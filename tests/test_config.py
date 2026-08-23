@@ -90,6 +90,19 @@ class TestRejectingAnUnknownKey(unittest.TestCase):
         for key in KNOWN:
             self.assertIn(key, str(caught.exception))
 
+    def test_the_list_is_in_a_fixed_order(self) -> None:
+        """Alphabetical, and written out here as one string.
+
+        Asserting only that each key *appears* leaves the order free, and the
+        order a `dict` gives is its insertion order -- so adding a setting would
+        quietly reshuffle an error message people paste into issues. The
+        mutation sweep is what noticed: reversing the sort changed nothing any
+        test could see.
+        """
+        with self.assertRaises(TupferlError) as caught:
+            parse("nonsense = 1", WHERE)
+        self.assertIn("editor, hostname, ignore, max_file_size", str(caught.exception))
+
     def test_the_file_is_named(self) -> None:
         with self.assertRaises(TupferlError) as caught:
             parse("nonsense = 1", "/somewhere/config.toml")

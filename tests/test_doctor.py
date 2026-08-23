@@ -218,6 +218,24 @@ class TestTheBackupCheck(DoctorCase):
         self.assertIs(True, doctor.writable(where).ok)
         self.assertTrue(where.is_dir())
 
+    @unittest.skipIf(os.geteuid() == 0, "root ignores the mode bits, so nothing is unwritable")
+    def test_a_directory_that_exists_and_cannot_be_written_fails(self) -> None:
+        """The second half of the check, and the half `mkdir` cannot reach: a
+        directory that is already there and is not writable.
+
+        Labelled rather than left silent, as CLAUDE.md §2 asks. It runs on CI,
+        whose runners are an ordinary user, and skips in a root container --
+        where `os.access(..., W_OK)` is true for every directory, so a test
+        written without the guard would pass there whatever the code did.
+        """
+        where = self.tmp / "readonly"
+        where.mkdir()
+        where.chmod(0o500)
+        self.addCleanup(where.chmod, 0o700)
+        found = doctor.writable(where)
+        self.assertIs(False, found.ok)
+        self.assertIn("not writable", found.detail)
+
     def test_a_path_that_cannot_be_created_fails(self) -> None:
         """The parent is a *file*, so `mkdir` fails for a reason no mode-bit
         check would see -- and root, which ignores mode bits, still sees this."""
