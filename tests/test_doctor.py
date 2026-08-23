@@ -19,6 +19,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
 from tests import support
 from tupferl import doctor, gitrepo, paths
@@ -42,11 +43,24 @@ class TestGitPresence(DoctorCase):
         self.assertIs(True, found.ok)
         self.assertIn("git version", found.detail)
 
+    def test_no_git_on_path_fails_and_says_what_to_do(self) -> None:
+        """The branch every other check depends on, produced by emptying `PATH`
+        rather than by patching `gitrepo.git` -- a mock would also pass against
+        a `git_present` that had stopped calling git at all."""
+        os.environ["PATH"] = "/nonexistent"
+        found = doctor.git_present()
+        self.assertIs(False, found.ok)
+        self.assertIn("install git", found.detail)
+
 
 class TestTheRepositoryCheck(DoctorCase):
     def test_nothing_there_says_run_init(self) -> None:
+        """On "no repository at", not on "tupferl init": *both* messages end in
+        that command, so asserting it alone passes with the existence check
+        removed entirely. The mutation sweep found that."""
         found = doctor.repository(self.repo)
         self.assertIs(False, found.ok)
+        self.assertIn("no repository at", found.detail)
         self.assertIn("tupferl init", found.detail)
 
     def test_a_directory_that_is_not_a_repository_says_so_differently(self) -> None:
@@ -147,6 +161,54 @@ class TestTheRemoteCheck(DoctorCase):
         found = doctor.remote(self.repo, ok=True)
         self.assertIs(False, found.ok)
         self.assertIn("credentials", found.detail)
+        # git's own reason, not just the advice: without this the message could
+        # say "refused: None" and still pass.
+        self.assertIn("does not appear to be a git repository", found.detail)
+
+    def test_the_reason_is_gits_first_line(self) -> None:
+        """git leads with the specific failure and follows it with generic
+        advice, so the *first* line is the one worth printing. Its last is
+        "and the repository exists.", which is what `doctor` reported as the
+        reason a remote refused until this test was written.
+
+        A single-line stderr cannot tell the two apart, which is why the fixture
+        checks that it produced several.
+        """
+        support.make_repo(self.repo, self.env)
+        support.git(["remote", "add", "origin", str(self.tmp / "absent.git")], self.repo, self.env)
+        said = gitrepo.git(["ls-remote", "--exit-code", "origin", "HEAD"], cwd=self.repo)
+        self.assertGreater(len(said.err.splitlines()), 1, "the fixture produced one line")
+        found = doctor.remote(self.repo, ok=True)
+        self.assertIs(False, found.ok)
+        self.assertIn(said.err.splitlines()[0], found.detail)
+        self.assertNotIn(said.err.splitlines()[-1], found.detail)
+
+    def test_the_first_remote_is_the_one_asked(self) -> None:
+        """Two remotes, so "the first" is observable. `git remote` lists them
+        alphabetically, so `alpha` is first and `origin` is not."""
+        remote = support.make_remote(self.remote, self.env)
+        support.make_repo(self.repo, self.env, remote=remote)
+        support.git(["remote", "add", "alpha", str(remote)], self.repo, self.env)
+        found = doctor.remote(self.repo, ok=True)
+        self.assertIs(True, found.ok)
+        self.assertIn("alpha", found.detail)
+
+    def test_a_remote_that_never_answers_is_a_timeout_not_a_refusal(self) -> None:
+        """The two need different sentences: "did not answer" is a network or a
+        wedged host, "refused" is a URL or a credential. Produced with an ssh
+        command that sleeps, so no packet leaves the machine."""
+        support.make_repo(self.repo, self.env)
+        support.git(["remote", "add", "origin", "ssh://example.invalid/x"], self.repo, self.env)
+        # `sh -c`, not a bare `sleep 30`: git appends the host and the remote
+        # command to whatever this names, and `sleep 30 example.invalid ...`
+        # exits immediately with "invalid time interval" -- which arrives as a
+        # *refusal*, and would make this test pass for the wrong reason.
+        os.environ["GIT_SSH_COMMAND"] = "sh -c 'sleep 30'"
+        with mock.patch.object(gitrepo, "TIMEOUT", 0.5):
+            found = doctor.remote(self.repo, ok=True)
+        self.assertIs(False, found.ok)
+        self.assertIn("did not answer", found.detail)
+        self.assertNotIn("refused", found.detail)
 
 
 class TestTheBackupCheck(DoctorCase):
@@ -274,6 +336,14 @@ class TestTheReport(unittest.TestCase):
         self.assertTrue(lines[3].startswith("✘"))
         self.assertTrue(lines[5].startswith("-"))
 
+    def test_the_details_line_up(self) -> None:
+        """What the width computation is *for*. The titles here differ in length
+        (`one` against `three`), so a width taken from the shortest -- or from
+        the first -- puts the details in different columns."""
+        lines = doctor.report(self.found).splitlines()[: len(self.found)]
+        columns = {line.index(check.detail) for line, check in zip(lines, self.found, strict=True)}
+        self.assertEqual(1, len(columns), f"details start at {sorted(columns)}")
+
     def test_the_details_are_all_there(self) -> None:
         text = doctor.report(self.found)
         for check in self.found:
@@ -325,6 +395,26 @@ class TestTheChecksRunInOrder(DoctorCase):
         self.assertEqual(
             ["git", "repository", "settings", "hostname", "remote", "backups", "state"], titles
         )
+
+    def test_a_bare_machine_skips_what_it_cannot_ask(self) -> None:
+        """`checks()` passes `here.ok is True` down to `remote` and `dangling`.
+        Inverted, a bare machine would report those two as ✔ and ✘ the wrong way
+        round -- and every other assertion in this file still passes, because
+        they call those functions directly."""
+        found = {check.title: check.ok for check in doctor.checks()}
+        self.assertIs(False, found["repository"])
+        self.assertIs(None, found["remote"])
+        self.assertIs(None, found["state"])
+
+    def test_a_healthy_machine_asks_everything(self) -> None:
+        """The other side of the same wiring, and the reason the test above is
+        not satisfied by a `checks()` that skips those two unconditionally."""
+        remote = support.make_remote(self.remote, self.env)
+        support.make_repo(self.repo, self.env, remote=remote)
+        found = {check.title: check.ok for check in doctor.checks()}
+        self.assertIs(True, found["repository"])
+        self.assertIs(True, found["remote"])
+        self.assertIs(True, found["state"])
 
     def test_the_repository_path_comes_from_the_environment(self) -> None:
         """`checks()` takes no arguments, so this is the only thing that decides

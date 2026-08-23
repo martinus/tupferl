@@ -59,26 +59,38 @@ def env() -> dict[str, str]:
     return prepared
 
 
-def git(args: list[str], cwd: Path | None = None, timeout: float = TIMEOUT) -> Result:
+def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) -> Result:
     """Run git with `args`, and answer rather than raise.
 
     `cwd=None` means the current directory, which is right for `git --version`
     and wrong for everything else -- so every other caller passes one. Not
     defaulted to the repository, because that would make a call against the wrong
     tree the quiet option.
+
+    `timeout=None` means `TIMEOUT`, resolved *here* rather than as
+    `timeout: float = TIMEOUT` in the signature. A default argument is evaluated
+    once, when the module is imported, so the signature version cannot be changed
+    afterwards -- and `doctor.remote` reads `gitrepo.TIMEOUT` when it composes
+    its message, so the two would disagree: a test that shortened the constant
+    waited the full thirty seconds and was told it had waited half of one.
     """
+    waiting = TIMEOUT if timeout is None else timeout
     try:
         done = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=waiting,
             env=env(),
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return Result(False, "", f"git {args[0]} did not answer within {timeout:g}s", True)
+        # The whole argument list, not `args[0]`, which is `-c` as often as it is
+        # the subcommand -- "git -c did not answer" names a flag and sends the
+        # reader looking for a command by that name.
+        shown = " ".join(args)
+        return Result(False, "", f"`git {shown}` did not answer within {waiting:g}s", True)
     except FileNotFoundError:
         return Result(False, "", "git is not installed, or not on PATH")
     return Result(done.returncode == 0, done.stdout.strip(), done.stderr.strip())

@@ -47,14 +47,26 @@ class Check(NamedTuple):
 
 
 def _why(result: gitrepo.Result) -> str:
-    """The last line of git's stderr, which is where the reason is.
+    """The first line of git's stderr, which is where the reason is.
 
-    Its first line is context -- "fatal: not a git repository" is preceded by
-    nothing useful on some paths and by a whole hint block on others. Empty
-    stderr is possible (a killed process), so there is a fallback rather than an
-    `IndexError` inside a message about something else going wrong.
+    This said *last* line until a test asked what was actually in there. git
+    leads with the specific failure and follows it with generic advice, so the
+    last line is the least informative one it printed. Measured on three
+    failures, each ending in the same four-line block:
+
+        fatal: '/tmp/absent.git' does not appear to be a git repository
+        fatal: Could not read from remote repository.
+        <blank>
+        Please make sure you have the correct access rights
+        and the repository exists.
+
+    "and the repository exists." was what a `doctor` run reported as the reason
+    a remote refused.
+
+    Empty stderr is possible (a killed process), so there is a fallback rather
+    than an `IndexError` inside a message about something else going wrong.
     """
-    return result.err.splitlines()[-1] if result.err else "no reason given"
+    return result.err.splitlines()[0] if result.err else "no reason given"
 
 
 def git_present() -> Check:
