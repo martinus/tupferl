@@ -70,6 +70,11 @@ Every change reaches the main branch through a green PR — one-line fixes, docs
 edits and lint reformats included. Enforce this in branch protection rather than
 agreeing to it, or it decays the first time someone is in a hurry.
 
+Here that enforcement is [`.github/rulesets/main.json`](.github/rulesets/main.json),
+with an empty `bypass_actors` so it binds administrators too. GitHub does not
+read the file; it has to be applied once by hand, and
+[its README](.github/rulesets/README.md) says how and how to verify it took.
+
 ### The CI gate job
 
 Require **one** status check that `needs:` every other job, not thirty job names

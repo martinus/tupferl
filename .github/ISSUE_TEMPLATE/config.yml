@@ -1,0 +1,12 @@
+# The blank-issue escape hatch is closed and the private channel is offered
+# beside the two templates: tupferl reads and writes a user's whole dotfiles
+# tree, so a vulnerability here is not a thing to learn about from a public
+# issue.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/martinus/tupferl/security/advisories/new
+    about: Privately, where only the maintainer can read it. Never a public issue.
+  - name: How the repository works
+    url: https://github.com/martinus/tupferl/blob/main/CLAUDE.md
+    about: The preflight one-liner, and what a change needs before it lands.

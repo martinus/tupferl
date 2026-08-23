@@ -1,0 +1,44 @@
+name: Feature request
+description: Something you wanted tupferl to do and could not
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing: [`docs/plan.md`](https://github.com/martinus/tupferl/blob/main/docs/plan.md)
+        §2 lists what this project deliberately does **not** build — templates,
+        secret management, hooks, a daemon, Windows. Those are not oversights,
+        and the issue that changes one of them has to argue against the reason
+        it is on that list.
+
+  - type: textarea
+    id: trying
+    attributes:
+      label: What were you trying to do?
+      description: |
+        The task, not the feature. What you were actually after is the thing
+        worth designing against — there is often a shorter way to it than the
+        one that comes to mind first, and it is the part nobody else can supply.
+      placeholder: |
+        My work laptop needs a different git email, and I did not want to keep
+        two copies of .gitconfig in my head.
+    validations:
+      required: true
+
+  - type: textarea
+    id: instead
+    attributes:
+      label: What did you do instead?
+      description: What you fell back on, and why it was not good enough.
+    validations:
+      required: false
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you had in mind, if you have something in mind
+      description: |
+        Optional, and genuinely so. A clear problem with no proposed solution is
+        a better issue than a solution with no problem behind it.
+    validations:
+      required: false

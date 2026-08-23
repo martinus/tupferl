@@ -191,6 +191,13 @@ _BUDGET = "TUPFERL_MUTATE_BUDGET"
 #: randomised mutant draw different examples, and "it failed" then means nothing.
 _PROFILE = "TUPFERL_HYPOTHESIS_PROFILE"
 
+#: The value it is set to. A constant rather than a literal in the `env` dict
+#: below, so a test can assert that the profile this asks for is one
+#: `tests/profiles.py` has registered -- `load_profile` on a name nobody
+#: registered raises inside the probe, where it surfaces as `BROKE` on every row
+#: rather than as the typo it is.
+_MUTATION_PROFILE = "mutation"
+
 #: Names never copied into a mutation's sandbox. ``.git`` because it is large and
 #: nothing under test reads it; the caches because a stale one is the trap this
 #: module documents, and the cheapest way to not have it is to not copy it.
@@ -646,7 +653,7 @@ def _run(
                     **os.environ,
                     "PYTHONDONTWRITEBYTECODE": "1",
                     _BUDGET: str(memory),
-                    _PROFILE: "mutation",
+                    _PROFILE: _MUTATION_PROFILE,
                 },
                 # A file rather than a pipe, and this is not a style choice. The
                 # suite's `python -m tupferl` grandchildren inherit the write
