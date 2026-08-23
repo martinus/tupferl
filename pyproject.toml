@@ -1,0 +1,114 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tupferl"
+# Read from tupferl/__init__.py rather than repeated here. Two declarations can
+# disagree, and when they do `tupferl --version` lies about what is installed --
+# which matters most during a release, when it is the only thing anyone checks.
+dynamic = ["version"]
+description = "A simple dotfiles manager: one git repository, one sync command"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Martin Leitner-Ankerl", email = "martin.ankerl@gmail.com" }]
+keywords = ["dotfiles", "git", "sync", "config"]
+
+# No `License ::` classifier: `license = "Apache-2.0"` above is the SPDX
+# expression PEP 639 replaced it with, and declaring both is how a build starts
+# failing on a future packaging release.
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+
+# One conditional dependency and no others. `tomllib` entered the standard
+# library in 3.11 and this project supports 3.10 (plan §5), so 3.10 needs the
+# backport `tomllib` was taken from -- same parser, same API. Dropping 3.10 is
+# the way to remove this line; nothing else here needs it.
+#
+# `rich` is sanctioned by plan §5 for the conflict UI. It is not listed yet
+# because nothing imports it yet, and a declared dependency nobody uses is a
+# dependency nobody notices going stale.
+dependencies = ["tomli>=2.0; python_version < '3.11'"]
+
+[project.optional-dependencies]
+# Floors, not pins -- but recent ones, and specifically the versions this tree is
+# actually formatted and checked by. `ruff format --check` is a *formatter* gate
+# whose output changes between versions, so a floor three years behind lets a
+# contributor pass locally and fail in CI for no reason they can see.
+#
+# `test` is separate from `dev` so the CI jobs that only run the suite can take
+# hypothesis without also pulling a linter and a type checker into a job that
+# runs neither.
+test = ["hypothesis>=6.100"]
+dev = ["ruff>=0.16", "mypy>=2.3", "tupferl[test]"]
+
+[project.scripts]
+tupferl = "tupferl.__main__:main"
+
+# Below every plain key of `[project]`, not beside `classifiers` where it reads
+# better: a TOML sub-table ends its parent, so `[project.urls]` up there quietly
+# swallows `dependencies` and the rest into itself. The build fails with "URL
+# `dependencies` must be a string", which does not sound like a misplaced
+# heading.
+[project.urls]
+Homepage = "https://github.com/martinus/tupferl"
+Source = "https://github.com/martinus/tupferl"
+Issues = "https://github.com/martinus/tupferl/issues"
+
+[tool.hatch.version]
+path = "tupferl/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tupferl"]
+
+[tool.hatch.build.targets.sdist]
+include = ["tupferl", "tests", "tools", "docs", "README.md", "LICENSE", "CLAUDE.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Mutation specs are throwaway tables of source text, and the source they quote
+# is not theirs to reformat -- a wrapped `old` string no longer matches the file,
+# so the row silently applies to nothing.
+extend-exclude = ["*.md", "spec_*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+
+# Hypothesis is a third-party import with two frictions against `strict`. Both
+# are narrowed to the modules that use it rather than relaxed for the tree: an
+# exemption wide enough to cover a file nobody remembers writing is the kind that
+# stops being noticed.
+[[tool.mypy.overrides]]
+module = ["hypothesis.*", "tomli.*"]
+ignore_missing_imports = true
+
+# `@rule` and `@invariant` are generic wrappers mypy reads as untyped, so
+# `disallow_untyped_decorators` rejects every rule in a state machine, and
+# `RuleBasedStateMachine` reads as `Any` once its module is unresolved above, so
+# subclassing it trips `disallow_subclassing_any`. The alternative is a
+# `type: ignore` per rule, which is the same exemption written five times where a
+# reader will stop seeing it.
+#
+# Listed rather than matched: mypy only accepts `*` as a whole component, so
+# `tests.test_*_properties` is rejected outright. Every `_properties` module
+# belongs here -- the suffix is the convention that earns them, and the list is
+# what mypy will take.
+[[tool.mypy.overrides]]
+module = ["tests.profiles", "tests.test_config_properties"]
+disallow_untyped_decorators = false
+disallow_subclassing_any = false
