@@ -407,6 +407,17 @@ Two things are not where a newcomer would guess, both on purpose:
 - **`ruff format --check` fails on code you did not touch** — the formatter's
   output changes between versions. The floors in `pyproject.toml` are the
   versions the tree is actually formatted by, not the oldest that would work.
+- **A Hypothesis profile means something different in CI than on your machine.**
+  Hypothesis registers and loads a derandomised profile of its own when it sees
+  `CI` in the environment, and a profile that leaves a field unstated inherits
+  whatever is default when it is registered. That is why every profile in
+  `tests/profiles.py` states every field it cares about. To reproduce a CI-only
+  failure of this shape, run the preflight the way CI does:
+
+  ```sh
+  CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
+  ```
+
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.

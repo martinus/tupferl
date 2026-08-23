@@ -29,9 +29,21 @@ ENV = "TUPFERL_HYPOTHESIS_PROFILE"
 
 #: The default. Randomised, because on a developer's machine finding a new
 #: falsifying example is the whole point of running these at all.
-settings.register_profile("dev", max_examples=200, deadline=None)
+#:
+#: `derandomize=False` is stated rather than left out, and that is not
+#: redundancy. **Hypothesis registers and loads a profile of its own when it
+#: sees `CI` in the environment**, and that one is derandomised -- so a field a
+#: profile here does not state is inherited from whatever is default at
+#: registration time. Left implicit, `dev` was randomised on a laptop and
+#: derandomised on a runner: the same name for two different things, decided by
+#: an environment variable nobody here mentions. CI caught it on the first run.
+settings.register_profile("dev", max_examples=200, deadline=None, derandomize=False)
 
 #: CI: derandomised, so a failure a contributor is asked to reproduce reproduces.
+#: The name collides with the profile Hypothesis registers for itself when `CI`
+#: is set, deliberately: registering it again replaces theirs, and the
+#: `load_profile` at the bottom of this module is what decides which one is in
+#: force either way.
 #: `deadline=None` on every profile, and this is not laziness -- these properties
 #: drive real `git` subprocesses, so a per-example deadline measures the runner's
 #: load rather than the code.
@@ -49,4 +61,7 @@ settings.register_profile(
     suppress_health_check=list(HealthCheck),
 )
 
+#: Every profile above states every field it cares about, so that this line is
+#: the only thing that decides which settings are in force. `tests/test_profiles.py`
+#: asserts that by running this module in a subprocess with and without `CI`.
 settings.load_profile(os.environ.get(ENV, "dev"))

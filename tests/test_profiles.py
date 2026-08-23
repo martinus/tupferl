@@ -14,11 +14,14 @@ baseline passed and the mutant failed" stops meaning "a test noticed".
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import unittest
 
 from hypothesis import settings
 
-from tests import profiles
+from tests import profiles, support
 from tools import mutate
 
 
@@ -44,6 +47,51 @@ class TestTheProfilesExist(unittest.TestCase):
         """A developer's run should find new falsifying examples; that is the
         whole reason to run these at all locally."""
         self.assertFalse(settings.get_profile("dev").derandomize)
+
+
+#: Asks a fresh interpreter what each profile says, so the answer is the module's
+#: import-time behaviour rather than this process's already-loaded state.
+ASK = (
+    "from hypothesis import settings;"
+    "from tests import profiles;"
+    "print({n: (settings.get_profile(n).derandomize, settings.get_profile(n).max_examples)"
+    " for n in ('dev', 'ci', 'mutation')})"
+)
+
+
+class TestTheProfilesDoNotDependOnTheAmbientEnvironment(unittest.TestCase):
+    """The failure this file was written for, found by CI rather than here.
+
+    Hypothesis registers and loads a derandomised profile of its own when it sees
+    `CI` in the environment, and a profile that leaves a field unstated inherits
+    whatever is default when it is registered. So `dev` was randomised locally
+    and derandomised on a runner -- one name, two meanings, decided by a variable
+    nothing in this project mentions.
+
+    Run in a subprocess because the interesting behaviour happens at import, and
+    `tests.profiles` is imported long before any test runs.
+    """
+
+    def ask(self, **env: str) -> str:
+        done = subprocess.run(
+            [sys.executable, "-c", ASK],
+            cwd=support.ROOT,
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    def test_the_profiles_are_the_same_with_and_without_ci(self) -> None:
+        without = self.ask(CI="")
+        with_ci = self.ask(CI="true")
+        self.assertEqual(without, with_ci)
+
+    def test_and_they_are_the_ones_this_module_asserts(self) -> None:
+        """The precondition: two identical answers prove nothing if the answer
+        itself is wrong, or if the subprocess failed to say anything useful."""
+        self.assertIn("'dev': (False, 200)", self.ask(CI="true"))
 
 
 class TestTheWiring(unittest.TestCase):
