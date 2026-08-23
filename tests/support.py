@@ -56,6 +56,10 @@ ROOT = Path(__file__).resolve().parents[1]
 #:   subprocess started here would otherwise drop them.
 #: - `TUPFERL_MUTATE_BUDGET`: how much memory a nested mutation harness may
 #:   assume. Dropping it lets an inner harness size itself for the whole host.
+#: - `PYTHONWARNINGS`: CI sets it to `error::DeprecationWarning`, and a sandbox
+#:   that drops it downgrades that guard to a warning *only in the subprocesses*
+#:   -- which is every test that drives the CLI as a user does. Measured before
+#:   it was added: a child raising a `DeprecationWarning` exited 0.
 CARRIES = (
     "PATH",
     "TMPDIR",
@@ -63,6 +67,7 @@ CARRIES = (
     "LC_ALL",
     "PYTHONDONTWRITEBYTECODE",
     "PYTHONPYCACHEPREFIX",
+    "PYTHONWARNINGS",
     "TUPFERL_MUTATE_BUDGET",
 )
 

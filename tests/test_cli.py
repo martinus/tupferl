@@ -122,6 +122,19 @@ class TestTheRealProcess(support.SandboxCase):
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertNotIn("✘", done.stdout)
 
+    def test_a_misconfigured_environment_is_reported_not_traced(self) -> None:
+        """A relative `TUPFERL_DIR` raises inside `paths.repo_dir`, which
+        `doctor` calls before it prints anything. It must arrive as the one
+        sentence and exit 2 -- "tupferl could not run" -- rather than as a
+        traceback, and rather than as `doctor`'s own exit 1, which would say a
+        check failed when no check ever ran.
+        """
+        done = support.run_cli(["doctor"], {**self.env, "TUPFERL_DIR": "relative/path"})
+        self.assertEqual(2, done.returncode)
+        self.assertIn("absolute", done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertEqual("", done.stdout)
+
     def test_it_runs_from_anywhere(self) -> None:
         """The repository is found from the environment, not from the current
         directory -- so a `cd` must not change what `doctor` looks at."""

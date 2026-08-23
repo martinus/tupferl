@@ -30,6 +30,11 @@ from tupferl.errors import TupferlError
 #: one: "-" is not a quieter tick, it is a different answer.
 MARKS: dict[bool | None, str] = {True: "✔", False: "✘", None: "-"}
 
+#: Files git leaves in the git directory while an operation is half-done. A
+#: killed `tupferl sync` leaves one behind, and the next sync would then build on
+#: top of a merge nobody finished.
+UNFINISHED = ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD")
+
 
 class Check(NamedTuple):
     """One question, its answer, and what to do about a "no"."""
@@ -39,6 +44,17 @@ class Check(NamedTuple):
     #: One sentence. For a failure it must say the next action; for a pass it
     #: says what was found, so a green run is still evidence rather than a tick.
     detail: str
+
+
+def _why(result: gitrepo.Result) -> str:
+    """The last line of git's stderr, which is where the reason is.
+
+    Its first line is context -- "fatal: not a git repository" is preceded by
+    nothing useful on some paths and by a whole hint block on others. Empty
+    stderr is possible (a killed process), so there is a fallback rather than an
+    `IndexError` inside a message about something else going wrong.
+    """
+    return result.err.splitlines()[-1] if result.err else "no reason given"
 
 
 def git_present() -> Check:
@@ -110,21 +126,16 @@ def remote(repo: Path, ok: bool) -> Check:
         return Check(
             False,
             "remote",
-            "no remote configured, so `tupferl sync` cannot share anything; add one with "
-            "`git -C "
-            f"{repo} remote add origin <git-url>`",
+            f"no remote configured, so `tupferl sync` cannot share anything; add one "
+            f"with `git -C {repo} remote add origin <git-url>`",
         )
     first = named.out.splitlines()[0]
     reached = gitrepo.git(["ls-remote", "--exit-code", first, "HEAD"], cwd=repo)
     if reached.timed_out:
         return Check(False, "remote", f"{first} did not answer within {gitrepo.TIMEOUT:g}s")
     if not reached.ok:
-        return Check(
-            False,
-            "remote",
-            f"{first} refused: {reached.err.splitlines()[-1] if reached.err else 'no reason given'}"
-            f"; check the URL and your credentials",
-        )
+        detail = f"{first} refused: {_why(reached)}; check the URL and your credentials"
+        return Check(False, "remote", detail)
     return Check(True, "remote", f"{first} answers")
 
 
@@ -155,14 +166,13 @@ def dangling(repo: Path, ok: bool) -> Check:
     if not ok:
         return Check(None, "state", "no repository yet, so there is nothing in progress")
     inside = gitrepo.git(["rev-parse", "--git-dir"], cwd=repo)
-    marker = next(
-        (
-            name
-            for name in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD")
-            if inside.ok and (repo / inside.out / name).exists()
-        ),
-        None,
-    )
+    if not inside.ok:
+        # A failed git call is not "nothing in progress". Folding the two
+        # together is CLAUDE.md §8's pass nobody can explain: this check would
+        # report ✔ for a repository git could not read at all.
+        return Check(False, "state", f"git cannot read {repo}: {_why(inside)}")
+    git_dir = repo / inside.out
+    marker = next((name for name in UNFINISHED if (git_dir / name).exists()), None)
     if marker is not None:
         return Check(
             False,
@@ -171,7 +181,9 @@ def dangling(repo: Path, ok: bool) -> Check:
             f"then sync again",
         )
     changed = gitrepo.git(["status", "--porcelain"], cwd=repo)
-    if changed.ok and changed.out:
+    if not changed.ok:
+        return Check(False, "state", f"`git status` failed in {repo}: {_why(changed)}")
+    if changed.out:
         count = len(changed.out.splitlines())
         return Check(
             False,

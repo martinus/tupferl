@@ -15,6 +15,8 @@ the code: a variable added there is poisoned by this fixture the same day.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +88,52 @@ class TestTheSandboxReplacesTheEnvironment(Boxed):
         """Not the real machine's, which differs per developer and per CI leg."""
         with support.sandboxed(self.home, host="other-host"):
             self.assertEqual("other-host", paths.hostname())
+
+
+class TestTheSandboxKeepsTheGuardsOn(Boxed):
+    """What a sandbox must *carry*, which is the opposite failure to leaking.
+
+    Building the environment from nothing is right, and it has one cost: a
+    variable that makes the run stricter is dropped along with the ones that
+    would point it at the real installation. CI's
+    `PYTHONWARNINGS=error::DeprecationWarning` is the case -- without it every
+    test that drives the CLI as a subprocess silently stops enforcing it.
+    """
+
+    def test_a_deprecation_warning_still_fails_a_sandboxed_child(self) -> None:
+        with mock.patch.dict(os.environ, {"PYTHONWARNINGS": "error::DeprecationWarning"}):
+            env = support.sandbox_env(self.home)
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import warnings; warnings.warn('x', DeprecationWarning)",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(0, done.returncode, "the sandbox dropped PYTHONWARNINGS")
+        self.assertIn("DeprecationWarning", done.stderr)
+
+    def test_without_it_set_the_child_is_unaffected(self) -> None:
+        """The precondition: the test above must be observing the variable
+        rather than a python that errors on every warning regardless."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            env = support.sandbox_env(self.home)
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import warnings; warnings.warn('x', DeprecationWarning)",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, done.returncode)
 
 
 class TestTheFixturesAreReal(Boxed):

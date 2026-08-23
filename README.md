@@ -9,6 +9,9 @@ language, no name mangling, no hooks. One command does the daily work, and the
 one thing it does better is what happens when two computers changed the same
 file.
 
+The whole of it, once it is finished — see **Status** below for what works
+today, which is not this:
+
 ```sh
 pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git

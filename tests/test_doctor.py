@@ -192,6 +192,63 @@ class TestTheDanglingStateCheck(DoctorCase):
     def test_without_a_repository_there_is_nothing_in_progress(self) -> None:
         self.assertIs(None, doctor.dangling(self.repo, ok=False).ok)
 
+    def test_a_repository_git_cannot_read_is_a_failure_not_a_pass(self) -> None:
+        """`ok=True` with a directory that is not a repository: both git calls
+        fail, and folding "git said no" into "nothing in progress" would report
+        ✔ for a tree nothing could be read from.
+
+        Reachable in anger when the repository is removed between the
+        `repository` check and this one, and by any future caller that passes a
+        wrong `ok`. The point is that the *shape* of the answer is right --
+        CLAUDE.md §8's pass nobody can explain.
+        """
+        empty = self.tmp / "not-a-repo"
+        empty.mkdir()
+        found = doctor.dangling(empty, ok=True)
+        self.assertIs(False, found.ok)
+        self.assertIn("git cannot read", found.detail)
+
+    def test_a_repository_whose_status_cannot_be_read_is_a_failure(self) -> None:
+        """The second half, and it needs its own fixture: `rev-parse` must
+        succeed while `git status` fails, or this passes for the reason the test
+        above already covers.
+
+        A directory where the index file belongs does exactly that -- git maps
+        the index to read the work tree's state, and `rev-parse --git-dir`
+        never touches it. Not a `chmod`, which root ignores.
+        """
+        index = self.repo / ".git" / "index"
+        index.unlink()
+        index.mkdir()
+        self.assertTrue(gitrepo.git(["rev-parse", "--git-dir"], cwd=self.repo).ok)
+        found = doctor.dangling(self.repo, ok=True)
+        self.assertIs(False, found.ok)
+        self.assertIn("git status", found.detail)
+
+    def test_every_unfinished_marker_is_looked_for(self) -> None:
+        """One test per marker: a rebase and a cherry-pick leave the tree in the
+        same half-done state as a merge, and a list that had lost an entry would
+        still pass a test naming only the first.
+
+        The names are written out here rather than read from `doctor.UNFINISHED`.
+        That was the first version, and the mutation harness killed it: with the
+        constant shortened to `("MERGE_HEAD",)` the loop simply ran once and
+        passed. A test containing a copy of the code it checks cannot fail --
+        CLAUDE.md §2 -- and this is what that looks like when it is only two
+        characters of `for ... in`.
+        """
+        git_dir = self.repo / ".git"
+        for marker in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD"):
+            with self.subTest(marker=marker):
+                where = git_dir / marker
+                where.write_text("deadbeef\n", encoding="utf-8")
+                try:
+                    found = doctor.dangling(self.repo, ok=True)
+                    self.assertIs(False, found.ok)
+                    self.assertIn(marker, found.detail)
+                finally:
+                    where.unlink()
+
 
 class TestTheReport(unittest.TestCase):
     """The text, from a hand-built list -- so the counting is tested without

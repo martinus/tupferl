@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import fields
 from pathlib import Path
 
 from tupferl.config import DEFAULT_MAX_FILE_SIZE, KNOWN, Config, load, parse
@@ -52,6 +53,27 @@ class TestReadingTheSettings(unittest.TestCase):
         self.assertEqual("vim", found.editor)
         self.assertIsNone(found.hostname)
         self.assertEqual([], found.ignore)
+
+
+class TestTheTableAndTheDataclassAgree(unittest.TestCase):
+    """`parse` ends in `Config(**raw)`, so the two definitions of "a setting"
+    have to be the same one.
+
+    A key added to `KNOWN` and not to `Config` is accepted by every check and
+    then raises `TypeError` -- an unexpected keyword argument, reported as a
+    traceback rather than as a sentence. The reverse is a field nobody can set.
+    """
+
+    def test_every_known_key_is_a_field(self) -> None:
+        self.assertEqual(set(KNOWN), {field.name for field in fields(Config)})
+
+    def test_every_field_has_the_type_the_table_claims(self) -> None:
+        """Reading the annotation, not the default: `hostname` defaults to
+        `None`, so a default-based check would say its type is `NoneType`."""
+        for name, expected in KNOWN.items():
+            with self.subTest(key=name):
+                said = Config.__annotations__[name]
+                self.assertIn(expected.__name__, said)
 
 
 class TestRejectingAnUnknownKey(unittest.TestCase):
