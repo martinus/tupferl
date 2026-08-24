@@ -368,6 +368,8 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | | |
 |---|---|
 | `tupferl/` | the package. `__main__.py` is the CLI and the only entry point |
+| `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — four of the six are there to stop the wrong file being pushed |
+| `tupferl/gitrepo.py` | every call to git. Nothing else in the package spawns a subprocess |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` |
 | `docs/plan.md` | the plan this is built from |

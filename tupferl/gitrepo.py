@@ -75,6 +75,15 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
     waited the full thirty seconds and was told it had waited half of one.
     """
     waiting = TIMEOUT if timeout is None else timeout
+    if cwd is not None and not cwd.is_dir():
+        # Checked before spawning, because `subprocess` reports both of these as
+        # errors about the *command*: a missing directory raises
+        # `FileNotFoundError`, indistinguishable from git not being installed, so
+        # `doctor` on a machine with no repository said "git is not installed";
+        # and a plain file raises `NotADirectoryError`, which nothing caught at
+        # all and which reached the user as a traceback. Both were found by
+        # reviewing this milestone rather than by anything failing.
+        return Result(False, "", f"{cwd} is not a directory")
     try:
         done = subprocess.run(
             ["git", *args],
@@ -92,6 +101,8 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
         shown = " ".join(args)
         return Result(False, "", f"`git {shown}` did not answer within {waiting:g}s", True)
     except FileNotFoundError:
+        # Now unambiguous: `cwd` was checked above, so the only file `subprocess`
+        # can fail to find here is `git` itself.
         return Result(False, "", "git is not installed, or not on PATH")
     return Result(done.returncode == 0, done.stdout.strip(), done.stderr.strip())
 

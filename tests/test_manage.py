@@ -96,6 +96,16 @@ class TestInit(Machine):
         self.assertEqual(2, done.returncode)
         self.assertIn("already a tupferl repository", done.stderr)
 
+    def test_a_file_where_the_repository_belongs_is_refused(self) -> None:
+        """One stray `touch` produces this, and `iterdir` raises
+        `NotADirectoryError` on it -- a traceback where a sentence belongs."""
+        self.repo.parent.mkdir(parents=True, exist_ok=True)
+        self.repo.write_text("not a directory", encoding="utf-8")
+        done = self.run_cli("init", str(self.remote))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("not a directory", done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+
     def test_a_non_empty_directory_in_the_way_is_refused(self) -> None:
         """Not cloned over. Whatever is there was put there by someone, and the
         message says to move it rather than doing it for them."""
@@ -199,6 +209,50 @@ class TestAdd(Machine):
         self.assertIn("updated", done.stdout)
         self.assertEqual(0o755, stat.S_IMODE(self.stored("s.sh").stat().st_mode))
 
+    def test_home_itself_cannot_be_added(self) -> None:
+        """The most extreme form of "contains the repository": adding `$HOME`
+        would walk into `~/.local/share/tupferl/repo` and manage tupferl's own
+        copies of everything, recursively."""
+        done = self.run_cli("add", str(self.home))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("own repository", done.stderr)
+
+    def test_a_large_file_is_compared_without_reading_it_whole(self) -> None:
+        """`max_file_size` is a setting and someone will raise it, so the
+        unchanged-file comparison must not load both copies into memory. This
+        asserts the *answer* rather than the mechanism -- a megabyte is not
+        enough to prove the memory claim, but it does prove `filecmp` was given
+        the two paths correctly, which is what a swap to it can get wrong."""
+        big = self.write(self.home / ".big", "x" * 900_000)
+        self.assertEqual(0, self.run_cli("add", str(big)).returncode)
+        again = self.run_cli("add", str(big))
+        self.assertIn("no change", again.stdout)
+        self.write(self.home / ".big", "y" * 900_000)
+        self.assertIn("updated", self.run_cli("add", str(big)).stdout)
+
+    def test_a_file_whose_name_begins_with_a_dash(self) -> None:
+        """`git add -- -x` is why `stage` passes `--`. Without it git reports
+        "unknown switch" for a dotfile somebody really has, and the guard is
+        otherwise a line nobody can tell works."""
+        self.write(self.home / "-dashfile", "x")
+        done = self.run_cli("add", str(self.home / "-dashfile"))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("add from test-host: -dashfile", self.log())
+        gone = self.run_cli("remove", str(self.home / "-dashfile"))
+        self.assertEqual(0, gone.returncode, gone.stdout + gone.stderr)
+
+    def test_overlapping_paths_are_stored_once(self) -> None:
+        """A directory and a file inside it, named in the same run. The commit
+        message and the printed list both come from this set, so a duplicate
+        would be visible twice in `git log`."""
+        self.write(self.home / ".config" / "nvim" / "init.lua", "x")
+        done = self.run_cli(
+            "add", str(self.home / ".config"), str(self.home / ".config" / "nvim" / "init.lua")
+        )
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(1, done.stdout.count("init.lua"), done.stdout)
+        self.assertEqual(1, self.log()[0].count("init.lua"), self.log()[0])
+
     def test_it_needs_a_repository(self) -> None:
         """Run in a home where `init` never was."""
         with support.tempdir() as box:
@@ -249,6 +303,18 @@ class TestRemove(Machine):
         not delete the repository out from under the user."""
         self.run_cli("remove", str(self.home / ".bashrc"))
         self.assertTrue(gitrepo.is_repository(self.repo))
+
+    def test_pruning_stops_at_the_repository_even_from_deep_inside(self) -> None:
+        """The loop deletes directories and walks upwards. This is the deepest
+        tree the tests build, so it is the one that would climb furthest if the
+        stop condition were wrong -- and `$HOME` is what sits above it."""
+        self.write(self.home / ".config" / "a" / "b" / "c" / "deep.conf", "x")
+        self.run_cli("add", str(self.home / ".config"))
+        self.run_cli("remove", str(self.home / ".config" / "a" / "b" / "c" / "deep.conf"))
+        self.assertFalse((self.repo / ".config").exists())
+        self.assertTrue(self.repo.is_dir(), "it pruned the repository itself")
+        self.assertTrue(self.home.is_dir(), "it climbed out of the repository")
+        self.assertTrue(paths.config_file(self.repo).is_file(), "it pruned .tupferl/")
 
     def test_removing_something_unmanaged_is_an_error(self) -> None:
         done = self.run_cli("remove", str(self.home / ".never-added"))

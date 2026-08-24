@@ -25,6 +25,7 @@ it to their other machine. Requiring existence would refuse exactly then.
 
 from __future__ import annotations
 
+import filecmp
 import shutil
 import stat
 from pathlib import Path, PurePosixPath
@@ -99,20 +100,18 @@ def store(source: Path, target: Path) -> str | None:
     survive a clone.
 
     The comparison before writing is not an optimisation -- the files are a
-    megabyte at most and the copy is not worth avoiding. It is so that `add` can
+    megabyte at most by default and the copy is not worth avoiding. It is so `add` can
     say "added", "updated" or nothing at all rather than printing "added" and
     then, three lines later, that the repository did not change. Mode is part of
     the comparison because a `chmod +x` with no edit is a real change that git
-    will record.
+    will record. `filecmp` rather than reading both files whole, because
+    `max_file_size` is a setting and someone will raise it.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = mode_for(source)
     existed = target.is_file()
-    if (
-        existed
-        and target.stat().st_mode & 0o777 == mode
-        and target.read_bytes() == source.read_bytes()
-    ):
+    same = filecmp.cmp(source, target, shallow=False) if existed else False
+    if existed and target.stat().st_mode & 0o777 == mode and same:
         return None
     shutil.copyfile(source, target)
     target.chmod(mode)
@@ -135,6 +134,10 @@ def init(url: str) -> int:
             f"{repo} is already a tupferl repository; use `tupferl sync` to update it, "
             f"or move it aside to start over."
         )
+    if repo.exists() and not repo.is_dir():
+        # Before `iterdir`, which raises `NotADirectoryError` here -- a traceback
+        # where a sentence belongs, for a state one stray `touch` produces.
+        raise TupferlError(f"{repo} exists and is not a directory; move it aside.")
     if repo.exists() and any(repo.iterdir()):
         raise TupferlError(
             f"{repo} already exists and is not empty; move it aside before running init."
@@ -264,7 +267,13 @@ def _prune(where: Path, repo: Path) -> None:
     the commit and present in every clone's working tree -- `~/.config/nvim/`
     with nothing in it, on a machine that never used nvim.
     """
-    while where != repo and where.is_dir() and not any(where.iterdir()):
+    # `repo in where.parents` as well as the inequality, and not only for
+    # tidiness: this loop deletes directories and walks *upwards*. Its safety
+    # otherwise rests on `name` being relative -- which it is, because
+    # `relative_to` cannot return anything else -- but an invariant three
+    # functions away is not what a delete loop should rest on. With this, a name
+    # that somehow arrived absolute stops immediately instead of climbing to `/`.
+    while where != repo and repo in where.parents and not any(where.iterdir()):
         where.rmdir()
         where = where.parent
 

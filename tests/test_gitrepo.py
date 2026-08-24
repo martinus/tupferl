@@ -93,6 +93,32 @@ class TestWhenGitCannotAnswer(unittest.TestCase):
         self.assertFalse(found.timed_out, "not answering and not being there are different")
         self.assertIn("not installed", found.err)
 
+    def test_a_missing_working_directory_says_so(self) -> None:
+        """Not "git is not installed", which is what `subprocess` makes it look
+        like: a missing `cwd` raises `FileNotFoundError`, the same exception as a
+        missing binary. `doctor` on a machine with no repository reported the
+        wrong one of the two until this was checked before spawning."""
+        found = gitrepo.git(["--version"], cwd=Path("/nonexistent-directory"))
+        self.assertFalse(found.ok)
+        self.assertIn("not a directory", found.err)
+        self.assertNotIn("not installed", found.err)
+
+    def test_a_plain_file_as_the_working_directory_says_so(self) -> None:
+        """The other half, and the one that used to be a traceback:
+        `NotADirectoryError` was caught by nothing."""
+        with tempfile.TemporaryDirectory() as box:
+            where = Path(box) / "file"
+            where.write_text("x", encoding="utf-8")
+            found = gitrepo.git(["--version"], cwd=where)
+        self.assertFalse(found.ok)
+        self.assertIn("not a directory", found.err)
+
+    def test_a_real_directory_still_runs(self) -> None:
+        """The precondition: the guard must not refuse the ordinary case, which
+        is every other call in this project."""
+        with tempfile.TemporaryDirectory() as box:
+            self.assertTrue(gitrepo.git(["--version"], cwd=Path(box)).ok)
+
     def test_a_failing_call_is_not_a_timeout(self) -> None:
         """The precondition for the two above: `timed_out` must distinguish, not
         just be set whenever something went wrong."""
