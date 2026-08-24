@@ -117,7 +117,8 @@ class Prompted(unittest.TestCase):
         `support.FALLBACK` is typed after them; see there for why.
         """
         self.terminal.type(keys + support.FALLBACK)
-        return conflicts.ask(sides, self.config, self.terminal.source, self.out)
+        with support.deadline(support.PATIENCE, f"the prompt never settled on {keys!r}"):
+            return conflicts.ask(sides, self.config, self.terminal.source, self.out)
 
     def scratch(self) -> Path:
         """A throwaway directory that lives as long as the test.
@@ -278,17 +279,29 @@ class TestOneKeypress(unittest.TestCase):
         self.terminal = support.Terminal()
         self.addCleanup(self.terminal.close)
 
+    def key(self) -> str:
+        """One keypress, under a deadline.
+
+        Every assertion here is about a read *returning*, so the failure these
+        tests must produce is a red test rather than a hang -- see
+        `support.deadline`. Without it, `ICANON` left set makes the read wait for
+        a newline that never comes, and the harness files that as `BROKE`, which
+        is never `caught`.
+        """
+        with support.deadline(support.PATIENCE, "one_key never returned"):
+            return conflicts.one_key(self.terminal.source)
+
     def test_a_key_is_read_without_waiting_for_enter(self) -> None:
         """Plan §3.4: every choice is one keypress. Nothing but `l` is written,
-        so a read that waited for a newline would block until the test timed
-        out -- which is the assertion, and it cannot be made any other way."""
+        so a read that waited for a newline would run past the deadline and fail
+        -- which is the assertion, and it cannot be made any other way."""
         self.terminal.type("l")
-        self.assertEqual("l", conflicts.one_key(self.terminal.source))
+        self.assertEqual("l", self.key())
 
     def test_the_terminal_is_left_as_it_was_found(self) -> None:
         before = termios.tcgetattr(self.terminal.source.fileno())
         self.terminal.type("l")
-        conflicts.one_key(self.terminal.source)
+        self.key()
         self.assertEqual(before, termios.tcgetattr(self.terminal.source.fileno()))
 
     def test_it_is_restored_even_when_the_read_raises(self) -> None:
@@ -313,7 +326,7 @@ class TestOneKeypress(unittest.TestCase):
         merge to `$HOME`, the repository and the snapshot with `sync` exiting 0.
         """
         self.terminal.type("\x1b[B")
-        self.assertEqual("\x1b[b", conflicts.one_key(self.terminal.source))
+        self.assertEqual("\x1b[b", self.key())
 
     def test_nothing_of_the_sequence_is_left_for_the_next_read(self) -> None:
         """The half the test above cannot show: the whole press was consumed, so
@@ -321,12 +334,12 @@ class TestOneKeypress(unittest.TestCase):
         arrow and then an `l`, which is what a user who scrolled and then
         answered does."""
         self.terminal.type("\x1b[Al")
-        conflicts.one_key(self.terminal.source)
-        self.assertEqual("l", conflicts.one_key(self.terminal.source))
+        self.key()
+        self.assertEqual("l", self.key())
 
     def test_it_is_lower_cased(self) -> None:
         self.terminal.type("L")
-        self.assertEqual("l", conflicts.one_key(self.terminal.source))
+        self.assertEqual("l", self.key())
 
     def test_a_pipe_is_read_a_line_at_a_time(self) -> None:
         """The other branch, and it is not a test affordance: `sync` with its
@@ -543,9 +556,10 @@ class TestWhichSettler(unittest.TestCase):
         arguments produce a settler that asks, and takes the key typed at it."""
         terminal = support.Terminal()
         self.addCleanup(terminal.close)
-        terminal.type("r")
+        terminal.type("r" + support.FALLBACK)
         spill = io.StringIO()
-        with mock.patch("sys.stdin", terminal.source), mock.patch("sys.stdout", spill):
+        patched = mock.patch("sys.stdin", terminal.source), mock.patch("sys.stdout", spill)
+        with patched[0], patched[1], support.deadline(support.PATIENCE, "the prompt never settled"):
             settler = conflicts.answering(Config(), no_input=False, ours=False, theirs=False)
             self.assertEqual(conflicts.Answer(conflicts.REMOTE), settler(self.sides()))
         self.assertIn("1 conflict to settle", spill.getvalue())
@@ -806,8 +820,17 @@ class TestReadingAnEscapeSequence(unittest.TestCase):
         self.addCleanup(self.terminal.close)
 
     def read(self, typed: str) -> str:
+        """One keypress, and never a hang.
+
+        Every test in this class drives code whose whole job is to *stop*
+        reading -- the `VMIN`/`VTIME` pair and the loop's two exits. Mutate any
+        of them and the read blocks, which the harness reports as `BROKE` rather
+        than as caught, so the line ends up guarded by nothing. The deadline is
+        what turns each of those into a red test.
+        """
         self.terminal.type(typed)
-        return conflicts.one_key(self.terminal.source)
+        with support.deadline(support.PATIENCE, f"one_key never returned for {typed!r}"):
+            return conflicts.one_key(self.terminal.source)
 
     def test_a_plain_arrow(self) -> None:
         self.assertEqual("\x1b[a", self.read("\x1b[A"))

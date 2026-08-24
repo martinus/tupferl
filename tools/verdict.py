@@ -211,6 +211,17 @@ class Verdicts(unittest.TextTestResult):
         self.killers: list[str] = []
         #: Fixtures that died before any assertion ran. Not an answer.
         self.broke: list[str] = []
+        #: The formatted traceback of the first test that noticed.
+        #:
+        #: A mutation run does not want this -- `caught` is the whole answer and
+        #: 200 tracebacks is noise. The *baseline* does: a red baseline voids
+        #: every verdict above it, and until this was recorded the only thing
+        #: said about one was the failing test's name. Diagnosing it meant
+        #: reproducing the shard by hand, and five reproductions of a red
+        #: baseline all came back green because the sixth thing that differed
+        #: was never guessed. See `mutate.run`'s baseline branch, which is the
+        #: one reader.
+        self.reasons: list[str] = []
         #: Seconds one test may take. 0 disables the alarm, which is what a
         #: platform without `SIGALRM` gets.
         self.each: float = 0.0
@@ -236,14 +247,23 @@ class Verdicts(unittest.TextTestResult):
             signal.setitimer(signal.ITIMER_REAL, 0)
         super().stopTest(test)
 
-    def _answered(self, test: unittest.TestCase) -> None:
-        """Record one test that noticed, both ways round."""
+    def _answered(self, test: unittest.TestCase, err: ExcInfo | None = None) -> None:
+        """Record one test that noticed, every way round."""
         self.noticed.append(str(test))
         self.killers.append(test.id())
+        if err is not None and not self.reasons:
+            # The first only. A `failfast` run stops here anyway, and a baseline
+            # -- which never uses `failfast` -- is diagnosed from the first
+            # failure just as well as from forty.
+            # `traceback.format_exception`, not `TestResult._exc_info_to_string`:
+            # the latter is private, untyped in typeshed, and the version that
+            # differs between releases -- three reasons the one lint that only
+            # fails in CI would have found here.
+            self.reasons.append("".join(traceback.format_exception(*err)))
 
     def addFailure(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addFailure(test, err)
-        self._answered(test)
+        self._answered(test, err)
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addError(test, err)
@@ -266,6 +286,8 @@ class Verdicts(unittest.TextTestResult):
         target.append(str(test))
         if target is self.noticed:
             self.killers.append(test.id())
+            if not self.reasons:
+                self.reasons.append("".join(traceback.format_exception(*err)))
 
     def addSubTest(
         self, test: unittest.TestCase, subtest: unittest.TestCase, err: ExcInfo | None
@@ -334,6 +356,7 @@ def collect(
             "ran": 0,
             "noticed": [],
             "killers": [],
+            "reasons": [],
             "times": {},
             # `str()` because typeshed types `errors` as exception classes while
             # `unittest` actually appends formatted tracebacks; the first line is
@@ -356,6 +379,7 @@ def collect(
         "ran": result.testsRun,
         "noticed": result.noticed,
         "killers": result.killers,
+        "reasons": result.reasons,
         "times": result.times,
         "broke": result.broke,
     }

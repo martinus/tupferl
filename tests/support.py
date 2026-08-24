@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import os
 import pty
+import signal
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,46 @@ CARRIES = (
     "PYTHONWARNINGS",
     "TUPFERL_MUTATE_BUDGET",
 )
+
+#: How long a fixture will wait for a read from a terminal before calling it a
+#: failure. Five seconds against a suite that runs 500 tests in twelve, so a
+#: legitimate prompt has three orders of magnitude of headroom -- and a mutant
+#: that leaves `one_key` blocking fails in five seconds rather than holding a
+#: mutation lane for the harness's full 30s per-test alarm.
+PATIENCE = 5.0
+
+
+@contextmanager
+def deadline(seconds: float, why: str) -> Iterator[None]:
+    """Fail the body if it has not finished in `seconds`.
+
+    **A test that hangs is not a test that guards anything.** `tools/mutate.py`
+    reports a mutant whose suite blocked as `BROKE`, and `BROKE` is never
+    `caught` -- so a line whose only tests hang when it is wrong is a line
+    nothing is watching. Six mutants of `conflicts.rest_of_escape`'s `VMIN`/
+    `VTIME` lines came back that way, and the fixture's own docstring described
+    the hang as if it were the assertion.
+
+    Raising from the handler rather than setting a flag, for `tools/verdict.py`'s
+    reason: PEP 475 makes Python *retry* a syscall interrupted by a signal, so a
+    handler that returned would be swallowed by exactly the blocking `read` this
+    exists to interrupt.
+
+    The previous handler is restored, not assumed to be the default: the harness
+    installs its own per-test alarm around this one.
+    """
+
+    def ring(signum: int, frame: object) -> None:
+        raise TimeoutError(why)
+
+    before = signal.signal(signal.SIGALRM, ring)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, before)
+
 
 #: Typed after every set of keys a fixture sends to a conflict prompt.
 #:

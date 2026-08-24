@@ -116,6 +116,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from textwrap import indent
 from typing import Literal, NamedTuple
 
 from tools import mutants, run_tests
@@ -242,6 +243,13 @@ class Verdict(NamedTuple):
     #: by yield-per-second needs a denominator and measuring it separately would
     #: be a second source of truth about the same suite.
     times: dict[str, float] | None = None
+    #: The failing traceback, for a `caught` verdict. Carried but never printed
+    #: by a mutation row -- `caught` is the whole answer there, and two hundred
+    #: tracebacks is noise. `run`'s baseline branch is the one reader: a red
+    #: baseline voids every verdict above it, and a test's *name* is not enough
+    #: to diagnose one. Five hand-built reproductions of a red baseline all came
+    #: back green because the thing that differed was never guessed.
+    why: str = ""
 
     @property
     def answered(self) -> bool:
@@ -755,11 +763,13 @@ def _run(
         # revision -- there is no older probe to guard against, and a `.get`
         # here would turn a real protocol break into a silently empty ordering.
         remembered = written["killers"]
+        reasons = written["reasons"]
         return Verdict(
             "caught",
             str(written["noticed"][0]),
             str(remembered[0]) if remembered else "",
             written["times"] or None,
+            str(reasons[0]) if reasons else "",
         )
     if not written["ran"]:
         return Verdict("broke", "the targets held no tests")
@@ -1122,6 +1132,14 @@ def run(
                         f"  BASELINE NOT GREEN ({first_look.outcome}) -- the suite does not "
                         f"pass untouched, so {scope} means anything: {first_look.detail}"
                     )
+                    # The traceback, not just the name. A red baseline is the one
+                    # verdict that cannot be diagnosed by re-running the row, and
+                    # the shard it came from is rarely reproducible by hand --
+                    # `first` is a shard of its own, the sandbox is a copy, and
+                    # the lanes are concurrent. Printing what actually failed
+                    # costs nothing on a green run, which is every run.
+                    if first_look.why:
+                        print(indent(first_look.why.rstrip(), "  | "))
                     red = True
                     break
             checking = []
@@ -1885,6 +1903,41 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     return Report(collected, report.baseline_red, times=report.times)
 
 
+def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
+    """Run just this table's baseline shards, and say whether they all passed.
+
+    The same shards `run` would build, including the one holding every
+    remembered `first` test -- which is a shard of its own and was the one this
+    author forgot when reproducing a red baseline by hand.
+    """
+    shards = sorted({mutation.tests for mutation in table})
+    ahead = " ".join(sorted({name for row in table for name in row.first.split()}))
+    if ahead:
+        shards.append(ahead)
+    # The same sizing `run` does, so the question is asked under the conditions
+    # the sweep will ask it under -- which is the whole point of asking early.
+    wanted = args.workers if args.workers is not None else _affordable()
+    lanes, memory = _share(wanted, args.memory, pinned=args.workers is not None)
+    green = True
+    with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
+        checks = [
+            pool.submit(_borrow, available, shard.split(), args.timeout, memory, args.each_test)
+            for shard in shards
+        ]
+        for shard, future in zip(shards, checks, strict=True):
+            verdict = future.result()
+            name = shard if len(shard) < 70 else f"{shard[:67]}..."
+            if verdict.outcome == "survived":
+                print(f"  green   {name}")
+                continue
+            green = False
+            print(f"  RED ({verdict.outcome})  {name}: {verdict.detail}")
+            if verdict.why:
+                print(indent(verdict.why.rstrip(), "  | "))
+    print(f"\n{len(shards)} baseline shard(s), {'all green' if green else 'NOT green'}.")
+    return green
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tools.mutate",
@@ -1939,6 +1992,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--workers", type=int, help="lanes to run in parallel")
     parser.add_argument("--no-baseline", action="store_true", help="skip the untouched-suite check")
+    parser.add_argument(
+        "--baseline-only",
+        action="store_true",
+        help="run just the untouched-suite check for this table, and stop",
+    )
     parser.add_argument(
         "--no-confirm",
         action="store_true",
@@ -1997,6 +2055,14 @@ def main(argv: list[str] | None = None) -> int:
         # After `--list`, which is about the table rather than about how it will
         # be run, and before the first row.
         table = killers.ahead_of(table)
+        if args.baseline_only:
+            # Before the prefix is announced and before any sandbox is built: a
+            # red baseline voids every row, so being able to ask *only* that
+            # question, in the time one shard takes rather than one sweep, is the
+            # difference between a minute and a re-run. Two full sweeps were paid
+            # for here to learn what this prints -- and the second was launched
+            # on a theory the first could not have confirmed.
+            return 0 if _baseline_is_green(table, args) else 1
         if killers.dropped:
             print(f"{killers.dropped} remembered test(s) no longer load; those rows run as usual.")
         if killers.head:
