@@ -22,10 +22,13 @@ the two sides never share a line.
 
 from __future__ import annotations
 
+import contextlib
 import unittest
+from unittest import mock
 
 from tests import support
-from tupferl import gitrepo
+from tupferl import conflicts, gitrepo
+from tupferl.errors import TupferlError
 
 #: What each machine commits. Distinct, and neither a prefix of the other, so no
 #: assertion below can hold against the wrong side.
@@ -93,7 +96,6 @@ class TwoCommits(support.TwoMachines):
         self.assertEqual(want, self.second.stored(MANAGED).read_text(encoding="utf-8"))
         self.assertEqual(0, self.first.call("sync"))
         self.assertEqual(want, self.first.read(MANAGED))
-        self.assertNotIn("<<<<<<<", self.first.read(MANAGED))
 
 
 class TestTheFixtureReallyProducesACommitConflict(TwoCommits):
@@ -119,12 +121,13 @@ class TestTheFixtureReallyProducesACommitConflict(TwoCommits):
         does its own merge from a clean tree.
         """
         self.second.git("fetch", "origin")
-        done = support.git_status(
-            ["merge", "--no-commit", "--no-ff", "origin/main"], self.second.repo, self.second.env
+        self.assertNotEqual(
+            0,
+            support.git_merged(self.second.repo, self.second.env),
+            "git merged cleanly, so there is no conflict to settle",
         )
-        self.assertNotEqual(0, done, "git merged cleanly, so there is no conflict to settle")
         self.assertIn(MANAGED, gitrepo.unmerged(self.second.repo))
-        support.git_status(["merge", "--abort"], self.second.repo, self.second.env)
+        support.git_aborted(self.second.repo, self.second.env)
 
 
 class TestTheFlags(TwoCommits):
@@ -181,9 +184,13 @@ class TestTheKeys(TwoCommits):
         self.everywhere(BOTH_KEPT)
 
     def test_s_leaves_the_repository_exactly_as_it_was(self) -> None:
+        """`--porcelain` as well as the commit, because a file settled before the
+        skipped one is written into the working tree, and only the abort takes it
+        back out. Without this the test cannot see it left behind."""
         was = self.second.git("rev-parse", "HEAD")
         self.assertEqual(2, self.second.call("sync", keys="s"))
         self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        self.assertEqual("", self.second.git("status", "--porcelain"))
         self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
 
 
@@ -239,7 +246,7 @@ class TestAFileOnlyOneSideStillHas(TwoCommits):
         done = self.second.run("sync", "--ours")
         self.assertEqual(2, done.returncode, done.stdout + done.stderr)
         self.assertIn(MANAGED, done.stderr)
-        self.assertIn("removed it", done.stderr)
+        self.assertIn("removed or replaced it", done.stderr)
 
     def test_the_repository_is_left_exactly_as_it_was(self) -> None:
         was = self.second.git("rev-parse", "HEAD")
@@ -247,6 +254,221 @@ class TestAFileOnlyOneSideStillHas(TwoCommits):
         self.assertIsNone(gitrepo.unfinished(self.second.repo))
         self.assertEqual("", self.second.git("status", "--porcelain"))
         self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+
+class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachines):
+    """A conflict with a **stage 1**, which every fixture above lacks.
+
+    `TwoCommits` has both machines `add` the file independently, so the two
+    commits have no common version of it: git records stages 2 and 3 and no base.
+    Mutating `sync.reconcile` to pass `base = None` therefore left the whole
+    suite green.
+
+    Finding the fixture that *does* see it took three attempts, and the two that
+    failed are worth recording. Adjacent edits to a three-line file are one hunk,
+    so git conflicts and the base changes nothing. Non-adjacent edits to a short
+    file merge cleanly at the tree level, so there is no conflict to settle at
+    all. What discriminates is **one overlapping edit and one that only one side
+    made**: with the base, the one-sided edit merges silently; without it, every
+    difference is a disagreement and it becomes a second conflict.
+
+    Measured on this fixture -- 1 conflict against 2, and `l20` gone against
+    `l20` kept -- which is what the assertions below are.
+    """
+
+    #: Long enough that two edits are separate hunks. `l20` is the line only
+    #: `machine-b` touches, and whether it survives is the whole assertion.
+    SHARED = "\n".join(f"l{number}" for number in range(30)) + "\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.first.write(MANAGED, self.SHARED)
+        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
+        self.assertEqual(0, self.first.call("sync"))
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        # Both hold the same committed version. `machine-b` changes the first
+        # line *and* line 20; `machine-a` changes only the first. So they overlap
+        # in one place and `machine-b` is alone in the other.
+        self.second.write(
+            MANAGED, self.SHARED.replace("l0\n", "B-FIRST\n").replace("l20\n", "B-ONLY\n")
+        )
+        self.first.write(MANAGED, self.SHARED.replace("l0\n", "A-FIRST\n"))
+        self.assertEqual(0, self.second.call("add", str(self.second.home / MANAGED)))
+        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
+        self.assertEqual(0, self.first.call("sync"))
+
+    def test_the_fixture_really_has_a_merge_base(self) -> None:
+        """The precondition, and the whole reason this class exists."""
+        self.second.git("fetch", "origin")
+        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        stages = gitrepo.conflicted(self.second.repo)
+        self.assertIn(gitrepo.BASE, stages.get(MANAGED, {}), "no stage 1: there is no base")
+        self.assertEqual(
+            self.SHARED.encode(), gitrepo.version(self.second.repo, gitrepo.BASE, MANAGED)
+        )
+        support.git_aborted(self.second.repo, self.second.env)
+
+    def test_the_base_settles_the_edit_only_one_side_made(self) -> None:
+        """`[b]` keeps both versions of what the two disagree about -- and the
+        base is what says they do not disagree about line 20.
+
+        Without it that line is a second conflict and the union keeps `l20`
+        alongside `B-ONLY`, which is a line the user deleted coming back. That
+        absence is the assertion; `B-ONLY` being present is only the precondition
+        for it meaning anything.
+        """
+        self.assertEqual(0, self.second.call("sync", keys="b"))
+        settled = self.second.read(MANAGED)
+        self.assertIn("B-ONLY", settled)
+        self.assertNotIn("l20", settled, "the base was not used: a one-sided edit came back")
+        self.assertIn("A-FIRST", settled)
+        self.assertIn("B-FIRST", settled)
+
+
+class TestTheExecutableBitComesFromTheIndex(support.TwoMachines):
+    """Asymmetric modes, because equal ones cannot tell the index from disk.
+
+    `held`'s docstring claims the mode is read from the index rather than from
+    the working tree, which during a conflict holds git's marked-up merge. With
+    both sides `755` the working tree is `755` too, so mutating `held` to
+    `os.stat` the path left the suite green. Here `machine-b` commits it
+    executable and `machine-a` commits it plain: the working tree is still `755`,
+    so a `--theirs` run can only come out non-executable by reading stage 3.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.second.write(MANAGED, FROM_B)
+        (self.second.home / MANAGED).chmod(0o755)
+        self.first.write(MANAGED, FROM_A)
+        (self.first.home / MANAGED).chmod(0o644)
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.assertEqual(0, self.second.call("add", str(self.second.home / MANAGED)))
+        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
+        self.assertEqual(0, self.first.call("sync"))
+
+    def test_the_two_sides_really_disagree_about_the_bit(self) -> None:
+        """Otherwise everything below holds for a fixture that set one mode."""
+        self.second.git("fetch", "origin")
+        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        stages = gitrepo.conflicted(self.second.repo)[MANAGED]
+        self.assertEqual(0o100755, stages[gitrepo.OURS])
+        self.assertEqual(0o100644, stages[gitrepo.THEIRS])
+        support.git_aborted(self.second.repo, self.second.env)
+
+    def test_keeping_the_repositorys_side_takes_its_mode_too(self) -> None:
+        """The working tree is `755` throughout, so this can only pass by
+        reading stage 3's mode out of the index."""
+        self.assertEqual(0, self.second.call("sync", "--theirs"))
+        self.assertFalse((self.second.home / MANAGED).stat().st_mode & 0o111)
+
+    def test_keeping_this_machines_side_keeps_its_own(self) -> None:
+        self.assertEqual(0, self.second.call("sync", "--ours"))
+        self.assertTrue((self.second.home / MANAGED).stat().st_mode & 0o111)
+
+
+class TestWhatIsNotAFileOnBothSides(support.TwoMachines):
+    """A committed symlink, which `copies.write` would write **through**.
+
+    `manifest` refuses a symlink at `add` time, so one only reaches the
+    repository by hand, by another tool, or from a hostile remote. But a path out
+    of the *index* has had no such check, and `copies.write` does
+    `write_bytes` + `chmod`, both of which follow a link -- so settling a
+    conflict over one destroyed a file outside the repository entirely.
+    Reproduced before the fix: two branches committing `link -> ../victim/target`
+    and `link -> /dev/null`, settled with `--ours`, overwrote `victim/target`.
+
+    `--ours` reaches it with no prompt at all, which is what makes it worth a
+    test rather than a comment.
+    """
+
+    LINK = ".config/link"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.victim = self.tmp / "victim"
+        self.victim.write_text("SECRET-ORIGINAL\n", encoding="utf-8")
+        for machine, target in ((self.second, self.victim), (self.first, self.tmp / "elsewhere")):
+            link = machine.repo / self.LINK
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(target)
+            machine.git("add", "-A")
+            machine.git("commit", "-m", "a symlink, committed by hand")
+        self.assertEqual(0, self.first.call("sync"))
+
+    def test_the_fixture_really_committed_a_symlink(self) -> None:
+        """Otherwise the refusal below is a claim about nothing."""
+        self.assertIn("120000", self.second.git("ls-files", "-s", self.LINK))
+
+    def test_it_is_refused_rather_than_written_through(self) -> None:
+        done = self.second.run("sync", "--ours")
+        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
+        self.assertIn(self.LINK, done.stderr)
+
+    def test_the_file_the_link_pointed_at_is_untouched(self) -> None:
+        """The assertion that matters, and it is about a file *outside* the
+        repository -- which is why "it was refused" is not enough on its own."""
+        self.second.call("sync", "--ours")
+        self.assertEqual("SECRET-ORIGINAL\n", self.victim.read_text(encoding="utf-8"))
+
+
+class TestWhenSettlingIsInterrupted(TwoCommits):
+    """Everything in `reconcile` runs inside an unfinished merge.
+
+    So a `TupferlError`, an `OSError`, or a Ctrl-C at the prompt can arrive with
+    some files already settled and staged. Without the `finally` that aborts,
+    each leaves `MERGE_HEAD` behind -- and `sync.main`'s own `unfinished` check
+    then refuses **every** subsequent run until the user does git surgery. One
+    interrupted prompt, and the machine cannot sync at all.
+    """
+
+    def raising(self, kind: type[BaseException]) -> None:
+        """Make the settler raise, the way a broken `$EDITOR` or a Ctrl-C does."""
+
+        def boom(sides: object) -> conflicts.Answer:
+            raise kind("interrupted")
+
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.object(conflicts, "answering", lambda *a: boom))
+
+    def test_an_error_at_the_prompt_leaves_no_half_merged_tree(self) -> None:
+        was = self.second.git("rev-parse", "HEAD")
+        self.raising(TupferlError)
+        self.assertEqual(2, self.second.call("sync"))
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        self.assertEqual("", self.second.git("status", "--porcelain"))
+        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+    def test_a_keyboard_interrupt_leaves_no_half_merged_tree(self) -> None:
+        """`BaseException`, not `Exception`: Ctrl-C at a prompt is the most
+        ordinary way this happens and it is not an `Exception`."""
+        self.raising(KeyboardInterrupt)
+        with self.assertRaises(KeyboardInterrupt):
+            self.second.call("sync")
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        self.assertEqual("", self.second.git("status", "--porcelain"))
+
+    def test_the_next_sync_still_works_afterwards(self) -> None:
+        """The whole point: an interrupted prompt must not cost the machine its
+        ability to sync."""
+        self.raising(TupferlError)
+        self.assertEqual(2, self.second.call("sync"))
+        self.stack.close()
+        self.assertEqual(0, self.second.call("sync", "--theirs"))
+        self.assertEqual(FROM_A, self.second.read(MANAGED))
+
+
+class TestSettlingWithTheEditor(TwoCommits):
+    """`[e]` over a commit conflict, which no other test here covers."""
+
+    def test_the_editor_settles_it_like_any_other_conflict(self) -> None:
+        where = support.fake_editor(self.tmp / "fake-editor", 'printf "SETTLED-BY-HAND\\n" > "$1"')
+        self.second.env["EDITOR"] = str(where)
+        self.assertEqual(0, self.second.call("sync", keys="e"))
+        self.assertEqual("SETTLED-BY-HAND\n", self.second.read(MANAGED))
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ and a `PATH` with no git on it.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -256,10 +257,6 @@ class TestIsRepository(unittest.TestCase):
             self.assertFalse(gitrepo.is_repository(Path.cwd()))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestReadingAConflictedIndex(support.SandboxCase):
     """`gitrepo.version`, and which stage is which side.
 
@@ -334,3 +331,119 @@ class TestReadingAConflictedIndex(support.SandboxCase):
             b"\n\nleading and trailing blank lines\n\n",
             gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"),
         )
+
+
+class TestReadingTheStagesOfAConflict(support.SandboxCase):
+    """`gitrepo.conflicted`, asked directly.
+
+    It had no test of its own: everything reached it through `sync`, which is why
+    the `-z` parsing, the missing-stage case and the non-UTF-8 path all went
+    unnoticed until a review. The modes it returns decide whether a settled file
+    keeps its executable bit and whether it is written at all, so they are worth
+    asking about here rather than three layers up.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.home / "r", self.env)
+
+    def commit(self, name: str, text: bytes, mode: int = 0o644) -> None:
+        where = self.repo / name
+        where.parent.mkdir(parents=True, exist_ok=True)
+        where.write_bytes(text)
+        where.chmod(mode)
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", name], cwd=self.repo, env=self.env)
+
+    def diverge(self, name: str, ours: bytes, theirs: bytes, mode: int = 0o644) -> None:
+        """Two branches that both changed `name`, left mid-merge."""
+        self.commit(name, b"base\n", mode)
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(name, ours, mode)
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        self.commit(name, theirs, mode)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        support.git_aborted(self.repo, self.env)  # no-op; keeps the tree clean if a prior ran
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+
+    def test_a_clean_repository_has_nothing_conflicted(self) -> None:
+        """The empty answer, which every caller reads as "nothing to settle"."""
+        self.commit(".bashrc", b"one\n")
+        self.assertEqual({}, gitrepo.conflicted(self.repo))
+
+    def test_all_three_stages_with_their_modes(self) -> None:
+        self.diverge(".bashrc", b"ours\n", b"theirs\n")
+        found = gitrepo.conflicted(self.repo)[".bashrc"]
+        self.assertEqual({1: 0o100644, 2: 0o100644, 3: 0o100644}, found)
+
+    def test_the_executable_bit_is_carried_per_stage(self) -> None:
+        """Asymmetric, so the answer cannot be right by accident: equal modes
+        pass against a function that returns the same number for every stage."""
+        self.commit(".sh", b"base\n", 0o755)
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(".sh", b"ours\n", 0o755)
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        self.commit(".sh", b"theirs\n", 0o644)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        found = gitrepo.conflicted(self.repo)[".sh"]
+        self.assertEqual(0o100755, found[gitrepo.OURS])
+        self.assertEqual(0o100644, found[gitrepo.THEIRS])
+
+    def test_a_side_that_deleted_the_file_has_no_stage(self) -> None:
+        """What `sync.held` reads to tell "that side has none" from "git would
+        not answer" -- two very different things it used to conflate."""
+        self.commit(".bashrc", b"base\n")
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(".bashrc", b"ours\n")
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        (self.repo / ".bashrc").unlink()
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "gone"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        found = gitrepo.conflicted(self.repo)[".bashrc"]
+        self.assertIn(gitrepo.OURS, found)
+        self.assertNotIn(gitrepo.THEIRS, found)
+
+    def test_a_symlink_is_reported_with_its_own_mode(self) -> None:
+        """`0o120000`, which is what `sync.reconcile` refuses on. Without the
+        mode it would look like a plain file and be written *through*."""
+        (self.repo / "link").symlink_to(self.home / "target")
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "link"], cwd=self.repo, env=self.env)
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        (self.repo / "link").unlink()
+        (self.repo / "link").symlink_to(self.home / "elsewhere")
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "relink"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        (self.repo / "link").unlink()
+        (self.repo / "link").symlink_to(self.home / "third")
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "relink again"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        self.assertEqual(0o120000, gitrepo.conflicted(self.repo)["link"][gitrepo.OURS])
+
+    def test_a_path_that_is_not_utf8_does_not_raise(self) -> None:
+        """`git()` runs with `text=True`, so reading this through it raised
+        `UnicodeDecodeError` out of `subprocess.run` -- past the two exceptions
+        it catches, and out of a half-finished merge. A dotfile name in latin-1
+        needs no hostile input."""
+        self.diverge("caf\udce9rc", b"ours\n", b"theirs\n")
+        found = gitrepo.conflicted(self.repo)
+        self.assertEqual(1, len(found))
+        self.assertEqual(3, len(next(iter(found.values()))))
+
+
+if __name__ == "__main__":
+    unittest.main()

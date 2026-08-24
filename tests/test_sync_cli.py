@@ -414,10 +414,15 @@ class TestAGitLevelConflict(support.TwoMachines):
 
     git's own merge has the real merge base and is a better answer than anything
     this module could compute, so a conflict there is two *commits* disagreeing.
-    That is not the conflict prompt's case, which settles `$HOME` against the
-    repository over this machine's snapshot -- three files, where this needs the
-    three index stages. What `sync` owes the user until then is a sentence naming
-    the file, a way out, and a repository left exactly as it was found.
+    `sync.reconcile` settles those from the three index stages now, at the same
+    prompt -- `tests/test_sync_commits.py` is where that is tested.
+
+    **What is left here is the paths `reconcile` refuses**, and these two tests
+    reach them because `support.run_cli` gives the child no terminal: with nobody
+    to answer, the settler is `always(SKIP)`, nothing is settled, and the merge is
+    undone. So this class still asserts what it always did -- a sentence naming
+    the file, a way out, and a repository left exactly as it was found -- but the
+    reason it gets there is the skip, not the absence of a prompt.
     """
 
     def commit_locally(self, machine: support.Computer, text: str) -> None:

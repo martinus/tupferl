@@ -43,6 +43,28 @@ EXEC_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 EXECUTABLE = 0o755
 PLAIN = 0o644
 
+#: The two modes git records for a regular file in a tree or an index. Anything
+#: else is a symlink (`0o120000`) or a submodule (`0o160000`), and neither is a
+#: copy of a file's bytes.
+#:
+#: Load-bearing where a path comes from git rather than from `manifest`, which
+#: refuses both at `add` time. `sync.reconcile` settles conflicts from the index,
+#: and `copies.write` follows a symlink -- so without this check a settled
+#: conflict over a committed symlink writes **through** it, to a file outside the
+#: repository entirely. Reproduced: two branches committing `link` pointing at
+#: `../victim/target`, settled with `--ours`, destroyed `victim/target`.
+REGULAR = (0o100644, 0o100755)
+
+
+def executable(mode: int) -> bool:
+    """Whether a git file mode carries the bit that travels.
+
+    One rule, in the module that owns what a stored copy is. `read` asks the
+    same question of a `stat` result and `mode_for` answers it for a path; a
+    third spelling beside them is the drift this module exists to prevent.
+    """
+    return bool(mode & EXEC_BITS)
+
 
 class Blob(NamedTuple):
     """A file as tupferl cares about it, and the unit of comparison.

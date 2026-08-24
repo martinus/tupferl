@@ -341,20 +341,30 @@ def break_commits(home: Path) -> None:
         config.write(f"[core]\n\thooksPath = {hooks}\n")
 
 
-def git_status(args: list[str], cwd: Path, env: dict[str, str]) -> int:
-    """Run git and return its exit status, rather than insisting it worked.
+def git_merged(repo: Path, env: dict[str, str]) -> int:
+    """Try to merge `origin/main` and say what git thought of it.
 
-    `git` above raises on a non-zero exit because it is used for *fixture*
-    setup, where a half-failed step builds a repository that is not the shape
-    the test's name claims. This one is for the tests that assert about a git
-    command *failing* -- "git cannot merge these two branches on its own" is a
-    precondition worth asking git rather than assuming, and it is only
-    interesting when the answer is non-zero.
+    For the preconditions that ask git whether two branches conflict rather than
+    assuming it. `git` above raises on a non-zero exit because it is used for
+    *fixture setup*, where a half-failed step builds a repository that is not the
+    shape the test's name claims; here the non-zero exit is the answer.
+
+    `--no-commit --no-ff` so a clean merge leaves something to abort rather than
+    a commit to undo; every caller pairs this with `git_aborted`.
     """
     done = subprocess.run(
-        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=False
+        ["git", "merge", "--no-commit", "--no-ff", "origin/main"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
     )
     return done.returncode
+
+
+def git_aborted(repo: Path, env: dict[str, str]) -> None:
+    """Undo whatever `git_merged` started, so the test under it begins clean."""
+    subprocess.run(["git", "merge", "--abort"], cwd=repo, env=env, capture_output=True, check=False)
 
 
 def make_remote(where: Path, env: dict[str, str]) -> Path:

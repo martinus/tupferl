@@ -346,9 +346,14 @@ def abort_merge(repo: Path) -> Result:
 
 
 def unmerged(repo: Path) -> list[str]:
-    """The paths git left with conflict markers, relative to the repository."""
-    found = git(["diff", "--name-only", "--diff-filter=U"], cwd=repo)
-    return found.out.splitlines() if found.ok else []
+    """The paths git left with conflict markers, relative to the repository.
+
+    From `conflicted` rather than from `diff --name-only`, which quotes a path
+    that is not plain ASCII and splits on newlines -- so a file named with either
+    came back as a name that does not exist, and `sync` then told the user to go
+    and resolve it. One question, one spelling, one git call.
+    """
+    return sorted(conflicted(repo))
 
 
 def conflicted(repo: Path) -> dict[str, dict[int, int]]:
@@ -359,27 +364,48 @@ def conflicted(repo: Path) -> dict[str, dict[int, int]]:
     already answered in one.
 
     The mode is what carries the executable bit through a merge git could not
-    finish. Without it a resolved script comes back `0644` and fails the moment
-    the user runs it -- plan §5 asks for that one bit to be preserved, and the
-    index is where it is during a conflict.
+    finish -- and what says whether the entry is a regular file at all, since
+    git records a symlink as `0o120000` and a submodule as `0o160000`. See
+    `copies.REGULAR`, and what happens without that check.
 
-    Lines look like `100644 <sha> 2\t.bashrc`. A path is absent from the answer
-    when it is not conflicted, and a *stage* is absent when that side has no
-    version of the file -- a delete against an edit, which `sync` cannot settle
-    by picking lines and does not pretend to.
+    **Bytes, not `git()`.** A path is not required to be UTF-8, and `git()` runs
+    with `text=True`, so a latin-1 dotfile name raised `UnicodeDecodeError` out
+    of `subprocess.run` -- past the two exceptions `git()` catches, out of
+    `reconcile`, and out of a half-finished merge. `surrogateescape` keeps such a
+    name round-trippable back to the filesystem. `version` bypasses `git()` for
+    the same family of reason.
+
+    `-z`, so the answer is unquoted and a path may hold a newline or a tab
+    without being split or escaped. Lines look like `100644 <sha> 2\t.bashrc`. A
+    path is absent when it is not conflicted, and a *stage* is absent when that
+    side has no version of the file -- a delete against an edit, which `sync`
+    cannot settle by picking lines and does not pretend to.
     """
-    found = git(["ls-files", "-u", "-z"], cwd=repo)
-    if not found.ok:
+    try:
+        done = subprocess.run(
+            ["git", "ls-files", "-u", "-z"],
+            cwd=repo,
+            capture_output=True,
+            timeout=TIMEOUT,
+            env=env(),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if done.returncode != 0:
         return {}
     stages: dict[str, dict[int, int]] = {}
-    # `-z` and a NUL split, because a dotfile may legitimately have a newline in
-    # its name and `splitlines` would then invent a path that does not exist.
-    for row in found.out.split("\0"):
-        head, _, name = row.partition("\t")
+    for row in done.stdout.split(b"\0"):
+        head, _, raw = row.partition(b"\t")
         parts = head.split()
-        if not name or len(parts) != 3 or not parts[0].isdigit() or not parts[2].isdigit():
+        # Only the empty tail after the final NUL is reachable here; git's own
+        # output always has three fields and two numbers. Guarded anyway because
+        # the alternative to a skipped row is a `ValueError` from inside a merge.
+        if not raw or len(parts) != 3:
             continue
-        stages.setdefault(name, {})[int(parts[2])] = int(parts[0], 8)
+        stages.setdefault(raw.decode("utf-8", "surrogateescape"), {})[int(parts[2])] = int(
+            parts[0], 8
+        )
     return stages
 
 
