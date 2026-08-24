@@ -341,6 +341,22 @@ def break_commits(home: Path) -> None:
         config.write(f"[core]\n\thooksPath = {hooks}\n")
 
 
+def git_status(args: list[str], cwd: Path, env: dict[str, str]) -> int:
+    """Run git and return its exit status, rather than insisting it worked.
+
+    `git` above raises on a non-zero exit because it is used for *fixture*
+    setup, where a half-failed step builds a repository that is not the shape
+    the test's name claims. This one is for the tests that assert about a git
+    command *failing* -- "git cannot merge these two branches on its own" is a
+    precondition worth asking git rather than assuming, and it is only
+    interesting when the answer is non-zero.
+    """
+    done = subprocess.run(
+        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=False
+    )
+    return done.returncode
+
+
 def make_remote(where: Path, env: dict[str, str]) -> Path:
     """A bare repository standing in for the remote. No network, ever."""
     where.mkdir(parents=True, exist_ok=True)
