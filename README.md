@@ -48,9 +48,11 @@ $ tupferl sync
 ```
 
 `[b]` keeps both versions in turn, with no markers left behind. `[e]` opens the
-merged file — conflict markers and all — in `$VISUAL`, `$EDITOR`, or whatever
-`editor` in `.tupferl/config.toml` names, and refuses a save that still has the
-markers in it. `[s]` leaves both copies exactly as they were and reports the
+merged file — conflict markers and all — in whatever `editor` in
+`.tupferl/config.toml` names, else `$VISUAL`, else `$EDITOR`, and refuses a save
+that still has the markers in it. (The config first, because that file is the
+one you can commit; a setting that loses to an environment variable is one you
+cannot make stick.) `[s]` leaves both copies exactly as they were and reports the
 file at the end, which is also what a `sync` with nobody at the keyboard does:
 
 ```

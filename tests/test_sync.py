@@ -21,7 +21,7 @@ import unittest
 from pathlib import PurePosixPath
 
 from tests import support
-from tupferl import conflicts, copies, gitrepo, sync
+from tupferl import conflicts, copies, gitrepo, merge, sync
 
 #: Three versions of one file whose edits do not overlap, so a merge of any two
 #: of them is decidable. Named rather than spelled out per test: half the table
@@ -368,3 +368,106 @@ class TestUnfinishedMarkers(support.SandboxCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhatAnAnswerMeansOnDisk(unittest.TestCase):
+    """`sync.settled`, which had no direct test at all until the review.
+
+    Every route to a settled conflict passes through it -- the five keys and the
+    three flags alike -- so a row that names the wrong side writes the wrong
+    file on every one of them at once.
+    """
+
+    def sides(self, executable: bool = False) -> conflicts.Sides:
+        mine = copies.Blob(b"mine\nbeta\ngamma\n", executable)
+        theirs = copies.Blob(b"theirs\nbeta\ngamma\n", False)
+        base = copies.Blob(b"alpha\nbeta\ngamma\n", False)
+        merged = merge.three_way(str(NAME), base.data, mine.data, theirs.data)
+        return conflicts.Sides(NAME, base, mine, theirs, merged.data, merged.conflicts)
+
+    def settled(self, choice: str, data: bytes | None = None) -> sync.Outcome:
+        return sync.settled(self.sides(), conflicts.Answer(choice, data))
+
+    def test_keeping_local_writes_the_repository_only(self) -> None:
+        """`$HOME` already holds these bytes, and `to_home` is also what takes
+        the backup -- so a copy of a file nothing replaced would evict a real
+        one from plan §5's window of five."""
+        got = self.settled(conflicts.LOCAL)
+        self.assertEqual(sync.KEPT_LOCAL, got.action)
+        self.assertEqual(self.sides().home, got.blob)
+        self.assertEqual(
+            sync.Rule(to_repo=True, to_home=False, needs_user=False), sync.RULES[got.action]
+        )
+
+    def test_keeping_the_repository_writes_home_only(self) -> None:
+        got = self.settled(conflicts.REMOTE)
+        self.assertEqual(sync.KEPT_REMOTE, got.action)
+        self.assertEqual(self.sides().stored, got.blob)
+        self.assertEqual(
+            sync.Rule(to_repo=False, to_home=True, needs_user=False), sync.RULES[got.action]
+        )
+
+    def test_the_two_sides_are_not_the_same_blob(self) -> None:
+        """The precondition for the pair above. With a symmetric fixture both
+        assertions hold against a table that has the two rows swapped, which
+        CLAUDE.md §2 lists as its second-commonest shape."""
+        self.assertNotEqual(self.sides().home, self.sides().stored)
+
+    def test_an_answer_that_carries_bytes_writes_them_to_both(self) -> None:
+        for choice, action in (
+            (conflicts.BOTH, sync.KEPT_BOTH),
+            (conflicts.EDIT, sync.EDITED),
+        ):
+            with self.subTest(choice=choice):
+                got = self.settled(choice, b"by hand\n")
+                self.assertEqual(action, got.action)
+                self.assertEqual(copies.Blob(b"by hand\n", False), got.blob)
+                self.assertTrue(sync.RULES[action].to_repo and sync.RULES[action].to_home)
+
+    def test_skipping_leaves_the_conflict_standing(self) -> None:
+        got = self.settled(conflicts.SKIP)
+        self.assertEqual(sync.CONFLICT, got.action)
+        self.assertIsNone(got.blob)
+        self.assertIsNotNone(got.sides)
+
+    def test_only_a_conflict_carries_its_sides(self) -> None:
+        """The invariant `Outcome.sides` documents, asserted rather than
+        described. `report` tests `sides is not None` where `main` tests
+        `RULES[...].needs_user`, so an outcome that carried its sides under
+        another action would print "1 in conflict" for a file that was settled.
+        """
+        for choice in (conflicts.LOCAL, conflicts.REMOTE):
+            with self.subTest(choice=choice):
+                self.assertIsNone(self.settled(choice).sides)
+        for choice in (conflicts.BOTH, conflicts.EDIT):
+            with self.subTest(choice=choice):
+                self.assertIsNone(self.settled(choice, b"x\n").sides)
+
+    def test_the_executable_bit_survives_an_answer_that_carries_bytes(self) -> None:
+        """`chmod +x` on one machine and an edit on the other is one change to
+        each of two things, and `[b]`/`[e]` must not drop the one they did not
+        produce."""
+        got = sync.settled(
+            self.sides(executable=True), conflicts.Answer(conflicts.EDIT, b"by hand\n")
+        )
+        self.assertEqual(copies.Blob(b"by hand\n", True), got.blob)
+
+    def test_taking_a_side_takes_that_side_s_bit(self) -> None:
+        """`[l]` and `[r]` do not merge the bit -- they take a whole file, and
+        its mode is part of it."""
+        chosen = sync.settled(self.sides(executable=True), conflicts.Answer(conflicts.LOCAL))
+        self.assertTrue(chosen.blob is not None and chosen.blob.executable)
+        other = sync.settled(self.sides(executable=True), conflicts.Answer(conflicts.REMOTE))
+        self.assertTrue(other.blob is not None and not other.blob.executable)
+
+    def test_every_answer_the_prompt_can_give_has_a_row(self) -> None:
+        """`MEANS` is the enumeration of the prompt's answers, so a key `ask`
+        can return without a row here is a `KeyError` in the middle of a sync.
+        `[d]` is deliberately absent: it is something the prompt does before
+        asking again, not an answer."""
+        self.assertEqual(
+            {conflicts.LOCAL, conflicts.REMOTE, conflicts.BOTH, conflicts.EDIT, conflicts.SKIP},
+            set(sync.MEANS),
+        )
+        for means in sync.MEANS.values():
+            self.assertIn(means.action, sync.RULES)

@@ -74,6 +74,19 @@ CARRIES = (
     "TUPFERL_MUTATE_BUDGET",
 )
 
+#: Typed after every set of keys a fixture sends to a conflict prompt.
+#:
+#: The prompt loops, so a test that types one fewer key than it asks for reads
+#: an empty terminal and waits for ever -- a suite that *hangs* in CI rather
+#: than one that goes red, which is the failure nobody can read from a log. With
+#: a `[s]` waiting, the unexpected extra question is answered "skip", the run
+#: exits 1, and the test fails on its own assertion instead. Two tests were
+#: written without it and did exactly that.
+#:
+#: `s` and not something invalid: an unrecognised key re-asks, which is the
+#: behaviour this is guarding against.
+FALLBACK = "s"
+
 #: What the branch is called in every fixture -- `seed_home` writes it as
 #: `init.defaultBranch`, both repository builders pass it to `--initial-branch`,
 #: and `move_on_first_push` names it in a hook. Written down rather than left to
@@ -285,7 +298,7 @@ def run_cli(
 
     `keys` opens a real pty and types them, which is the only way to exercise the
     prompt: `conflicts.one_key` clears `ICANON` with `termios`, and there is no
-    pipe that behaves like that.
+    pipe that behaves like that. `FALLBACK` is typed after them -- see there.
     """
     if keys is None:
         return subprocess.run(
@@ -300,7 +313,7 @@ def run_cli(
 
     master, slave = pty.openpty()
     try:
-        os.write(master, keys.encode("utf-8"))
+        os.write(master, (keys + FALLBACK).encode("utf-8"))
         started = subprocess.Popen(
             [sys.executable, "-m", "tupferl", *args],
             cwd=cwd,
@@ -320,6 +333,43 @@ def run_cli(
     return subprocess.CompletedProcess(started.args, started.returncode, out, err)
 
 
+class Terminal:
+    """A pty, and the two halves of it as files.
+
+    `type` writes to the master, which is what a person pressing a key does;
+    `source` is the slave, which the prompt reads and which answers `isatty`
+    with `True`.
+
+    Here rather than in a test module because three fixtures in one commit
+    opened their own, and each has to get the same two things right: the keys go
+    in *before* the reader starts, and both ends are closed exactly once.
+    """
+
+    def __init__(self) -> None:
+        self.master, self.slave = pty.openpty()
+        self.source = os.fdopen(self.slave, "r")
+
+    def type(self, keys: str) -> None:
+        os.write(self.master, keys.encode("utf-8"))
+
+    def close(self) -> None:
+        self.source.close()
+        os.close(self.master)
+
+
+def fake_editor(where: Path, body: str) -> Path:
+    """A real program to put in `$EDITOR`: a shell script whose body is `body`.
+
+    Returned rather than exported through the environment, because the two
+    callers set it in different places -- one in `os.environ`, one in a single
+    machine's environment dict -- and only one of them may touch the process's
+    own.
+    """
+    where.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    where.chmod(0o755)
+    return where
+
+
 @contextmanager
 def typing(keys: str | None) -> Iterator[None]:
     """Replace `sys.stdin` for an in-process run. `None` means nobody is there.
@@ -332,13 +382,13 @@ def typing(keys: str | None) -> Iterator[None]:
         with mock.patch("sys.stdin", io.StringIO()):
             yield
         return
-    master, slave = pty.openpty()
+    terminal = Terminal()
     try:
-        os.write(master, keys.encode("utf-8"))
-        with os.fdopen(slave, "r") as source, mock.patch("sys.stdin", source):
+        terminal.type(keys + FALLBACK)
+        with mock.patch("sys.stdin", terminal.source):
             yield
     finally:
-        os.close(master)
+        terminal.close()
 
 
 class SandboxCase(unittest.TestCase):
@@ -456,9 +506,17 @@ class TwoMachines(unittest.TestCase):
     synced from the first -- plan §3.5's daily flow, at the point where a second
     computer can be brought up.
 
-    Not `SandboxCase`, which patches `os.environ` for *one* machine; these drive
-    the CLI as subprocesses with one environment each, which is also the only way
-    two hostnames can exist at once.
+    Not `SandboxCase`, which patches `os.environ` for *one* machine: each
+    `Computer` carries its own environment, and `run`/`call` apply it per
+    command, which is how two hostnames coexist without two processes.
+
+    **The setup runs in-process.** It was three subprocesses until the property
+    tests demonstrated the same fixture built with `call`; measured, interleaved,
+    five builds each: 0.45s per `setUp` through subprocesses against 0.24s
+    in-process, and 37 tests inherit it -- about 7.8s per suite run, paid again
+    for every mutant in a sweep. Nothing here inspects stdout or the exit status
+    beyond "it worked", which is the only thing a subprocess would add; the tests
+    that *do* still use `run`.
 
     Here rather than in a test module because three of them build it, and a
     fixture that drifts between them is one where a failure in one file cannot be
@@ -474,9 +532,23 @@ class TwoMachines(unittest.TestCase):
         self.remote = make_remote(self.tmp / "remote.git", self.first.env)
 
         self.first.write(".bashrc", "one\ntwo\nthree\nfour\nfive\n")
-        self.assertEqual(0, self.first.run("init", str(self.remote)).returncode)
-        self.assertEqual(0, self.first.run("add", str(self.first.home / ".bashrc")).returncode)
-        self.assertEqual(0, self.first.run("sync").returncode)
+        self.assertEqual(0, self.first.call("init", str(self.remote)))
+        self.assertEqual(0, self.first.call("add", str(self.first.home / ".bashrc")))
+        self.assertEqual(0, self.first.call("sync"))
+
+    def diverge(self, name: str, mine: bytes, theirs: bytes) -> None:
+        """Make the two machines disagree about `name`, with `machine-a` pushing.
+
+        `machine-b` is left holding `theirs` in its `$HOME` and the repository
+        holding `mine`, so its next sync is the conflict. Bytes rather than text
+        because one caller's fixture is a file with a NUL in it.
+
+        `machine-b` must already have run `init`; three tests built this by hand
+        and the one that forgot produced a first sync rather than a conflict.
+        """
+        (self.first.home / name).write_bytes(mine)
+        (self.second.home / name).write_bytes(theirs)
+        self.assertEqual(0, self.first.call("sync"))
 
 
 def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:

@@ -15,6 +15,13 @@ test, with no sentence needed to say which is which. A fixture that called them
 is "no silent loss", and a test that stopped at `machine-b`'s `$HOME` could not
 tell a choice that was written from one that was written and then lost on the
 next sync. So the shape is: choose, then sync `machine-a`, then read `machine-a`.
+
+Named `test_sync_conflicts` rather than `test_conflicts_cli`, which is what it
+is about: `tools/mutants.targets_for` picks a suite by the `test_<module>_`
+prefix, and the branches this file covers -- `sync.settled`, the four new `RULES`
+rows, the backup window -- are `sync.py`'s. Under the other name a mutant in
+either module reached these tests only through the whole-suite confirmation
+pass, which is a slower way to the same answer.
 """
 
 from __future__ import annotations
@@ -44,10 +51,8 @@ class Conflicted(support.TwoMachines):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.run("init", str(self.remote)).returncode)
-        self.first.write(".bashrc", FROM_A)
-        self.second.write(".bashrc", FROM_B)
-        self.assertEqual(0, self.first.run("sync").returncode)
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.diverge(".bashrc", FROM_A.encode(), FROM_B.encode())
 
     def settle(self, *args: str, keys: str | None = None) -> str:
         """Sync `machine-b` with the given flags or keypresses; return its stdout.
@@ -70,9 +75,8 @@ class Conflicted(support.TwoMachines):
         """
         self.assertEqual(want, self.second.read(".bashrc"))
         self.assertEqual(want, self.second.stored(".bashrc").read_text(encoding="utf-8"))
-        self.assertEqual(0, self.first.run("sync").returncode)
+        self.assertEqual(0, self.first.call("sync"))
         self.assertEqual(want, self.first.read(".bashrc"))
-        self.assertNotIn("<<<<<<<", self.first.read(".bashrc"))
 
     def editor_writing(self, text: str) -> None:
         """Point `machine-b`'s `$EDITOR` at a script that writes `text`.
@@ -82,9 +86,7 @@ class Conflicted(support.TwoMachines):
         not carry one in, so a developer's own editor cannot be launched by the
         suite.
         """
-        where = self.tmp / "fake-editor"
-        where.write_text(f'#!/bin/sh\nprintf "{text}" > "$1"\n', encoding="utf-8")
-        where.chmod(0o755)
+        where = support.fake_editor(self.tmp / "fake-editor", f'printf "{text}" > "$1"')
         self.second.env["EDITOR"] = str(where)
 
 
@@ -140,13 +142,11 @@ class TestTwoConflictsAtOnce(support.TwoMachines):
         super().setUp()
         for name in self.NAMES:
             self.first.write(name, "shared\n")
-            self.assertEqual(0, self.first.run("add", str(self.first.home / name)).returncode)
-        self.assertEqual(0, self.first.run("sync").returncode)
-        self.assertEqual(0, self.second.run("init", str(self.remote)).returncode)
+            self.assertEqual(0, self.first.call("add", str(self.first.home / name)))
+        self.assertEqual(0, self.first.call("sync"))
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
         for name in self.NAMES:
-            self.first.write(name, "FROM-A\n")
-            self.second.write(name, "FROM-B\n")
-        self.assertEqual(0, self.first.run("sync").returncode)
+            self.diverge(name, b"FROM-A\n", b"FROM-B\n")
 
     def test_a_flag_answers_each_of_them(self) -> None:
         done = self.second.run("sync", "--ours")
@@ -267,12 +267,10 @@ class TestABinaryConflict(support.TwoMachines):
     def setUp(self) -> None:
         super().setUp()
         (self.first.home / ".icon").write_bytes(b"\x00base\n")
-        self.assertEqual(0, self.first.run("add", str(self.first.home / ".icon")).returncode)
-        self.assertEqual(0, self.first.run("sync").returncode)
-        self.assertEqual(0, self.second.run("init", str(self.remote)).returncode)
-        (self.first.home / ".icon").write_bytes(b"\x00from-a\n")
-        (self.second.home / ".icon").write_bytes(b"\x00from-b\n")
-        self.assertEqual(0, self.first.run("sync").returncode)
+        self.assertEqual(0, self.first.call("add", str(self.first.home / ".icon")))
+        self.assertEqual(0, self.first.call("sync"))
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.diverge(".icon", b"\x00from-a\n", b"\x00from-b\n")
 
     def test_it_is_one_choice_for_the_whole_file(self) -> None:
         done = self.second.run("sync", keys="s")
@@ -288,3 +286,53 @@ class TestABinaryConflict(support.TwoMachines):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAFileWithWindowsLineEndings(Conflicted):
+    """The end-to-end half of `tests/test_conflicts.py`'s CRLF cases.
+
+    git writes CRLF markers into a CRLF file, so the guard that stops an
+    unfinished `[e]` reaching disk was inert for the whole class: `sync` exited 0
+    and the markers landed in `$HOME`, the repository and the snapshot, on both
+    machines. Asserted here against the files themselves rather than against the
+    prompt's text, because that is where the damage was.
+    """
+
+    CRLF_A = "FROM-A\r\ntwo\r\nthree\r\n"
+    CRLF_B = "FROM-B\r\ntwo\r\nthree\r\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Replaces the LF conflict `Conflicted` set up: `machine-b` has not
+        # synced yet, so overwriting both copies leaves exactly one conflict.
+        self.diverge(".bashrc", self.CRLF_A.encode(), self.CRLF_B.encode())
+
+    def test_an_unfinished_edit_never_reaches_either_computer(self) -> None:
+        """An editor that saves nothing is the classic "I quit without
+        resolving". It must be refused, and the run must not report success."""
+        # An editor that writes nothing at all, so what comes back is exactly
+        # the merged file it was handed -- markers included.
+        self.second.env["EDITOR"] = str(support.fake_editor(self.tmp / "quitter", "exit 0"))
+
+        done = self.second.run("sync", keys="e")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("still has tupferl's conflict markers", done.stdout)
+        for where_now in (
+            self.second.home / ".bashrc",
+            self.second.stored(".bashrc"),
+            self.second.snapshot(".bashrc"),
+        ):
+            self.assertNotIn(b"<<<<<<<", where_now.read_bytes(), f"markers reached {where_now}")
+
+    def test_a_choice_still_settles_it(self) -> None:
+        """The other half: the guard must not refuse every CRLF file.
+
+        Read as bytes. `Path.read_text` translates newlines, so it reports a
+        CRLF file and an LF one as the same string -- which would make this pass
+        against a sync that had silently rewritten the user's line endings.
+        """
+        self.assertIn("kept local .bashrc", self.settle(keys="l"))
+        want = self.CRLF_B.encode()
+        self.assertEqual(want, (self.second.home / ".bashrc").read_bytes())
+        self.assertEqual(0, self.first.call("sync"))
+        self.assertEqual(want, (self.first.home / ".bashrc").read_bytes())

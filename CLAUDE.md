@@ -508,9 +508,33 @@ Four things are not where a newcomer would guess, all on purpose:
   family as the `tomllib` gotcha above, and the same leg catches it.
 - **A prompt in a test must fail, not block.** `conflicts.ask` loops, so a test
   that types one fewer key than the prompt asks for reads an empty terminal and
-  waits for ever — a suite that hangs in CI rather than one that goes red. Every
-  fixture that types keys appends an `[s]`, so an unexpected extra question is
-  answered "skip" and the assertion fails instead.
+  waits for ever — a suite that hangs in CI rather than one that goes red. Both
+  fixtures that type keys append `support.FALLBACK` (`s`), so an unexpected
+  extra question is answered "skip", the run exits 1, and the test fails on its
+  own assertion instead. `run_cli`'s subprocess path also passes
+  `communicate(timeout=60)`, because a child that ignores its stdin entirely
+  would otherwise outlive the suite.
+- **git writes CRLF conflict markers into a CRLF file.** `split(b"\n")` leaves
+  the `\r` attached, so a marker arrives as `b"<<<<<<< … (this computer)\r"` and
+  matches nothing spelled without it. That made `conflicts.leftover` inert for
+  every CRLF dotfile — an `[e]` the user quit without resolving was accepted and
+  the markers reached `$HOME`, the repository *and* the snapshot on both
+  machines, with `sync` exiting 0. `conflicts.bare` is the one place that strips
+  it. Every fixture in the suite was LF until the review, which is why the run
+  was green with the bug in it.
+- **One keypress can be several bytes.** A press of the Down arrow is `\x1b[B`,
+  and read a byte at a time that is three answers — the last of which is `b`,
+  *keep both*. Reading the whole sequence is not simply `os.read(fd, 8)` either:
+  that returns everything the terminal holds, which includes the key pressed
+  *after* it. `conflicts.rest_of_escape` reads to the end of the sequence and no
+  further.
+- **`=======` has no label, so it cannot be matched the way the other two
+  markers can.** A line of a dotfile that is exactly seven equals signs ends the
+  local side of a hunk whether it was meant to or not, and the prompt then shows
+  that side empty and attributes its lines to the other computer — a display bug
+  whose consequence is the user pressing the other key and destroying their own
+  edit. `conflicts.trustworthy` checks the parse against the two real files and
+  `describe` shows nothing rather than showing it swapped.
 - **`git merge-file` ignores `merge.conflictStyle`.** Measured against git 2.43
   with the setting at `merge`, `diff3` and `zdiff3`: all three gave the
   two-section form. `gitrepo.merge_file` passes `-c merge.conflictStyle=merge`

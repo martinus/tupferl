@@ -112,7 +112,12 @@ sed -i 's/alias ll=ls/alias ll="ls -l"/' "$A/.bashrc"
 sed -i 's/alias ll=ls/alias ll="ls -la"/' "$B/.bashrc"
 run "$A" sync
 run "$B" sync --ours
-grep -q 'ls -la' "$B/.bashrc" || { echo "::error::--ours did not keep B's line"; exit 1; }
+# B's *repository copy*, not its `$HOME` file. `--ours` writes only the
+# repository -- `$HOME` already holds those bytes -- so a grep of `$HOME` here
+# passes with the resolution code removed entirely: the line was put there by
+# the `sed` two lines above and nothing was ever going to overwrite it.
+grep -q 'ls -la' "$B/.local/share/tupferl/repo/.bashrc" \
+  || { echo "::error::--ours did not store B's line"; exit 1; }
 run "$A" sync
 grep -q 'ls -la' "$A/.bashrc" || { echo "::error::B's choice did not reach A"; exit 1; }
 

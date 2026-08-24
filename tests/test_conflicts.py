@@ -19,9 +19,9 @@ know what a marker looks like.
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import os
-import pty
 import termios
 import unittest
 from pathlib import Path, PurePosixPath
@@ -70,8 +70,15 @@ def many(count: int) -> tuple[bytes, bytes, bytes]:
     return build("base"), build("mine"), build("theirs")
 
 
+@functools.cache
 def sides_for(base: bytes | None, mine: bytes, theirs: bytes) -> conflicts.Sides:
-    """A `Sides` built by the real merge, the way `sync.resolve` builds one."""
+    """A `Sides` built by the real merge, the way `sync.resolve` builds one.
+
+    Cached, because every call spawns `git merge-file` and this file asked for
+    the same three byte strings 42 times per run -- 0.105s of its 0.130s. Safe
+    to share: a `Sides` is an immutable `NamedTuple` of bytes, and no test here
+    mutates one. Still the real git, just not 42 times for the same answer.
+    """
     merged = merge.three_way(str(NAME), base, mine, theirs)
     return conflicts.Sides(
         NAME,
@@ -92,31 +99,11 @@ def binary() -> conflicts.Sides:
     return sides_for(b"\x00base", b"\x00mine", b"\x00theirs")
 
 
-class Terminal:
-    """A pty, and the two halves of it as files.
-
-    `type` writes to the master, which is what a person pressing a key does;
-    `source` is the slave, which the prompt reads and which answers `isatty`
-    with `True`. Both are closed by the caller's `addCleanup`.
-    """
-
-    def __init__(self) -> None:
-        self.master, slave = pty.openpty()
-        self.source = os.fdopen(slave, "r")
-
-    def type(self, keys: str) -> None:
-        os.write(self.master, keys.encode("utf-8"))
-
-    def close(self) -> None:
-        self.source.close()
-        os.close(self.master)
-
-
 class Prompted(unittest.TestCase):
     """A terminal to type into and a buffer to read the prompt out of."""
 
     def setUp(self) -> None:
-        self.terminal = Terminal()
+        self.terminal = support.Terminal()
         self.addCleanup(self.terminal.close)
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
@@ -126,14 +113,9 @@ class Prompted(unittest.TestCase):
     def ask(self, sides: conflicts.Sides, keys: str) -> conflicts.Answer:
         """Type `keys` at the prompt and return what it settled on.
 
-        A `[s]` is typed after them, and it is not padding: `ask` loops, so a
-        prompt that asks one more time than the test expected would read an
-        empty terminal and block for ever. With the fallback there it answers
-        `SKIP` instead, and the test *fails* -- which is the difference between
-        a red run and a suite that hangs in CI. Two tests here were written
-        without it and did exactly that.
+        `support.FALLBACK` is typed after them; see there for why.
         """
-        self.terminal.type(keys + conflicts.SKIP)
+        self.terminal.type(keys + support.FALLBACK)
         return conflicts.ask(sides, self.config, self.terminal.source, self.out)
 
     def scratch(self) -> Path:
@@ -146,10 +128,8 @@ class Prompted(unittest.TestCase):
         return self.stack.enter_context(support.tempdir())
 
     def editor_that(self, body: str) -> None:
-        """Install a real `$EDITOR`: a shell script with `body` as its one line."""
-        where = self.scratch() / "fake-editor"
-        where.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
-        where.chmod(0o755)
+        """Install a real `$EDITOR`: a shell script whose body is `body`."""
+        where = support.fake_editor(self.scratch() / "fake-editor", body)
         self.stack.enter_context(mock.patch.dict(os.environ, {"EDITOR": str(where)}))
 
 
@@ -294,7 +274,7 @@ class TestTheFullDiff(unittest.TestCase):
 
 class TestOneKeypress(unittest.TestCase):
     def setUp(self) -> None:
-        self.terminal = Terminal()
+        self.terminal = support.Terminal()
         self.addCleanup(self.terminal.close)
 
     def test_a_key_is_read_without_waiting_for_enter(self) -> None:
@@ -305,12 +285,43 @@ class TestOneKeypress(unittest.TestCase):
         self.assertEqual("l", conflicts.one_key(self.terminal.source))
 
     def test_the_terminal_is_left_as_it_was_found(self) -> None:
-        """An interrupt at the prompt must not leave the user's shell with echo
-        off, which looks like a hung terminal."""
         before = termios.tcgetattr(self.terminal.source.fileno())
         self.terminal.type("l")
         conflicts.one_key(self.terminal.source)
         self.assertEqual(before, termios.tcgetattr(self.terminal.source.fileno()))
+
+    def test_it_is_restored_even_when_the_read_raises(self) -> None:
+        """The case the `finally` exists for, and the one the test above cannot
+        see: an interrupt at the prompt must not leave the user's shell with
+        `ECHO` off, which looks like a hung terminal.
+
+        Without this, moving `tcsetattr` out of the `finally` into ordinary
+        sequence leaves the whole suite green -- a precondition never
+        established, which CLAUDE.md §2 lists by name.
+        """
+        before = termios.tcgetattr(self.terminal.source.fileno())
+        patched = mock.patch("os.read", side_effect=KeyboardInterrupt)
+        with patched, self.assertRaises(KeyboardInterrupt):
+            conflicts.one_key(self.terminal.source)
+        self.assertEqual(before, termios.tcgetattr(self.terminal.source.fileno()))
+
+    def test_an_arrow_key_is_one_keypress_and_not_three(self) -> None:
+        """A single press of Down sends `\x1b[B`. Read a byte at a time, that is
+        `\x1b`, `[` and `B` to three successive calls -- and `b` is *keep both*,
+        so one arrow key, or one notch of a mouse wheel, silently wrote a union
+        merge to `$HOME`, the repository and the snapshot with `sync` exiting 0.
+        """
+        self.terminal.type("\x1b[B")
+        self.assertEqual("\x1b[b", conflicts.one_key(self.terminal.source))
+
+    def test_nothing_of_the_sequence_is_left_for_the_next_read(self) -> None:
+        """The half the test above cannot show: the whole press was consumed, so
+        the *next* key is the next key the user pressed. Asserted by typing an
+        arrow and then an `l`, which is what a user who scrolled and then
+        answered does."""
+        self.terminal.type("\x1b[Al")
+        conflicts.one_key(self.terminal.source)
+        self.assertEqual("l", conflicts.one_key(self.terminal.source))
 
     def test_it_is_lower_cased(self) -> None:
         self.terminal.type("L")
@@ -323,6 +334,20 @@ class TestOneKeypress(unittest.TestCase):
 
     def test_end_of_input_is_the_empty_string(self) -> None:
         self.assertEqual("", conflicts.one_key(io.StringIO("")))
+
+
+class TestAKeypressThatIsNotAKey(Prompted):
+    def test_an_arrow_key_does_not_answer_the_prompt(self) -> None:
+        """It re-asks, and it does not act on the last byte of the sequence."""
+        got = self.ask(one_conflict(), "\x1b[B")
+        self.assertEqual(conflicts.SKIP, got.choice)
+        self.assertIn("is not a key", self.out.getvalue())
+
+    def test_the_escape_is_not_echoed_raw(self) -> None:
+        """Printing the bytes back would move the cursor or clear the screen on
+        their way out, which is what a `repr` avoids."""
+        self.ask(one_conflict(), "\x1b[B")
+        self.assertNotIn("\x1b[B", self.out.getvalue())
 
 
 class TestTheKeys(Prompted):
@@ -421,6 +446,33 @@ class TestTheEditorHandoff(Prompted):
         self.assertEqual(conflicts.SKIP, got.choice)
         self.assertIn("still has tupferl's conflict markers", self.out.getvalue())
 
+    def test_a_half_finished_resolution_is_what_the_next_edit_opens(self) -> None:
+        """The user resolved one hunk of two, saved, and was told so. Pressing
+        `[e]` again must reopen *their* file, not the pristine merge -- otherwise
+        being told "you are not finished" costs them the work they did.
+
+        The editor appends a line and leaves everything else alone, so the
+        second run sees the first run's output exactly when the buffer carried
+        over. Two hunks, because with one there is nothing to half-finish.
+        """
+        landed = self.scratch() / "seen"
+        self.editor_that(f'cat "$1" > {landed}\nprintf "mine\\n" >> "$1"')
+        sides = sides_for(*many(2))
+        got = self.ask(sides, "ee")
+        # Both edits were refused -- the markers survive `cat` -- so it skipped.
+        self.assertEqual(conflicts.SKIP, got.choice)
+        self.assertIn(
+            b"mine", landed.read_bytes(), "the second [e] did not reopen the first's work"
+        )
+
+    def test_an_editor_that_deletes_the_file_asks_again(self) -> None:
+        """Rather than a traceback. `sync` exits 1 for "conflicts were left", so
+        a crash that also exits 1 is one a script reads as a normal result."""
+        self.editor_that('rm -f "$1"')
+        got = self.ask(one_conflict(), "es")
+        self.assertEqual(conflicts.SKIP, got.choice)
+        self.assertIn("left nothing to read", self.out.getvalue())
+
     def test_a_file_that_merely_mentions_a_marker_is_accepted(self) -> None:
         """The other half, and the one a bare `<<<<<<<` check would fail: the
         markers looked for carry the file's name and the side's description, so
@@ -429,10 +481,14 @@ class TestTheEditorHandoff(Prompted):
         got = self.ask(one_conflict(), "e")
         self.assertEqual(conflicts.EDIT, got.choice)
 
-    def test_with_no_editor_set_it_says_what_to_set(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(TupferlError) as raised:
-            self.ask(one_conflict(), "e")
-        self.assertIn("$EDITOR", str(raised.exception))
+    def test_with_no_editor_set_it_says_what_to_set_and_asks_again(self) -> None:
+        """It must not end the run. A `sync` aborted here has already written
+        the conflicts it settled earlier and committed none of them, which is a
+        far worse answer to a mistyped `e` than a line saying what to set."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            got = self.ask(one_conflict(), "es")
+        self.assertEqual(conflicts.SKIP, got.choice)
+        self.assertIn("$EDITOR", self.out.getvalue())
 
 
 class TestWhichEditor(unittest.TestCase):
@@ -484,7 +540,7 @@ class TestWhichSettler(unittest.TestCase):
     def test_with_a_terminal_it_is_the_prompt(self) -> None:
         """The half the test above cannot show: with a real terminal the same
         arguments produce a settler that asks, and takes the key typed at it."""
-        terminal = Terminal()
+        terminal = support.Terminal()
         self.addCleanup(terminal.close)
         terminal.type("r")
         spill = io.StringIO()
@@ -492,3 +548,102 @@ class TestWhichSettler(unittest.TestCase):
             settler = conflicts.answering(Config(), no_input=False, ours=False, theirs=False)
             self.assertEqual(conflicts.Answer(conflicts.REMOTE), settler(self.sides()))
         self.assertIn("1 conflict to settle", spill.getvalue())
+
+
+#: The same conflict as `one_conflict`, with Windows line endings. git writes
+#: **CRLF markers into a CRLF file** -- so every fixture above, being LF, is
+#: blind to a whole class of file that a dotfiles repository certainly holds.
+CRLF_BASE = BASE.replace(b"\n", b"\r\n")
+CRLF_MINE = MINE.replace(b"\n", b"\r\n")
+CRLF_THEIRS = THEIRS.replace(b"\n", b"\r\n")
+
+
+def crlf() -> conflicts.Sides:
+    return sides_for(CRLF_BASE, CRLF_MINE, CRLF_THEIRS)
+
+
+class TestAFileWithWindowsLineEndings(Prompted):
+    """The class of file every other fixture here is blind to.
+
+    `split(b"\n")` leaves the `\r` on the end of each line, so a marker arrives
+    as `b"<<<<<<< .bashrc (this computer)\r"`. Matching without stripping it made
+    `leftover` inert for every CRLF dotfile -- an `[e]` the user quit without
+    resolving was accepted, and the markers reached `$HOME`, the repository and
+    the snapshot on both machines with `sync` exiting 0.
+    """
+
+    def test_the_fixture_really_is_crlf_and_really_conflicts(self) -> None:
+        """The precondition, asserted rather than assumed: a fixture git merged
+        cleanly, or one whose markers came back LF, would make every assertion
+        below vacuous."""
+        sides = crlf()
+        self.assertEqual(1, sides.conflicts)
+        assert sides.marked is not None
+        self.assertIn(b"(this computer)\r\n", sides.marked)
+
+    def test_the_two_sides_are_still_found(self) -> None:
+        found = conflicts.hunks(crlf())
+        self.assertEqual(1, len(found))
+        self.assertEqual([b"MINE-IS-HERE\r"], found[0].mine)
+        self.assertEqual([b"THEIRS-IS-HERE\r"], found[0].theirs)
+
+    def test_the_prompt_shows_both_sides(self) -> None:
+        text = conflicts.describe(crlf(), colour=False)
+        self.assertIn("MINE-IS-HERE", text)
+        self.assertIn("THEIRS-IS-HERE", text)
+
+    def test_markers_left_in_place_are_still_refused(self) -> None:
+        """The one that matters. Without `bare`, this passes `leftover` and the
+        markers are written to both computers."""
+        self.editor_that("exit 0")
+        got = self.ask(crlf(), "es")
+        self.assertEqual(conflicts.SKIP, got.choice)
+        self.assertIn("still has tupferl's conflict markers", self.out.getvalue())
+
+    def test_a_finished_edit_is_still_accepted(self) -> None:
+        """The other half: `bare` must not make every CRLF save look unfinished."""
+        self.editor_that('printf "done\\r\\n" > "$1"')
+        self.assertEqual(conflicts.EDIT, self.ask(crlf(), "e").choice)
+
+
+class TestALineThatLooksLikeASeparator(Prompted):
+    """git writes `=======` with no label, so a line of the file that *is* seven
+    equals signs cannot be told apart from it.
+
+    The first such line inside a region ends this side whether it was meant to
+    or not, and the display then shows one side empty and attributes that side's
+    lines to the other. A user who believes it presses the other key and
+    destroys their own edit -- so "display only" is not a defence, and `describe`
+    refuses to show a parse it cannot corroborate.
+    """
+
+    def sides(self) -> conflicts.Sides:
+        base = b"title\nold\ntail\n"
+        mine = b"title\n=======\nMY SECTION\ntail\n"
+        theirs = b"title\nTHEIR LINE\ntail\n"
+        return sides_for(base, mine, theirs)
+
+    def test_the_parse_really_does_go_wrong(self) -> None:
+        """The precondition. If git ever stopped producing this shape the tests
+        below would pass against a parse that was fine all along."""
+        found = conflicts.hunks(self.sides())
+        self.assertEqual([], found[0].mine, "the fixture no longer mis-splits")
+        self.assertIn(b"MY SECTION", found[0].theirs)
+
+    def test_it_is_refused_rather_than_shown(self) -> None:
+        text = conflicts.describe(self.sides(), colour=False)
+        self.assertIn("cannot show the two sides", text)
+        self.assertIn("[d]", text)
+        self.assertNotIn("MY SECTION", text)
+
+    def test_an_ordinary_conflict_is_still_shown(self) -> None:
+        """The other half: a check that refused everything would pass the test
+        above and make the prompt useless."""
+        self.assertIn("MINE-IS-HERE", conflicts.describe(one_conflict(), colour=False))
+
+    def test_the_full_diff_still_tells_the_truth(self) -> None:
+        """`[d]` reads the two files rather than the markers, so it is the way
+        out -- which is what the message points at."""
+        text = conflicts.unified(self.sides())
+        self.assertIn("-MY SECTION", text)
+        self.assertIn("+THEIR LINE", text)

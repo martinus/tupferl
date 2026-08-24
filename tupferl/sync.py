@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -134,15 +135,29 @@ RULES: dict[str, Rule] = {
     EDITED: Rule(to_repo=True, to_home=True, needs_user=False),
 }
 
-#: Which action each of the prompt's five answers is. A table for `RULES`'
-#: reason: the alternative is a chain of comparisons in `settled`, where a
-#: missing arm falls through to whatever the last one was rather than failing.
-MEANS: dict[str, str] = {
-    conflicts.LOCAL: KEPT_LOCAL,
-    conflicts.REMOTE: KEPT_REMOTE,
-    conflicts.BOTH: KEPT_BOTH,
-    conflicts.EDIT: EDITED,
-    conflicts.SKIP: CONFLICT,
+
+class Means(NamedTuple):
+    """What one answer to the prompt is."""
+
+    #: The action it becomes, whose `RULES` row decides what gets written.
+    action: str
+    #: Which of the two sides it keeps, for the two answers that name one.
+    #: `None` for the three that do not: `[b]` and `[e]` carry a file that is
+    #: neither side, and `[s]` writes nothing at all.
+    keeps: Callable[[conflicts.Sides], Blob] | None
+
+
+#: What each of the prompt's five answers means. A table for `RULES`' reason,
+#: and it holds the side as well as the action for the same one: with the action
+#: alone, `settled` had to re-derive "which side is that?" from the action
+#: string, so a sixth answer needed entering here, in `RULES`, *and* in a chain
+#: of comparisons -- three places, which is the thing the table exists to stop.
+MEANS: dict[str, Means] = {
+    conflicts.LOCAL: Means(KEPT_LOCAL, lambda sides: sides.home),
+    conflicts.REMOTE: Means(KEPT_REMOTE, lambda sides: sides.stored),
+    conflicts.BOTH: Means(KEPT_BOTH, None),
+    conflicts.EDIT: Means(EDITED, None),
+    conflicts.SKIP: Means(CONFLICT, None),
 }
 
 
@@ -241,20 +256,23 @@ def settled(sides: conflicts.Sides, answer: conflicts.Answer) -> Outcome:
     the prompt: a flag reaches disk through this function and so cannot resolve
     a conflict differently from the keypress it stands for.
 
-    Keyed on whether the answer *carried* bytes rather than on which choice it
-    was. `[b]` and `[e]` are the two that produce a file that is neither side,
-    and both hand it back here; the other three name a side this function
-    already has, and copying those bytes through the answer would be a second
-    place for them to differ from the ones that were compared.
+    `[l]` and `[r]` name a side this function already has, and take it from the
+    table rather than through the answer -- a copy of those bytes riding along
+    would be a second place for them to differ from the ones that were compared.
+    `[b]` and `[e]` produce a file that is neither side and hand it back. `[s]`
+    does neither, which is what the last arm is: the conflict stands.
     """
-    action = MEANS[answer.choice]
+    means = MEANS[answer.choice]
+    if means.keeps is not None:
+        return Outcome(sides.name, means.action, means.keeps(sides))
     if answer.data is not None:
         bit = executable_after(sides.base, sides.home, sides.stored)
-        return Outcome(sides.name, action, Blob(answer.data, bit))
-    if action == KEPT_LOCAL:
-        return Outcome(sides.name, action, sides.home)
-    if action == KEPT_REMOTE:
-        return Outcome(sides.name, action, sides.stored)
+        return Outcome(sides.name, means.action, Blob(answer.data, bit))
+    # `[s]`, and the one way this can be wrong: an answer of `[b]` or `[e]`
+    # built by hand with no bytes on it reads as a skip. Nothing constructs one
+    # -- `ask` always attaches the file and the three flags only ever answer
+    # `[l]`, `[r]` or `[s]` -- so this is named rather than guarded, since a
+    # guard here could only be reached by a test written to reach it.
     return Outcome(sides.name, CONFLICT, None, sides)
 
 
@@ -466,11 +484,21 @@ def apply(
         # them ever had.
         return False
     rule = RULES[outcome.action]
-    if rule.to_home and found is not None:
-        # `found is not None` and not a fourth action: RESTORED is the case where
-        # `$HOME` had no file, so there is nothing to back up, and `resolve` is
-        # what guarantees that. Plan §5 wants a copy of what is replaced, not of
-        # what was not there.
+    if rule.to_home and found is not None and found != outcome.blob:
+        # Three conditions, and each rules out a backup of nothing:
+        #
+        # - `to_home`, because only a write to `$HOME` replaces the user's file;
+        # - `found is not None`, because RESTORED is the case where `$HOME` had
+        #   no file at all and `resolve` is what guarantees it;
+        # - `found != outcome.blob`, because the write below would then change
+        #   nothing. `[e]` reaches it easily -- editing the merged file down to
+        #   exactly what `$HOME` already holds is how a user says "keep mine,
+        #   but let me look first" -- and MERGED reaches it whenever the merge
+        #   lands back on this side's bytes.
+        #
+        # The third is not thrift. A backup directory is created per run that
+        # takes one, and `forget_old` keeps five: a backup of a file nothing
+        # replaced evicts a real one, which is the copy plan §5 exists to keep.
         backups.take(outcome.name, found)
 
     wrote = False
@@ -553,9 +581,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
                 f"run `git -C {repo} checkout main`."
             )
         integrate(repo, remote, branch)
-        outcomes = deliver(
-            repo, home, host, remote, branch, settler, settle(repo, home, host, settler)
-        )
+        outcomes = deliver(repo, home, host, remote, branch, settler)
 
     print(report(outcomes))
     return 1 if any(RULES[outcome.action].needs_user for outcome in outcomes) else 0
@@ -568,7 +594,6 @@ def deliver(
     remote: str,
     branch: str,
     settler: conflicts.Settler,
-    outcomes: list[Outcome],
 ) -> list[Outcome]:
     """Push, and plan §3.4 step 5: if the remote moved, pull, redo, push again.
 
@@ -580,7 +605,13 @@ def deliver(
     the remote moved, and what arrived may conflict with what this machine just
     wrote. Asking again is the honest thing -- the alternative is a second pass
     that silently skips a conflict the first pass would have prompted for.
+
+    A file the user *skipped* is asked about again too, up to `ATTEMPTS` times.
+    That is intended rather than overlooked: each retry follows a real change to
+    the repository's copy, so it is a different question from the one they
+    declined, and a `[s]` that stuck would hide it.
     """
+    outcomes = settle(repo, home, host, settler)
     there = f"{remote}/{branch}"
     for _ in range(ATTEMPTS):
         if gitrepo.is_ancestor(repo, "HEAD", there):

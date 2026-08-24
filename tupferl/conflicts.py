@@ -53,7 +53,7 @@ import termios
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple, TextIO
+from typing import Any, NamedTuple, TextIO
 
 from tupferl import merge
 from tupferl.config import Config
@@ -151,33 +151,56 @@ class Hunk(NamedTuple):
     theirs: list[bytes]
 
 
+def bare(line: bytes) -> bytes:
+    """`line` without the carriage return a CRLF file leaves on the end of it.
+
+    `git merge-file` writes **CRLF markers into a CRLF file** -- measured, git
+    2.43 -- and `split(b"\n")` leaves the `\r` attached, so a marker line
+    arrives as `b"<<<<<<< .bashrc (this computer)\r"` and matched nothing.
+
+    That was not a display bug. It made `leftover` inert for the whole class of
+    CRLF dotfiles: an `[e]` where the user quit without resolving was accepted,
+    and the markers reached `$HOME`, the repository *and* the snapshot on both
+    machines, with `sync` exiting 0. The CRLF cases in
+    `tests/test_conflicts.py` are what see it -- every fixture here was LF until
+    they were written, which is why the suite was green with the bug in place.
+    """
+    return line[:-1] if line.endswith(b"\r") else line
+
+
 def hunks(sides: Sides) -> list[Hunk]:
     """The conflicting regions of `sides.marked`, for display only.
 
-    The markers are matched against the exact labels `merge.labels_for` wrote,
-    not against a bare `<<<<<<<`. A dotfiles repository is one of the few places
-    a file legitimately *contains* conflict markers -- a gitattributes example, a
-    merge driver's documentation, somebody's own test fixture -- and matching the
-    bare form would split a file at a line nobody was arguing about.
+    The two labelled markers are matched against exactly what `merge` wrote. A
+    dotfiles repository is one of the few places a file legitimately *contains*
+    conflict markers -- a gitattributes example, a merge driver's documentation,
+    somebody's own test fixture -- and matching a bare `<<<<<<<` would split a
+    file at a line nobody was arguing about.
 
-    `split(b"\\n")` rather than `splitlines()`: the latter splits on eight more
+    The separator cannot be matched that carefully, because git writes it with
+    no label: a line of the file that is exactly seven equals signs cannot be
+    told apart from it, and the *first* such line inside a region ends this side
+    whether or not it was meant to. That is why `describe` checks the parse
+    against the two real files rather than trusting it -- a mis-split shows one
+    side as empty, and a user who believes it presses the other key and loses
+    their own edit.
+
+    `split(b"\n")` rather than `splitlines()`: the latter splits on eight more
     characters than git does, so a file containing one of them would shift every
     line number after it. Nothing here recovers from a malformed run of markers;
-    a region that never closes is simply not reported, because this feeds a
-    display and the merged file itself is what `[e]` hands to the user.
+    a region that never closes is simply not reported.
     """
     if sides.marked is None:
         return []
-    mine_at, _, theirs_at = merge.labels_for(str(sides.name))
-    opens = f"<<<<<<< {mine_at}".encode()
-    closes = f">>>>>>> {theirs_at}".encode()
+    opens, closes = merge.markers_for(str(sides.name))
     middle = b"======="
 
     found: list[Hunk] = []
     start: int | None = None
     mine: list[bytes] = []
     theirs: list[bytes] | None = None
-    for number, text in enumerate(sides.marked.split(b"\n"), start=1):
+    for number, raw in enumerate(sides.marked.split(b"\n"), start=1):
+        text = bare(raw)
         if text == opens:
             start, mine, theirs = number, [], None
         elif start is None:
@@ -188,10 +211,39 @@ def hunks(sides: Sides) -> list[Hunk]:
             found.append(Hunk(start, number, mine, theirs))
             start, theirs = None, None
         elif theirs is not None:
-            theirs.append(text)
+            theirs.append(raw)
         else:
-            mine.append(text)
+            mine.append(raw)
     return found
+
+
+def somewhere_in(run: list[bytes], whole: list[bytes]) -> bool:
+    """Whether `run` appears as a block of consecutive lines of `whole`."""
+    if not run:
+        return True
+    return any(whole[at : at + len(run)] == run for at in range(len(whole) - len(run) + 1))
+
+
+def trustworthy(sides: Sides, regions: list[Hunk]) -> bool:
+    """Whether the parsed sides really are what the two computers hold.
+
+    A conflict region's lines come verbatim from one file or the other, so each
+    hunk's `mine` must be a block of `$HOME`'s lines and each `theirs` a block
+    of the repository's. When a line inside a region is itself `=======` the
+    split lands in the wrong place and this fails -- which is the point.
+    `describe` then shows no sides at all rather than showing them swapped, and
+    points at `[d]`, which reads the two files directly and cannot be fooled.
+
+    Measured case: `$HOME` holding `=======` immediately above its own change
+    made the prompt print "this computer" with nothing under it and attribute
+    that change to the repository. A user who trusts that display presses `[r]`
+    and destroys the line they wrote.
+    """
+    mine = sides.home.data.split(b"\n")
+    theirs = sides.stored.data.split(b"\n")
+    return all(
+        somewhere_in(hunk.mine, mine) and somewhere_in(hunk.theirs, theirs) for hunk in regions
+    )
 
 
 def paint(text: str, code: str, colour: bool) -> str:
@@ -236,10 +288,24 @@ def describe(sides: Sides, colour: bool) -> str:
         )
 
     regions = hunks(sides)
+    # git's count, not `len(regions)`. They agree on everything git produces;
+    # where they cannot -- a file whose own content looks like a marker -- git's
+    # is the one that decided there was a conflict at all, and the parse below
+    # is the one that is refused rather than shown.
     lines = [
         f"{paint(str(sides.name), BOLD, colour)}: "
         f"{sides.conflicts} conflict{'s' if sides.conflicts > 1 else ''} to settle."
     ]
+    if not trustworthy(sides, regions):
+        lines.append("")
+        lines.append(
+            "  tupferl cannot show the two sides of this one: a line in it looks "
+            "like a\n  conflict marker, so where one side ends is not decidable. "
+            "Press [d] for the\n  whole difference, which is read from the two "
+            "files and cannot be fooled."
+        )
+        return "\n".join(lines)
+
     for index, hunk in enumerate(regions[:SHOWN_HUNKS], start=1):
         lines.append("")
         lines.append(
@@ -323,21 +389,24 @@ def editor(config: Config) -> str:
 def leftover(sides: Sides, data: bytes) -> bool:
     """Whether tupferl's own conflict markers are still in `data`.
 
-    Its own, matched in full against `merge.labels_for` -- the same rule as
-    `hunks`, and for the same reason. A user whose dotfile legitimately contains
-    `<<<<<<<` is not told they left the merge half-finished; a user who really
-    did leave it half-finished is, before those markers reach both computers.
+    Its own, matched in full against what `merge` wrote -- the same rule as
+    `hunks`, from the same `merge.markers_for`, so the two cannot be half
+    changed. A user whose dotfile legitimately contains `<<<<<<<` is not told
+    they left the merge half-finished; a user who really did leave it
+    half-finished is told, before those markers reach both computers.
+
+    `bare` on every line, because a CRLF file's markers carry a `\r` and
+    without it this returned `False` for every one of them -- see `bare`.
     """
-    mine_at, _, theirs_at = merge.labels_for(str(sides.name))
-    marks = {f"<<<<<<< {mine_at}".encode(), f">>>>>>> {theirs_at}".encode()}
-    return any(line in marks for line in data.split(b"\n"))
+    marks = set(merge.markers_for(str(sides.name)))
+    return any(bare(line) in marks for line in data.split(b"\n"))
 
 
 @contextmanager
 def workspace(name: PurePosixPath) -> Iterator[Path]:
     """A throwaway file named after `name`, so the editor picks the right mode.
 
-    The *basename* only, in a temporary directory of its own: an editor chooses
+    The basename only, in a temporary directory of its own: an editor chooses
     its syntax highlighting and its indent rules from the file name, and a user
     editing `init.lua` in a file called `tmp9k2j` gets neither. The basename and
     not the whole path, because `PurePosixPath.name` cannot contain a separator
@@ -348,12 +417,25 @@ def workspace(name: PurePosixPath) -> Iterator[Path]:
 
 
 def edit(sides: Sides, buffer: bytes, config: Config, out: TextIO) -> bytes | None:
-    """Open `buffer` in the user's editor; return what came back, or `None`.
+    """Open `buffer` in the user's editor and return what came back.
 
-    `None` means "ask again", and it has two causes worth telling apart in the
-    message: the editor exited non-zero, or the file still carries the markers.
-    Neither is an error to abort the sync with -- the user is standing right
-    there and can choose something else.
+    `None` means the editor never gave an answer -- it exited non-zero, or it
+    removed the file, or it left something that is not a readable file where the
+    file was. `ask` re-asks in that case rather than aborting, and it keeps the
+    buffer it had: there is nothing here to keep.
+
+    A file that came back *is* returned, markers and all. Whether it is finished
+    is `ask`'s question, not this one, and the split matters: a save that still
+    has markers in it is text the user wrote, and handing it back is what lets
+    the next `[e]` reopen their half-finished work instead of the pristine
+    merge.
+
+    **Every failure here is recoverable and none of them ends the run.** The
+    user is standing at the prompt and can choose another key. That includes
+    having no `$EDITOR`: `editor` raises, and this catches it, because an
+    aborted `sync` would leave the conflicts it had already settled written to
+    disk and uncommitted -- a much worse answer to a mistyped `e` than a line
+    saying what to set.
 
     The buffer is a real file in a throwaway directory rather than `$HOME`'s
     copy. An editor opened directly on the managed file would leave the markers
@@ -365,36 +447,97 @@ def edit(sides: Sides, buffer: bytes, config: Config, out: TextIO) -> bytes | No
     it is a full-screen program the user is about to type into -- so nothing
     here captures its output.
     """
-    command = editor(config)
+    try:
+        command = editor(config)
+    except TupferlError as unset:
+        print(f"{unset}", file=out)
+        return None
     with workspace(sides.name) as scratch:
         scratch.write_bytes(buffer)
         done = subprocess.run([*shlex.split(command), str(scratch)], check=False)
         if done.returncode != 0:
             print(f"{command} exited with {done.returncode}; nothing was changed.", file=out)
             return None
-        settled = scratch.read_bytes()
-    if leftover(sides, settled):
-        print(
-            "the merged file still has tupferl's conflict markers in it, so it was "
-            "not saved; remove them, or choose another key.",
-            file=out,
-        )
-        return None
-    return settled
+        try:
+            return scratch.read_bytes()
+        except OSError as gone:
+            # An editor that removed the file, or left a directory in its place.
+            # Not a traceback and not an aborted run: `sync` exits 1 for "there
+            # are conflicts left", and a crash that also exits 1 is one a script
+            # reads as a normal result.
+            print(f"{command} left nothing to read ({gone.strerror}).", file=out)
+            return None
+
+
+#: The most bytes one keypress can be. Six covers a modified arrow
+#: (`\x1b[1;5B`); eight leaves room without letting a runaway read swallow a
+#: line of a paste.
+KEYPRESS = 8
+
+#: How long to wait for the rest of an escape sequence, in tenths of a second
+#: (`VTIME`'s unit). A terminal sends the whole sequence in one burst, so this
+#: only has to outlast the write; a lone Escape costs exactly this much before
+#: the prompt calls it "not a key", which is the same trade every editor makes.
+ESCAPE_WAIT = 1
+
+
+def rest_of_escape(fd: int, mode: list[Any]) -> bytes:
+    """Everything after an `\x1b` that belongs to the same keypress.
+
+    One byte at a time, stopping at the byte that ends the sequence rather than
+    reading a fixed number: `os.read(fd, 8)` returns *everything the terminal
+    has*, which is the escape sequence **and the key pressed after it**. That is
+    not hypothetical -- it swallowed the answer in three tests here, on the first
+    attempt at this function.
+
+    `ESC [` and `ESC O` introduce a sequence; anything else after `ESC` is a lone
+    Escape followed by an ordinary key. A CSI sequence ends at its first byte in
+    `@`..`~`, which is what the loop watches for.
+
+    `VMIN=0` with `VTIME` is what makes a lone Escape return rather than block:
+    with nothing more to read, the call comes back empty after `ESCAPE_WAIT`.
+    """
+    mode[6][termios.VMIN] = 0
+    mode[6][termios.VTIME] = ESCAPE_WAIT
+    termios.tcsetattr(fd, termios.TCSANOW, mode)
+    rest = b""
+    while len(rest) < KEYPRESS:
+        more = os.read(fd, 1)
+        if not more:
+            break
+        rest += more
+        if len(rest) == 1 and more not in (b"[", b"O"):
+            break
+        if len(rest) > 1 and b"@" <= more <= b"~":
+            break
+    return rest
 
 
 def one_key(source: TextIO) -> str:
     """One keypress from `source`, lower-cased. Empty string at end of input.
 
-    Two paths, and the second is not a fallback for tests -- it is what happens
-    when `sync` runs with a pipe on stdin and something has already decided the
-    prompt is worth showing anyway.
+    Two paths, and the second is not a test affordance: `sync` with a pipe on
+    stdin takes it whenever something has already decided the prompt is worth
+    showing.
+
+    **A whole escape sequence is one keypress, not three.** `source.read(1)`
+    returns one character and leaves the rest in the stream's buffer, so a single
+    press of the Down arrow arrived as `\x1b`, `[` and `B` at three successive
+    calls -- and `b` is *keep both*. One arrow key, or one notch of a mouse wheel
+    in a terminal without the alternate screen, silently wrote a union merge into
+    `$HOME`, the repository and the snapshot, and `sync` exited 0. Anything that
+    is not exactly one character is not a key, and `ask` says so rather than
+    acting on its last byte.
+
+    The read is of the raw descriptor for that reason: a buffered stream holds
+    the tail of the sequence where no drain can reach it. Nothing else in this
+    module reads `source`, so mixing a raw read with a buffered one cannot arise.
 
     The terminal flags are set here rather than through `tty.setcbreak`, which
     changed behaviour in Python 3.12: it stopped clearing `ECHO`, so the same
     call echoes the key on 3.12 and does not on 3.10. `ICANON` is what makes the
     read return without waiting for Enter -- plan §3.4's "every choice is one
-    keypress" -- and `ECHO` is cleared so that the key can be echoed back with a
+    keypress" -- and `ECHO` is cleared so the key can be echoed back with a
     newline after it, which a terminal in this mode will not add.
     """
     if not source.isatty():
@@ -409,7 +552,10 @@ def one_key(source: TextIO) -> str:
     mode[6][termios.VTIME] = 0
     try:
         termios.tcsetattr(fd, termios.TCSADRAIN, mode)
-        return source.read(1).lower()
+        first = os.read(fd, 1)
+        if first == b"\x1b":
+            first += rest_of_escape(fd, mode)
+        return first.decode("utf-8", "replace").lower()
     finally:
         # In a `finally` because an interrupt at the prompt would otherwise leave
         # the user's shell with echo off, which looks like a hung terminal.
@@ -420,24 +566,37 @@ def ask(sides: Sides, config: Config, source: TextIO, out: TextIO) -> Answer:
     """Plan §3.4 step 4: show the conflict and settle it with one keypress.
 
     `[d]` and a key that is not on offer both re-ask, which is why this is a
-    loop. So does `[e]` when the editor said no -- and the edited text is kept as
-    the buffer the next `[e]` opens, so a user who saved half a resolution does
-    not lose it by pressing the wrong key next.
+    loop. So does `[e]` when the editor gave no answer -- and when it gave one
+    that still has the markers in it, the text the user wrote becomes the buffer
+    the next `[e]` opens, so a half-finished resolution is not lost by pressing
+    the wrong key next.
 
     End of input is `[s]`. That is the same answer `--no-input` gives, and it is
     the only one that cannot lose something the user meant to keep.
+
+    The question and the keys are built once. They depend on nothing the loop
+    changes, and `describe` re-parses the whole marked file -- so re-*printing*
+    is intended and re-*computing* was not.
     """
     colour = coloured(out)
+    question = describe(sides, colour)
+    keys = choices(sides, colour)
     buffer = sides.marked
     while True:
-        print(f"\n{describe(sides, colour)}\n", file=out)
-        print(choices(sides, colour), file=out)
+        print(f"\n{question}\n", file=out)
+        print(keys, file=out)
         out.flush()
 
         key = one_key(source)
         if key == "":
             print(f"{SKIP}   (end of input)", file=out)
             return Answer(SKIP)
+        if len(key) != 1:
+            # An escape sequence, or a keypress this terminal sends as several
+            # bytes. Echoed as a repr rather than as itself: the raw bytes would
+            # move the cursor or clear the screen on their way out.
+            print(f"{key!r} is not a key.", file=out)
+            continue
         print(key, file=out)
 
         if key in (LOCAL, REMOTE, SKIP):
@@ -449,25 +608,32 @@ def ask(sides: Sides, config: Config, source: TextIO, out: TextIO) -> Answer:
             print(unified(sides), file=out)
             continue
         if key == BOTH:
-            both = merge.three_way(
-                str(sides.name),
-                None if sides.base is None else sides.base.data,
-                sides.home.data,
-                sides.stored.data,
-                keep_both=True,
+            return Answer(
+                BOTH,
+                merge.keep_both(
+                    str(sides.name),
+                    None if sides.base is None else sides.base.data,
+                    sides.home.data,
+                    sides.stored.data,
+                ),
             )
-            # `keep_both` never conflicts and never returns `None` for a file
-            # that got this far -- `merge.three_way` raises rather than return
-            # either -- so this is the value, not a case to handle.
-            assert both.data is not None
-            return Answer(BOTH, both.data)
         if key == EDIT:
-            assert buffer is not None  # not binary, so `marked` is bytes
-            settled = edit(sides, buffer, config, out)
-            if settled is None:
+            # `buffer` is bytes here: `sides.binary` was checked above, so
+            # `marked` is not `None`, and every reassignment below is bytes.
+            assert buffer is not None
+            typed = edit(sides, buffer, config, out)
+            if typed is None:
                 continue
-            buffer = settled
-            return Answer(EDIT, settled)
+            buffer = typed
+            if leftover(sides, typed):
+                print(
+                    "the merged file still has tupferl's conflict markers in it, so it "
+                    "was not saved; remove them, or choose another key. What you wrote "
+                    "is what [e] will open next.",
+                    file=out,
+                )
+                continue
+            return Answer(EDIT, typed)
         print(f"{key!r} is not one of the keys.", file=out)
 
 

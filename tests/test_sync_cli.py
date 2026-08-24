@@ -216,11 +216,11 @@ class TestWhatStopsASync(OneMachine):
     """What a run refuses, and what it survives. The resolution flags are
     `tests/test_conflict_cli.py`, which needs a conflict to point them at."""
 
-    def test_the_resolution_flags_change_nothing_when_there_is_no_conflict(self) -> None:
-        """All three, on a run with nothing to settle. Not a placeholder: each
-        one installs a settler that is never called, and a settler that ran
-        anyway would have to invent three versions of a file nobody disagreed
-        about."""
+    def test_the_resolution_flags_are_accepted_when_there_is_no_conflict(self) -> None:
+        """A smoke test, and no more than one: with nothing to settle it cannot
+        see whether a settler was installed or called, because there is no
+        conflict to hand one. What each flag *does* is
+        `tests/test_sync_conflicts.py`, which has one."""
         for flag in ("--ours", "--theirs", "--no-input"):
             with self.subTest(flag=flag):
                 self.assertEqual(0, self.sync(flag)[0])
@@ -436,8 +436,12 @@ class TestAGitLevelConflict(support.TwoMachines):
         self.assertEqual(2, done.returncode, done.stdout + done.stderr)
         self.assertIn(".bashrc", done.stderr)
         # The sentence has to be actionable, which is what plan §5 asks of every
-        # error. `git pull` is the way out until tupferl settles this itself.
-        self.assertIn("git", done.stderr)
+        # error, and `git pull` is the way out until tupferl settles this itself
+        # (issue #10). The whole command, not the word "git": git's own stderr
+        # reaches the user through `gitrepo.reason` on the *other* branch of this
+        # function, and it contains "git" there too -- so the loose spelling
+        # passed for a failure this test is not about.
+        self.assertIn(f"git -C {self.second.repo} pull", done.stderr)
 
     def test_the_repository_is_left_exactly_as_it_was_found(self) -> None:
         """The abort is the point. A half-merged tree makes the *next* run refuse
