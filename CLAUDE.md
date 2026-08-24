@@ -370,6 +370,8 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/` | the package. `__main__.py` is the CLI and the only entry point |
 | `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — four of the six are there to stop the wrong file being pushed |
 | `tupferl/gitrepo.py` | every call to git. Nothing else in the package spawns a subprocess |
+| `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |
+| `tupferl/merge.py` | the 3-way merge, over `git merge-file`. Bytes in, bytes out, and the conflict count is git's exit status |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` |
 | `docs/plan.md` | the plan this is built from |
@@ -385,7 +387,16 @@ Two things are not where a newcomer would guess, both on purpose:
 - **`tests/profiles.py` holds every Hypothesis profile.** Selected by
   `TUPFERL_HYPOTHESIS_PROFILE`; `tools/mutate.py` sets it to `mutation` for the
   suites it runs. Without that, every mutant pays the full example budget and a
-  sweep takes hours for no extra signal.
+  sweep takes hours for no extra signal. It also holds `STATEFUL`/`STEPS`, which
+  are *not* `max_examples`: one example of the sync state machine is a dozen
+  real `tupferl sync` runs (~0.4s) against one `three_way` call (~3ms), and a
+  single budget cannot suit both.
+- **`sync` writes the snapshot last, and that ordering is a guarantee.** A run
+  killed part-way then leaves the merge base *older* than both copies, so the
+  next run merges conservatively. Written first, the same interruption leaves a
+  snapshot claiming `$HOME` was already updated, and the next run copies the
+  stale `$HOME` file over the new one. `tests/test_sync.py`'s
+  `TestTheSnapshotIsWrittenLast` is the only thing that can see it.
 
 ### Testing rules this project adds to §2
 
@@ -440,6 +451,24 @@ Two things are not where a newcomer would guess, both on purpose:
   `--done` at `<json>.done`, never at the `--json` report, which under `--batch`
   and `--all` is rewritten after every file and so exists long before the run
   ends.
+- **`str.splitlines()` splits on far more than `\n`** — `\x0b \x0c \x1c \x1d
+  \x1e \x85 \u2028 \u2029` as well. A generated line containing one of those
+  becomes two lines, and anything indexing by line number is then off by one for
+  the rest of the file. It bit the sync state machine's *model*, not the code:
+  git splits on `\n` alone, so the file under test was right and the expectation
+  was wrong. Use `split("\n")` wherever the line count is load-bearing.
+- **`git merge-file` refuses a file with a NUL byte in its first 8000 bytes**,
+  with "Cannot merge binary files" and exit 255 — indistinguishable by exit code
+  from git not being installed. `merge.is_text` asks the same question first, so
+  a binary file both machines changed is reported as one conflict rather than as
+  a broken git. Found by the merge property test on its first run.
+- **A git receiving hook cannot update refs**: "ref updates forbidden inside
+  quarantine environment". `unset GIT_QUARANTINE_PATH` first. Needed by
+  `support.move_on_first_push`, which is the only way to make a push fail
+  *because the remote moved* — pushing beforehand does not work, since a sync
+  fetches before it pushes and would simply merge it.
+- **A ref pushed to a name directly under `refs/` is a "funny refname"** and is
+  rejected. Park a prepared commit under `refs/heads/`.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every

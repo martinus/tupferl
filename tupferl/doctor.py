@@ -30,11 +30,6 @@ from tupferl.errors import TupferlError
 #: one: "-" is not a quieter tick, it is a different answer.
 MARKS: dict[bool | None, str] = {True: "✔", False: "✘", None: "-"}
 
-#: Files git leaves in the git directory while an operation is half-done. A
-#: killed `tupferl sync` leaves one behind, and the next sync would then build on
-#: top of a merge nobody finished.
-UNFINISHED = ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD")
-
 
 class Check(NamedTuple):
     """One question, its answer, and what to do about a "no"."""
@@ -110,15 +105,17 @@ def remote(repo: Path, ok: bool) -> Check:
     """
     if not ok:
         return Check(None, "remote", "no repository yet, so there is no remote to reach")
-    named = gitrepo.git(["remote"], cwd=repo)
-    if not named.ok or not named.out:
+    # Which remote is *the* remote is a decision, and `sync` makes the same one.
+    # It lives in `gitrepo.first_remote` so the two cannot report on different
+    # remotes -- a green `doctor` for a remote nothing pushes to.
+    first = gitrepo.first_remote(repo)
+    if first is None:
         return Check(
             False,
             "remote",
             f"no remote configured, so `tupferl sync` cannot share anything; add one "
             f"with `git -C {repo} remote add origin <git-url>`",
         )
-    first = named.out.splitlines()[0]
     reached = gitrepo.git(["ls-remote", "--exit-code", first, "HEAD"], cwd=repo)
     if reached.timed_out:
         return Check(False, "remote", f"{first} did not answer within {gitrepo.TIMEOUT:g}s")
@@ -161,7 +158,9 @@ def dangling(repo: Path, ok: bool) -> Check:
         # report ✔ for a repository git could not read at all.
         return Check(False, "state", f"git cannot read {repo}: {gitrepo.reason(inside)}")
     git_dir = repo / inside.out
-    marker = next((name for name in UNFINISHED if (git_dir / name).exists()), None)
+    # `gitrepo.UNFINISHED` rather than a list here: `sync` refuses to run on the
+    # same markers, and two copies of that list is one that will lose an entry.
+    marker = next((name for name in gitrepo.UNFINISHED if (git_dir / name).exists()), None)
     if marker is not None:
         return Check(
             False,

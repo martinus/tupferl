@@ -49,6 +49,20 @@ TEMPLATE = """\
 # max_file_size = 1048576       # bytes
 """
 
+#: Executable by anyone. The one mode bit git records, and therefore the only
+#: one worth reading off a file -- see `mode_for`. Named here rather than in
+#: `sync`, which reads the same bit to decide whether a `chmod +x` on one machine
+#: is a change to carry to the other: two spellings of "executable" would let the
+#: two commands disagree about a file neither of them edited.
+EXEC_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+
+#: The two modes a stored copy can have. Everything else about the source's mode
+#: is dropped on purpose (plan §5): git records exactly this one bit, so any
+#: other bit kept in the working tree is lost on the first clone and the two
+#: machines then disagree about a file neither of them changed.
+EXECUTABLE = 0o755
+PLAIN = 0o644
+
 #: How many names a generated commit message lists before it summarises. Long
 #: enough that an ordinary `add` names everything it did, short enough that
 #: `git log --oneline` stays readable after adding a directory of two hundred.
@@ -80,8 +94,8 @@ def describe(what: str, names: list[PurePosixPath], host: str) -> str:
     return f"{what} from {host}: {shown}"
 
 
-def record(repo: Path, paths_: list[Path], message: str, doing: str) -> None:
-    """Stage `paths_`, commit them, and raise a sentence if either step fails.
+def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
+    """Stage `paths_` and commit them; `False` if there was nothing to commit.
 
     Written three times before this existed -- in `init`, `add` and `remove` --
     and the three copies had already drifted in the two ways duplication
@@ -98,21 +112,31 @@ def record(repo: Path, paths_: list[Path], message: str, doing: str) -> None:
     staged = gitrepo.stage(repo, paths_)
     if not staged.ok:
         raise TupferlError(f"could not stage {doing} in {repo}: {gitrepo.reason(staged)}")
+    if not gitrepo.staged(repo):
+        # Asked rather than assumed, for `sync`: it stages every file it looked
+        # at, including the ones it decided nothing about, so that a copy left
+        # behind by an interrupted run is committed by the next one. `git commit`
+        # with nothing staged fails, and reporting that as "could not commit"
+        # would turn the ordinary "nothing changed" run into an error.
+        #
+        # `add`, `remove` and `init` cannot reach this: each works out what
+        # changed before it calls, and calls only when something did.
+        return False
     made = gitrepo.commit(repo, message)
     if not made.ok:
         raise TupferlError(f"could not commit {doing} in {repo}: {gitrepo.reason(made)}")
+    return True
 
 
 def mode_for(source: Path) -> int:
-    """The mode a stored copy gets: 0o755 if the source is executable, else 0o644.
+    """The mode a stored copy gets: `EXECUTABLE` if the source is, else `PLAIN`.
 
     Executable by *anyone*, not by the owner alone. A script that arrived from a
     tarball as 0o711 is a script, and storing it as non-executable would put it
     back on the other machine unrunnable -- a failure the user would blame on the
     program that reads it.
     """
-    executable = source.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return 0o755 if executable else 0o644
+    return EXECUTABLE if source.stat().st_mode & EXEC_BITS else PLAIN
 
 
 def store(source: Path, target: Path) -> str | None:
@@ -240,21 +264,29 @@ def add(wanted: list[str], to_host: bool) -> int:
     if not admitted:
         raise TupferlError("nothing to add: every path given was skipped.")
 
+    snapshots = paths.snapshot_dir(repo, host)
     touched: list[PurePosixPath] = []
+    written: list[Path] = []
     for name in sorted(admitted):
         did = store(home / name, root / name)
+        # The merge base starts here. `add` has just made the two copies
+        # identical, which is exactly what a snapshot records -- and without one
+        # the first `sync` after an edit has no common ancestor and reports the
+        # file as conflicting *with its own copy*. Found by a milestone 3 test
+        # that edited a file between `add` and `sync`, which is an ordinary
+        # thing to do.
+        store(home / name, snapshots / name)
+        written.extend([root / name, snapshots / name])
         if did is not None:
             touched.append(name)
             print(f"{did} {name}{' (host)' if to_host else ''}")
 
-    if not touched:
-        # Every file was already stored, byte for byte and bit for bit. Not an
-        # error: `add` is how someone re-stores a file they have since edited,
-        # and this is what it does when they had not.
+    if not record(repo, written, describe("add", touched or sorted(admitted), host), "the copies"):
+        # Every file was already stored, byte for byte and bit for bit, and its
+        # snapshot was already there. Not an error: `add` is how someone
+        # re-stores a file they have since edited, and this is what it does when
+        # they had not. git decides, rather than a second comparison of our own.
         print(f"no change: the repository already held {count(len(admitted))}")
-        return 0
-
-    record(repo, [root / name for name in touched], describe("add", touched, host), "the copies")
     return 0
 
 
@@ -287,19 +319,23 @@ def remove(wanted: str) -> int:
         raise TupferlError(f"{name} is not managed; `tupferl list` shows what is.")
     for where in gone:
         where.unlink()
-        _prune(where.parent, repo)
+        prune(where.parent, repo)
 
     record(repo, gone, describe("remove", [name], host), "the removal")
     print(f"removed {name} from the repository; the file in {home} was not touched")
     return 0
 
 
-def _prune(where: Path, repo: Path) -> None:
+def prune(where: Path, repo: Path) -> None:
     """Delete directories left empty by a removal, up to but not including `repo`.
 
     git does not track directories, so an empty one left behind is invisible in
     the commit and present in every clone's working tree -- `~/.config/nvim/`
     with nothing in it, on a machine that never used nvim.
+
+    Public because `sync` prunes the same way when it drops the snapshot of a
+    file another machine stopped managing; the underscore said "one caller" and
+    there are two.
     """
     # `repo in where.parents` as well as the inequality, and not only for
     # tidiness: this loop deletes directories and walks *upwards*. Its safety

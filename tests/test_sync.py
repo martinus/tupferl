@@ -1,0 +1,599 @@
+"""The sync engine's example tests: plan §7.4's boundary cases, one by one.
+
+The properties in `test_sync_properties.py` and `test_merge_properties.py` cover
+the bulk of §7.4 item 1 -- every combination of what changed, over generated
+content, across two machines. This file is what a generator is bad at:
+
+- the exact rows of the decision table, asserted as decisions rather than as
+  outcomes of a whole sync (§7.4 item 1's boundary cases);
+- the failure paths (§7.4 item 4): a push the remote rejects because it moved, a
+  repository left half-merged, a path that cannot be written, no remote at all;
+- the two things milestone 3 does *not* do, so that a later milestone changing
+  them is a visible change: a conflict is reported and nothing is written, and
+  `--ours`/`--theirs` are refused rather than ignored.
+
+Host overlays are milestone 5, but `add --host` shipped in milestone 2 and sync
+has to respect it now or the overlay would be silently overwritten from the
+shared copy. That test is here for the same reason the rule is in `manifest`.
+"""
+
+from __future__ import annotations
+
+import shutil
+import unittest
+from pathlib import PurePosixPath
+
+from tests import support
+from tupferl import gitrepo, manage, paths, sync
+
+#: Three versions of one file whose edits do not overlap, so a merge of any two
+#: of them is decidable. Named rather than spelled out per test: half the table
+#: below is the same three inputs in different roles.
+BASE = sync.Blob(b"alpha\nbeta\ngamma\ndelta\nepsilon\n", False)
+HOME_EDIT = sync.Blob(b"ALPHA\nbeta\ngamma\ndelta\nepsilon\n", False)
+REPO_EDIT = sync.Blob(b"alpha\nbeta\ngamma\ndelta\nEPSILON\n", False)
+BOTH = sync.Blob(b"ALPHA\nbeta\ngamma\ndelta\nEPSILON\n", False)
+
+NAME = PurePosixPath(".bashrc")
+
+
+class TestTheDecisionTable(unittest.TestCase):
+    """Plan §7.4 item 1, as decisions. `resolve` reads no files, so each row is
+    three values in and one out -- and a row that is wrong here is wrong for
+    every path through the engine that reaches it."""
+
+    def test_neither_side_changed(self) -> None:
+        got = sync.resolve(NAME, BASE, BASE, BASE)
+        self.assertEqual(sync.UNCHANGED, got.action)
+
+    def test_only_home_changed(self) -> None:
+        got = sync.resolve(NAME, BASE, HOME_EDIT, BASE)
+        self.assertEqual(sync.TO_REPO, got.action)
+        self.assertEqual(HOME_EDIT, got.blob)
+
+    def test_only_the_repository_changed(self) -> None:
+        got = sync.resolve(NAME, BASE, BASE, REPO_EDIT)
+        self.assertEqual(sync.TO_HOME, got.action)
+        self.assertEqual(REPO_EDIT, got.blob)
+
+    def test_both_changed_in_different_places(self) -> None:
+        got = sync.resolve(NAME, BASE, HOME_EDIT, REPO_EDIT)
+        self.assertEqual(sync.MERGED, got.action)
+        self.assertEqual(BOTH, got.blob)
+
+    def test_both_changed_the_same_line(self) -> None:
+        mine = sync.Blob(b"mine\nbeta\ngamma\ndelta\nepsilon\n", False)
+        theirs = sync.Blob(b"theirs\nbeta\ngamma\ndelta\nepsilon\n", False)
+        got = sync.resolve(NAME, BASE, mine, theirs)
+        self.assertEqual(sync.CONFLICT, got.action)
+        self.assertIsNone(got.blob)
+        self.assertEqual(1, got.conflicts)
+
+    def test_both_arrived_at_the_same_content(self) -> None:
+        """Two machines edited the same file to the same bytes. There is nothing
+        to write, but the snapshot has to move -- otherwise the next run merges
+        against a base neither side holds any more."""
+        got = sync.resolve(NAME, BASE, BOTH, BOTH)
+        self.assertEqual(sync.UNCHANGED, got.action)
+        self.assertEqual(BOTH, got.blob)
+
+    def test_a_file_missing_from_home_is_restored(self) -> None:
+        """`remove` is how someone stops managing a file (plan §4), so a missing
+        one is an `rm` or a new machine. Reading it as "delete it everywhere"
+        would make one mistake lose the file on every computer the user owns."""
+        got = sync.resolve(NAME, BASE, None, REPO_EDIT)
+        self.assertEqual(sync.RESTORED, got.action)
+        self.assertEqual(REPO_EDIT, got.blob)
+
+    def test_a_missing_file_is_restored_even_when_the_snapshot_is_gone(self) -> None:
+        """The check order: missing beats everything, because the comparisons
+        below it have nothing to compare."""
+        got = sync.resolve(NAME, None, None, REPO_EDIT)
+        self.assertEqual(sync.RESTORED, got.action)
+
+    def test_no_snapshot_and_two_different_files_is_a_conflict(self) -> None:
+        """Both machines created the file independently. Nothing in the data says
+        which is newer, so taking either is a guess that loses the other."""
+        got = sync.resolve(NAME, None, HOME_EDIT, REPO_EDIT)
+        self.assertEqual(sync.CONFLICT, got.action)
+
+    def test_no_snapshot_and_identical_files_is_not(self) -> None:
+        got = sync.resolve(NAME, None, BASE, BASE)
+        self.assertEqual(sync.UNCHANGED, got.action)
+
+    def test_a_binary_file_both_sides_changed_is_a_conflict(self) -> None:
+        base = sync.Blob(b"\x00\x01base", False)
+        got = sync.resolve(NAME, base, sync.Blob(b"\x00\x01mine", False), REPO_EDIT)
+        self.assertEqual(sync.CONFLICT, got.action)
+        self.assertIsNone(got.blob)
+
+
+class TestTheExecutableBit(unittest.TestCase):
+    """Plan §5 asks for the bit to be preserved. Sync has to *decide* it, which
+    is a merge of its own -- and one that cannot conflict, since a bit both sides
+    changed they changed to the same value."""
+
+    def test_a_chmod_with_no_edit_is_a_change(self) -> None:
+        got = sync.resolve(NAME, BASE, sync.Blob(BASE.data, True), BASE)
+        self.assertEqual(sync.TO_REPO, got.action)
+        self.assertTrue(got.blob is not None and got.blob.executable)
+
+    def test_it_travels_with_a_merge(self) -> None:
+        """The content merges cleanly and the bit comes from the side that
+        changed it, so a `chmod +x` on one machine survives an edit on the
+        other."""
+        got = sync.resolve(NAME, BASE, sync.Blob(HOME_EDIT.data, True), REPO_EDIT)
+        self.assertEqual(sync.MERGED, got.action)
+        self.assertEqual(sync.Blob(BOTH.data, True), got.blob)
+
+    def test_the_side_that_changed_it_wins(self) -> None:
+        for ours, theirs, want in ((False, True, True), (True, False, True)):
+            with self.subTest(ours=ours, theirs=theirs):
+                self.assertEqual(
+                    want,
+                    sync.executable_after(
+                        sync.Blob(b"", False), sync.Blob(b"", ours), sync.Blob(b"", theirs)
+                    ),
+                )
+
+    def test_taking_it_away_is_a_change_too(self) -> None:
+        """The mirror of the test above, and not the same assertion: a rule that
+        only ever answered `True` would pass that one."""
+        self.assertFalse(
+            sync.executable_after(sync.Blob(b"", True), sync.Blob(b"", False), sync.Blob(b"", True))
+        )
+
+    def test_with_no_base_it_resolves_towards_executable(self) -> None:
+        """Nothing says which side is right, and the two mistakes are not equal:
+        a script restored without the bit fails when the user runs it."""
+        self.assertTrue(sync.executable_after(None, sync.Blob(b"", False), sync.Blob(b"", True)))
+        self.assertFalse(sync.executable_after(None, sync.Blob(b"", False), sync.Blob(b"", False)))
+
+
+class TestReadingAndWriting(support.SandboxCase):
+    def test_a_symlink_is_not_the_file(self) -> None:
+        """`manifest` refuses a symlink at `add` time; this is the same rule at
+        sync time, for a path that has become one since. Following it would read
+        -- and then overwrite -- something the user never named."""
+        real = self.write(self.tmp / "real", "content\n")
+        link = self.tmp / "link"
+        link.symlink_to(real)
+        self.assertIsNone(sync.read(link))
+
+    def test_a_directory_is_not_the_file_either(self) -> None:
+        (self.tmp / "adir").mkdir()
+        self.assertIsNone(sync.read(self.tmp / "adir"))
+
+    def test_writing_the_same_bytes_and_bit_changes_nothing(self) -> None:
+        """What makes a second sync touch nothing at all. Asserted through the
+        return value rather than through mtime, which some filesystems round to
+        the second."""
+        where = self.tmp / "x"
+        blob = sync.Blob(b"hello\n", False)
+        self.assertTrue(sync.write(where, blob))
+        self.assertFalse(sync.write(where, blob))
+
+    def test_the_executable_bit_round_trips(self) -> None:
+        where = self.tmp / "x"
+        sync.write(where, sync.Blob(b"#!/bin/sh\n", True))
+        self.assertEqual(manage.EXECUTABLE, where.stat().st_mode & 0o777)
+        self.assertEqual(sync.Blob(b"#!/bin/sh\n", True), sync.read(where))
+
+    def test_a_mode_change_alone_is_written(self) -> None:
+        where = self.tmp / "x"
+        sync.write(where, sync.Blob(b"same\n", False))
+        self.assertTrue(sync.write(where, sync.Blob(b"same\n", True)))
+
+
+class TestBackups(support.SandboxCase):
+    """Plan §5: a copy before anything in `$HOME` is overwritten, last 5 kept."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = self.tmp / "backup"
+        self.root.mkdir()
+
+    def test_nothing_is_created_until_something_needs_saving(self) -> None:
+        """A quiet sync must leave the disk as it found it. A directory per run
+        would also push the last real backup out of the window of five."""
+        sync.Backups(self.root)
+        self.assertEqual([], sorted(self.root.iterdir()))
+
+    def test_a_saved_file_keeps_its_bytes_and_its_bit(self) -> None:
+        where = sync.Backups(self.root).take(
+            PurePosixPath(".local/bin/x"), sync.Blob(b"hi\n", True)
+        )
+        self.assertEqual(sync.Blob(b"hi\n", True), sync.read(where))
+        self.assertEqual(".local/bin/x", str(where.relative_to(where.parents[2])))
+
+    def test_only_the_newest_five_runs_survive(self) -> None:
+        for index in range(8):
+            (self.root / f"2026082{index}T000000.000000").mkdir()
+        sync.Backups(self.root).take(NAME, sync.Blob(b"x", False))
+        left = sorted(found.name for found in self.root.iterdir())
+        self.assertEqual(5, len(left))
+        # The oldest three are gone and the newest of the old ones is not.
+        self.assertNotIn("20260820T000000.000000", left)
+        self.assertIn("20260827T000000.000000", left)
+
+    def test_a_file_a_user_left_here_is_not_deleted(self) -> None:
+        """This removes trees. Anything that is not one of its own directories
+        belongs to somebody else."""
+        keep = self.write(self.root / "notes.txt", "mine\n")
+        for index in range(8):
+            (self.root / f"2026082{index}T000000.000000").mkdir()
+        sync.Backups(self.root).take(NAME, sync.Blob(b"x", False))
+        self.assertTrue(keep.is_file())
+
+
+class TestStaleSnapshots(support.SandboxCase):
+    def test_snapshots_of_unmanaged_files_are_found(self) -> None:
+        snaps = self.tmp / "state"
+        self.write(snaps / ".bashrc", "a")
+        self.write(snaps / ".config" / "foo.conf", "b")
+        found = sync.stale(snaps, {PurePosixPath(".bashrc")})
+        self.assertEqual([snaps / ".config" / "foo.conf"], found)
+
+    def test_a_machine_that_has_never_synced_has_none(self) -> None:
+        self.assertEqual([], sync.stale(self.tmp / "never", set()))
+
+
+class OneMachine(support.SandboxCase):
+    """A `$HOME`, a bare remote, and a repository `tupferl init` made."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.remote = support.make_remote(self.tmp / "remote.git", self.env)
+        self.repo = paths.repo_dir()
+        self.write(self.home / ".bashrc", "one\ntwo\nthree\n")
+        self.assertEqual(0, support.run_cli(["init", str(self.remote)], self.env).returncode)
+        self.assertEqual(
+            0, support.run_cli(["add", str(self.home / ".bashrc")], self.env).returncode
+        )
+
+    def sync(self, *flags: str) -> tuple[int, str, str]:
+        done = support.run_cli(["sync", *flags], self.env)
+        return done.returncode, done.stdout, done.stderr
+
+
+class TestSyncOneMachine(OneMachine):
+    def test_it_commits_and_pushes_what_add_stored(self) -> None:
+        status, _, _ = self.sync()
+        self.assertEqual(0, status)
+        on_remote = support.git(["ls-tree", "-r", "--name-only", "main"], self.remote, self.env)
+        self.assertIn(".bashrc", on_remote.splitlines())
+
+    def test_the_snapshot_is_committed_so_a_restore_keeps_the_merge_base(self) -> None:
+        """Plan §5: snapshots are per-host and committed, "so every host knows
+        its own merge base". A snapshot only on disk is lost with the machine."""
+        self.sync()
+        on_remote = support.git(["ls-tree", "-r", "--name-only", "main"], self.remote, self.env)
+        self.assertIn(f"{paths.META}/state/{self.host}/.bashrc", on_remote.splitlines())
+
+    def test_a_home_edit_reaches_the_repository(self) -> None:
+        self.sync()
+        self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
+        status, out, _ = self.sync()
+        self.assertEqual(0, status)
+        self.assertContains(out, "stored .bashrc")
+        self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+
+    def test_the_commit_message_is_the_shape_the_plan_asks_for(self) -> None:
+        """Plan §3.5: `sync from <hostname>: update .bashrc, .gitconfig`."""
+        self.sync()
+        self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
+        self.sync()
+        subject = support.git(["log", "-1", "--format=%s"], self.repo, self.env)
+        self.assertEqual(f"sync from {self.host}: .bashrc", subject)
+
+    def test_a_second_sync_writes_no_commit(self) -> None:
+        self.sync()
+        before = support.git(["rev-parse", "HEAD"], self.repo, self.env)
+        status, out, _ = self.sync()
+        self.assertEqual(0, status)
+        self.assertEqual(before, support.git(["rev-parse", "HEAD"], self.repo, self.env))
+        self.assertContains(out, "0 changed")
+
+    def test_a_file_a_user_dropped_into_the_repository_is_committed(self) -> None:
+        """`doctor` already promises this -- "`tupferl sync` will commit them" --
+        and it is also how a copy an interrupted run left behind gets in."""
+        self.sync()
+        self.write(self.repo / ".vimrc", "set nocompatible\n")
+        status, _, _ = self.sync()
+        self.assertEqual(0, status)
+        self.assertEqual("", support.git(["status", "--porcelain"], self.repo, self.env))
+
+    def test_without_a_remote_it_still_syncs_and_says_so(self) -> None:
+        support.git(["remote", "remove", "origin"], self.repo, self.env)
+        self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
+        status, out, _ = self.sync()
+        self.assertEqual(0, status)
+        self.assertContains(out, "no remote configured")
+        self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+
+
+class TestWhatMilestoneThreeRefuses(OneMachine):
+    def test_ours_and_theirs_name_the_milestone_that_builds_them(self) -> None:
+        """Refused rather than ignored: a flag that silently does nothing is how
+        a script ends up believing its conflicts were resolved."""
+        for flag in ("--ours", "--theirs"):
+            with self.subTest(flag=flag):
+                status, _, err = self.sync(flag)
+                self.assertEqual(2, status)
+                self.assertContains(err, "milestone 4")
+
+    def test_no_input_is_accepted_because_it_is_already_what_happens(self) -> None:
+        self.assertEqual(0, self.sync("--no-input")[0])
+
+    def test_an_unfinished_merge_stops_it(self) -> None:
+        """A killed sync leaves this behind, and committing on top of it would
+        conclude a merge nobody resolved."""
+        (self.repo / ".git" / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
+        status, _, err = self.sync()
+        self.assertEqual(2, status)
+        self.assertContains(err, "MERGE_HEAD")
+
+    def test_a_path_that_cannot_be_written_is_reported_and_the_rest_go_on(self) -> None:
+        """One bad path does not stop the run, and it does not arrive as a
+        traceback. Here `$HOME/.config/nvim` is a *file*, so the directory the
+        managed `init.lua` needs cannot be made."""
+        self.write(self.home / ".config" / "nvim" / "init.lua", "vim.o.number = true\n")
+        support.run_cli(["add", str(self.home / ".config" / "nvim")], self.env)
+        self.sync()
+        shutil.rmtree(self.home / ".config" / "nvim")
+        self.write(self.home / ".config" / "nvim", "not a directory\n")
+        self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
+
+        status, out, err = self.sync()
+        self.assertEqual(1, status)
+        self.assertContains(out, "skipped .config/nvim/init.lua")
+        self.assertNotIn("Traceback", err)
+        # The other file still synced.
+        self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+
+
+class TwoMachines(unittest.TestCase):
+    """Two `$HOME`s and one bare remote -- plan §3.5's daily flow.
+
+    Not `SandboxCase`, which patches `os.environ` for *one* machine; these drive
+    the CLI as subprocesses with one environment each, which is also the only way
+    two hostnames can exist at once.
+    """
+
+    def setUp(self) -> None:
+        box = support.tempdir()
+        self.tmp = box.__enter__()
+        self.addCleanup(box.__exit__, None, None, None)
+        self.first = support.Computer(self.tmp, "machine-a")
+        self.second = support.Computer(self.tmp, "machine-b")
+        self.remote = support.make_remote(self.tmp / "remote.git", self.first.env)
+
+        self.first.write(".bashrc", "one\ntwo\nthree\nfour\nfive\n")
+        self.assertEqual(0, self.first.run("init", str(self.remote)).returncode)
+        self.assertEqual(0, self.first.run("add", str(self.first.home / ".bashrc")).returncode)
+        self.assertEqual(0, self.first.run("sync").returncode)
+
+
+class TestTwoMachines(TwoMachines):
+    def test_init_on_the_second_machine_brings_everything_down(self) -> None:
+        """The README's promise: `tupferl init <url>` alone sets up a second
+        computer, because plan §4 says init "then runs a first sync"."""
+        done = self.second.run("init", str(self.remote))
+        self.assertEqual(0, done.returncode)
+        self.assertEqual("one\ntwo\nthree\nfour\nfive\n", self.second.read(".bashrc"))
+        self.assertIn("restored .bashrc", done.stdout)
+
+    def test_edits_that_do_not_overlap_merge_without_asking(self) -> None:
+        self.second.run("init", str(self.remote))
+        self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        self.second.write(".bashrc", "one\ntwo\nthree\nfour\nFIVE\n")
+        self.assertEqual(0, self.first.run("sync").returncode)
+        done = self.second.run("sync")
+        self.assertEqual(0, done.returncode)
+        self.assertIn("merged .bashrc", done.stdout)
+        self.assertEqual("ONE\ntwo\nthree\nfour\nFIVE\n", self.second.read(".bashrc"))
+        self.assertEqual(0, self.first.run("sync").returncode)
+        self.assertEqual("ONE\ntwo\nthree\nfour\nFIVE\n", self.first.read(".bashrc"))
+
+    def test_a_real_conflict_is_reported_and_nothing_is_written(self) -> None:
+        """Milestone 3's whole answer to a conflict, and the thing milestone 4
+        changes: both copies are left exactly as they were, and the exit status
+        says a human is needed."""
+        self.second.run("init", str(self.remote))
+        self.first.write(".bashrc", "MINE\ntwo\nthree\nfour\nfive\n")
+        self.second.write(".bashrc", "THEIRS\ntwo\nthree\nfour\nfive\n")
+        self.first.run("sync")
+
+        done = self.second.run("sync")
+        self.assertEqual(1, done.returncode)
+        self.assertIn("conflict in .bashrc", done.stdout)
+        # Nothing written means nothing left uncommitted either: a conflict must
+        # not leave the repository dirty for the next run to commit blindly.
+        self.assertEqual("", self.second.git("status", "--porcelain"))
+        self.assertEqual("THEIRS\ntwo\nthree\nfour\nfive\n", self.second.read(".bashrc"))
+        self.assertEqual(
+            "MINE\ntwo\nthree\nfour\nfive\n", self.second.stored(".bashrc").read_text()
+        )
+        self.assertNotIn("<<<<<<<", self.second.read(".bashrc"))
+
+    def test_a_conflict_leaves_the_snapshot_where_it_was(self) -> None:
+        """Otherwise the next run would merge against a state neither side ever
+        had, and the conflict would resolve itself into one of the two by
+        accident."""
+        self.second.run("init", str(self.remote))
+        was = self.second.snapshot(".bashrc").read_text()
+        self.first.write(".bashrc", "MINE\ntwo\nthree\nfour\nfive\n")
+        self.second.write(".bashrc", "THEIRS\ntwo\nthree\nfour\nfive\n")
+        self.first.run("sync")
+        self.second.run("sync")
+        self.assertEqual(was, self.second.snapshot(".bashrc").read_text())
+
+    def test_a_backup_is_taken_before_home_is_overwritten(self) -> None:
+        """Plan §5. The file being replaced is the user's, and this is the only
+        copy of it that survives."""
+        self.second.run("init", str(self.remote))
+        self.second.write(".bashrc", "local edit\ntwo\nthree\nfour\nfive\n")
+        self.first.write(".bashrc", "one\ntwo\nthree\nfour\nFIVE\n")
+        self.first.run("sync")
+        self.second.run("sync")
+
+        backups = self.second.home / ".local" / "state" / "tupferl" / "backup"
+        saved = sorted(backups.rglob(".bashrc"))
+        self.assertEqual(1, len(saved), f"expected one backup, found {saved}")
+        self.assertEqual("local edit\ntwo\nthree\nfour\nfive\n", saved[0].read_text())
+
+    def test_the_executable_bit_reaches_the_other_machine(self) -> None:
+        self.second.run("init", str(self.remote))
+        (self.first.home / ".bashrc").chmod(manage.EXECUTABLE)
+        self.first.run("sync")
+        self.second.run("sync")
+        self.assertEqual(manage.EXECUTABLE, (self.second.home / ".bashrc").stat().st_mode & 0o777)
+
+    def test_a_removal_elsewhere_prunes_this_machines_snapshot(self) -> None:
+        """A snapshot left behind is committed, and would become the merge base
+        for a file that came back later under the same name."""
+        self.second.run("init", str(self.remote))
+        self.assertTrue(self.second.snapshot(".bashrc").is_file())
+        self.first.run("remove", str(self.first.home / ".bashrc"))
+        self.first.run("sync")
+        self.second.run("sync")
+        self.assertFalse(self.second.snapshot(".bashrc").exists())
+        # Plan §4: `remove` keeps the file in $HOME -- on every machine.
+        self.assertTrue((self.second.home / ".bashrc").is_file())
+
+    def test_a_host_overlay_is_what_syncs_on_that_host(self) -> None:
+        """Plan §3.3: the overlay replaces the shared file on this host. Writing
+        the shared copy instead would overwrite the overlay from the other
+        machine's version on the next run."""
+        self.first.write(".gitconfig", support.gitconfig("machine-a") + "[core]\n\tpager = less\n")
+        self.first.run("add", "--host", str(self.first.home / ".gitconfig"))
+        self.first.run("sync")
+        shared = self.first.stored(".gitconfig")
+        overlay = self.first.repo / paths.META / "hosts" / "machine-a" / ".gitconfig"
+        self.assertTrue(overlay.is_file())
+        self.assertFalse(shared.exists())
+
+        self.first.write(".gitconfig", support.gitconfig("machine-a") + "[core]\n\tpager = bat\n")
+        self.assertEqual(0, self.first.run("sync").returncode)
+        self.assertIn("pager = bat", overlay.read_text())
+
+    def test_a_push_the_remote_rejected_is_retried_after_pulling(self) -> None:
+        """Plan §3.4 step 5. The remote genuinely moves inside the window between
+        this sync's fetch and its push -- see `support.move_on_first_push`."""
+        support.move_on_first_push(self.remote, self.first.env, self.tmp)
+        self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+
+        done = self.first.run("sync")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        # `support.git` strips, so the trailing newline is not in the comparison.
+        on_remote = support.git(["show", "main:.bashrc"], self.remote, self.first.env)
+        self.assertEqual("ONE\ntwo\nthree\nfour\nfive", on_remote)
+        # And what the other machine pushed is still there.
+        settings = support.git(
+            ["show", f"main:{paths.META}/config.toml"], self.remote, self.first.env
+        )
+        self.assertIn("edited on another machine", settings)
+
+    def test_a_push_refused_for_any_other_reason_is_reported(self) -> None:
+        """The other half of the retry: if nothing came in, pushing again would
+        fail the same way, so it says so instead of looping."""
+        support.git(
+            ["remote", "set-url", "origin", str(self.tmp / "gone.git")],
+            self.first.repo,
+            self.first.env,
+        )
+        self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        done = self.first.run("sync")
+        self.assertEqual(2, done.returncode)
+        self.assertIn("could not fetch", done.stderr)
+
+
+class TestTheSnapshotIsWrittenLast(TwoMachines):
+    """Plan §7.4 item 4: a sync killed part-way must leave the state consistent.
+
+    The ordering in `apply` is the whole of that guarantee, and it is invisible
+    in a successful run -- so this makes the `$HOME` write *fail* and asserts
+    that the snapshot did not move. Written the other way round, the snapshot
+    would claim `$HOME` already held the new version, and the next run would copy
+    the stale `$HOME` file over the new one: silent loss, one line away.
+    """
+
+    def test_a_failed_home_write_leaves_the_snapshot_alone(self) -> None:
+        self.first.write(".config/nvim/init.lua", "vim.o.number = true\n")
+        self.first.run("add", str(self.first.home / ".config" / "nvim"))
+        self.first.run("sync")
+        self.second.run("init", str(self.remote))
+        was = self.second.snapshot(".config/nvim/init.lua").read_text()
+
+        # `$HOME/.config/nvim` becomes a file, so the directory the managed
+        # `init.lua` needs cannot be created and the write fails for real.
+        shutil.rmtree(self.second.home / ".config" / "nvim")
+        self.second.write(".config/nvim", "not a directory\n")
+        self.first.write(".config/nvim/init.lua", "vim.o.number = false\n")
+        self.first.run("sync")
+
+        done = self.second.run("sync")
+        self.assertEqual(1, done.returncode)
+        self.assertIn("skipped .config/nvim/init.lua", done.stdout)
+        self.assertEqual(was, self.second.snapshot(".config/nvim/init.lua").read_text())
+
+
+class TestTheReport(unittest.TestCase):
+    def test_unchanged_files_are_not_listed_but_are_counted(self) -> None:
+        """Most files on most runs. Forty lines saying nothing happened would
+        bury the one line saying something did."""
+        text = sync.report(
+            [
+                sync.Outcome(PurePosixPath(".bashrc"), sync.UNCHANGED, BASE),
+                sync.Outcome(PurePosixPath(".vimrc"), sync.TO_REPO, HOME_EDIT),
+            ]
+        )
+        self.assertNotIn(".bashrc", text)
+        self.assertIn("stored .vimrc", text)
+        self.assertIn("2 files managed, 1 changed, 0 in conflict", text)
+
+    def test_a_conflict_says_how_much_there_is_to_settle(self) -> None:
+        text = sync.report([sync.Outcome(PurePosixPath(".bashrc"), sync.CONFLICT, None, 3)])
+        self.assertIn("conflict in .bashrc (3 to settle)", text)
+        self.assertIn("1 in conflict", text)
+
+
+class TestTheCommitMessage(unittest.TestCase):
+    def test_it_names_what_changed(self) -> None:
+        got = sync.message([PurePosixPath(".vimrc"), PurePosixPath(".bashrc")], "laptop")
+        self.assertEqual("sync from laptop: .bashrc, .vimrc", got)
+
+    def test_with_nothing_decided_it_says_what_actually_happened(self) -> None:
+        """Staged but untouched means an earlier run left a copy behind, or the
+        user put a file in the repository by hand. Naming files would be a lie."""
+        got = sync.message([], "laptop")
+        self.assertIn("an earlier run", got)
+
+
+class TestUnfinishedMarkers(support.SandboxCase):
+    def test_every_marker_is_looked_for(self) -> None:
+        """One per marker: a rebase and a cherry-pick leave the same half-done
+        tree as a merge. The names are written out rather than read from the
+        constant, because a loop over a shortened constant still passes."""
+        repo = support.make_repo(self.tmp / "repo", self.env)
+        self.assertIsNone(gitrepo.unfinished(repo))
+        for marker in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD"):
+            with self.subTest(marker=marker):
+                where = repo / ".git" / marker
+                where.write_text("deadbeef\n", encoding="utf-8")
+                try:
+                    self.assertEqual(marker, gitrepo.unfinished(repo))
+                finally:
+                    where.unlink()
+
+    def test_a_directory_git_cannot_read_reports_nothing_rather_than_guessing(self) -> None:
+        """`None` because there is no answer, not because the answer is "no" --
+        `sync` fails on its own next git call, and `doctor` reports the git
+        failure separately."""
+        empty = self.tmp / "not-a-repo"
+        empty.mkdir()
+        self.assertIsNone(gitrepo.unfinished(empty))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -317,3 +317,113 @@ class SandboxCase(unittest.TestCase):
         """
         if needle not in haystack:
             self.fail(f"{needle!r} not found in:\n{haystack}")
+
+
+class Computer:
+    """One machine in a multi-machine test: a `$HOME`, an environment, a repository.
+
+    Plan §7.1 asks for the real thing where speed allows, and the two methods
+    here are that trade-off made explicit rather than per-test:
+
+    - `run` starts a real `python -m tupferl`, which is what a user does and the
+      only way to see stdout, stderr and the exit status as they really are;
+    - `call` runs the same command in this process, which is 30ms against 70ms
+      and is what makes a Hypothesis state machine firing a dozen syncs per
+      example finish in seconds. git is still the real binary either way.
+
+    Written once here because two test files build the same two-machine fixture,
+    and a fixture that drifts between them is one where a failure in one file
+    cannot be reproduced in the other.
+    """
+
+    def __init__(self, root: Path, name: str) -> None:
+        self.name = name
+        self.home = root / name
+        self.home.mkdir(parents=True)
+        seed_home(self.home, name)
+        self.env = sandbox_env(self.home, name)
+        self.repo = self.home / ".local" / "share" / "tupferl" / "repo"
+
+    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """One command, as a subprocess, the way a user runs it."""
+        return run_cli(list(args), self.env)
+
+    def call(self, *args: str) -> int:
+        """One command, in this process. Returns the exit status; output is eaten."""
+        from tupferl import __main__ as cli
+
+        with mock.patch.dict(os.environ, self.env, clear=True), quiet():
+            return cli.main(list(args))
+
+    def git(self, *args: str) -> str:
+        """A git command in this machine's repository, for a test to look with."""
+        return git(list(args), cwd=self.repo, env=self.env)
+
+    def write(self, name: str, text: str) -> Path:
+        """Write a file in this machine's `$HOME`, making its parents."""
+        where = self.home / name
+        where.parent.mkdir(parents=True, exist_ok=True)
+        where.write_text(text, encoding="utf-8")
+        return where
+
+    def read(self, name: str) -> str:
+        return (self.home / name).read_text(encoding="utf-8")
+
+    def stored(self, name: str) -> Path:
+        """Where the shared copy of `name` lives in this machine's repository."""
+        return self.repo / name
+
+    def snapshot(self, name: str) -> Path:
+        """Where this machine's merge base for `name` lives."""
+        return self.repo / paths.META / "state" / self.name / name
+
+
+#: What the branch is called in every fixture. Written down rather than asked of
+#: git, for `seed_home`'s reason: the default has changed between git versions.
+BRANCH = "main"
+
+
+def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
+    """Make the remote's next push fail *because somebody else pushed first*.
+
+    Plan §3.4 step 5 is "if the push fails because the remote moved, pull, redo,
+    push again", and that race cannot be arranged by two sequential test steps:
+    a sync fetches before it pushes, so anything pushed beforehand is simply
+    merged in. This produces the real thing -- a `pre-receive` hook that, on its
+    first run only, advances the branch and then rejects the push it is
+    examining. No git is mocked; the remote genuinely moved in the window.
+
+    The commit it advances to is prepared here and parked on `refs/heads/moved`,
+    so the hook itself needs no working tree. Under `refs/heads/` and not a
+    namespace of its own: git refuses to push to a ref directly under `refs/`
+    with "funny refname", so a parking spot outside the branch namespace cannot
+    be created remotely at all.
+    """
+    work = root / "someone-else"
+    git(["clone", str(remote), str(work)], cwd=root, env=env)
+    settings = work / paths.META / "config.toml"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    with settings.open("a", encoding="utf-8") as extra:
+        extra.write("# edited on another machine\n")
+    git(["add", "-A"], cwd=work, env=env)
+    git(["commit", "-m", "someone else was here"], cwd=work, env=env)
+    git(["push", "origin", "HEAD:refs/heads/moved"], cwd=work, env=env)
+
+    hook = remote / "hooks" / "pre-receive"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(
+        "#!/bin/sh\n"
+        "if [ -f moved-already ]; then exit 0; fi\n"
+        ": > moved-already\n"
+        # git puts a receiving hook in a quarantine and refuses ref updates from
+        # inside it -- "ref updates forbidden inside quarantine environment".
+        # Unsetting the variable that marks the quarantine lifts it, and the
+        # commit being moved to is already in the real object store because it
+        # was pushed above.
+        "unset GIT_QUARANTINE_PATH\n"
+        f"git update-ref refs/heads/{BRANCH} refs/heads/moved\n"
+        "echo 'the remote moved while you were pushing' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)

@@ -69,10 +69,15 @@ class TestInit(Machine):
         self.init()
         self.assertEqual(Config(), load(paths.config_file(self.repo)))
 
-    def test_a_remote_with_content_is_cloned_untouched(self) -> None:
-        """The second-machine path. Nothing is written and nothing is committed:
-        the repository already has a shape, and `init` inventing a settings file
-        here would be a commit the user did not ask for."""
+    def test_a_remote_with_content_is_cloned_and_then_synced(self) -> None:
+        """The second-machine path, and the README's one-line promise.
+
+        No settings file is invented -- the repository already has a shape -- but
+        plan §4 says `init` "then runs a first sync", and milestone 3 made that
+        true. So the file arrives in `$HOME`, and the one commit `init` adds is
+        this host's merge base: without it the machine could not merge anything
+        later, because it would have no common ancestor to merge against.
+        """
         first = support.make_repo(self.tmp / "seed", self.env, remote=self.remote)
         (first / ".bashrc").write_text("export EDITOR=nvim\n", encoding="utf-8")
         support.git(["add", "-A"], first, self.env)
@@ -82,7 +87,9 @@ class TestInit(Machine):
         self.init()
         stored = (self.repo / ".bashrc").read_text(encoding="utf-8")
         self.assertEqual("export EDITOR=nvim\n", stored)
-        self.assertEqual(["seeded", "initial"], self.log())
+        self.assertEqual("export EDITOR=nvim\n", (self.home / ".bashrc").read_text())
+        self.assertEqual([f"sync from {self.host}: .bashrc", "seeded", "initial"], self.log())
+        self.assertFalse(paths.config_file(self.repo).is_file())
 
     def test_a_url_that_cannot_be_cloned_is_reported(self) -> None:
         """And nothing is created. The alternative — falling back to a local
@@ -690,7 +697,10 @@ class TestWhatEachCommandPrints(Machine):
             home.mkdir()
             support.seed_home(home)
             env = support.sandbox_env(home)
-            done = support.run_cli(["init", str(self.remote)], env)
+            # Its own remote, and freshly empty. Since milestone 3 `init` ends in
+            # a sync, so it *pushes* -- and the class's shared remote has already
+            # been initialised into by `setUp`, which makes it no longer empty.
+            done = support.run_cli(["init", str(support.make_remote(box / "r.git", env))], env)
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertIn("cloned", done.stdout)
         self.assertIn("the remote was empty", done.stdout)
