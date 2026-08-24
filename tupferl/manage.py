@@ -209,10 +209,17 @@ def add(wanted: list[str], to_host: bool) -> int:
     tree, overlay = manifest.roots(repo, host)
     root = overlay if to_host else tree
 
-    # A set, not a name -> source map: the source is always `home / name`, and a
-    # derived value stored beside the key it is derived from is one that can go
-    # out of step with it.
-    admitted: set[PurePosixPath] = set()
+    # A dict used as an ordered set: keys only, because the source is always
+    # `home / name` and a derived value stored beside the key it comes from is
+    # one that can go out of step with it.
+    #
+    # Not a `set`. Python randomises string hashing per process, so a set's
+    # iteration order changes between runs -- which makes "is this sorted?"
+    # unobservable to a test: the mutation that drops the `sorted` below passes
+    # about half the time by luck. A dict keeps insertion order, so the argument
+    # order and the stored order differ deterministically and the sort has
+    # something that can see it missing.
+    admitted: dict[PurePosixPath, None] = {}
     refused: list[manifest.Refused] = []
     for raw in wanted:
         path = manifest.named(raw)
@@ -224,9 +231,9 @@ def add(wanted: list[str], to_host: bool) -> int:
         if path.is_dir():
             names, skipped = manifest.collect(path, home, repo, config)
             refused.extend(skipped)
-            admitted.update(names)
+            admitted.update(dict.fromkeys(names))
         else:
-            admitted.add(name)
+            admitted[name] = None
 
     for skip in refused:
         print(f"skipped {skip.path}: {skip.why}")
