@@ -420,6 +420,17 @@ Two things are not where a newcomer would guess, both on purpose:
   CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
   ```
 
+- **A test that makes `git commit` fail must not do it by removing the git
+  identity.** git falls back to `user@hostname`, and whether that *works*
+  depends on the machine: in a Linux container the hostname is `(none)` and git
+  refuses, on a macOS runner it is a real name and the commit succeeds. Three
+  tests written that way were green on every Linux leg and red on macOS. Use
+  `support.break_commits`, which installs a `pre-commit` hook that exits 1.
+- **A unix socket cannot be bound at an arbitrary path.** `sun_path` is 104
+  bytes on macOS, and a sandbox path plus `.local/share/tupferl/repo/…` exceeds
+  it, so `bind` raises `OSError` and the test errors instead of testing. Use
+  `os.mkfifo` where a "not a regular file" fixture is needed; it is the same
+  class with no length limit.
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.

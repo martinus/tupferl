@@ -12,7 +12,6 @@ applied in an order that blames the wrong one.
 from __future__ import annotations
 
 import os
-import socket
 import unittest
 from pathlib import Path, PurePosixPath
 
@@ -97,12 +96,16 @@ class TestWhatIsRefused(ManifestCase):
         self.assertIn("own repository", self.refusal(self.home / ".local"))
 
     def test_something_that_is_not_a_file(self) -> None:
-        """A unix socket: `~/.gnupg/S.agent` is one on a real machine, and it is
-        in exactly the directory somebody would think to add."""
-        where = self.home / ".agent-socket"
-        with socket.socket(socket.AF_UNIX) as sock:
-            sock.bind(str(where))
-            self.assertIn("not a regular file", self.refusal(where))
+        """A named pipe. The realistic instance is a socket -- `~/.gnupg/S.agent`
+        is one, in exactly the directory somebody would think to add -- but a
+        socket cannot be bound at an arbitrary path: `sun_path` is 104 bytes on
+        macOS, and the runner's temporary directories are long enough that
+        binding inside a sandboxed repository fails with `OSError` rather than
+        testing anything. A fifo is the same class of "not a regular file" with
+        no such limit, so it is what these fixtures use."""
+        where = self.home / ".agent-pipe"
+        os.mkfifo(where)
+        self.assertIn("not a regular file", self.refusal(where))
 
     def test_a_file_that_is_not_there(self) -> None:
         self.assertIn("does not exist", self.refusal(self.home / ".absent"))
@@ -274,9 +277,8 @@ class TestWhatTheRepositoryHolds(ManifestCase):
         — but the repository is a directory on disk that other things can put
         entries in, and `list` reads whatever is there."""
         self.write(self.repo / ".bashrc", "x")
-        with socket.socket(socket.AF_UNIX) as sock:
-            sock.bind(str(self.repo / "stray.sock"))
-            found = manifest.managed(self.repo, support.HOST)
+        os.mkfifo(self.repo / "stray.pipe")
+        found = manifest.managed(self.repo, support.HOST)
         self.assertEqual([PurePosixPath(".bashrc")], [item.name for item in found])
 
     def test_another_hosts_overlay_is_not_listed(self) -> None:

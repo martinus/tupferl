@@ -183,6 +183,31 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
     return done.stdout.strip()
 
 
+def break_commits(home: Path) -> None:
+    """Make every subsequent `git commit` under `home` fail, on any platform.
+
+    A `core.hooksPath` pointing at a `pre-commit` that exits 1. The obvious
+    fixture -- delete `~/.gitconfig` so git has no identity -- was tried first
+    and is **wrong**: git falls back to `user@hostname`, and whether that
+    succeeds depends on the machine. In a Linux container the hostname is
+    `(none)` and git refuses; on a macOS runner it is a real name and the commit
+    goes through. Three tests written that way passed on every Linux leg and
+    failed on macOS, which is CLAUDE.md §2's "a test that can only fail on one
+    platform" in its least obvious form -- it was not even the half anyone
+    intended.
+
+    A hook is also a real reason a user's commit fails, which the identity case
+    stopped being the moment git learned to guess.
+    """
+    hooks = home / "hooks"
+    hooks.mkdir(exist_ok=True)
+    refuse = hooks / "pre-commit"
+    refuse.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    refuse.chmod(0o755)
+    with (home / ".gitconfig").open("a", encoding="utf-8") as config:
+        config.write(f"[core]\n\thooksPath = {hooks}\n")
+
+
 def make_remote(where: Path, env: dict[str, str]) -> Path:
     """A bare repository standing in for the remote. No network, ever."""
     where.mkdir(parents=True, exist_ok=True)

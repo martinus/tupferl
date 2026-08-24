@@ -143,10 +143,10 @@ class TestInit(Machine):
 
     def test_a_first_commit_that_fails_is_reported(self) -> None:
         """`init` on an empty remote makes the repository's first commit, and a
-        machine with no git identity cannot. Without the guard `init` reports
+        machine whose hooks refuse it cannot. Without the guard `init` reports
         success and leaves a clone with no branch — the one state where `HEAD`
         does not resolve, which is what the commit exists to avoid."""
-        (self.home / ".gitconfig").unlink()
+        support.break_commits(self.home)
         done = self.run_cli("init", str(self.remote))
         self.assertEqual(2, done.returncode)
         self.assertIn("could not make the first commit", done.stderr)
@@ -340,10 +340,11 @@ class TestAdd(Machine):
         """A brand-new machine with no git identity: `git commit` refuses, and
         without the guard `add` would report success having stored nothing.
 
-        The fixture removes the identity `seed_home` wrote, which is exactly
-        the state a user is in before their first `git config --global user.email`.
+        The fixture is a `pre-commit` hook that refuses -- see
+        `support.break_commits` for why not the missing-identity state this test
+        was originally written against.
         """
-        (self.home / ".gitconfig").unlink()
+        support.break_commits(self.home)
         self.write(self.home / ".bashrc", "x")
         done = self.run_cli("add", str(self.home / ".bashrc"))
         self.assertEqual(2, done.returncode)
@@ -457,9 +458,9 @@ class TestRemove(Machine):
         self.assertIn("could not stage", done.stderr)
 
     def test_a_failing_commit_during_removal_is_reported(self) -> None:
-        """No git identity, which is the state of a machine before its owner has
-        run `git config --global user.email`."""
-        (self.home / ".gitconfig").unlink()
+        """A `pre-commit` hook that refuses, which is a real thing to have and,
+        unlike a missing git identity, fails the same way on every platform."""
+        support.break_commits(self.home)
         done = self.run_cli("remove", str(self.home / ".bashrc"))
         self.assertEqual(2, done.returncode)
         self.assertIn("could not commit", done.stderr)
