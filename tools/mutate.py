@@ -133,6 +133,17 @@ __all__ = ["Mutation", "Report", "Result", "Verdict", "run", "verify"]
 #: lane for the rest of the table.
 TIMEOUT = 300.0
 
+#: Seconds one *test* may take before the run gives up on it, which is a much
+#: tighter question than `TIMEOUT`'s. The suite this guards is 27s and its
+#: slowest single test 1.21s, so this is fifteen to twenty-five times the
+#: slowest honest one -- and it names the test, which `TIMEOUT` cannot: a
+#: whole-run bound reports "no answer within 300s" and leaves the reader to find
+#: out which of seventy tests it was.
+#:
+#: `TIMEOUT` stays, as the backstop for a hang that happens outside any test --
+#: a `setUpModule`, or an import. This does not replace it, it makes it rare.
+EACH_TEST = 30.0
+
 #: The most lanes worth running, whatever the machine reports.
 _LANES = 16
 
@@ -607,6 +618,7 @@ def _run(
     failfast: bool = False,
     timeout: float = TIMEOUT,
     memory: int = MEMORY,
+    each: float = EACH_TEST,
 ) -> Verdict:
     """What the suite concluded about one mutation, and by which route.
 
@@ -623,11 +635,15 @@ def _run(
     turn a loop bound into one that never fires, and with no limit here that
     holds a lane for the rest of the run.
 
-    Three limits, and each answers a failure the other two cannot see. `timeout`
-    is "this mutation never finishes"; `memory`, through `verdict.cap`, is "this
-    process never stops allocating"; and `_Lanes`, through the session started
-    here, is "this mutation spawns processes" -- which is neither of the others
-    and is the one that reached the OOM killer.
+    Four limits, and each answers a failure the others cannot see. `each` is
+    "this *test* never finishes", and is the one that fires in practice -- it
+    names the test, and it costs seconds where the others cost minutes.
+    `timeout` is "this *run* never finishes", the backstop for a hang outside
+    any test, in a `setUpModule` or an import, where no per-test alarm is armed.
+    `memory`, through `verdict.cap`, is "this process never stops allocating";
+    and `_Lanes`, through the session started here, is "this mutation spawns
+    processes" -- which is none of the others and is the one that reached the
+    OOM killer.
     """
     _clear_bytecode(root)
     # Both files land outside the sandbox on purpose: the copy is what the
@@ -646,6 +662,7 @@ def _run(
                     str(report),
                     "1" if failfast else "0",
                     str(memory),
+                    str(each),
                     *tests,
                 ],
                 cwd=root,
@@ -775,7 +792,7 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
 
 
 def _borrow(
-    available: queue.Queue[Path], tests: Sequence[str], timeout: float, memory: int
+    available: queue.Queue[Path], tests: Sequence[str], timeout: float, memory: int, each: float
 ) -> Verdict:
     """Run ``tests`` unmutated in a borrowed sandbox. One shard of the baseline.
 
@@ -784,7 +801,7 @@ def _borrow(
     """
     root = available.get()
     try:
-        return _run(tests, root, timeout=timeout, memory=memory)
+        return _run(tests, root, timeout=timeout, memory=memory, each=each)
     finally:
         available.put(root)
 
@@ -811,6 +828,7 @@ def _attempt(
     failfast: bool,
     timeout: float,
     memory: int,
+    each: float,
 ) -> Verdict:
     """Apply one mutation in a borrowed sandbox and report what the suite said."""
     root = available.get()
@@ -827,6 +845,7 @@ def _attempt(
                 failfast=failfast,
                 timeout=timeout,
                 memory=memory,
+                each=each,
             )
         finally:
             # Into the sandbox, not the working tree. Only so the next mutation
@@ -978,6 +997,7 @@ def run(
     failfast: bool = False,
     timeout: float = TIMEOUT,
     memory: int = MEMORY,
+    each: float = EACH_TEST,
     summarise: bool = True,
     scope: str = "nothing above",
 ) -> Report:
@@ -1042,12 +1062,15 @@ def run(
     red = False
     with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
         checking = (
-            [pool.submit(_borrow, available, shard.split(), timeout, memory) for shard in shards]
+            [
+                pool.submit(_borrow, available, shard.split(), timeout, memory, each)
+                for shard in shards
+            ]
             if baseline
             else []
         )
         futures = [
-            pool.submit(_attempt, mutation, available, failfast, timeout, memory)
+            pool.submit(_attempt, mutation, available, failfast, timeout, memory, each)
             for mutation in table
         ]
         for mutation, future in zip(table, futures, strict=True):
@@ -1142,6 +1165,7 @@ def confirm(
     timeout: float,
     memory: int,
     *,
+    each: float = EACH_TEST,
     baseline: bool = True,
 ) -> Report:
     """Re-run every survivor against the whole suite, and correct the ones caught.
@@ -1218,6 +1242,7 @@ def confirm(
         failfast=True,
         timeout=timeout,
         memory=memory,
+        each=each,
         summarise=False,
         # These rows are not the run's answer -- the narrow pass's are, and they
         # are still good. See `run`'s ``scope``.
@@ -1565,6 +1590,7 @@ def _run_generated(
         failfast=True,
         timeout=args.timeout,
         memory=args.memory,
+        each=args.each_test,
         scope=scope,
     )
 
@@ -1703,6 +1729,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=LIMIT, help="cap the table (0 for no cap)")
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds per mutation")
     parser.add_argument(
+        "--each-test",
+        type=float,
+        default=EACH_TEST,
+        metavar="SECONDS",
+        help=f"seconds one test may take, 0 to disable (default {EACH_TEST:g})",
+    )
+    parser.add_argument(
         "--memory",
         type=_bytes,
         default=MEMORY,
@@ -1779,6 +1812,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.workers,
                 args.timeout,
                 args.memory,
+                each=args.each_test,
                 baseline=not args.no_baseline,
             )
         else:

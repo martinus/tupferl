@@ -19,9 +19,13 @@ else in this project's testing story is downstream of the harness being honest.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from tests import support
 from tools import mutants, mutate
@@ -292,3 +296,92 @@ class TestTheKillerIsRecordedAtAll(unittest.TestCase):
         self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
         # The claim: it loads. `str(test)` -- "method (dotted.id)" -- does not.
         self.assertEqual({result.verdict.killer}, mutate._loadable([result.verdict.killer]))
+
+
+#: A test module that hangs on a blocking read, and one that does not. Written
+#: to a throwaway directory rather than kept in `tests/`, because `run_tests`
+#: discovers everything here and a permanently-hanging test in the tree is the
+#: exact failure this guards against.
+HANGS = """
+import os, unittest
+from pathlib import Path
+
+
+class TestOne(unittest.TestCase):
+    def test_hangs_on_a_fifo(self):
+        where = Path(os.environ["HANGDIR"]) / "pipe"
+        if not where.exists():
+            os.mkfifo(where)
+        where.read_bytes()
+        self.fail("unreachable")
+
+    def test_is_fine(self):
+        self.assertTrue(True)
+"""
+
+
+class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
+    """A per-test alarm, and the classification that makes it safe.
+
+    `tools/mutate.py`'s `TIMEOUT` bounds a whole *run* at 300s and cannot say
+    which test hung. This bounds a *test*, in seconds, and names it.
+
+    The dangerous part is not the timer, it is where the result is filed. The
+    alarm raises inside a real `TestCase`, so it reaches `addError` carrying a
+    genuine test -- indistinguishable by protocol from that test having noticed
+    the mutation. Filed as an answer it would report `caught`, crediting a test
+    that asserted nothing. 300s of wasted lane is visible; a false `caught` is
+    not.
+    """
+
+    def collect(self, each: float) -> dict[str, Any]:
+        """Drive the real probe, in a real subprocess, on a real fifo."""
+        with support.tempdir() as box:
+            (box / "tests").mkdir()
+            (box / "tests" / "__init__.py").write_text("", encoding="utf-8")
+            (box / "tests" / "test_hang.py").write_text(HANGS, encoding="utf-8")
+            report = box / "verdict.json"
+            done = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    Path("tools/verdict.py").read_text(encoding="utf-8"),
+                    str(report),
+                    "0",
+                    "0",
+                    str(each),
+                    "tests.test_hang",
+                ],
+                cwd=box,
+                env={**os.environ, "HANGDIR": str(box), "PYTHONPATH": str(box)},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertTrue(report.is_file(), done.stderr[-800:])
+            return dict(json.loads(report.read_text(encoding="utf-8")))
+
+    def test_a_hung_test_is_interrupted_rather_than_waited_out(self) -> None:
+        """A blocking `read()` on a fifo, which is the shape `tupferl/copies.py`
+        hangs in when its not-a-regular-file guard is mutated away. PEP 475
+        retries a syscall interrupted by a signal, so this only works because the
+        handler *raises* rather than setting a flag."""
+        found = self.collect(2)
+        self.assertEqual(2, found["ran"], "the run did not get past the hung test")
+
+    def test_it_is_never_counted_as_the_test_noticing(self) -> None:
+        """The whole safety argument. `noticed` is what `caught` is made of."""
+        found = self.collect(2)
+        self.assertEqual([], found["noticed"])
+        broke = [str(line) for line in found["broke"]]
+        self.assertEqual(1, len(broke), broke)
+        self.assertIn("test_hangs_on_a_fifo", broke[0])
+        self.assertIn("did not finish", broke[0])
+
+    def test_zero_disables_it(self) -> None:
+        """So a platform without `SIGALRM`, or someone debugging a genuinely slow
+        test, can turn it off -- and then the whole-run `TIMEOUT` is what bounds
+        the hang, which is the behaviour before this existed."""
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.collect(0)

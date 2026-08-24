@@ -53,6 +53,7 @@ from __future__ import annotations
 import io
 import json
 import resource
+import signal
 import sys
 import traceback
 import unittest
@@ -155,6 +156,28 @@ def _exhausted(err: ExcInfo | None) -> bool:
     return err is not None and err[0] is not None and issubclass(err[0], MemoryError)
 
 
+class Hung(BaseException):
+    """A test that ran past its share of the clock.
+
+    `BaseException`, not `Exception`, so that a test doing `except Exception` --
+    which several here do, to assert on a message -- cannot swallow the alarm and
+    hang anyway. `unittest` catches `BaseException` around a test, so it is still
+    reported rather than escaping the runner.
+    """
+
+
+def _ring(signum: int, frame: object) -> None:
+    """Raise, rather than set a flag.
+
+    The whole mechanism turns on this. PEP 475 makes Python *retry* a syscall
+    interrupted by a signal, so a handler that recorded the alarm and returned
+    would be swallowed by exactly the blocking `read()` a hung test sits in.
+    Raising propagates instead of resuming. Measured against a fifo read and a
+    `subprocess.run`, both interrupted at 0.5s.
+    """
+    raise Hung("this test ran past the per-test limit")
+
+
 class Verdicts(unittest.TextTestResult):
     """Keeps the tests that asserted apart from the carriers that did not."""
 
@@ -170,6 +193,22 @@ class Verdicts(unittest.TextTestResult):
         self.killers: list[str] = []
         #: Fixtures that died before any assertion ran. Not an answer.
         self.broke: list[str] = []
+        #: Seconds one test may take. 0 disables the alarm, which is what a
+        #: platform without `SIGALRM` gets.
+        self.each: float = 0.0
+
+    def startTest(self, test: unittest.TestCase) -> None:
+        super().startTest(test)
+        if self.each:
+            signal.setitimer(signal.ITIMER_REAL, self.each)
+
+    def stopTest(self, test: unittest.TestCase) -> None:
+        # Cancelled here rather than only on the next `startTest`, or a fast test
+        # would be charged for the timer its predecessor set and the alarm would
+        # land in whatever ran next.
+        if self.each:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        super().stopTest(test)
 
     def _answered(self, test: unittest.TestCase) -> None:
         """Record one test that noticed, both ways round."""
@@ -182,6 +221,15 @@ class Verdicts(unittest.TextTestResult):
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addError(test, err)
+        if err[0] is not None and issubclass(err[0], Hung):
+            # Classified with `_exhausted` below and for the identical reason:
+            # the alarm raises *inside* a real `TestCase`, so it reaches here
+            # indistinguishable by protocol from that test noticing the
+            # mutation. Filed as an answer it would credit a test that asserted
+            # nothing with a guard it does not have -- and a false `caught` is
+            # invisible where a slow run is merely slow.
+            self.broke.append(f"{test} did not finish within {self.each:g}s")
+            return
         if _exhausted(err):
             # The one exception classified by type rather than by protocol, and
             # it has to be. `cap` makes a runaway mutation raise `MemoryError`
@@ -217,7 +265,9 @@ class Verdicts(unittest.TextTestResult):
             # `test` is the owning case; `subtest` is the `_SubTest` carrier that
             # the base class files into `failures`. Recording the owner is what
             # keeps a `subTest` assertion a real answer.
-            if _exhausted(err):
+            if err[0] is not None and issubclass(err[0], Hung):
+                self.broke.append(f"{test} did not finish within {self.each:g}s")
+            elif _exhausted(err):
                 self.broke.append(f"{test} ran out of memory")
             else:
                 # The *owner*, not the `_SubTest` carrier: its `id()` carries the
@@ -225,7 +275,24 @@ class Verdicts(unittest.TextTestResult):
                 self._answered(test)
 
 
-def collect(names: list[str], failfast: bool) -> dict[str, Any]:
+def each_test(seconds: float) -> float:
+    """Arm the per-test alarm, and say what was actually armed.
+
+    0 where `SIGALRM` does not exist -- Windows, and any non-main thread. Plan §2
+    puts Windows out of scope for v1 and `collect` runs in the main thread, so
+    this is a guard rather than a supported path; it returns 0 so the caller can
+    report that no per-test bound was in force rather than assume one was.
+    """
+    if not seconds or not hasattr(signal, "SIGALRM"):
+        return 0.0
+    try:
+        signal.signal(signal.SIGALRM, _ring)
+    except ValueError:
+        return 0.0
+    return seconds
+
+
+def collect(names: list[str], failfast: bool, each: float = 0.0) -> dict[str, Any]:
     loader = unittest.TestLoader()
     # No names means the whole suite, and it has to be `discover` rather than
     # the package name: `loadTestsFromNames(["tests"])` imports the package and
@@ -251,8 +318,15 @@ def collect(names: list[str], failfast: bool) -> dict[str, Any]:
             # the "Failed to import test module: x" that says which.
             "broke": [str(error).splitlines()[0] for error in loader.errors],
         }
+    armed = each_test(each)
+
+    def build(*args: Any, **kwargs: Any) -> Verdicts:
+        made = Verdicts(*args, **kwargs)
+        made.each = armed
+        return made
+
     result = unittest.TextTestRunner(
-        stream=io.StringIO(), verbosity=0, failfast=failfast, resultclass=Verdicts
+        stream=io.StringIO(), verbosity=0, failfast=failfast, resultclass=build
     ).run(suite)
     assert isinstance(result, Verdicts)
     return {
@@ -265,12 +339,12 @@ def collect(names: list[str], failfast: bool) -> dict[str, Any]:
 
 
 def main(argv: list[str]) -> None:
-    report, failfast, names = argv[0], argv[1] == "1", argv[3:]
+    report, failfast, names = argv[0], argv[1] == "1", argv[4:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))
     try:
-        written = collect(names, failfast)
+        written = collect(names, failfast, float(argv[3]))
     except BaseException:
         # Said, not inferred. The caller used to conclude "the suite could not be
         # loaded" from an absent file, which is also what a typo in this file
