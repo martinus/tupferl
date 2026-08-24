@@ -99,6 +99,7 @@ before concluding that a surviving mutation means a weak test.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -110,6 +111,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unittest
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
@@ -220,6 +222,10 @@ class Verdict(NamedTuple):
     #: The first test that noticed, or the reason nothing could. Printed for
     #: everything except a plain `caught`, where the label already says it.
     detail: str = ""
+    #: The same test as `module.Class.method`, which is what `unittest` takes
+    #: back. Empty unless the outcome is `caught`. `detail` is for a reader and
+    #: this is for `killers`, which runs it again next time -- see `Killers`.
+    killer: str = ""
 
     @property
     def answered(self) -> bool:
@@ -715,7 +721,16 @@ def _run(
     if written["broke"]:
         return Verdict("broke", str(written["broke"][0]))
     if written["noticed"]:
-        return Verdict("caught", str(written["noticed"][0]))
+        # `.get` with a fallback: a report written by an older `verdict.py`, or
+        # read from a `--json` file that predates this field, has no `killers`.
+        # An absent one costs the next run a remembered ordering, which is the
+        # behaviour before any of this existed.
+        remembered = written.get("killers") or []
+        return Verdict(
+            "caught",
+            str(written["noticed"][0]),
+            str(remembered[0]) if remembered else "",
+        )
     if not written["ran"]:
         return Verdict("broke", "the targets held no tests")
     return Verdict("survived")
@@ -1238,6 +1253,122 @@ def confirm(
     )
 
 
+#: Where the remembered killers live by default, under the directory the
+#: `.gitignore` already keeps out of the tree. Machine-specific and stale the
+#: moment a test is renamed, which is why nothing here trusts it: see `Killers`.
+KILLERS = Path("sweeps/killers.json")
+
+
+def _key(mutation: Mutation) -> str:
+    """What identifies a mutation across runs.
+
+    Content, never position. `label` and `span` both carry a line number, and a
+    line number is invalidated by any edit *above* it -- which is every edit, so
+    a position-keyed cache would be empty exactly when it was most wanted. What
+    stays the same is the file, the operator, and the text going in and out.
+
+    Hashed rather than concatenated because `old` and `new` are whole
+    statements: the keys would otherwise be kilobytes and the file unreadable.
+    """
+    parts = "\0".join((mutation.path, mutation.operator, mutation.old, mutation.new))
+    return hashlib.sha256(parts.encode("utf-8")).hexdigest()[:16]
+
+
+class Killers:
+    """Which test caught each mutation last time, so it can run first this time.
+
+    A mutation is caught by a *set* of tests, and `failfast` stops at whichever
+    the selection reaches first. That order is alphabetical and has nothing to
+    do with cost, so a mutant in a pure function was found only after the
+    CLI-driven classes above it had run: 20.48s to learn something a 0.30s test
+    knew (tupferl#5).
+
+    Choosing one global order over all mutants is Min-Sum Set Cover -- NP-hard,
+    greedy within a factor of 4, and it needs the *full* kill-set per mutant,
+    which costs more to collect than it saves. Per mutant there is no problem to
+    solve: run the test that worked last time.
+
+    **The remembered test is put in front of the usual selection, never in place
+    of it.** That asymmetry is the whole safety argument. A cache that is right
+    saves the rest of the suite; a cache that is wrong costs one extra test and
+    the run continues exactly as it would have. Substituting instead would turn
+    every stale entry into a `caught` that nothing verified -- flattering the
+    tests, which is the direction every bug in this class has erred.
+    """
+
+    def __init__(self, where: Path | None) -> None:
+        self.where = where
+        self.known: dict[str, str] = {}
+        if where is not None and where.is_file():
+            try:
+                saved = json.loads(where.read_text(encoding="utf-8"))
+                self.known = {str(k): str(v) for k, v in saved.items() if v}
+            except (OSError, ValueError, AttributeError):
+                # A half-written or hand-edited file is not worth a failure: the
+                # worst an empty cache does is run at yesterday's speed.
+                self.known = {}
+
+    def ahead_of(self, table: Sequence[Mutation]) -> list[Mutation]:
+        """The same table, with each remembered killer moved to the front.
+
+        Only ids that still load are used, and they are resolved once for the
+        whole table rather than per mutant. That is not thrift: an id that no
+        longer exists makes `unittest`'s loader record an error, which
+        `tools/verdict.py` correctly classifies as `broke` -- so one renamed
+        test would turn every mutant that remembered it into a non-answer, and
+        the sweep would report a wall of `BROKE` rows for a rename.
+        """
+        wanted = {self.known[_key(row)] for row in table if _key(row) in self.known}
+        usable = _loadable(wanted)
+        if dropped := len(wanted) - len(usable):
+            print(f"{dropped} remembered test(s) no longer load, so their rows run as usual.")
+        ahead = []
+        for row in table:
+            killer = self.known.get(_key(row), "")
+            first = killer and killer in usable
+            ahead.append(row._replace(tests=f"{killer} {row.tests}") if first else row)
+        return ahead
+
+    def learn(self, results: Sequence[Result]) -> None:
+        """Remember what caught each mutation, and forget what stopped catching it."""
+        for result in results:
+            if result.verdict.outcome == "caught" and result.verdict.killer:
+                self.known[_key(result.mutation)] = result.verdict.killer
+            elif result.verdict.answered:
+                # It survived. Whatever used to catch it does not any more, so
+                # keeping the entry would put a test that cannot help at the
+                # front of every future run of this row.
+                self.known.pop(_key(result.mutation), None)
+
+    def save(self) -> None:
+        if self.where is None:
+            return
+        self.where.parent.mkdir(parents=True, exist_ok=True)
+        self.where.write_text(json.dumps(self.known, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def _loadable(ids: Iterable[str]) -> set[str]:
+    """Those of `ids` that `unittest` can still turn into a test.
+
+    Asked of the loader rather than by checking that the file exists: a renamed
+    *method* leaves its module in place, and that is the common way a remembered
+    id goes stale.
+    """
+    found = set()
+    for name in ids:
+        loader = unittest.TestLoader()
+        try:
+            loader.loadTestsFromName(name)
+        except Exception:
+            # Deliberately every exception: a module that no longer imports can
+            # raise anything at all on the way, and each one means the same
+            # thing here -- this id cannot be put in front of a run.
+            continue
+        if not loader.errors:
+            found.add(name)
+    return found
+
+
 def generated(args: argparse.Namespace) -> list[Mutation]:
     """The table the diff implies, printed about before any of it runs."""
     root = Path.cwd()
@@ -1369,6 +1500,7 @@ def _persist(report: Report, where: Path) -> None:
                 "operator": result.mutation.operator,
                 "outcome": result.verdict.outcome,
                 "detail": result.verdict.detail,
+                "killer": result.verdict.killer,
                 # Enough to rebuild the row, not just to read about it. Without
                 # `old`/`new` a resumed sweep could skip a file but never
                 # re-confirm its survivors, and CLAUDE.md promises every
@@ -1455,7 +1587,7 @@ def _recorded(where: Path | None) -> list[Result]:
                     span=(row["span"][0], row["span"][1]) if row.get("span") else None,
                     operator=row.get("operator", ""),
                 ),
-                Verdict(row["outcome"], row.get("detail", "")),
+                Verdict(row["outcome"], row.get("detail", ""), row.get("killer", "")),
             )
             for row in saved.get("results", [])
         ]
@@ -1576,6 +1708,18 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="write the outcomes here, for `python -m tools.reached`",
     )
+    parser.add_argument(
+        "--killers",
+        type=Path,
+        default=KILLERS,
+        metavar="PATH",
+        help=f"remember which test caught each mutation (default {KILLERS})",
+    )
+    parser.add_argument(
+        "--no-killers",
+        action="store_true",
+        help="ignore and do not update the remembered killers",
+    )
     args = parser.parse_args(argv)
 
     if args.all and args.base:
@@ -1596,10 +1740,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.base:
         table = generated(args)
+        killers = Killers(None if args.no_killers else args.killers)
         if args.list:
             for row in table:
                 print(f"  {row.operator:16} {row.label}")
             return 0
+        # After `--list`, which is about the table rather than about how it will
+        # be run, and before the first row.
+        table = killers.ahead_of(table)
         if args.json:
             # Before the first row, so a watcher started alongside this one has
             # something to read straight away. Its own pid, not a caller's guess.
@@ -1626,6 +1774,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\n--no-confirm: survivors below were not re-run against the whole suite,")
             print("so one may simply have been run against tests that cannot see it.")
         _summarise(report.results)
+        # After `confirm`, whose verdicts are the ones that stand: a row it
+        # promotes from survivor to caught has a killer worth keeping, and one
+        # it leaves surviving must forget the test that stopped catching it.
+        killers.learn(report.results)
+        killers.save()
         if args.json:
             _persist(report, args.json)
             # Last, and after `confirm`: the marker means the whole run is over,

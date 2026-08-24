@@ -162,12 +162,23 @@ class Verdicts(unittest.TextTestResult):
         super().__init__(*args, **kwargs)
         #: Real test methods that failed. This is what `caught` means.
         self.noticed: list[str] = []
+        #: The same tests, as `python -m unittest` takes them back --
+        #: `module.Class.method`, where `noticed` holds `method (module.Class.
+        #: method)` for a human. Recorded rather than parsed back out of the
+        #: display string, because `mutate` feeds these straight to a loader and
+        #: a display format is not an API.
+        self.killers: list[str] = []
         #: Fixtures that died before any assertion ran. Not an answer.
         self.broke: list[str] = []
 
+    def _answered(self, test: unittest.TestCase) -> None:
+        """Record one test that noticed, both ways round."""
+        self.noticed.append(str(test))
+        self.killers.append(test.id())
+
     def addFailure(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addFailure(test, err)
-        self.noticed.append(str(test))
+        self._answered(test)
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addError(test, err)
@@ -187,8 +198,16 @@ class Verdicts(unittest.TextTestResult):
         # is not a `TestCase`, and that is the whole check. It carries a
         # traceback for something that happened *around* the tests, so no
         # assertion in it was ever evaluated.
+        # Kept as a ternary over the *list*, rather than an `if`/`else` around
+        # two statements. `test` is annotated `TestCase` because that is what
+        # typeshed says `addError` takes, so mypy proves an `else:` branch
+        # unreachable and `warn_unreachable` rejects it -- while at runtime the
+        # branch is exactly the case this check exists for. `target is` is a
+        # fact about a list mypy cannot argue with.
         target = self.noticed if isinstance(test, unittest.TestCase) else self.broke
         target.append(str(test))
+        if target is self.noticed:
+            self.killers.append(test.id())
 
     def addSubTest(
         self, test: unittest.TestCase, subtest: unittest.TestCase, err: ExcInfo | None
@@ -201,7 +220,9 @@ class Verdicts(unittest.TextTestResult):
             if _exhausted(err):
                 self.broke.append(f"{test} ran out of memory")
             else:
-                self.noticed.append(str(test))
+                # The *owner*, not the `_SubTest` carrier: its `id()` carries the
+                # parameters in brackets and `unittest` cannot load that back.
+                self._answered(test)
 
 
 def collect(names: list[str], failfast: bool) -> dict[str, Any]:
@@ -224,6 +245,7 @@ def collect(names: list[str], failfast: bool) -> dict[str, Any]:
             "loaded": True,
             "ran": 0,
             "noticed": [],
+            "killers": [],
             # `str()` because typeshed types `errors` as exception classes while
             # `unittest` actually appends formatted tracebacks; the first line is
             # the "Failed to import test module: x" that says which.
@@ -237,6 +259,7 @@ def collect(names: list[str], failfast: bool) -> dict[str, Any]:
         "loaded": True,
         "ran": result.testsRun,
         "noticed": result.noticed,
+        "killers": result.killers,
         "broke": result.broke,
     }
 

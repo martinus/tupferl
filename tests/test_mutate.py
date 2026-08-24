@@ -18,6 +18,7 @@ else in this project's testing story is downstream of the harness being honest.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,3 +146,135 @@ class TestGeneratingFromADiff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: A test id that certainly resolves, used where the point is "a real one is
+#: kept". This module's own name, so it cannot go stale without this file
+#: being edited -- and if it is renamed, the test that depends on it is right
+#: here rather than somewhere that would fail mysteriously.
+REAL = "tests.test_mutate.TestRememberingWhatCaughtEachMutation.test_a_remembered_test_runs_first"
+
+
+def row(
+    path: str = "tupferl/sync.py",
+    old: str = "a",
+    new: str = "b",
+    label: str = "x:1 in f()",
+) -> Mutation:
+    """One generated-shaped mutation, with only the fields the cache reads."""
+    return Mutation(label, path, old, new, "tests.test_sync", operator="branch")
+
+
+class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
+    """`Killers`: run the test that worked last time, first.
+
+    The claim is about the *selection* the harness builds, which is what
+    `failfast` then walks in order -- so that is what these assert on. Driving a
+    whole sweep to observe it would take minutes and tell us the same thing.
+    """
+
+    def cache(self, known: dict[str, str]) -> mutate.Killers:
+        with support.tempdir() as box:
+            where = box / "killers.json"
+            where.write_text(json.dumps(known), encoding="utf-8")
+            return mutate.Killers(where)
+
+    def test_a_remembered_test_runs_first(self) -> None:
+        """In front, and the original selection still behind it."""
+        one = row()
+        cached = self.cache({mutate._key(one): REAL})
+        (ahead,) = cached.ahead_of([one])
+        self.assertEqual(REAL, ahead.tests.split()[0])
+        self.assertIn("tests.test_sync", ahead.tests.split())
+
+    def test_the_whole_selection_is_kept_behind_it(self) -> None:
+        """The safety argument, asserted rather than assumed. Substituting the
+        remembered test for the selection would make every stale entry a
+        `caught` that nothing verified -- flattering the tests, which is the
+        direction every bug in this class errs."""
+        one = row()._replace(tests="tests.test_sync tests.test_sync_cli")
+        cached = self.cache({mutate._key(one): REAL})
+        (ahead,) = cached.ahead_of([one])
+        self.assertEqual([REAL, "tests.test_sync", "tests.test_sync_cli"], ahead.tests.split())
+
+    def test_a_test_that_no_longer_exists_is_dropped(self) -> None:
+        """A renamed test leaves its module in place, so `unittest`'s loader
+        records an error rather than raising -- and an error there is classified
+        `broke`, which would turn every mutant that remembered it into a
+        non-answer. One rename would produce a wall of them."""
+        one = row()
+        cached = self.cache({mutate._key(one): "tests.test_mutate.NoSuchClass.no_such_test"})
+        with support.quiet():
+            (ahead,) = cached.ahead_of([one])
+        self.assertEqual("tests.test_sync", ahead.tests)
+
+    def test_a_module_that_no_longer_exists_is_dropped_too(self) -> None:
+        one = row()
+        cached = self.cache({mutate._key(one): "tests.test_gone.Class.test_x"})
+        with support.quiet():
+            (ahead,) = cached.ahead_of([one])
+        self.assertEqual("tests.test_sync", ahead.tests)
+
+    def test_a_row_nothing_is_remembered_about_is_left_alone(self) -> None:
+        (ahead,) = mutate.Killers(None).ahead_of([row()])
+        self.assertEqual("tests.test_sync", ahead.tests)
+
+
+class TestTheKeyIsContentNotPosition(unittest.TestCase):
+    """A line number is invalidated by any edit above it -- which is every edit,
+    so a position-keyed cache would be empty exactly when it was most wanted."""
+
+    def test_the_same_edit_at_a_different_line_is_the_same_key(self) -> None:
+        moved = row(label="tupferl/sync.py:900 in f()")._replace(span=(9000, 9001))
+        self.assertEqual(mutate._key(row()), mutate._key(moved))
+
+    def test_a_different_edit_at_the_same_line_is_a_different_key(self) -> None:
+        """Otherwise two operators' rows on one line would share an entry, and
+        the second would run a test chosen for the first."""
+        self.assertNotEqual(mutate._key(row()), mutate._key(row(new="c")))
+        self.assertNotEqual(mutate._key(row()), mutate._key(row(path="tupferl/manage.py")))
+        self.assertNotEqual(
+            mutate._key(row()), mutate._key(row()._replace(operator="return-value"))
+        )
+
+
+class TestWhatTheCacheLearns(unittest.TestCase):
+    def learned(self, outcome: mutate.Outcome, killer: str) -> dict[str, str]:
+        one = row()
+        with support.tempdir() as box:
+            cache = mutate.Killers(box / "killers.json")
+            cache.known = {mutate._key(one): "tests.test_old.C.t"}
+            cache.learn([mutate.Result(one, mutate.Verdict(outcome, "", killer))])
+            return cache.known
+
+    def test_a_catch_is_remembered(self) -> None:
+        self.assertEqual({mutate._key(row()): REAL}, self.learned("caught", REAL))
+
+    def test_a_survivor_forgets_whatever_used_to_catch_it(self) -> None:
+        """Keeping it would put a test that cannot help at the front of every
+        future run of this row, for ever."""
+        self.assertEqual({}, self.learned("survived", ""))
+
+    def test_a_run_that_asked_nothing_changes_nothing(self) -> None:
+        """`broke` and `timeout` are not answers, so they are not evidence that
+        the remembered test stopped working."""
+        outcomes: tuple[mutate.Outcome, ...] = ("broke", "timeout")
+        for outcome in outcomes:
+            with self.subTest(outcome=outcome):
+                self.assertEqual(
+                    {mutate._key(row()): "tests.test_old.C.t"}, self.learned(outcome, "")
+                )
+
+
+class TestTheKillerIsRecordedAtAll(unittest.TestCase):
+    """The cache is worth nothing if `Verdict.killer` is empty, and it comes
+    from `tools/verdict.py` through a JSON report -- so this drives the real
+    thing rather than asserting on a field."""
+
+    def test_a_caught_mutation_names_the_test_in_a_form_unittest_takes_back(self) -> None:
+        found = mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False)
+        (result,) = found.results
+        self.assertEqual("caught", result.verdict.outcome)
+        self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
+        # The claim: it loads. `str(test)` -- "method (dotted.id)" -- does not.
+        self.assertEqual({result.verdict.killer}, mutate._loadable([result.verdict.killer]))
