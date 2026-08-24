@@ -301,18 +301,29 @@ def each_test(seconds: float) -> float:
     return seconds
 
 
-def collect(names: list[str], failfast: bool, each: float = 0.0) -> dict[str, Any]:
+def collect(
+    names: list[str], failfast: bool, each: float = 0.0, first: list[str] | None = None
+) -> dict[str, Any]:
     loader = unittest.TestLoader()
     # No names means the whole suite, and it has to be `discover` rather than
     # the package name: `loadTestsFromNames(["tests"])` imports the package and
     # finds nothing in it, so the run comes back green having executed zero
     # tests. That is reported as `broke` -- correctly, and confusingly, since the
     # request was for everything.
-    suite = (
+    chosen = (
         loader.loadTestsFromNames(names)
         if names
         else loader.discover(".", pattern="test_*.py", top_level_dir=".")
     )
+    # `first` in its own argument rather than pushed onto `names`, and that is
+    # not tidiness. An empty `names` *means* the whole suite -- `mutate`'s
+    # `WHOLE_SUITE` -- and the fall-through above is how. Prepending to the list
+    # makes it non-empty, so "run everything" quietly became "run these three",
+    # and `confirm` builds exactly that row: it widens a survivor's selection to
+    # `WHOLE_SUITE` while the cheap prefix is still attached. The pass that
+    # promises every survivor was re-run against the whole suite would have run
+    # eight tests and said so.
+    suite = unittest.TestSuite([loader.loadTestsFromNames(first), chosen]) if first else chosen
     if loader.errors:
         # Public API, and checked before running: the suite `loadTestsFromNames`
         # returns for an unimportable module holds a synthetic `_FailedTest`
@@ -350,12 +361,13 @@ def collect(names: list[str], failfast: bool, each: float = 0.0) -> dict[str, An
 
 
 def main(argv: list[str]) -> None:
-    report, failfast, names = argv[0], argv[1] == "1", argv[4:]
+    report, failfast = argv[0], argv[1] == "1"
+    first, names = [n for n in argv[4].split() if n], argv[5:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))
     try:
-        written = collect(names, failfast, float(argv[3]))
+        written = collect(names, failfast, float(argv[3]), first)
     except BaseException:
         # Said, not inferred. The caller used to conclude "the suite could not be
         # loaded" from an absent file, which is also what a typo in this file

@@ -334,8 +334,20 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
     not.
     """
 
-    def collect(self, each: float, wait: float = 60) -> dict[str, Any]:
-        """Drive the real probe, in a real subprocess, on a real fifo."""
+    def collect(
+        self,
+        each: float,
+        wait: float = 60,
+        first: str = "",
+        names: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Drive the real probe, in a real subprocess, on a real fifo.
+
+        The argv is positional and shared with `mutate._run`: report, failfast,
+        memory, per-test seconds, the prefix, then the selection. Spelling it out
+        here is what made a protocol change visible -- when `first` gained its
+        own slot, this helper's selection slid into it and the module ran twice.
+        """
         with support.tempdir() as box:
             (box / "tests").mkdir()
             (box / "tests" / "__init__.py").write_text("", encoding="utf-8")
@@ -351,7 +363,8 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                     "0",
                     "0",
                     str(each),
-                    "tests.test_hang",
+                    first,
+                    *(("tests.test_hang",) if names is None else names),
                 ],
                 cwd=box,
                 env={**os.environ, "HANGDIR": str(box), "PYTHONPATH": str(box)},
@@ -543,7 +556,12 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         """`WHOLE_SUITE` is the empty string -- what a file nothing imports gets,
         so its rows run the entire suite at ~51s each. Cutting the prefix to
         "modules named in an empty selection" left them with nothing, which is
-        the most expensive row in the table paying the most for the omission."""
+        the most expensive row in the table paying the most for the omission.
+
+        Safe only because `first` reaches the probe as its own argument. Merged
+        into the selection it would make an empty list non-empty, and "run
+        everything" would become "run the prefix" -- see `verdict.collect`.
+        """
         self.assertEqual(REAL, self.ahead(mutate.WHOLE_SUITE).first)
 
     def test_a_selection_naming_a_class_still_matches_its_tests(self) -> None:
@@ -557,3 +575,79 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         """The guard the two above must not break: a test in a module that does
         not import the mutated file cannot see the mutation."""
         self.assertEqual("", self.ahead("tests.test_paths").first)
+
+
+class TestConfirmationReallyRunsTheWholeSuite(unittest.TestCase):
+    """CLAUDE.md promises every survivor is re-run against the whole suite
+    before it is reported, and `Report.widened` is the flag that claims it.
+
+    Two things could quietly make that false, and both are one character wide.
+    `WHOLE_SUITE` is the *empty* selection -- `verdict.collect` falls through to
+    `discover` only when the list is empty -- so anything in front of it turns
+    "everything" into "only this". The rows `confirm` builds are exactly the
+    shape that triggers it: a survivor's selection widened while its remembered
+    test is still attached.
+    """
+
+    def test_a_widened_row_carries_no_remembered_test(self) -> None:
+        survivor = mutate.Result(
+            row()._replace(first="tests.test_sync.TestTheReport.test_it"),
+            mutate.Verdict("survived"),
+        )
+        widened = survivor.mutation._replace(tests=mutate.WHOLE_SUITE, first="")
+        self.assertEqual("", widened.first)
+        self.assertEqual("", widened.tests)
+
+    def test_an_empty_selection_behind_a_prefix_still_discovers(self) -> None:
+        """The protocol half: an empty selection plus a prefix must run the
+        prefix *and* everything, not the prefix instead of everything.
+
+        Driven in the probe's own two-test tree rather than against this
+        repository, which would run the whole suite inside a test of it.
+        """
+        found = TestAHungTestIsBoundedAndNotCredited.collect(
+            self,  # type: ignore[arg-type]
+            # Armed, because discovery reaches that tree's deliberately hanging
+            # test. With the alarm off this test hung for its whole subprocess
+            # timeout -- proving the discovery worked, at thirty seconds a run.
+            each=2,
+            wait=30,
+            first="tests.test_hang.TestOne.test_is_fine",
+            names=(),
+        )
+        # Two tests in that module, and the prefix names one of them -- so it
+        # runs twice, once in front and once as discovery reaches it. Anything
+        # less than three means the empty selection stopped discovering.
+        self.assertEqual(3, found["ran"])
+
+
+class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
+    """The gap that let the `WHOLE_SUITE` defect through.
+
+    Every other test here asserts on what `ahead_of` *returns*. None drove
+    `_attempt`, so nothing noticed that the argv it built turned "discover
+    everything" into "run these three" -- the review found it by reading. These
+    drive a real mutation with a real `first`.
+    """
+
+    def test_a_prefix_that_catches_it_still_reports_caught(self) -> None:
+        one = UNKNOWN_KEY_GUARD._replace(
+            first="tests.test_config.TestRejectingAnUnknownKey.test_a_typo_is_an_error_rather_than_silence"
+        )
+        found = mutate.run([one], baseline=False, workers=1, summarise=False)
+        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
+
+    def test_a_prefix_that_misses_falls_through_to_the_selection(self) -> None:
+        """The safety argument, driven rather than asserted on a data structure:
+        a prefix that cannot see the mutation must cost one test, not the
+        answer."""
+        one = UNKNOWN_KEY_GUARD._replace(first="tests.test_paths.TestWhereTheRepositoryGoes")
+        found = mutate.run([one], baseline=False, workers=1, summarise=False)
+        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
+
+    # The `WHOLE_SUITE` case is *not* driven through `mutate.run` here. It would
+    # discover and run this entire suite inside a mutation sandbox -- ~50s, for a
+    # claim `TestConfirmationReallyRunsTheWholeSuite` already proves against the
+    # probe's own two-test tree in milliseconds. Adding a minute to every run to
+    # re-state something is the mistake `test_zero_disables_it` already made
+    # once today.

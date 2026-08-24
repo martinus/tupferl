@@ -629,6 +629,7 @@ def _run(
     timeout: float = TIMEOUT,
     memory: int = MEMORY,
     each: float = EACH_TEST,
+    first: str = "",
 ) -> Verdict:
     """What the suite concluded about one mutation, and by which route.
 
@@ -673,6 +674,7 @@ def _run(
                     "1" if failfast else "0",
                     str(memory),
                     str(each),
+                    first,
                     *tests,
                 ],
                 cwd=root,
@@ -850,15 +852,18 @@ def _attempt(
         original = source.read_text(encoding="utf-8")
         source.write_text(_applied(original, mutation), encoding="utf-8")
         try:
-            # `first` ahead of the selection, and the selection entire behind it.
-            targets = mutation.tests.split()
+            # `first` handed over as its own argument, never merged into the
+            # selection: an empty selection is `WHOLE_SUITE` and means "run
+            # everything", so anything pushed onto that list turns it into
+            # "run only this". See `verdict.collect`.
             return _run(
-                ([*mutation.first.split(), *targets] if mutation.first else targets),
+                mutation.tests.split(),
                 root,
                 failfast=failfast,
                 timeout=timeout,
                 memory=memory,
                 each=each,
+                first=mutation.first,
             )
         finally:
             # Into the sandbox, not the working tree. Only so the next mutation
@@ -1054,6 +1059,19 @@ def run(
     # the check meant to cost nothing was two thirds of the wall clock and got
     # worse as the table grew -- mutations fan out, a union sums.
     shards = sorted({mutation.tests for mutation in table})
+    # `first` too, or the baseline never sees it. A remembered killer can name a
+    # test *outside* the row's selection -- `confirm` records them from
+    # whole-suite runs, so systematically so -- and if that test is red on the
+    # untouched tree it fails here as well, `noticed[0]` names it, and the row
+    # reports `caught` with a green baseline behind it. That is `confirm`'s own
+    # recorded failure ("credited to a shell-hook test that had never heard of
+    # the file under mutation") coming back through the cache.
+    #
+    # One shard holding all of them, not one each: a shard per remembered test
+    # is the sharding explosion that cost 372s -> 730s, in a new disguise.
+    ahead = " ".join(sorted({name for row in table for name in row.first.split()}))
+    if ahead:
+        shards.append(ahead)
     # Twice the usable cores, which is what `tools/run_tests.py` measured for this
     # same subprocess-wait-bound work (jobs=8 beat jobs=4 by ~9%, jobs=16
     # regressed). An earlier `cpu // 2` here gave two lanes on a four-core runner
@@ -1088,6 +1106,26 @@ def run(
             pool.submit(_attempt, mutation, available, failfast, timeout, memory, each)
             for mutation in table
         ]
+        if landed is not None:
+            # Collected *before* the rows when a caller persists incrementally,
+            # which reverses the order below and is worth the reversal. A report
+            # written mid-run says `baseline_red: false`, `_recorded` drops the
+            # flag entirely, and `sweep` skips a recorded file by name -- so a
+            # red-baseline run that is interrupted leaves rows a resume treats as
+            # final. The per-file code this replaced could not do that: it wrote
+            # after its batch returned, by which time the baseline was known.
+            for future in checking:
+                first_look = future.result()
+                timings.update(first_look.times or {})
+                if first_look.outcome != "survived":
+                    print(
+                        f"  BASELINE NOT GREEN ({first_look.outcome}) -- the suite does not "
+                        f"pass untouched, so {scope} means anything: {first_look.detail}"
+                    )
+                    red = True
+                    break
+            checking = []
+
         for mutation, future in zip(table, futures, strict=True):
             verdict = future.result()
             timings.update(verdict.times or {})
@@ -1256,7 +1294,10 @@ def confirm(
     print(f"\nconfirming {len(survivors)} survivor(s) against the whole suite...")
     # `rerun` rather than `widened`: `Report.widened` is a different thing three
     # lines down, and one word for two meanings in one function is a re-read.
-    rerun = [result.mutation._replace(tests=WHOLE_SUITE) for _, result in survivors]
+    # `first=""` as well as the widened selection: this pass exists to run the
+    # *whole* suite against each survivor, and a remembered test in front of it
+    # would be the one thing that could make that untrue.
+    rerun = [result.mutation._replace(tests=WHOLE_SUITE, first="") for _, result in survivors]
     again = run(
         rerun,
         baseline=baseline,
@@ -1297,7 +1338,11 @@ def confirm(
     unsure = sum(1 for found in again.results if not found.verdict.answered)
     if unsure:
         print(f"{unsure} confirmation(s) could not be answered; those rows stand as reported.")
-    merged = {**(report.times or {}), **(again.times or {})}
+    # `again` first so `report` wins: `again` is a `failfast` pass over mutated
+    # trees, where a test that normally costs five seconds stops at its first
+    # assertion and measures a hundredth of one. Recorded as its cost, it enters
+    # the prefix budget every row pays and the real prefix stops being bounded.
+    merged = {**(again.times or {}), **(report.times or {})}
     if not corrected:
         return report._replace(widened=True, times=merged or None)
     print(f"{len(corrected)} of them were caught by a test the selection had not run.")
@@ -1982,8 +2027,16 @@ def main(argv: list[str] | None = None) -> int:
         # After `confirm`, whose verdicts are the ones that stand: a row it
         # promotes from survivor to caught has a killer worth keeping, and one
         # it leaves surviving must forget the test that stopped catching it.
-        killers.learn(report)
-        killers.save()
+        if report.baseline_red:
+            # Its verdicts are meaningless by definition, so its killers are
+            # too -- and a killer recorded from a red tree is a test that fails
+            # untouched, which is exactly what must never be put in front of a
+            # later run. This is the supply line for the false `caught` the
+            # baseline shard above guards against; both ends are closed.
+            print("the baseline was red, so nothing was remembered from this run.")
+        else:
+            killers.learn(report)
+            killers.save()
         if args.json:
             _persist(report, args.json)
             # Last, and after `confirm`: the marker means the whole run is over,
