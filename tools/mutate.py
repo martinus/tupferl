@@ -197,6 +197,17 @@ _FLOOR = 2 << 30
 #: cgroup's.
 _BUDGET = "TUPFERL_MUTATE_BUDGET"
 
+#: What the whole run may spend, in bytes, when the caller says so outright.
+#: Set by `--budget`, and an environment variable rather than a module global so
+#: that a nested harness inherits the answer instead of re-deriving it from a
+#: machine it can no longer see.
+_TOTAL = "TUPFERL_MUTATE_TOTAL"
+
+#: What a run leaves for the operating system and for itself when the machine is
+#: its own. A gibibyte, which is `_LANE` -- the same number, because the thing
+#: being reserved is exactly "room for one more lane's worth of everything else".
+_SPARE = 1 << 30
+
 #: Which Hypothesis profile the suites this runs should use. Set for every probe
 #: and *not* conditional on the caller's own value: a sweep runs one suite per
 #: mutation, so the full example budget multiplies by the size of the table.
@@ -925,14 +936,95 @@ def _visible_memory() -> int:
     return min(limits) if limits else _LANES * _LANE
 
 
+def _confined() -> int:
+    """The cgroup's memory limit, or 0 when the host's RAM is what bounds us.
+
+    A limit counts only when it is *below* what the host reports: cgroup v2
+    writes `max` for "no limit" and v1 writes a sentinel near 2**63, and on this
+    machine that sentinel is what `memory.limit_in_bytes` holds. Comparing
+    against the host total is the only way to tell a real limit from either.
+    """
+    host = 0
+    with suppress(AttributeError, OSError, ValueError):  # not POSIX
+        host = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    if not host:
+        return 0
+    for where in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            said = Path(where).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if said.isdigit() and 0 < int(said) < host:
+            return int(said)
+    return 0
+
+
+def dedicated() -> str:
+    """Why this machine is this run's alone, or "" when it is shared.
+
+    Two signals, and both are facts rather than guesses about intent:
+
+    - **A cgroup limit is in force.** The kernel has already carved out this
+      process's share, so halving it again double-counts the same reservation --
+      the container has no "other half" to leave for anybody, because nobody
+      else is in it.
+    - **`CI` is set.** A CI runner is by construction not shared with a person
+      waiting for their editor to respond. Every CI system sets it, and
+      `tests/profiles.py` already keys off it for the same reason.
+
+    Returned as a *reason* rather than a bool so the line the run prints can say
+    which one applied. A lane count nobody can account for is what sent this
+    author reading `_share` in the first place.
+    """
+    if os.environ.get("CI"):
+        return "CI is set"
+    if _confined():
+        return "a cgroup limit is in force"
+    return ""
+
+
+def _why() -> str:
+    """Which rule set the budget, for the line the run prints.
+
+    Said out loud for the same reason `--limit` says what it dropped: three
+    lanes on a four-core machine reads as a slow tool rather than a bounded one,
+    and this author read `_share` twice before finding that the number came from
+    memory rather than cores.
+    """
+    if os.environ.get(_TOTAL, "").isdigit():
+        return "--budget"
+    return f"dedicated: {dedicated()}" if dedicated() else "shared machine, so half of it"
+
+
 def _budget() -> int:
     """What this run may spend in total.
 
-    Half of visible memory, because the other half belongs to whoever is using
-    the machine. Mutation testing is a background chore and has no claim on the
-    whole box.
+    **Half of visible memory when the machine is shared with a person**, because
+    the other half is theirs: mutation testing is a background chore and has no
+    claim on a box somebody is working in.
+
+    That halving was unconditional, and on a dedicated machine it is not thrift
+    but waste. Measured on the container this was found in -- 16 GiB, four cores,
+    nothing else running -- it gave a budget of 8037 MiB, and `_share` then
+    allowed **three** lanes where the cores wanted eight. The ceiling is what
+    stops a runaway, within seconds; the budget only decides how many honest
+    lanes fit, and on a machine with no one else on it the honest answer is
+    nearly all of them.
+
+    So a dedicated machine keeps everything but `_SPARE`, and `--budget` beats
+    both -- because the one thing better than a good guess about who owns the
+    machine is being told.
     """
-    return _visible_memory() // 2
+    said = os.environ.get(_TOTAL, "")
+    if said.isdigit() and int(said) > 0:
+        return int(said)
+    visible = _visible_memory()
+    if dedicated():
+        # Never below the floor: a very small dedicated box would otherwise be
+        # handed a budget under one lane's ceiling and get fewer lanes than the
+        # shared rule would have given it, which is the opposite of the point.
+        return max(_FLOOR, visible - _SPARE)
+    return visible // 2
 
 
 def _affordable() -> int:
@@ -1097,7 +1189,7 @@ def run(
         # inexplicable.
         print(
             f"{lanes} lane(s) at {memory >> 20} MiB each, from {_budget() >> 20} MiB "
-            f"of usable memory -- see tools.mutate._share."
+            f"of usable memory ({_why()}) -- see tools.mutate._share."
         )
 
     results: list[Result] = []

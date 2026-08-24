@@ -859,3 +859,97 @@ class TestASpecFileWithNothingInIt(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 mutate.main([str(where)])
         self.assertIn("MUTATIONS", str(raised.exception))
+
+
+class TestWhoOwnsTheMachine(unittest.TestCase):
+    """`_budget` halves a shared machine and does not halve a dedicated one.
+
+    The halving was unconditional, and on a machine with nobody else on it that
+    is waste rather than thrift: 16 GiB and four cores gave a budget of 8037 MiB,
+    which `_share` turned into **three** lanes where the cores wanted eight.
+    Measured on one interleaved pair of the same 17-mutant table: 283.7s at three
+    lanes against 154.7s at seven.
+    """
+
+    #: Bigger than `_SPARE` and than `_FLOOR`, so "leave a gibibyte" and "never
+    #: go under the floor" are both visible rather than clipping each other.
+    VISIBLE = 16 << 30
+
+    def budget(self, **environment: str) -> int:
+        seen = mock.patch.object(mutate, "_visible_memory", lambda: self.VISIBLE)
+        with seen, mock.patch.dict(os.environ, environment, clear=True):
+            return mutate._budget()
+
+    def test_a_shared_machine_keeps_half_for_the_person_using_it(self) -> None:
+        self.assertEqual(self.VISIBLE // 2, self.budget())
+
+    def test_a_ci_runner_is_not_shared(self) -> None:
+        """Nobody is waiting for their editor on a CI runner, and every CI
+        system sets this."""
+        self.assertEqual(self.VISIBLE - mutate._SPARE, self.budget(CI="true"))
+
+    def test_a_cgroup_limit_means_the_share_is_already_carved_out(self) -> None:
+        """Halving a cgroup limit double-counts the same reservation: the
+        container has no other half to leave, because nobody else is in it."""
+        with mock.patch.object(mutate, "_confined", lambda: 1 << 30):
+            self.assertEqual(self.VISIBLE - mutate._SPARE, self.budget())
+
+    def test_being_told_beats_both(self) -> None:
+        asked = 12 << 30
+        self.assertEqual(asked, self.budget(**{mutate._TOTAL: str(asked)}))
+        self.assertEqual(asked, self.budget(CI="true", **{mutate._TOTAL: str(asked)}))
+
+    def test_nonsense_in_the_variable_is_ignored_rather_than_obeyed(self) -> None:
+        for said in ("", "0", "-1", "lots"):
+            with self.subTest(said=said):
+                self.assertEqual(self.VISIBLE // 2, self.budget(**{mutate._TOTAL: said}))
+
+    def test_a_tiny_dedicated_machine_never_drops_under_the_floor(self) -> None:
+        """Otherwise subtracting `_SPARE` hands it less than one lane's ceiling
+        and it gets *fewer* lanes than the shared rule would have given -- the
+        opposite of the point."""
+        tiny = mock.patch.object(mutate, "_visible_memory", lambda: mutate._SPARE + (1 << 20))
+        with tiny, mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
+            self.assertEqual(mutate._FLOOR, mutate._budget())
+
+    def test_the_run_says_which_rule_it_used(self) -> None:
+        """A lane count nobody can account for is what sent this author reading
+        `_share` in the first place."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIn("shared", mutate._why())
+        with mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
+            self.assertIn("dedicated", mutate._why())
+        with mock.patch.dict(os.environ, {mutate._TOTAL: "123"}, clear=True):
+            self.assertEqual("--budget", mutate._why())
+
+
+class TestReadingACgroupLimit(unittest.TestCase):
+    """`_confined` tells a real limit from the two ways of saying "no limit"."""
+
+    HOST = 16 << 30
+
+    def confined(self, written: str) -> int:
+        def reads(where: str, **kwargs: object) -> str:
+            del where, kwargs
+            return written
+
+        # Both patched by name rather than through `mutate.<attr>`: the module
+        # imports `os` and `Path`, it does not re-export them, and mypy is right
+        # to say so.
+        host = mock.patch(
+            "os.sysconf", lambda name: {"SC_PAGE_SIZE": 1, "SC_PHYS_PAGES": self.HOST}[name]
+        )
+        with mock.patch("pathlib.Path.read_text", reads), host:
+            return mutate._confined()
+
+    def test_a_real_limit_below_the_host_total_counts(self) -> None:
+        self.assertEqual(2 << 30, self.confined(str(2 << 30)))
+
+    def test_cgroup_v2_writes_max_for_no_limit(self) -> None:
+        self.assertEqual(0, self.confined("max"))
+
+    def test_cgroup_v1_writes_a_sentinel_near_two_to_the_sixty_three(self) -> None:
+        """Which is what this machine's `memory.limit_in_bytes` actually holds:
+        9223372036854771712. Read as a limit it would look like the largest
+        dedicated machine ever built."""
+        self.assertEqual(0, self.confined("9223372036854771712"))
