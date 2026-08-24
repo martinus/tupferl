@@ -30,6 +30,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -361,6 +362,7 @@ def run_cli(
 
     master, slave = pty.openpty()
     try:
+        hush(slave)
         os.write(master, (keys + FALLBACK).encode("utf-8"))
         started = subprocess.Popen(
             [sys.executable, "-m", "tupferl", *args],
@@ -381,6 +383,24 @@ def run_cli(
     return subprocess.CompletedProcess(started.args, started.returncode, out, err)
 
 
+def hush(slave: int) -> None:
+    """Turn the pty's own echo off before anything is typed at it.
+
+    A pty starts with `ECHO` on, so every byte written to the master is echoed
+    straight back into the terminal's *output* queue -- and in these fixtures
+    nobody reads that queue. It fills, and the next `tcsetattr` that waits for
+    output to drain never returns.
+
+    `conflicts.one_key` no longer asks for that wait, which is the real fix; this
+    is the other half, and it is worth having on its own. The prompt echoes the
+    key it read deliberately, to its own output stream, so the terminal's echo
+    was never anything but noise queued behind the test.
+    """
+    mode = termios.tcgetattr(slave)
+    mode[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, mode)
+
+
 class Terminal:
     """A pty, and the two halves of it as files.
 
@@ -395,6 +415,7 @@ class Terminal:
 
     def __init__(self) -> None:
         self.master, self.slave = pty.openpty()
+        hush(self.slave)
         self.source = os.fdopen(self.slave, "r")
 
     def type(self, keys: str) -> None:

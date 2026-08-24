@@ -551,15 +551,26 @@ def one_key(source: TextIO) -> str:
     mode[6][termios.VMIN] = 1
     mode[6][termios.VTIME] = 0
     try:
-        termios.tcsetattr(fd, termios.TCSADRAIN, mode)
+        # `TCSANOW`, never `TCSADRAIN`. Every flag set here is an *input* flag,
+        # so there is no output to wait for -- and `TCSADRAIN` waits for the
+        # terminal's pending output to drain, which can block for ever when
+        # nobody is reading the other end. A pty starts with `ECHO` on, so
+        # anything typed at it before this call is sitting in that output queue;
+        # if it fills, the drain never completes and the prompt hangs before it
+        # has read a byte. Linux's buffer is large enough to hide it and macOS's
+        # is not, which is the shape CLAUDE.md warns about: green on three legs
+        # and hung on the fourth.
+        termios.tcsetattr(fd, termios.TCSANOW, mode)
         first = os.read(fd, 1)
         if first == b"\x1b":
             first += rest_of_escape(fd, mode)
         return first.decode("utf-8", "replace").lower()
     finally:
         # In a `finally` because an interrupt at the prompt would otherwise leave
-        # the user's shell with echo off, which looks like a hung terminal.
-        termios.tcsetattr(fd, termios.TCSADRAIN, before)
+        # the user's shell with echo off, which looks like a hung terminal. And
+        # `TCSANOW` for the reason above, doubly so here: a restore that blocks
+        # leaves the terminal in exactly the state this line exists to undo.
+        termios.tcsetattr(fd, termios.TCSANOW, before)
 
 
 def ask(sides: Sides, config: Config, source: TextIO, out: TextIO) -> Answer:

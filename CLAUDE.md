@@ -541,6 +541,16 @@ Four things are not where a newcomer would guess, all on purpose:
   anyway, because `conflicts.hunks` parses the markers back out and a git that
   started honouring it would turn a base section into something the parser reads
   as the repository's version.
+- **`tcsetattr` with `TCSADRAIN` can block for ever on a pty.** It waits for the
+  terminal's pending *output* to drain, and a pty starts with `ECHO` on — so
+  every key a fixture types is echoed into an output queue that, in these tests,
+  nobody reads. When it fills, the drain never completes. `conflicts.one_key`
+  sets only *input* flags, so it uses `TCSANOW`, which cannot wait; and
+  `support.hush` clears the pty's echo before anything is typed. The symptom was
+  a `macos` CI leg running for twenty minutes while every other leg finished in
+  under one — Linux's pty buffer is large enough to hide it. Every job now has a
+  `timeout-minutes`, and `tests/test_ci.py` asserts it, because a running job's
+  log is a 404: a hang is the one failure with nothing to read.
 - **The suite must never inherit the developer's stdin.** `sync` asks
   `sys.stdin.isatty()` to decide whether anyone is there to answer a conflict,
   so a test that inherits a terminal *prompts* and blocks, and the same test in
