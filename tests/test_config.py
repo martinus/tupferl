@@ -93,10 +93,17 @@ class TestWhichTomlParserIsUsed(unittest.TestCase):
     """
 
     def test_three_eleven_and_later_use_the_standard_library(self) -> None:
-        with mock.patch.object(sys, "version_info", (3, 11, 0)):
-            self.assertEqual("tomllib", config.toml().__name__)
-        with mock.patch.object(sys, "version_info", (3, 14, 1)):
-            self.assertEqual("tomllib", config.toml().__name__)
+        """Stubbed, for the same reason the 3.10 case is: patching the version
+        number does not conjure the module. On a real 3.10 interpreter `import
+        tomllib` raises `ModuleNotFoundError`, so the first version of this test
+        passed everywhere except the one leg that runs 3.10 -- which is the leg
+        that exists to check exactly this branch."""
+        stdlib = types.ModuleType("tomllib")
+        stubbed = mock.patch.dict(sys.modules, {"tomllib": stdlib})
+        for version in ((3, 11, 0), (3, 14, 1)):
+            said = mock.patch.object(sys, "version_info", version)
+            with self.subTest(version=version), stubbed, said:
+                self.assertIs(stdlib, config.toml())
 
     def test_three_ten_uses_the_backport_it_was_taken_from(self) -> None:
         """`(3, 11, 0)` above and `(3, 10, 7)` here are the two sides of the

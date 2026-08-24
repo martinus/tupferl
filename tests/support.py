@@ -443,6 +443,13 @@ def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
 #: character found to break one construction must not be excluded in only one of
 #: them.
 #:
+#: `codec="utf-8"` rather than excluding the `Cs` category by name. It says the
+#: real reason -- these strings get encoded, and a lone surrogate raises when they
+#: do -- and it is the modern spelling: `blacklist_categories` is a compatibility
+#: shim whose stub is typed differently in newer hypothesis, which passed mypy
+#: locally and failed it in CI. Verified against the `hypothesis>=6.100` floor,
+#: and 400 generated characters checked to be utf-8 encodable.
+#:
 #: - `\n` and `\r`, because `joined` adds the newlines: a generated one would
 #:   change how many lines a region has, and both constructions rest on that
 #:   count.
@@ -454,7 +461,7 @@ def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
 #:   exclusion being a hole.
 def line(max_size: int) -> st.SearchStrategy[str]:
     return st.text(
-        alphabet=st.characters(blacklist_characters="\n\r\x00", blacklist_categories=("Cs",)),
+        alphabet=st.characters(codec="utf-8", exclude_characters="\n\r\x00"),
         max_size=max_size,
     )
 

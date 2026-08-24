@@ -463,6 +463,18 @@ Two things are not where a newcomer would guess, both on purpose:
   absent, `subprocess` falls back to `confstr("CS_PATH")` and finds
   `/usr/bin/git` anyway. The obvious spelling of a "git is not installed" fixture
   merges successfully and passes for the wrong reason.
+- **Patching `sys.version_info` does not conjure the module.** A test that fakes
+  3.11 and then lets the code `import tomllib` fails on a real 3.10 interpreter,
+  where that module does not exist -- so it passes on every leg *except* the one
+  that exists to check the branch. Stub the module in `sys.modules` instead: the
+  claim under test is "this branch imports that name", and standing something
+  there and watching it come back is exactly that claim.
+- **The preflight passing locally does not mean CI's will.** `hypothesis`'s
+  `blacklist_categories` is a compatibility shim whose stub is typed in newer
+  releases; the same file passed `mypy` here and failed it on the runner. Prefer
+  the modern spellings (`exclude_characters`, `exclude_categories`, `codec`),
+  and when a lint fails only in CI, suspect the dependency's version before the
+  code. Clearing `.mypy_cache` was the first guess here and it was wrong.
 - **`str.splitlines()` splits on far more than `\n`** — `\x0b \x0c \x1c \x1d
   \x1e \x85 \u2028 \u2029` as well. A generated line containing one of those
   becomes two lines, and anything indexing by line number is then off by one for
