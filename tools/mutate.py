@@ -1371,8 +1371,9 @@ class Killers:
     730s before the field existed.
     """
 
-    def __init__(self, where: Path | None) -> None:
+    def __init__(self, where: Path | None, budget: float = PREFIX) -> None:
         self.where = where
+        self.budget = budget
         self.known: dict[str, str] = {}
         self.cost: dict[str, float] = {}
         if where is not None and where.is_file():
@@ -1416,7 +1417,7 @@ class Killers:
         covered: set[str] = set()
         chosen: list[str] = []
         spent = 0.0
-        while spent < PREFIX:
+        while spent < self.budget:
             best, yield_ = "", 0.0
             for test, caught in rows.items():
                 fresh = len(caught - covered)
@@ -1426,7 +1427,7 @@ class Killers:
                 rate = fresh / max(self.cost[test], 0.001)
                 if fresh and rate > yield_:
                     best, yield_ = test, rate
-            if not best or spent + self.cost[best] > PREFIX:
+            if not best or spent + self.cost[best] > self.budget:
                 break
             chosen.append(best)
             covered |= rows[best]
@@ -1905,6 +1906,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="ignore and do not update the remembered killers",
     )
+    parser.add_argument(
+        "--prefix",
+        type=float,
+        default=PREFIX,
+        metavar="SECONDS",
+        help=f"budget for the cheap-tests-first prefix, 0 to disable (default {PREFIX:g})",
+    )
     args = parser.parse_args(argv)
 
     if args.all and args.base:
@@ -1925,7 +1933,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.base:
         table = generated(args)
-        killers = Killers(None if args.no_killers else args.killers)
+        killers = Killers(None if args.no_killers else args.killers, budget=args.prefix)
         if args.list:
             for row in table:
                 print(f"  {row.operator:16} {row.label}")
