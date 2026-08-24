@@ -53,7 +53,9 @@ from __future__ import annotations
 import io
 import json
 import resource
+import signal
 import sys
+import time
 import traceback
 import unittest
 from types import TracebackType
@@ -155,6 +157,45 @@ def _exhausted(err: ExcInfo | None) -> bool:
     return err is not None and err[0] is not None and issubclass(err[0], MemoryError)
 
 
+def _carrier(test: object, err: ExcInfo | None, each: float) -> str:
+    """Why this error is not an answer, or "" when it is one.
+
+    Both limits in one place, because both are the same mistake waiting to
+    happen: they raise *inside* a real `TestCase`, so they arrive at `addError`
+    indistinguishable by protocol from that test noticing the mutation, and
+    filed as answers they credit a test that asserted nothing. Written out
+    twice, a refinement to one copy leaves the other crediting -- and the
+    `addSubTest` copy had no test at all.
+    """
+    if err is None or err[0] is None:
+        return ""
+    if issubclass(err[0], Hung):
+        return f"{test} did not finish within {each:g}s"
+    return f"{test} ran out of memory" if _exhausted(err) else ""
+
+
+class Hung(BaseException):
+    """A test that ran past its share of the clock.
+
+    `BaseException`, not `Exception`, so that a test doing `except Exception` --
+    which several here do, to assert on a message -- cannot swallow the alarm and
+    hang anyway. `unittest` catches `BaseException` around a test, so it is still
+    reported rather than escaping the runner.
+    """
+
+
+def _ring(signum: int, frame: object) -> None:
+    """Raise, rather than set a flag.
+
+    The whole mechanism turns on this. PEP 475 makes Python *retry* a syscall
+    interrupted by a signal, so a handler that recorded the alarm and returned
+    would be swallowed by exactly the blocking `read()` a hung test sits in.
+    Raising propagates instead of resuming. Measured against a fifo read and a
+    `subprocess.run`, both interrupted at 0.5s.
+    """
+    raise Hung("this test ran past the per-test limit")
+
+
 class Verdicts(unittest.TextTestResult):
     """Keeps the tests that asserted apart from the carriers that did not."""
 
@@ -162,33 +203,69 @@ class Verdicts(unittest.TextTestResult):
         super().__init__(*args, **kwargs)
         #: Real test methods that failed. This is what `caught` means.
         self.noticed: list[str] = []
+        #: The same tests, as `python -m unittest` takes them back --
+        #: `module.Class.method`, where `noticed` holds `method (module.Class.
+        #: method)` for a human. Recorded rather than parsed back out of the
+        #: display string, because `mutate` feeds these straight to a loader and
+        #: a display format is not an API.
+        self.killers: list[str] = []
         #: Fixtures that died before any assertion ran. Not an answer.
         self.broke: list[str] = []
+        #: Seconds one test may take. 0 disables the alarm, which is what a
+        #: platform without `SIGALRM` gets.
+        self.each: float = 0.0
+        #: What each test that ran cost, by id. `mutate.Killers` accumulates
+        #: these so it can order the cheap high-yield tests first; the *baseline*
+        #: runs are where they mostly come from, since those alone run a whole
+        #: selection to the end without `failfast` cutting it short.
+        self.times: dict[str, float] = {}
+        self._began = 0.0
+
+    def startTest(self, test: unittest.TestCase) -> None:
+        super().startTest(test)
+        self._began = time.perf_counter()
+        if self.each:
+            signal.setitimer(signal.ITIMER_REAL, self.each)
+
+    def stopTest(self, test: unittest.TestCase) -> None:
+        self.times[test.id()] = time.perf_counter() - self._began
+        # Cancelled here rather than only on the next `startTest`, or a fast test
+        # would be charged for the timer its predecessor set and the alarm would
+        # land in whatever ran next.
+        if self.each:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        super().stopTest(test)
+
+    def _answered(self, test: unittest.TestCase) -> None:
+        """Record one test that noticed, both ways round."""
+        self.noticed.append(str(test))
+        self.killers.append(test.id())
 
     def addFailure(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addFailure(test, err)
-        self.noticed.append(str(test))
+        self._answered(test)
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addError(test, err)
-        if _exhausted(err):
-            # The one exception classified by type rather than by protocol, and
-            # it has to be. `cap` makes a runaway mutation raise `MemoryError`
-            # inside whichever test happened to be running -- a real `TestCase`,
-            # reached through `addError`, indistinguishable by protocol from
-            # that test having *noticed* something. Left alone it would report
-            # `caught`, naming a test that asserted nothing and crediting it
-            # with a guard it does not have. That is precisely the lie this
-            # module was written to remove, so the guard against running out of
-            # memory must not reintroduce it one level up.
-            self.broke.append(f"{test} ran out of memory")
+        # The two limits, classified by type rather than by protocol, because by
+        # protocol they are a test noticing. See `_carrier`.
+        if reason := _carrier(test, err, self.each):
+            self.broke.append(reason)
             return
         # `_ErrorHolder` -- a dead `setUpClass`, `setUpModule` or `tearDown` --
         # is not a `TestCase`, and that is the whole check. It carries a
         # traceback for something that happened *around* the tests, so no
         # assertion in it was ever evaluated.
+        # Kept as a ternary over the *list*, rather than an `if`/`else` around
+        # two statements. `test` is annotated `TestCase` because that is what
+        # typeshed says `addError` takes, so mypy proves an `else:` branch
+        # unreachable and `warn_unreachable` rejects it -- while at runtime the
+        # branch is exactly the case this check exists for. `target is` is a
+        # fact about a list mypy cannot argue with.
         target = self.noticed if isinstance(test, unittest.TestCase) else self.broke
         target.append(str(test))
+        if target is self.noticed:
+            self.killers.append(test.id())
 
     def addSubTest(
         self, test: unittest.TestCase, subtest: unittest.TestCase, err: ExcInfo | None
@@ -198,24 +275,56 @@ class Verdicts(unittest.TextTestResult):
             # `test` is the owning case; `subtest` is the `_SubTest` carrier that
             # the base class files into `failures`. Recording the owner is what
             # keeps a `subTest` assertion a real answer.
-            if _exhausted(err):
-                self.broke.append(f"{test} ran out of memory")
+            if reason := _carrier(test, err, self.each):
+                self.broke.append(reason)
             else:
-                self.noticed.append(str(test))
+                # The *owner*, not the `_SubTest` carrier: its `id()` carries the
+                # parameters in brackets and `unittest` cannot load that back.
+                self._answered(test)
 
 
-def collect(names: list[str], failfast: bool) -> dict[str, Any]:
+def each_test(seconds: float) -> float:
+    """Arm the per-test alarm, and say what was actually armed.
+
+    0 where `SIGALRM` does not exist -- Windows, and any non-main thread. Plan §2
+    puts Windows out of scope for v1 and `collect` runs in the main thread, so
+    this is a guard rather than a supported path. The returned value is what the
+    `Verdicts` instances are given, so a run with no alarm armed reports every
+    test at `0s` in its `broke` messages rather than quoting a bound that was
+    never in force.
+    """
+    if not seconds or not hasattr(signal, "SIGALRM"):
+        return 0.0
+    try:
+        signal.signal(signal.SIGALRM, _ring)
+    except ValueError:
+        return 0.0
+    return seconds
+
+
+def collect(
+    names: list[str], failfast: bool, each: float = 0.0, first: list[str] | None = None
+) -> dict[str, Any]:
     loader = unittest.TestLoader()
     # No names means the whole suite, and it has to be `discover` rather than
     # the package name: `loadTestsFromNames(["tests"])` imports the package and
     # finds nothing in it, so the run comes back green having executed zero
     # tests. That is reported as `broke` -- correctly, and confusingly, since the
     # request was for everything.
-    suite = (
+    chosen = (
         loader.loadTestsFromNames(names)
         if names
         else loader.discover(".", pattern="test_*.py", top_level_dir=".")
     )
+    # `first` in its own argument rather than pushed onto `names`, and that is
+    # not tidiness. An empty `names` *means* the whole suite -- `mutate`'s
+    # `WHOLE_SUITE` -- and the fall-through above is how. Prepending to the list
+    # makes it non-empty, so "run everything" quietly became "run these three",
+    # and `confirm` builds exactly that row: it widens a survivor's selection to
+    # `WHOLE_SUITE` while the cheap prefix is still attached. The pass that
+    # promises every survivor was re-run against the whole suite would have run
+    # eight tests and said so.
+    suite = unittest.TestSuite([loader.loadTestsFromNames(first), chosen]) if first else chosen
     if loader.errors:
         # Public API, and checked before running: the suite `loadTestsFromNames`
         # returns for an unimportable module holds a synthetic `_FailedTest`
@@ -224,30 +333,42 @@ def collect(names: list[str], failfast: bool) -> dict[str, Any]:
             "loaded": True,
             "ran": 0,
             "noticed": [],
+            "killers": [],
+            "times": {},
             # `str()` because typeshed types `errors` as exception classes while
             # `unittest` actually appends formatted tracebacks; the first line is
             # the "Failed to import test module: x" that says which.
             "broke": [str(error).splitlines()[0] for error in loader.errors],
         }
+    armed = each_test(each)
+
+    def build(*args: Any, **kwargs: Any) -> Verdicts:
+        made = Verdicts(*args, **kwargs)
+        made.each = armed
+        return made
+
     result = unittest.TextTestRunner(
-        stream=io.StringIO(), verbosity=0, failfast=failfast, resultclass=Verdicts
+        stream=io.StringIO(), verbosity=0, failfast=failfast, resultclass=build
     ).run(suite)
     assert isinstance(result, Verdicts)
     return {
         "loaded": True,
         "ran": result.testsRun,
         "noticed": result.noticed,
+        "killers": result.killers,
+        "times": result.times,
         "broke": result.broke,
     }
 
 
 def main(argv: list[str]) -> None:
-    report, failfast, names = argv[0], argv[1] == "1", argv[3:]
+    report, failfast = argv[0], argv[1] == "1"
+    first, names = [n for n in argv[4].split() if n], argv[5:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))
     try:
-        written = collect(names, failfast)
+        written = collect(names, failfast, float(argv[3]), first)
     except BaseException:
         # Said, not inferred. The caller used to conclude "the suite could not be
         # loaded" from an absent file, which is also what a typo in this file
