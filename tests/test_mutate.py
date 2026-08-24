@@ -488,3 +488,31 @@ class TestWhichRowsGetThePrefix(unittest.TestCase):
         with support.quiet():
             (ahead,) = cache.ahead_of(self.rows("tests.test_paths"))
         self.assertEqual("", ahead.first)
+
+
+class TestTheCacheLearnsFromARealRun(unittest.TestCase):
+    """The plumbing, not the algorithm.
+
+    `TestTheCheapPrefix` sets `cost` by hand, so every one of its assertions
+    passed while the harness was recording **zero** costs -- `sweep` re-wrapped
+    the report without `times` and the prefix quietly ordered nothing. A test
+    that builds its own inputs cannot see a data path that never delivers them,
+    which is CLAUDE.md §8's pass nobody can explain.
+    """
+
+    def test_a_run_measures_the_tests_it_ran(self) -> None:
+        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        times = found.times or {}
+        self.assertTrue(times, "the run recorded no test timings at all")
+        # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
+        # exactly what should have been measured.
+        self.assertTrue(
+            any(name.startswith("tests.test_paths.") for name in times), sorted(times)[:5]
+        )
+        self.assertTrue(all(seconds >= 0 for seconds in times.values()))
+
+    def test_they_reach_the_cache(self) -> None:
+        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        cache = mutate.Killers(None)
+        cache.learn(found)
+        self.assertEqual(found.times or {}, cache.cost)

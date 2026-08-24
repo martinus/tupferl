@@ -1297,8 +1297,9 @@ def confirm(
     unsure = sum(1 for found in again.results if not found.verdict.answered)
     if unsure:
         print(f"{unsure} confirmation(s) could not be answered; those rows stand as reported.")
+    merged = {**(report.times or {}), **(again.times or {})}
     if not corrected:
-        return report._replace(widened=True)
+        return report._replace(widened=True, times=merged or None)
     print(f"{len(corrected)} of them were caught by a test the selection had not run.")
     return Report(
         [
@@ -1307,6 +1308,7 @@ def confirm(
         ],
         report.baseline_red,
         True,
+        merged or None,
     )
 
 
@@ -1820,7 +1822,10 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         _persist(Report(collected, report.baseline_red), args.json)
     if report.baseline_red:
         print(f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.")
-    return Report(collected, report.baseline_red)
+    # `times` carried through, not dropped. Re-wrapping the report without them
+    # is what made the cheap prefix silently learn nothing: the run measured
+    # every test and the number reached `Killers` as an empty dict.
+    return Report(collected, report.baseline_red, times=report.times)
 
 
 def main(argv: list[str] | None = None) -> int:
