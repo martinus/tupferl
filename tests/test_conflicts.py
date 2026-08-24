@@ -298,11 +298,47 @@ class TestOneKeypress(unittest.TestCase):
         self.terminal.type("l")
         self.assertEqual("l", self.key())
 
+    def editing(self) -> int:
+        """The two flags whose loss the user would feel, as the driver has them.
+
+        **Not the whole `termios` structure.** Comparing all of it passed on
+        Linux and failed on macOS, and the whole-structure claim is the wrong one
+        to make: `VMIN` and `VTIME` carry no meaning once `ICANON` is back on, so
+        a driver is free to normalise them on the way, and one of them does. The
+        exact field is not established here -- macOS cannot be reproduced in this
+        container, and inventing the reason would be worse than saying so.
+
+        What the restore actually owes the user is these two bits: `ICANON` back
+        on so their shell reads lines again, and `ECHO` back on so they can see
+        what they type. A prompt that left either cleared looks like a hung
+        terminal, which is the whole reason the `finally` exists.
+        """
+        return int(termios.tcgetattr(self.terminal.source.fileno())[3]) & (
+            termios.ICANON | termios.ECHO
+        )
+
     def test_the_terminal_is_left_as_it_was_found(self) -> None:
-        before = termios.tcgetattr(self.terminal.source.fileno())
+        before = self.editing()
         self.terminal.type("l")
         self.key()
-        self.assertEqual(before, termios.tcgetattr(self.terminal.source.fileno()))
+        self.assertEqual(before, self.editing())
+
+    def test_the_precondition_holds_that_one_key_really_clears_them(self) -> None:
+        """Both restore tests are vacuous unless the flags are cleared in
+        between: "unchanged before and after" is trivially true of a function
+        that changes nothing. This asserts the middle of the sandwich, by
+        reading the flags from inside the read itself."""
+        seen: list[int] = []
+        self.terminal.type("l")
+        real = os.read
+
+        def peek(fd: int, size: int) -> bytes:
+            seen.append(self.editing())
+            return real(fd, size)
+
+        with mock.patch("os.read", peek):
+            self.key()
+        self.assertEqual([0], seen, "one_key did not clear ICANON and ECHO while reading")
 
     def test_it_is_restored_even_when_the_read_raises(self) -> None:
         """The case the `finally` exists for, and the one the test above cannot
@@ -313,11 +349,11 @@ class TestOneKeypress(unittest.TestCase):
         sequence leaves the whole suite green -- a precondition never
         established, which CLAUDE.md §2 lists by name.
         """
-        before = termios.tcgetattr(self.terminal.source.fileno())
+        before = self.editing()
         patched = mock.patch("os.read", side_effect=KeyboardInterrupt)
         with patched, self.assertRaises(KeyboardInterrupt):
             conflicts.one_key(self.terminal.source)
-        self.assertEqual(before, termios.tcgetattr(self.terminal.source.fileno()))
+        self.assertEqual(before, self.editing())
 
     def test_an_arrow_key_is_one_keypress_and_not_three(self) -> None:
         """A single press of Down sends `\x1b[B`. Read a byte at a time, that is

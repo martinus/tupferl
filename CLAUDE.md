@@ -551,6 +551,13 @@ Four things are not where a newcomer would guess, all on purpose:
   under one — Linux's pty buffer is large enough to hide it. Every job now has a
   `timeout-minutes`, and `tests/test_ci.py` asserts it, because a running job's
   log is a 404: a hang is the one failure with nothing to read.
+- **A whole `termios` structure does not round-trip portably.** Asserting
+  `tcgetattr(fd)` is byte-identical before and after a raw-mode read passed on
+  every Linux leg and failed on macOS: `VMIN` and `VTIME` are meaningless once
+  `ICANON` is back on, so a driver may normalise them on restore. Assert the
+  flags the user would actually miss — `ICANON` and `ECHO` — and assert
+  separately that they really were cleared in between, or "unchanged before and
+  after" is trivially true of a function that changes nothing.
 - **The suite must never inherit the developer's stdin.** `sync` asks
   `sys.stdin.isatty()` to decide whether anyone is there to answer a conflict,
   so a test that inherits a terminal *prompts* and blocks, and the same test in
