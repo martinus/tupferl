@@ -157,6 +157,23 @@ def _exhausted(err: ExcInfo | None) -> bool:
     return err is not None and err[0] is not None and issubclass(err[0], MemoryError)
 
 
+def _carrier(test: object, err: ExcInfo | None, each: float) -> str:
+    """Why this error is not an answer, or "" when it is one.
+
+    Both limits in one place, because both are the same mistake waiting to
+    happen: they raise *inside* a real `TestCase`, so they arrive at `addError`
+    indistinguishable by protocol from that test noticing the mutation, and
+    filed as answers they credit a test that asserted nothing. Written out
+    twice, a refinement to one copy leaves the other crediting -- and the
+    `addSubTest` copy had no test at all.
+    """
+    if err is None or err[0] is None:
+        return ""
+    if issubclass(err[0], Hung):
+        return f"{test} did not finish within {each:g}s"
+    return f"{test} ran out of memory" if _exhausted(err) else ""
+
+
 class Hung(BaseException):
     """A test that ran past its share of the clock.
 
@@ -230,26 +247,10 @@ class Verdicts(unittest.TextTestResult):
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
         super().addError(test, err)
-        if err[0] is not None and issubclass(err[0], Hung):
-            # Classified with `_exhausted` below and for the identical reason:
-            # the alarm raises *inside* a real `TestCase`, so it reaches here
-            # indistinguishable by protocol from that test noticing the
-            # mutation. Filed as an answer it would credit a test that asserted
-            # nothing with a guard it does not have -- and a false `caught` is
-            # invisible where a slow run is merely slow.
-            self.broke.append(f"{test} did not finish within {self.each:g}s")
-            return
-        if _exhausted(err):
-            # The one exception classified by type rather than by protocol, and
-            # it has to be. `cap` makes a runaway mutation raise `MemoryError`
-            # inside whichever test happened to be running -- a real `TestCase`,
-            # reached through `addError`, indistinguishable by protocol from
-            # that test having *noticed* something. Left alone it would report
-            # `caught`, naming a test that asserted nothing and crediting it
-            # with a guard it does not have. That is precisely the lie this
-            # module was written to remove, so the guard against running out of
-            # memory must not reintroduce it one level up.
-            self.broke.append(f"{test} ran out of memory")
+        # The two limits, classified by type rather than by protocol, because by
+        # protocol they are a test noticing. See `_carrier`.
+        if reason := _carrier(test, err, self.each):
+            self.broke.append(reason)
             return
         # `_ErrorHolder` -- a dead `setUpClass`, `setUpModule` or `tearDown` --
         # is not a `TestCase`, and that is the whole check. It carries a
@@ -274,10 +275,8 @@ class Verdicts(unittest.TextTestResult):
             # `test` is the owning case; `subtest` is the `_SubTest` carrier that
             # the base class files into `failures`. Recording the owner is what
             # keeps a `subTest` assertion a real answer.
-            if err[0] is not None and issubclass(err[0], Hung):
-                self.broke.append(f"{test} did not finish within {self.each:g}s")
-            elif _exhausted(err):
-                self.broke.append(f"{test} ran out of memory")
+            if reason := _carrier(test, err, self.each):
+                self.broke.append(reason)
             else:
                 # The *owner*, not the `_SubTest` carrier: its `id()` carries the
                 # parameters in brackets and `unittest` cannot load that back.
@@ -289,8 +288,10 @@ def each_test(seconds: float) -> float:
 
     0 where `SIGALRM` does not exist -- Windows, and any non-main thread. Plan §2
     puts Windows out of scope for v1 and `collect` runs in the main thread, so
-    this is a guard rather than a supported path; it returns 0 so the caller can
-    report that no per-test bound was in force rather than assume one was.
+    this is a guard rather than a supported path. The returned value is what the
+    `Verdicts` instances are given, so a run with no alarm armed reports every
+    test at `0s` in its `broke` messages rather than quoting a bound that was
+    never in force.
     """
     if not seconds or not hasattr(signal, "SIGALRM"):
         return 0.0

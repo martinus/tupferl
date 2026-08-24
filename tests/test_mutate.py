@@ -358,7 +358,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                     sys.executable,
                     "-B",
                     "-c",
-                    Path("tools/verdict.py").read_text(encoding="utf-8"),
+                    mutate._probe(),
                     str(report),
                     "0",
                     "0",

@@ -750,22 +750,22 @@ def _run(
     if written["broke"]:
         return Verdict("broke", str(written["broke"][0]))
     if written["noticed"]:
-        # `.get` with a fallback: a report written by an older `verdict.py`, or
-        # read from a `--json` file that predates this field, has no `killers`.
-        # An absent one costs the next run a remembered ordering, which is the
-        # behaviour before any of this existed.
-        remembered = written.get("killers") or []
+        # Required, like every sibling key on these lines. `_probe` reads
+        # `verdict.py` out of *this* tree, so the two are always the same
+        # revision -- there is no older probe to guard against, and a `.get`
+        # here would turn a real protocol break into a silently empty ordering.
+        remembered = written["killers"]
         return Verdict(
             "caught",
             str(written["noticed"][0]),
             str(remembered[0]) if remembered else "",
-            written.get("times") or None,
+            written["times"] or None,
         )
     if not written["ran"]:
         return Verdict("broke", "the targets held no tests")
     # A survivor ran its whole selection, so its timings are the complete ones --
     # as are a baseline shard's, which is where most of them come from.
-    return Verdict("survived", times=written.get("times") or None)
+    return Verdict("survived", times=written["times"] or None)
 
 
 def _tail(noise: Path) -> str:
@@ -1419,6 +1419,9 @@ class Killers:
     def __init__(self, where: Path | None, budget: float = PREFIX) -> None:
         self.where = where
         self.budget = budget
+        #: What the last `ahead_of` decided, for a caller that wants to say so.
+        self.head: list[str] = []
+        self.dropped = 0
         self.known: dict[str, str] = {}
         self.cost: dict[str, float] = {}
         if where is not None and where.is_file():
@@ -1532,10 +1535,11 @@ class Killers:
     def learn(self, report: Report) -> None:
         """Remember what caught each mutation, and forget what stopped catching it.
 
-        Costs are taken from every result that carries them, answered or not: a
-        `broke` row still measured whatever ran before it died, and the baseline
-        shards -- which run a whole selection with nothing failing -- are the
-        richest source of all.
+        Costs come from `Report.times`, which `run` fills from every row it
+        collected *and* every baseline shard. The shards are the richest source
+        by far: they alone run a whole selection with nothing failing, so they
+        measure every test in it rather than the handful before the first
+        failure.
         """
         self.cost.update(report.times or {})
         for result in report.results:
@@ -1734,7 +1738,6 @@ def _persist(report: Report, where: Path) -> None:
 def _run_generated(
     rows: Sequence[Mutation],
     args: argparse.Namespace,
-    scope: str = "nothing above",
     landed: Callable[[Result], None] | None = None,
 ) -> Report:
     """One batch of generated rows. Both the whole table and `sweep` use this.
@@ -1749,12 +1752,10 @@ def _run_generated(
     An average, not a bound -- `unittest` runs classes alphabetically, so a
     mutant caught only by the last of them still pays for nearly all.
 
-    ``scope`` is passed through to `run`, and defaults to the whole-table
-    wording because that is what `main`'s single-table path is. `sweep` calls
-    this once per *file* and must say so: eleven batches' worth of verdicts can
-    be scrolled above the twelfth, and telling the reader that all of it means
-    nothing is both false and the reason a real sweep's numbers were misread --
-    see woswoar#271.
+    No ``scope``: it existed because `sweep` called this once per *file*, and a
+    batch had to say that a red baseline voided only its own rows. tupferl#7
+    replaced the batches with one pool, so there is one baseline and one scope
+    again, and `run`'s default is right.
     """
     return run(
         rows,
@@ -1766,7 +1767,6 @@ def _run_generated(
         timeout=args.timeout,
         memory=args.memory,
         each=args.each_test,
-        scope=scope,
         landed=landed,
     )
 
@@ -1997,6 +1997,14 @@ def main(argv: list[str] | None = None) -> int:
         # After `--list`, which is about the table rather than about how it will
         # be run, and before the first row.
         table = killers.ahead_of(table)
+        if killers.dropped:
+            print(f"{killers.dropped} remembered test(s) no longer load; those rows run as usual.")
+        if killers.head:
+            spent = sum(killers.cost.get(test, 0.0) for test in killers.head)
+            print(
+                f"{len(killers.head)} cheap test(s), {spent:.2f}s, run first "
+                f"where nothing is remembered."
+            )
         if args.json:
             # Before the first row, so a watcher started alongside this one has
             # something to read straight away. Its own pid, not a caller's guess.
