@@ -795,8 +795,16 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
 
     def test_a_surviving_table_exits_one(self) -> None:
         """The other half. Without it, "always returns 0" passes the test above
-        and a spec file full of decoration reports success."""
-        self.assertEqual(1, self.status(*self.SURVIVES, "--no-confirm"))
+        and a spec file full of decoration reports success.
+
+        `--no-confirm` is stubbed out rather than trusted: a mutant that forces
+        confirmation on would otherwise send this into a whole-suite re-run and
+        past the harness's 30s alarm, which is `BROKE` -- no verdict for the
+        line under test. What this asserts is the exit status, and confirmation
+        of a survivor cannot change it.
+        """
+        with mock.patch.object(mutate, "confirm", lambda report, *a, **k: report):
+            self.assertEqual(1, self.status(*self.SURVIVES, "--no-confirm"))
 
     def test_survivors_are_confirmed_against_the_whole_suite_by_default(self) -> None:
         """CLAUDE.md's promise about a survivor before it is reported. This path
@@ -885,14 +893,20 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
 
     def test_a_ci_runner_is_not_shared(self) -> None:
         """Nobody is waiting for their editor on a CI runner, and every CI
-        system sets this."""
-        self.assertEqual(self.VISIBLE - mutate._SPARE, self.budget(CI="true"))
+        system sets this.
+
+        The gibibyte is written out rather than taken from `mutate._SPARE`:
+        against the constant this assertion changes with the code it checks and
+        holds for any value of it, which is CLAUDE.md §2's copy-of-the-code by
+        name. The sweep found it -- both mutations of `_SPARE` survived.
+        """
+        self.assertEqual(self.VISIBLE - (1 << 30), self.budget(CI="true"))
 
     def test_a_cgroup_limit_means_the_share_is_already_carved_out(self) -> None:
         """Halving a cgroup limit double-counts the same reservation: the
         container has no other half to leave, because nobody else is in it."""
         with mock.patch.object(mutate, "_confined", lambda: 1 << 30):
-            self.assertEqual(self.VISIBLE - mutate._SPARE, self.budget())
+            self.assertEqual(self.VISIBLE - (1 << 30), self.budget())
 
     def test_being_told_beats_both(self) -> None:
         asked = 12 << 30
@@ -908,7 +922,7 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         """Otherwise subtracting `_SPARE` hands it less than one lane's ceiling
         and it gets *fewer* lanes than the shared rule would have given -- the
         opposite of the point."""
-        tiny = mock.patch.object(mutate, "_visible_memory", lambda: mutate._SPARE + (1 << 20))
+        tiny = mock.patch.object(mutate, "_visible_memory", lambda: (1 << 30) + (1 << 20))
         with tiny, mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
             self.assertEqual(mutate._FLOOR, mutate._budget())
 
@@ -953,3 +967,86 @@ class TestReadingACgroupLimit(unittest.TestCase):
         9223372036854771712. Read as a limit it would look like the largest
         dedicated machine ever built."""
         self.assertEqual(0, self.confined("9223372036854771712"))
+
+
+class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
+    """`_confined`'s answers when the question cannot be asked.
+
+    Every one of these lines survived the first sweep of the budget change: the
+    tests above mock `_confined` wholesale, which proves what `_budget` does with
+    its answer and nothing about how the answer is reached.
+    """
+
+    def test_no_host_total_means_no_limit_can_be_judged(self) -> None:
+        """`sysconf` is not POSIX everywhere. Without a host total there is
+        nothing to compare a cgroup file against, and calling any number a limit
+        would be guessing -- a v1 sentinel would read as a machine with eight
+        exabytes."""
+        with mock.patch("os.sysconf", side_effect=OSError):
+            self.assertEqual(0, mutate._confined())
+
+    def test_no_cgroup_file_means_the_host_bounds_us(self) -> None:
+        with mock.patch("pathlib.Path.read_text", side_effect=OSError):
+            self.assertEqual(0, mutate._confined())
+
+    def test_a_shared_machine_is_reported_as_the_empty_string(self) -> None:
+        """`dedicated` returns a *reason*, and "no reason" has to be falsy for
+        `_budget` to read it. `None` would work there and break the line that
+        prints it."""
+        alone = mock.patch.object(mutate, "_confined", lambda: 0)
+        with mock.patch.dict(os.environ, {}, clear=True), alone:
+            self.assertEqual("", mutate.dedicated())
+
+    def test_a_budget_of_one_byte_is_still_a_budget(self) -> None:
+        """The boundary on `int(said) > 0`. A fixture using a comfortable number
+        cannot tell that from `> 1`."""
+        with mock.patch.dict(os.environ, {mutate._TOTAL: "1"}, clear=True):
+            self.assertEqual(1, mutate._budget())
+
+
+class TestTheRunAccountsForItsLanes(unittest.TestCase):
+    """The line is printed when the machine cut the run down, and not when it
+    did not.
+
+    Both halves: a run that always explains itself is noise, and one that never
+    does is what sent this author reading `_share` to find where three lanes on
+    a four-core box came from.
+    """
+
+    #: One real row, because `run` returns before any of this on an empty table.
+    #: `_attempt` is stubbed, so the row is never applied and its content only
+    #: has to survive `check`.
+    ROW = Mutation(
+        label="probe",
+        path="tupferl/merge.py",
+        old="PROBE = 8000",
+        new="PROBE = 1",
+        tests="tests.test_merge",
+    )
+
+    def lines(self, wanted: int, given: mutate.Share) -> str:
+        answered = mock.patch.object(
+            mutate, "_attempt", lambda *a, **k: mutate.Verdict("caught", "probe")
+        )
+        with (
+            mock.patch.object(mutate, "_share", lambda *a, **k: given),
+            mock.patch.object(mutate, "usable_cpus", lambda: wanted),
+            answered,
+            support.quiet() as spill,
+        ):
+            mutate.run([self.ROW], baseline=False, summarise=False)
+        return spill.getvalue()
+
+    #: What `run` asks for here: one row and one shard, so `len(table) + shards`
+    #: caps it at two whatever the cores say.
+    WANTED = 2
+
+    def test_it_says_so_when_the_machine_cut_the_lanes_down(self) -> None:
+        said = self.lines(8, mutate.Share(self.WANTED - 1, mutate.MEMORY))
+        self.assertIn("1 lane(s)", said)
+        self.assertIn("see tools.mutate._share", said)
+
+    def test_it_stays_quiet_when_nothing_was_taken_away(self) -> None:
+        """The other half. Without it, "always print" passes the test above and
+        every run carries a line about a limit that did not bind."""
+        self.assertNotIn("lane(s)", self.lines(8, mutate.Share(self.WANTED, mutate.MEMORY)))
