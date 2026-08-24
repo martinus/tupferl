@@ -76,16 +76,23 @@ CARRIES = (
 
 #: Typed after every set of keys a fixture sends to a conflict prompt.
 #:
-#: The prompt loops, so a test that types one fewer key than it asks for reads
-#: an empty terminal and waits for ever -- a suite that *hangs* in CI rather
-#: than one that goes red, which is the failure nobody can read from a log. With
-#: a `[s]` waiting, the unexpected extra question is answered "skip", the run
-#: exits 1, and the test fails on its own assertion instead. Two tests were
-#: written without it and did exactly that.
+#: The prompt loops, so a test that types fewer keys than it asks for reads an
+#: empty terminal and waits for ever -- a suite that *hangs* rather than one that
+#: goes red, which is the failure nobody can read from a log. With skips waiting,
+#: the unexpected extra question is answered "skip", the run exits 1, and the
+#: test fails on its own assertion instead.
+#:
+#: **Several, not one.** A mutation sweep is where this earns its keep, and there
+#: a mutant does not politely ask exactly one extra time: the first sweep of the
+#: conflict prompt produced 15 rows with no verdict at all, because one skip was
+#: not enough and each blocked test then held a lane for the full 30s per-test
+#: alarm. That load is also what turned an unrelated baseline red. Eight covers
+#: an off-by-one in any of the loop's arms; a mutant that loops without end is
+#: what the alarm is for, and it reports `BROKE`, which is honest.
 #:
 #: `s` and not something invalid: an unrecognised key re-asks, which is the
 #: behaviour this is guarding against.
-FALLBACK = "s"
+FALLBACK = "s" * 8
 
 #: What the branch is called in every fixture -- `seed_home` writes it as
 #: `init.defaultBranch`, both repository builders pass it to `--initial-branch`,

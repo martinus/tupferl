@@ -25,6 +25,7 @@ import os
 import termios
 import unittest
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 from unittest import mock
 
 from tests import support
@@ -647,3 +648,199 @@ class TestALineThatLooksLikeASeparator(Prompted):
         text = conflicts.unified(self.sides())
         self.assertIn("-MY SECTION", text)
         self.assertIn("+THEIR LINE", text)
+
+
+class TestFindingARunOfLines(unittest.TestCase):
+    """`conflicts.somewhere_in`, which `trustworthy` is built on.
+
+    Tested directly because through `trustworthy` only one of its answers is
+    ever observable: a whole sweep of it survived every mutation, including
+    "return `False` instead of `True`" and an off-by-one in the range.
+    """
+
+    WHOLE: ClassVar[list[bytes]] = [b"a", b"b", b"c", b"d"]
+
+    def test_an_empty_run_is_always_there(self) -> None:
+        """One side of a conflict legitimately has no lines -- the other added
+        them -- so this is the ordinary case, not a degenerate one."""
+        self.assertTrue(conflicts.somewhere_in([], self.WHOLE))
+        self.assertTrue(conflicts.somewhere_in([], []))
+
+    def test_a_run_at_the_start_middle_and_end(self) -> None:
+        """All three, because the range's bounds are what an off-by-one moves:
+        `len(whole) - len(run) + 1` dropping the `+ 1` still finds the first two.
+        """
+        for run in ([b"a", b"b"], [b"b", b"c"], [b"c", b"d"], [b"d"]):
+            with self.subTest(run=run):
+                self.assertTrue(conflicts.somewhere_in(run, self.WHOLE))
+
+    def test_lines_that_are_present_but_not_consecutive(self) -> None:
+        """The property is a *block*. Both lines are in `WHOLE`, which is what a
+        check written with `all(line in whole ...)` would accept."""
+        self.assertFalse(conflicts.somewhere_in([b"a", b"c"], self.WHOLE))
+
+    def test_a_run_that_is_not_there_at_all(self) -> None:
+        self.assertFalse(conflicts.somewhere_in([b"z"], self.WHOLE))
+
+    def test_a_run_longer_than_the_whole(self) -> None:
+        """The range is empty here, and a `+ 1` in the wrong place makes it
+        index past the end instead."""
+        self.assertFalse(conflicts.somewhere_in([*self.WHOLE, b"e"], self.WHOLE))
+
+    def test_the_whole_thing_is_a_run_of_itself(self) -> None:
+        self.assertTrue(conflicts.somewhere_in(self.WHOLE, self.WHOLE))
+
+
+class TestWhenOnlyOneHunkIsUntrustworthy(unittest.TestCase):
+    """One bad hunk out of two must condemn the display.
+
+    `all` becoming `any` survived the first sweep: with a single hunk the two
+    are the same answer, so a fixture with one conflict cannot tell them apart.
+    """
+
+    def sides(self) -> conflicts.Sides:
+        pad = "\n".join(f"pad-{step}" for step in range(APART))
+        base = f"one\n{pad}\ntwo\n".encode()
+        mine = f"MINE\n{pad}\n=======\nMY SECOND\n".encode()
+        theirs = f"THEIRS\n{pad}\nTHEIR SECOND\n".encode()
+        return sides_for(base, mine, theirs)
+
+    def test_the_fixture_has_two_hunks_and_only_one_is_bad(self) -> None:
+        """The precondition. With one hunk, or with both bad, the assertion
+        below holds against `any` as well and guards nothing."""
+        sides = self.sides()
+        regions = conflicts.hunks(sides)
+        self.assertEqual(2, len(regions), "the fixture is not two hunks")
+        good, bad = regions
+        self.assertTrue(conflicts.trustworthy(sides, [good]), "the first hunk is not clean")
+        self.assertFalse(conflicts.trustworthy(sides, [bad]), "the second hunk is not broken")
+
+    def test_one_bad_hunk_condemns_the_display(self) -> None:
+        self.assertFalse(conflicts.trustworthy(self.sides(), conflicts.hunks(self.sides())))
+        self.assertIn("cannot show the two sides", conflicts.describe(self.sides(), colour=False))
+
+
+class TestWhereTheDisplayStopsCutting(Prompted):
+    """The boundaries of `SHOWN_LINES` and `SHOWN_HUNKS`.
+
+    Exactly at the limit, not over it: `left > 0` against `left >= 0`, and `0`
+    against `1`, are the same answer for every fixture that overshoots -- which
+    is what the first sweep's survivors on those lines were.
+    """
+
+    def test_a_side_of_exactly_the_limit_says_nothing_about_more(self) -> None:
+        lines = [f"line-{index}".encode() for index in range(conflicts.SHOWN_LINES)]
+        sides = sides_for(b"base\n", b"\n".join(lines) + b"\n", b"theirs\n")
+        text = conflicts.describe(sides, colour=False)
+        self.assertIn(f"line-{conflicts.SHOWN_LINES - 1}", text)
+        self.assertNotIn("more line", text)
+
+    def test_one_line_over_the_limit_says_one_more(self) -> None:
+        """The singular, which is the other side of the `'s' if left > 1`."""
+        lines = [f"line-{index}".encode() for index in range(conflicts.SHOWN_LINES + 1)]
+        sides = sides_for(b"base\n", b"\n".join(lines) + b"\n", b"theirs\n")
+        self.assertIn("1 more line", conflicts.describe(sides, colour=False))
+
+    def test_exactly_the_shown_hunks_says_nothing_about_more(self) -> None:
+        sides = sides_for(*many(conflicts.SHOWN_HUNKS))
+        self.assertEqual(conflicts.SHOWN_HUNKS, sides.conflicts, "the fixture is the wrong size")
+        text = conflicts.describe(sides, colour=False)
+        self.assertIn(f"mine{conflicts.SHOWN_HUNKS - 1}", text)
+        self.assertNotIn("and 0 more", text)
+        self.assertNotIn("more; press", text)
+
+    def test_one_hunk_over_says_one_more(self) -> None:
+        sides = sides_for(*many(conflicts.SHOWN_HUNKS + 1))
+        self.assertIn("and 1 more; press [d]", conflicts.describe(sides, colour=False))
+
+    def test_one_conflict_is_said_in_the_singular(self) -> None:
+        self.assertIn("1 conflict to settle", conflicts.describe(one_conflict(), colour=False))
+
+    def test_two_conflicts_are_said_in_the_plural(self) -> None:
+        self.assertIn(
+            "2 conflicts to settle", conflicts.describe(sides_for(*many(2)), colour=False)
+        )
+
+
+class TestWhenColourIsUsed(unittest.TestCase):
+    """`conflicts.coloured`, both halves.
+
+    Every other assertion in this file runs against a `StringIO`, which is not a
+    terminal, *and* under a sandbox that sets `NO_COLOR` -- so the whole function
+    is unobservable there and each of its three mutations survived. A real pty
+    is the only way to make `isatty()` true.
+    """
+
+    def setUp(self) -> None:
+        self.terminal = support.Terminal()
+        self.addCleanup(self.terminal.close)
+        self.out = os.fdopen(os.dup(self.terminal.master), "w")
+        self.addCleanup(self.out.close)
+
+    def test_a_terminal_with_no_no_colour_is_coloured(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(conflicts.coloured(self.out))
+
+    def test_no_colour_turns_it_off_even_on_a_terminal(self) -> None:
+        """A user who set it meant it."""
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+            self.assertFalse(conflicts.coloured(self.out))
+
+    def test_a_pipe_is_never_coloured_even_without_no_colour(self) -> None:
+        """The other half of the `and`, and the reason it is not an `or`:
+        escape codes in a file someone redirected the run into are noise."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(conflicts.coloured(io.StringIO()))
+
+
+class TestReadingAnEscapeSequence(unittest.TestCase):
+    """`rest_of_escape`'s arms, each of which decides where a keypress ends.
+
+    Every one of them survived the first sweep: `TestOneKeypress` typed a plain
+    arrow and nothing else, and one shape of sequence cannot distinguish "stop at
+    the final byte" from "stop after two" from "read to `KEYPRESS`".
+    """
+
+    def setUp(self) -> None:
+        self.terminal = support.Terminal()
+        self.addCleanup(self.terminal.close)
+
+    def read(self, typed: str) -> str:
+        self.terminal.type(typed)
+        return conflicts.one_key(self.terminal.source)
+
+    def test_a_plain_arrow(self) -> None:
+        self.assertEqual("\x1b[a", self.read("\x1b[A"))
+
+    def test_an_application_mode_arrow(self) -> None:
+        """`ESC O B` is what a terminal in application cursor mode sends, and it
+        is the reason `O` introduces a sequence as well as `[`."""
+        self.assertEqual("\x1bob", self.read("\x1bOB"))
+
+    def test_a_modified_arrow_with_parameters(self) -> None:
+        """Ctrl-Down is `ESC [ 1 ; 5 B`: four bytes that are not final before the
+        one that is. A reader that stopped at the second byte would leave `1;5B`
+        for the next four prompts."""
+        self.assertEqual("\x1b[1;5b", self.read("\x1b[1;5B"))
+
+    def test_the_key_after_a_modified_arrow_is_still_read(self) -> None:
+        self.terminal.type("\x1b[1;5Br")
+        conflicts.one_key(self.terminal.source)
+        self.assertEqual("r", conflicts.one_key(self.terminal.source))
+
+    def test_escape_followed_by_an_ordinary_key(self) -> None:
+        """Neither `[` nor `O`, so the sequence is over at one byte. Alt-l sends
+        exactly this, and it must not be read as `[l] keep local`."""
+        self.assertEqual("\x1bl", self.read("\x1bl"))
+
+    def test_a_lone_escape_does_not_wait_for_ever(self) -> None:
+        """`VMIN=0` with `VTIME` is what makes the read come back empty rather
+        than block. With `VMIN` left at 1 this test hangs, which is why the
+        assertion is reached at all."""
+        self.assertEqual("\x1b", self.read("\x1b"))
+
+    def test_a_sequence_longer_than_a_keypress_stops(self) -> None:
+        """`KEYPRESS` is the backstop for a sequence with no final byte -- a
+        terminal that goes quiet mid-escape, or a paste. Without the bound the
+        loop reads until the `VTIME` timeout on every byte."""
+        self.assertEqual(conflicts.KEYPRESS + 1, len(self.read("\x1b[" + "1" * 12)))
