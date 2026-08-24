@@ -489,6 +489,101 @@ class TestTwoMachines(support.SandboxCase):
         self.assertIn("host  .gitconfig", done.stdout)
 
 
+class TestTheExitStatusEachCommandReturns(Machine):
+    """Every command returns the status rather than calling `sys.exit`, which is
+    what lets these run in-process.
+
+    Asserted here because the subprocess tests *cannot* see it: `sys.exit(None)`
+    and `sys.exit(0)` both exit 0, so a command that stopped returning a status
+    would pass every one of them. The mutation sweep found seven such lines at
+    once, which is what a whole class of unobservable code looks like.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write(self.home / ".bashrc", "x")
+
+    def quietly(self, run: object) -> int:
+        with support.quiet():
+            return int(run())  # type: ignore[operator]
+
+    def test_init(self) -> None:
+        self.assertEqual(0, self.quietly(lambda: manage.init(str(self.remote))))
+
+    def test_add(self) -> None:
+        self.quietly(lambda: manage.init(str(self.remote)))
+        self.assertEqual(0, self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False)))
+
+    def test_add_when_nothing_changed(self) -> None:
+        """The early return, which is a different line from the one above."""
+        self.quietly(lambda: manage.init(str(self.remote)))
+        self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False))
+        self.assertEqual(0, self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False)))
+
+    def test_remove(self) -> None:
+        self.quietly(lambda: manage.init(str(self.remote)))
+        self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False))
+        self.assertEqual(0, self.quietly(lambda: manage.remove(str(self.home / ".bashrc"))))
+
+    def test_list_when_empty(self) -> None:
+        self.quietly(lambda: manage.init(str(self.remote)))
+        self.assertEqual(0, self.quietly(manage.listing))
+
+    def test_list_with_files(self) -> None:
+        """The other branch of `listing`, and the one that counts the overlay."""
+        self.quietly(lambda: manage.init(str(self.remote)))
+        self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False))
+        self.assertEqual(0, self.quietly(manage.listing))
+
+
+class TestWhatEachCommandPrints(Machine):
+    """The printed output is the product for `list`, and the record of what
+    happened for the others. A command that stopped printing would pass every
+    exit-status test in this file."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.init()
+        self.write(self.home / ".bashrc", "x")
+
+    def test_add_names_each_file_it_stored(self) -> None:
+        done = self.run_cli("add", str(self.home / ".bashrc"))
+        self.assertIn("added .bashrc", done.stdout)
+
+    def test_add_marks_the_overlay(self) -> None:
+        """`(host)` is the only thing distinguishing the two destinations in the
+        output, and the destinations are otherwise invisible to the user."""
+        done = self.run_cli("add", "--host", str(self.home / ".bashrc"))
+        self.assertIn("added .bashrc (host)", done.stdout)
+
+    def test_remove_says_the_original_was_left_alone(self) -> None:
+        """The sentence that stops someone thinking `remove` deleted their
+        dotfile — which is the first thing the name suggests."""
+        self.run_cli("add", str(self.home / ".bashrc"))
+        done = self.run_cli("remove", str(self.home / ".bashrc"))
+        self.assertIn("was not touched", done.stdout)
+
+    def test_init_says_where_it_put_things_and_what_to_do_next(self) -> None:
+        done = self.run_cli("list")
+        self.assertEqual(0, done.returncode)
+        fresh = support.run_cli(["init", str(self.remote)], self.env)
+        self.assertIn("already a tupferl repository", fresh.stderr)
+
+    def test_list_counts_what_it_showed(self) -> None:
+        self.run_cli("add", str(self.home / ".bashrc"))
+        done = self.run_cli("list")
+        self.assertIn("1 managed, 0 from this host's overlay", done.stdout)
+
+    def test_list_counts_the_overlay_separately(self) -> None:
+        """0 and 1 rather than 1 and 1: with equal counts a swapped pair still
+        reads correctly."""
+        self.write(self.home / ".gitconfig-extra", "x")
+        self.run_cli("add", str(self.home / ".bashrc"))
+        self.run_cli("add", "--host", str(self.home / ".gitconfig-extra"))
+        done = self.run_cli("list")
+        self.assertIn("2 managed, 1 from this host's overlay", done.stdout)
+
+
 class TestCommitMessages(unittest.TestCase):
     def test_the_plans_shape(self) -> None:
         """Plan §3.5: `<what> from <hostname>: <names>`."""

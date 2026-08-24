@@ -117,6 +117,16 @@ class TestWhatIsRefused(ManifestCase):
         edge = self.write(self.home / ".edge", "x" * 100)
         self.assertEqual(PurePosixPath(".edge"), self.check(edge, Config(max_file_size=100)))
 
+    def test_a_directory_is_not_measured_against_the_size_limit(self) -> None:
+        """A directory's `st_size` is its own bookkeeping — 4096 on ext4, more
+        as it fills — and has nothing to do with what it holds. Applying the
+        limit to it would refuse `~/.config` on any machine with a small
+        `max_file_size`, for a number the user cannot see or change."""
+        (self.home / ".config").mkdir(exist_ok=True)
+        self.assertEqual(
+            PurePosixPath(".config"), self.check(self.home / ".config", Config(max_file_size=1))
+        )
+
     def test_one_matching_an_ignore_pattern(self) -> None:
         noisy = self.write(self.home / ".x.log", "x")
         self.assertIn("ignore", self.refusal(noisy, Config(ignore=["*.log"])))
@@ -222,6 +232,38 @@ class TestWhatTheRepositoryHolds(ManifestCase):
         found = manifest.managed(self.repo, support.HOST)
         self.assertEqual([PurePosixPath(".gitconfig")], [item.name for item in found])
         self.assertEqual([True], [item.host for item in found])
+
+    def test_the_listing_is_sorted_rather_than_however_it_was_built(self) -> None:
+        """The overlay is merged into the shared map *after* it, so insertion
+        order is "shared first". A name from the overlay that sorts before a
+        shared one is therefore the fixture that can tell `sorted` from `list`
+        — with any other pair the two answers coincide and the sort is
+        untested."""
+        self.write(self.repo / ".zshrc", "x")
+        self.write(paths.host_overlay(self.repo, support.HOST) / ".aaa", "x")
+        found = manifest.managed(self.repo, support.HOST)
+        self.assertEqual(
+            [PurePosixPath(".aaa"), PurePosixPath(".zshrc")], [item.name for item in found]
+        )
+
+    def test_the_walk_is_sorted_rather_than_in_readdir_order(self) -> None:
+        """Sorted because the order reaches the user twice — in what `add`
+        prints and in the commit message it writes — and an order that depends
+        on the filesystem makes two machines' commits differ for no visible
+        reason.
+
+        Five names created in an order the filesystem will not hand back
+        alphabetically. The fixture asserts that: on a filesystem that happens
+        to return entries sorted, this test cannot fail, and would then be
+        decoration rather than a guard.
+        """
+        for name in (".yyy", ".bbb", ".aaa", ".mmm", ".zshrc"):
+            self.write(self.repo / name, "x")
+        raw = [child.name for child in self.repo.iterdir() if child.name != paths.META]
+        if raw == sorted(raw):
+            self.skipTest("this filesystem returns directory entries already sorted")
+        found = [str(item.name) for item in manifest.managed(self.repo, support.HOST)]
+        self.assertEqual(sorted(raw), found)
 
     def test_an_overlay_replaces_the_shared_file_rather_than_doubling_it(self) -> None:
         """Plan §3.3: the overlay *replaces* the shared version on this host. So
