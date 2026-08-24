@@ -25,10 +25,27 @@ from typing import Any
 
 from tupferl.errors import TupferlError
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # 3.10 has no `tomllib`; `tomli` is the library it was taken from.
-    import tomli as tomllib
+
+def toml() -> Any:
+    """The TOML parser, imported when a file is actually read.
+
+    Deferred, not decorative. Every `tupferl` command pays its imports before it
+    does anything, the test suite runs the CLI as a subprocess several times per
+    test, and the mutation sweep runs the suite once per mutant -- so an import
+    on the module path is multiplied by tens of thousands. `tomllib` is 4.0ms of
+    a 63.7ms run and only `parse` needs it. Measured; see CLAUDE.md.
+
+    3.10 has no `tomllib`; `tomli` is the library it was taken from, and the
+    3.10 CI leg is what proves this branch is reachable.
+    """
+    if sys.version_info >= (3, 11):
+        import tomllib
+
+        return tomllib
+    import tomli
+
+    return tomli
+
 
 #: One megabyte, as plan §5 asks. A limit rather than no limit because the
 #: repository is copied to every machine and pushed on every sync, and a dotfile
@@ -53,6 +70,14 @@ class Config:
 
     Frozen because it is read from several places during one sync and nothing
     should be able to change what "ignored" means halfway through.
+
+    A `NamedTuple` would drop the `dataclasses` import, which pulls in `inspect`
+    and costs 8.5ms of a 63.7ms `tupferl --version`. Measured and *not* taken:
+    that is about 4% of a mutation sweep, and it costs `ignore` becoming a tuple
+    -- a change to what a setting *is* -- plus the premise of
+    `TestTheTableAndTheRecordAgree`, which holds because `KNOWN` describes what
+    TOML delivers and the field describes what is stored. A small share of what
+    is left is where an optimisation sequence stops.
     """
 
     hostname: str | None = None
@@ -69,6 +94,7 @@ def parse(text: str, where: Path | str) -> Config:
     parameter, because a message that cannot name the file it is complaining
     about sends the reader looking for it.
     """
+    tomllib = toml()
     try:
         raw: dict[str, Any] = tomllib.loads(text)
     except tomllib.TOMLDecodeError as broken:

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -135,7 +135,7 @@ def links_between(where: Path, home: Path) -> Path | None:
     return None
 
 
-def ignored(name: PurePosixPath, patterns: list[str]) -> bool:
+def ignored(name: PurePosixPath, patterns: Sequence[str]) -> bool:
     """Whether `name` or any directory above it matches an ignore pattern.
 
     The parent check is what makes `ignore = [".cache"]` mean the whole subtree

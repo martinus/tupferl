@@ -19,7 +19,6 @@ for `..` writes above the directory that was supposed to contain it.
 from __future__ import annotations
 
 import os
-import socket
 from pathlib import Path
 
 from tupferl.errors import TupferlError
@@ -165,6 +164,12 @@ def hostname(configured: str | None = None) -> str:
         return check_hostname(said)
     if configured:
         return check_hostname(configured)
+    # Imported here rather than at the top: `socket` costs 4.1ms of a 63.7ms
+    # `tupferl --version`, and this is the only line that needs it -- a machine
+    # that has said its own name in the environment or the settings never asks
+    # the system. Measured; see CLAUDE.md.
+    import socket
+
     return check_hostname(socket.gethostname().split(".")[0])
 
 

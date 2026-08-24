@@ -55,7 +55,7 @@ class TestReadingTheSettings(unittest.TestCase):
         self.assertEqual([], found.ignore)
 
 
-class TestTheTableAndTheDataclassAgree(unittest.TestCase):
+class TestTheTableAndTheRecordAgree(unittest.TestCase):
     """`parse` ends in `Config(**raw)`, so the two definitions of "a setting"
     have to be the same one.
 

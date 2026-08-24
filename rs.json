@@ -1,0 +1,1431 @@
+{
+ "baseline_red": false,
+ "widened": true,
+ "results": [
+  {
+   "label": "tupferl/copies.py:63 in mode_for() -- returns `None` instead of `EXECUTABLE if source.stat().s\u2026`",
+   "path": "tupferl/copies.py",
+   "line": 63,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_plain_file_is_not (tests.test_manage.TestModes.test_a_plain_file_is_not)",
+   "old": "EXECUTABLE if source.stat().st_mode & EXEC_BITS else PLAIN",
+   "new": "None",
+   "span": [
+    2760,
+    2818
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:82 in read() -- the `if` is always taken",
+   "path": "tupferl/copies.py",
+   "line": 82,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not stat.S_ISREG(found.st_mode)",
+   "new": "True",
+   "span": [
+    3497,
+    3528
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:82 in read() -- the `if` is never taken",
+   "path": "tupferl/copies.py",
+   "line": 82,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "timeout",
+   "detail": "no answer within 300s",
+   "old": "not stat.S_ISREG(found.st_mode)",
+   "new": "False",
+   "span": [
+    3497,
+    3528
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:82 in read() -- the `not` is dropped",
+   "path": "tupferl/copies.py",
+   "line": 82,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not stat.S_ISREG(found.st_mode)",
+   "new": "(stat.S_ISREG(found.st_mode))",
+   "span": [
+    3497,
+    3528
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:84 in read() -- returns `None` instead of `Blob(path.read_bytes(), bool(\u2026`",
+   "path": "tupferl/copies.py",
+   "line": 84,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "Blob(path.read_bytes(), bool(found.st_mode & EXEC_BITS))",
+   "new": "None",
+   "span": [
+    3561,
+    3617
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:96 in write() -- the `if` is always taken",
+   "path": "tupferl/copies.py",
+   "line": 96,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "read(path) == blob",
+   "new": "True",
+   "span": [
+    4134,
+    4152
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:96 in write() -- the `if` is never taken",
+   "path": "tupferl/copies.py",
+   "line": 96,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_add_names_only_what_it_actually_stored (tests.test_manage.TestWhatEachCommandPrints.test_add_names_only_what_it_actually_stored)",
+   "old": "read(path) == blob",
+   "new": "False",
+   "span": [
+    4134,
+    4152
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:96 in write() -- `==` becomes `!=`",
+   "path": "tupferl/copies.py",
+   "line": 96,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "negate",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "read(path) == blob",
+   "new": "(read(path) != blob)",
+   "span": [
+    4134,
+    4152
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:97 in write() -- returns `True` instead of `False`",
+   "path": "tupferl/copies.py",
+   "line": 97,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "return-constant",
+   "outcome": "caught",
+   "detail": "test_add_names_only_what_it_actually_stored (tests.test_manage.TestWhatEachCommandPrints.test_add_names_only_what_it_actually_stored)",
+   "old": "False",
+   "new": "True",
+   "span": [
+    4169,
+    4174
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:98 in write() -- the call to `path.parent.mkdir(...)` never happens",
+   "path": "tupferl/copies.py",
+   "line": 98,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "path.parent.mkdir(parents=True, exist_ok=True)",
+   "new": "pass",
+   "span": [
+    4179,
+    4225
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:98 in write() -- `exist_ok=True` is dropped",
+   "path": "tupferl/copies.py",
+   "line": 98,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "drop-kwarg",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "path.parent.mkdir(parents=True, exist_ok=True)",
+   "new": "(path.parent.mkdir(parents=True))",
+   "span": [
+    4179,
+    4225
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:99 in write() -- the call to `path.write_bytes(...)` never happens",
+   "path": "tupferl/copies.py",
+   "line": 99,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "path.write_bytes(blob.data)",
+   "new": "pass",
+   "span": [
+    4230,
+    4257
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:100 in write() -- the call to `path.chmod(...)` never happens",
+   "path": "tupferl/copies.py",
+   "line": 100,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_a_mode_change_alone_is_a_change (tests.test_manage.TestAdd.test_a_mode_change_alone_is_a_change)",
+   "old": "path.chmod(EXECUTABLE if blob.executable else PLAIN)",
+   "new": "pass",
+   "span": [
+    4262,
+    4314
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:101 in write() -- returns `False` instead of `True`",
+   "path": "tupferl/copies.py",
+   "line": 101,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "return-constant",
+   "outcome": "caught",
+   "detail": "test_a_file_is_copied_and_committed (tests.test_manage.TestAdd.test_a_file_is_copied_and_committed)",
+   "old": "True",
+   "new": "False",
+   "span": [
+    4326,
+    4330
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:112 in store() -- the `if` is always taken",
+   "path": "tupferl/copies.py",
+   "line": 112,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "blob is None",
+   "new": "True",
+   "span": [
+    4734,
+    4746
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:112 in store() -- the `if` is never taken",
+   "path": "tupferl/copies.py",
+   "line": 112,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_storing_something_that_stopped_being_a_file_is_an_error (tests.test_manage.TestModes.test_storing_something_that_stopped_being_a_file_is_an_error)",
+   "old": "blob is None",
+   "new": "False",
+   "span": [
+    4734,
+    4746
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:112 in store() -- `is` becomes `is not`",
+   "path": "tupferl/copies.py",
+   "line": 112,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "negate",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "blob is None",
+   "new": "(blob is not None)",
+   "span": [
+    4734,
+    4746
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:118 in store() -- the `if` is always taken",
+   "path": "tupferl/copies.py",
+   "line": 118,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not write(target, blob)",
+   "new": "True",
+   "span": [
+    5060,
+    5083
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:118 in store() -- the `if` is never taken",
+   "path": "tupferl/copies.py",
+   "line": 118,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not write(target, blob)",
+   "new": "False",
+   "span": [
+    5060,
+    5083
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:118 in store() -- the `not` is dropped",
+   "path": "tupferl/copies.py",
+   "line": 118,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_file_is_copied_and_committed (tests.test_manage.TestAdd.test_a_file_is_copied_and_committed)",
+   "old": "not write(target, blob)",
+   "new": "(write(target, blob))",
+   "span": [
+    5060,
+    5083
+   ]
+  },
+  {
+   "label": "tupferl/copies.py:120 in store() -- returns `None` instead of `'updated' if existed else 'ad\u2026`",
+   "path": "tupferl/copies.py",
+   "line": 120,
+   "tests": "tests.test_manage tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_file_is_copied_and_committed (tests.test_manage.TestAdd.test_a_file_is_copied_and_committed)",
+   "old": "\"updated\" if existed else \"added\"",
+   "new": "None",
+   "span": [
+    5116,
+    5149
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:71 in Result.ok() -- `==` becomes `!=`",
+   "path": "tupferl/gitrepo.py",
+   "line": 71,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "negate",
+   "outcome": "caught",
+   "detail": "test_a_real_git_passes_and_says_which (tests.test_doctor.TestGitPresence.test_a_real_git_passes_and_says_which)",
+   "old": "self.code == 0",
+   "new": "(self.code != 0)",
+   "span": [
+    3318,
+    3332
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:71 in Result.ok() -- returns `None` instead of `self.code == 0`",
+   "path": "tupferl/gitrepo.py",
+   "line": 71,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_real_git_passes_and_says_which (tests.test_doctor.TestGitPresence.test_a_real_git_passes_and_says_which)",
+   "old": "self.code == 0",
+   "new": "None",
+   "span": [
+    3318,
+    3332
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:71 in Result.ok() -- `0` becomes `1`",
+   "path": "tupferl/gitrepo.py",
+   "line": 71,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_a_real_git_passes_and_says_which (tests.test_doctor.TestGitPresence.test_a_real_git_passes_and_says_which)",
+   "old": "0",
+   "new": "1",
+   "span": [
+    3331,
+    3332
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:71 in Result.ok() -- `0` becomes `-1`",
+   "path": "tupferl/gitrepo.py",
+   "line": 71,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_a_real_git_passes_and_says_which (tests.test_doctor.TestGitPresence.test_a_real_git_passes_and_says_which)",
+   "old": "0",
+   "new": "-1",
+   "span": [
+    3331,
+    3332
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:98 in git() -- the `if` is always taken",
+   "path": "tupferl/gitrepo.py",
+   "line": 98,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_real_git_passes_and_says_which (tests.test_doctor.TestGitPresence.test_a_real_git_passes_and_says_which)",
+   "old": "cwd is not None and not cwd.is_dir()",
+   "new": "True",
+   "span": [
+    4559,
+    4595
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:98 in git() -- the `if` is never taken",
+   "path": "tupferl/gitrepo.py",
+   "line": 98,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_missing_working_directory_says_so (tests.test_gitrepo.TestWhenGitCannotAnswer.test_a_missing_working_directory_says_so)",
+   "old": "cwd is not None and not cwd.is_dir()",
+   "new": "False",
+   "span": [
+    4559,
+    4595
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:106 in git() -- returns `None` instead of `Result('', f'{cwd} is not a d\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 106,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_missing_working_directory_says_so (tests.test_gitrepo.TestWhenGitCannotAnswer.test_a_missing_working_directory_says_so)",
+   "old": "Result(\"\", f\"{cwd} is not a directory\")",
+   "new": "None",
+   "span": [
+    5144,
+    5183
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:122 in git() -- returns `None` instead of `Result('', f'`git {shown}` di\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 122,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_remote_that_never_answers_is_a_timeout_not_a_refusal (tests.test_doctor.TestTheRemoteCheck.test_a_remote_that_never_answers_is_a_timeout_not_a_refusal)",
+   "old": "Result(\"\", f\"`git {shown}` did not answer within {waiting:g}s\", True)",
+   "new": "None",
+   "span": [
+    5714,
+    5783
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:126 in git() -- returns `None` instead of `Result('', 'git is not instal\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 126,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_no_git_on_path_fails_and_says_what_to_do (tests.test_doctor.TestGitPresence.test_no_git_on_path_fails_and_says_what_to_do)",
+   "old": "Result(\"\", \"git is not installed, or not on PATH\")",
+   "new": "None",
+   "span": [
+    5960,
+    6010
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:127 in git() -- returns `None` instead of `Result(done.stdout.strip(), d\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 127,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_real_git_passes_and_says_which (tests.test_doctor.TestGitPresence.test_a_real_git_passes_and_says_which)",
+   "old": "Result(done.stdout.strip(), done.stderr.strip(), code=done.returncode)",
+   "new": "None",
+   "span": [
+    6022,
+    6092
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:219 in stage() -- the `if` is always taken",
+   "path": "tupferl/gitrepo.py",
+   "line": 219,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not paths",
+   "new": "True",
+   "span": [
+    10292,
+    10301
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:219 in stage() -- the `if` is never taken",
+   "path": "tupferl/gitrepo.py",
+   "line": 219,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_staging_nothing_is_refused_rather_than_staging_everything (tests.test_sync.TestUnfinishedMarkers.test_staging_nothing_is_refused_rather_than_staging_everything)",
+   "old": "not paths",
+   "new": "False",
+   "span": [
+    10292,
+    10301
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:219 in stage() -- the `not` is dropped",
+   "path": "tupferl/gitrepo.py",
+   "line": 219,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not paths",
+   "new": "(paths)",
+   "span": [
+    10292,
+    10301
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:225 in stage() -- returns `None` instead of `Result('', f'nothing to stage\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 225,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_staging_nothing_is_refused_rather_than_staging_everything (tests.test_sync.TestUnfinishedMarkers.test_staging_nothing_is_refused_rather_than_staging_everything)",
+   "old": "Result(\"\", f\"nothing to stage in {repo}\", code=1)",
+   "new": "None",
+   "span": [
+    10705,
+    10754
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:225 in stage() -- `1` becomes `2`",
+   "path": "tupferl/gitrepo.py",
+   "line": 225,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "off-by-one",
+   "outcome": "survived",
+   "detail": "",
+   "old": "1",
+   "new": "2",
+   "span": [
+    10752,
+    10753
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:225 in stage() -- `1` becomes `0`",
+   "path": "tupferl/gitrepo.py",
+   "line": 225,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_staging_nothing_is_refused_rather_than_staging_everything (tests.test_sync.TestUnfinishedMarkers.test_staging_nothing_is_refused_rather_than_staging_everything)",
+   "old": "1",
+   "new": "0",
+   "span": [
+    10752,
+    10753
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:253 in first_remote() -- returns `None` instead of `named.out.splitlines()[0] if \u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 253,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_healthy_machine_asks_everything (tests.test_doctor.TestTheChecksRunInOrder.test_a_healthy_machine_asks_everything)",
+   "old": "named.out.splitlines()[0] if named.ok and named.out else None",
+   "new": "None",
+   "span": [
+    11961,
+    12022
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:253 in first_remote() -- `0` becomes `1`",
+   "path": "tupferl/gitrepo.py",
+   "line": 253,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_a_healthy_machine_asks_everything (tests.test_doctor.TestTheChecksRunInOrder.test_a_healthy_machine_asks_everything)",
+   "old": "0",
+   "new": "1",
+   "span": [
+    11984,
+    11985
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:253 in first_remote() -- `0` becomes `-1`",
+   "path": "tupferl/gitrepo.py",
+   "line": 253,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_the_first_remote_is_the_one_asked (tests.test_doctor.TestTheRemoteCheck.test_the_first_remote_is_the_one_asked)",
+   "old": "0",
+   "new": "-1",
+   "span": [
+    11984,
+    11985
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:253 in first_remote() -- `and` becomes `or`",
+   "path": "tupferl/gitrepo.py",
+   "line": 253,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "connector",
+   "outcome": "caught",
+   "detail": "test_the_repository_path_comes_from_the_environment (tests.test_doctor.TestTheChecksRunInOrder.test_the_repository_path_comes_from_the_environment)",
+   "old": "named.ok and named.out",
+   "new": "(named.ok or named.out)",
+   "span": [
+    11990,
+    12012
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:265 in branch() -- returns `None` instead of `found.out if found.ok else No\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 265,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "found.out if found.ok else None",
+   "new": "None",
+   "span": [
+    12508,
+    12539
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:271 in has_ref() -- returns `None` instead of `git(['rev-parse', '--verify',\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 271,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_merge_that_fails_without_conflicting_files_says_so_instead (tests.test_sync.TestAGitLevelConflict.test_a_merge_that_fails_without_conflicting_files_says_so_instead)",
+   "old": "git([\"rev-parse\", \"--verify\", \"--quiet\", ref], cwd=repo).ok",
+   "new": "None",
+   "span": [
+    12735,
+    12794
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:284 in is_ancestor() -- returns `None` instead of `git(['merge-base', '--is-ance\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 284,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_sync_with_nothing_to_push_does_not_reach_the_remote (tests.test_sync.TestSyncOneMachine.test_a_sync_with_nothing_to_push_does_not_reach_the_remote)",
+   "old": "git([\"merge-base\", \"--is-ancestor\", older, newer], cwd=repo).ok",
+   "new": "None",
+   "span": [
+    13333,
+    13396
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:289 in fetch() -- returns `None` instead of `git(['fetch', '--quiet', remo\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 289,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "git([\"fetch\", \"--quiet\", remote], cwd=repo)",
+   "new": "None",
+   "span": [
+    13536,
+    13579
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:298 in merge() -- returns `None` instead of `git(['merge', '--no-edit', re\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 298,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_merge_that_fails_without_conflicting_files_says_so_instead (tests.test_sync.TestAGitLevelConflict.test_a_merge_that_fails_without_conflicting_files_says_so_instead)",
+   "old": "git([\"merge\", \"--no-edit\", ref], cwd=repo)",
+   "new": "None",
+   "span": [
+    13875,
+    13917
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:303 in abort_merge() -- returns `None` instead of `git(['merge', '--abort'], cwd\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 303,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_the_repository_is_left_exactly_as_it_was_found (tests.test_sync.TestAGitLevelConflict.test_the_repository_is_left_exactly_as_it_was_found)",
+   "old": "git([\"merge\", \"--abort\"], cwd=repo)",
+   "new": "None",
+   "span": [
+    14040,
+    14075
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:309 in unmerged() -- returns `None` instead of `found.out.splitlines() if fou\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 309,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_it_names_the_file_and_the_milestone_that_settles_it (tests.test_sync.TestAGitLevelConflict.test_it_names_the_file_and_the_milestone_that_settles_it)",
+   "old": "found.out.splitlines() if found.ok else []",
+   "new": "None",
+   "span": [
+    14278,
+    14320
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:319 in push() -- returns `None` instead of `git(['push', remote, ref], cw\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 319,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "git([\"push\", remote, ref], cwd=repo)",
+   "new": "None",
+   "span": [
+    14687,
+    14723
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:337 in unfinished() -- the `if` is always taken",
+   "path": "tupferl/gitrepo.py",
+   "line": 337,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_every_marker_is_looked_for (tests.test_sync.TestUnfinishedMarkers.test_every_marker_is_looked_for)",
+   "old": "not inside.ok",
+   "new": "True",
+   "span": [
+    15450,
+    15463
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:337 in unfinished() -- the `if` is never taken",
+   "path": "tupferl/gitrepo.py",
+   "line": 337,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_marker_outside_a_repository_is_not_reported_as_one (tests.test_sync.TestUnfinishedMarkers.test_a_marker_outside_a_repository_is_not_reported_as_one)",
+   "old": "not inside.ok",
+   "new": "False",
+   "span": [
+    15450,
+    15463
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:337 in unfinished() -- the `not` is dropped",
+   "path": "tupferl/gitrepo.py",
+   "line": 337,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_marker_outside_a_repository_is_not_reported_as_one (tests.test_sync.TestUnfinishedMarkers.test_a_marker_outside_a_repository_is_not_reported_as_one)",
+   "old": "not inside.ok",
+   "new": "(inside.ok)",
+   "span": [
+    15450,
+    15463
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:340 in unfinished() -- returns `None` instead of `next((name for name in UNFINI\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 340,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_every_marker_is_looked_for (tests.test_sync.TestUnfinishedMarkers.test_every_marker_is_looked_for)",
+   "old": "next((name for name in UNFINISHED if (git_dir / name).exists()), None)",
+   "new": "None",
+   "span": [
+    15528,
+    15598
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:367 in merge_file() -- returns `None` instead of `git(['merge-file', *marks, st\u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 367,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "git([\"merge-file\", *marks, str(ours), str(base), str(theirs)], cwd=ours.parent)",
+   "new": "None",
+   "span": [
+    16835,
+    16914
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:378 in staged() -- the `not` is dropped",
+   "path": "tupferl/gitrepo.py",
+   "line": 378,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not git([\"diff\", \"--cached\", \"--quiet\"], cwd=repo).ok",
+   "new": "(git(['diff', '--cached', '--quiet'], cwd=repo).ok)",
+   "span": [
+    17276,
+    17329
+   ]
+  },
+  {
+   "label": "tupferl/gitrepo.py:378 in staged() -- returns `None` instead of `not git(['diff', '--cached', \u2026`",
+   "path": "tupferl/gitrepo.py",
+   "line": 378,
+   "tests": "tests.test_doctor tests.test_gitrepo tests.test_manage tests.test_merge tests.test_sync",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not git([\"diff\", \"--cached\", \"--quiet\"], cwd=repo).ok",
+   "new": "None",
+   "span": [
+    17276,
+    17329
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:89 in added() -- the `if` is always taken",
+   "path": "tupferl/manage.py",
+   "line": 89,
+   "tests": "tests.test_manage",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_recording_a_stale_merge_base_does_not_claim_to_have_added (tests.test_manage.TestWhatEachCommandPrints.test_recording_a_stale_merge_base_does_not_claim_to_have_added)",
+   "old": "touched",
+   "new": "True",
+   "span": [
+    4183,
+    4190
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:89 in added() -- the `if` is never taken",
+   "path": "tupferl/manage.py",
+   "line": 89,
+   "tests": "tests.test_manage",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_file_is_copied_and_committed (tests.test_manage.TestAdd.test_a_file_is_copied_and_committed)",
+   "old": "touched",
+   "new": "False",
+   "span": [
+    4183,
+    4190
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:90 in added() -- returns `None` instead of `describe('add', touched, host)`",
+   "path": "tupferl/manage.py",
+   "line": 90,
+   "tests": "tests.test_manage",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "describe(\"add\", touched, host)",
+   "new": "None",
+   "span": [
+    4207,
+    4237
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:91 in added() -- returns `None` instead of `f'add from {host}: record the\u2026`",
+   "path": "tupferl/manage.py",
+   "line": 91,
+   "tests": "tests.test_manage",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_recording_a_stale_merge_base_does_not_claim_to_have_added (tests.test_manage.TestWhatEachCommandPrints.test_recording_a_stale_merge_base_does_not_claim_to_have_added)",
+   "old": "f\"add from {host}: record the merge base for {count(admitted)}\"",
+   "new": "None",
+   "span": [
+    4249,
+    4312
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:112 in record() -- the `if` is always taken",
+   "path": "tupferl/manage.py",
+   "line": 112,
+   "tests": "tests.test_manage",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not gitrepo.staged(repo)",
+   "new": "True",
+   "span": [
+    5323,
+    5347
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:112 in record() -- the `if` is never taken",
+   "path": "tupferl/manage.py",
+   "line": 112,
+   "tests": "tests.test_manage",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not gitrepo.staged(repo)",
+   "new": "False",
+   "span": [
+    5323,
+    5347
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:112 in record() -- the `not` is dropped",
+   "path": "tupferl/manage.py",
+   "line": 112,
+   "tests": "tests.test_manage",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not gitrepo.staged(repo)",
+   "new": "(gitrepo.staged(repo))",
+   "span": [
+    5323,
+    5347
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:121 in record() -- returns `True` instead of `False`",
+   "path": "tupferl/manage.py",
+   "line": 121,
+   "tests": "tests.test_manage",
+   "operator": "return-constant",
+   "outcome": "caught",
+   "detail": "test_a_large_file_is_compared_without_reading_it_whole (tests.test_manage.TestAdd.test_a_large_file_is_compared_without_reading_it_whole)",
+   "old": "False",
+   "new": "True",
+   "span": [
+    5910,
+    5915
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:125 in record() -- returns `False` instead of `True`",
+   "path": "tupferl/manage.py",
+   "line": 125,
+   "tests": "tests.test_manage",
+   "operator": "return-constant",
+   "outcome": "caught",
+   "detail": "test_add_names_each_file_it_stored (tests.test_manage.TestWhatEachCommandPrints.test_add_names_each_file_it_stored)",
+   "old": "True",
+   "new": "False",
+   "span": [
+    6078,
+    6082
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:234 in add() -- the call to `copies.store(...)` never happens",
+   "path": "tupferl/manage.py",
+   "line": 234,
+   "tests": "tests.test_manage",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "copies.store(home / name, snapshots / name)",
+   "new": "pass",
+   "span": [
+    11023,
+    11066
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:235 in add() -- the call to `written.extend(...)` never happens",
+   "path": "tupferl/manage.py",
+   "line": 235,
+   "tests": "tests.test_manage",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "written.extend([root / name, snapshots / name])",
+   "new": "pass",
+   "span": [
+    11075,
+    11122
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:240 in add() -- the `if` is always taken",
+   "path": "tupferl/manage.py",
+   "line": 240,
+   "tests": "tests.test_manage",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not record(repo, written, added(touched, len(admitted), host), \"the copies\")",
+   "new": "True",
+   "span": [
+    11257,
+    11333
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:240 in add() -- the `if` is never taken",
+   "path": "tupferl/manage.py",
+   "line": 240,
+   "tests": "tests.test_manage",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_commit_failure_is_reduced_to_the_line_that_explains (tests.test_manage.TestAdd.test_a_commit_failure_is_reduced_to_the_line_that_explains)",
+   "old": "not record(repo, written, added(touched, len(admitted), host), \"the copies\")",
+   "new": "False",
+   "span": [
+    11257,
+    11333
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:240 in add() -- the `not` is dropped",
+   "path": "tupferl/manage.py",
+   "line": 240,
+   "tests": "tests.test_manage",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_large_file_is_compared_without_reading_it_whole (tests.test_manage.TestAdd.test_a_large_file_is_compared_without_reading_it_whole)",
+   "old": "not record(repo, written, added(touched, len(admitted), host), \"the copies\")",
+   "new": "(record(repo, written, added(touched, len(admitted), host), 'the copies'))",
+   "span": [
+    11257,
+    11333
+   ]
+  },
+  {
+   "label": "tupferl/manage.py:278 in remove() -- the call to `prune(...)` never happens",
+   "path": "tupferl/manage.py",
+   "line": 278,
+   "tests": "tests.test_manage",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_directories_left_empty_are_pruned (tests.test_manage.TestRemove.test_directories_left_empty_are_pruned)",
+   "old": "prune(where.parent, repo)",
+   "new": "pass",
+   "span": [
+    12825,
+    12850
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:57 -- `1` becomes `2`",
+   "path": "tupferl/merge.py",
+   "line": 57,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_a_nul_byte_makes_the_whole_file_one_conflict (tests.test_merge.TestBinaryFilesHaveNoMerge.test_a_nul_byte_makes_the_whole_file_one_conflict)",
+   "old": "1",
+   "new": "2",
+   "span": [
+    2839,
+    2840
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:57 -- `1` becomes `0`",
+   "path": "tupferl/merge.py",
+   "line": 57,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_a_nul_byte_makes_the_whole_file_one_conflict (tests.test_merge.TestBinaryFilesHaveNoMerge.test_a_nul_byte_makes_the_whole_file_one_conflict)",
+   "old": "1",
+   "new": "0",
+   "span": [
+    2839,
+    2840
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:83 in is_text() -- `not in` becomes `in`",
+   "path": "tupferl/merge.py",
+   "line": 83,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "negate",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "b\"\\0\" not in data[:PROBE]",
+   "new": "(b'\\x00' in data[:PROBE])",
+   "span": [
+    3995,
+    4020
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:83 in is_text() -- returns `None` instead of `b'\\x00' not in data[:PROBE]`",
+   "path": "tupferl/merge.py",
+   "line": 83,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "b\"\\0\" not in data[:PROBE]",
+   "new": "None",
+   "span": [
+    3995,
+    4020
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:83 in is_text() -- the slice takes everything",
+   "path": "tupferl/merge.py",
+   "line": 83,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "slice",
+   "outcome": "caught",
+   "detail": "test_a_nul_past_gits_probe_is_still_text (tests.test_merge.TestBinaryFilesHaveNoMerge.test_a_nul_past_gits_probe_is_still_text)",
+   "old": "data[:PROBE]",
+   "new": "(data[:])",
+   "span": [
+    4008,
+    4020
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:95 in labels_for() -- returns `None` instead of `(f'{name} (this computer)', f\u2026`",
+   "path": "tupferl/merge.py",
+   "line": 95,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "(f\"{name} (this computer)\", f\"{name} (last sync)\", f\"{name} (the repository)\")",
+   "new": "None",
+   "span": [
+    4494,
+    4572
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:112 in three_way() -- the `if` is always taken",
+   "path": "tupferl/merge.py",
+   "line": 112,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "not all(is_text(side) for side in (base or b\"\", ours, theirs))",
+   "new": "True",
+   "span": [
+    5280,
+    5342
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:112 in three_way() -- the `if` is never taken",
+   "path": "tupferl/merge.py",
+   "line": 112,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_nul_byte_makes_the_whole_file_one_conflict (tests.test_merge.TestBinaryFilesHaveNoMerge.test_a_nul_byte_makes_the_whole_file_one_conflict)",
+   "old": "not all(is_text(side) for side in (base or b\"\", ours, theirs))",
+   "new": "False",
+   "span": [
+    5280,
+    5342
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:112 in three_way() -- the `not` is dropped",
+   "path": "tupferl/merge.py",
+   "line": 112,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "not all(is_text(side) for side in (base or b\"\", ours, theirs))",
+   "new": "(all((is_text(side) for side in (base or b'', ours, theirs))))",
+   "span": [
+    5280,
+    5342
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:112 in three_way() -- `all` becomes `any`",
+   "path": "tupferl/merge.py",
+   "line": 112,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "order",
+   "outcome": "caught",
+   "detail": "test_one_binary_side_is_enough (tests.test_merge.TestBinaryFilesHaveNoMerge.test_one_binary_side_is_enough)",
+   "old": "all(is_text(side) for side in (base or b\"\", ours, theirs))",
+   "new": "(any((is_text(side) for side in (base or b'', ours, theirs))))",
+   "span": [
+    5284,
+    5342
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:112 in three_way() -- `or` becomes `and`",
+   "path": "tupferl/merge.py",
+   "line": 112,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "connector",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "base or b\"\"",
+   "new": "(base and b'')",
+   "span": [
+    5315,
+    5326
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:113 in three_way() -- returns `None` instead of `Merged(None, WHOLE_FILE)`",
+   "path": "tupferl/merge.py",
+   "line": 113,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_a_nul_byte_makes_the_whole_file_one_conflict (tests.test_merge.TestBinaryFilesHaveNoMerge.test_a_nul_byte_makes_the_whole_file_one_conflict)",
+   "old": "Merged(None, WHOLE_FILE)",
+   "new": "None",
+   "span": [
+    5359,
+    5383
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:120 in three_way() -- the call to `mine.write_bytes(...)` never happens",
+   "path": "tupferl/merge.py",
+   "line": 120,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "mine.write_bytes(ours)",
+   "new": "pass",
+   "span": [
+    5648,
+    5670
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:122 in three_way() -- the call to `common.write_bytes(...)` never happens",
+   "path": "tupferl/merge.py",
+   "line": 122,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "common.write_bytes(b\"\" if base is None else base)",
+   "new": "pass",
+   "span": [
+    5711,
+    5760
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:122 in three_way() -- `is` becomes `is not`",
+   "path": "tupferl/merge.py",
+   "line": 122,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "negate",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "base is None",
+   "new": "(base is not None)",
+   "span": [
+    5737,
+    5749
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:124 in three_way() -- the call to `yours.write_bytes(...)` never happens",
+   "path": "tupferl/merge.py",
+   "line": 124,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "drop-call",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "yours.write_bytes(theirs)",
+   "new": "pass",
+   "span": [
+    5802,
+    5827
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- `is` becomes `is not`",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "negate",
+   "outcome": "caught",
+   "detail": "test_git_failing_is_an_error_and_not_a_conflict (tests.test_merge.TestAMergeThatCouldNotRun.test_git_failing_is_an_error_and_not_a_conflict)",
+   "old": "done.code is None",
+   "new": "(done.code is not None)",
+   "span": [
+    5913,
+    5930
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- the `if` is always taken",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "done.code is None or not 0 <= done.code <= gitrepo.MOST_CONFLICTS",
+   "new": "True",
+   "span": [
+    5913,
+    5978
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- the `if` is never taken",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "branch",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "done.code is None or not 0 <= done.code <= gitrepo.MOST_CONFLICTS",
+   "new": "False",
+   "span": [
+    5913,
+    5978
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- `or` becomes `and`",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "connector",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "done.code is None or not 0 <= done.code <= gitrepo.MOST_CONFLICTS",
+   "new": "(done.code is None and (not 0 <= done.code <= gitrepo.MOST_CONFLICTS))",
+   "span": [
+    5913,
+    5978
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- the `not` is dropped",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "drop-not",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "not 0 <= done.code <= gitrepo.MOST_CONFLICTS",
+   "new": "(0 <= done.code <= gitrepo.MOST_CONFLICTS)",
+   "span": [
+    5934,
+    5978
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- `0` becomes `1`",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "0",
+   "new": "1",
+   "span": [
+    5938,
+    5939
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:127 in three_way() -- `0` becomes `-1`",
+   "path": "tupferl/merge.py",
+   "line": 127,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "off-by-one",
+   "outcome": "caught",
+   "detail": "test_a_signal_killed_git_is_an_error_not_a_conflict_count (tests.test_merge.TestAGitThatDiedRatherThanAnswered.test_a_signal_killed_git_is_an_error_not_a_conflict_count)",
+   "old": "0",
+   "new": "-1",
+   "span": [
+    5938,
+    5939
+   ]
+  },
+  {
+   "label": "tupferl/merge.py:136 in three_way() -- returns `None` instead of `Merged(mine.read_bytes(), don\u2026`",
+   "path": "tupferl/merge.py",
+   "line": 136,
+   "tests": "tests.test_merge tests.test_merge_properties",
+   "operator": "return-value",
+   "outcome": "caught",
+   "detail": "test_identical_additions_over_no_base_still_merge (tests.test_merge.TestAMissingSnapshotIsAnEmptyBase.test_identical_additions_over_no_base_still_merge)",
+   "old": "Merged(mine.read_bytes(), done.code)",
+   "new": "None",
+   "span": [
+    6471,
+    6507
+   ]
+  }
+ ]
+}
