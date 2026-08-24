@@ -388,7 +388,11 @@ def integrate(repo: Path, remote: str, branch: str, settler: conflicts.Settler) 
     concluded = False
     try:
         left = reconcile(repo, settler)
-        if not left and not gitrepo.unmerged(repo):
+        # `left` alone. `gitrepo.unmerged` is `sorted(conflicted(repo))` now, and
+        # `reconcile` returns exactly the names it did not stage, so a second
+        # opinion from the same `ls-files` cannot disagree -- it was a redundant
+        # git call and two mutations of it that no test could tell apart.
+        if not left:
             finished = gitrepo.commit(repo, f"sync: settle the merge of {there}")
             if not finished.ok:
                 undone(

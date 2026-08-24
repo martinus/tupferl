@@ -473,3 +473,147 @@ class TestSettlingWithTheEditor(TwoCommits):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhenTheMergeCannotBeConcluded(TwoCommits):
+    """Everything settled, and then the commit refused.
+
+    A `pre-commit` hook is the ordinary way -- and `integrate` has to put the
+    repository back rather than leave a fully-settled index nobody committed,
+    which the next run would find as an unfinished merge and refuse.
+    """
+
+    def test_the_merge_is_undone_and_the_reason_reaches_the_user(self) -> None:
+        was = self.second.git("rev-parse", "HEAD")
+        support.break_commits(self.second.home)
+        done = self.second.run("sync", "--ours")
+        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
+        self.assertIn("could not commit", done.stderr)
+        self.assertIn("the merge was undone", done.stderr)
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+
+class TestWhenSeveralFilesCannotBeSettled(support.TwoMachines):
+    """The names are listed in a stable order.
+
+    `sorted` on the walk, so two machines and two runs produce the same sentence.
+    Nothing could tell before: with one refused file every ordering is the same
+    ordering, which is the fixture-too-weak shape.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        # Two files, each a delete against an edit, so both come back refused.
+        for name in (".zshrc", ".inputrc"):
+            self.first.write(name, "shared\n")
+            self.assertEqual(0, self.first.call("add", str(self.first.home / name)))
+        self.assertEqual(0, self.first.call("sync"))
+        self.assertEqual(0, self.second.call("sync"))
+        for name in (".zshrc", ".inputrc"):
+            self.second.write(name, "edited here\n")
+            self.assertEqual(0, self.second.call("add", str(self.second.home / name)))
+            self.assertEqual(0, self.first.call("remove", str(self.first.home / name)))
+        self.assertEqual(0, self.first.call("sync"))
+
+    def test_both_are_named_in_sorted_order(self) -> None:
+        done = self.second.run("sync", "--ours")
+        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
+        self.assertIn(".inputrc, .zshrc", done.stderr)
+
+
+class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachines):
+    """A type change, which git does not record the way I expected.
+
+    I wrote this to give `reconcile` a path with *mixed* stage kinds -- a regular
+    file on one side, a symlink on the other -- so that `any(mode not in
+    REGULAR)` and `all(...)` would differ. **git does not produce one.** Measured:
+
+        {'.config/thing':       {3: 0o120000},
+         '.config/thing~HEAD':  {2: 0o100644}}
+
+    It splits the type change into two paths, each carrying a single stage, and
+    each is therefore refused by the *missing-stage* branch rather than by the
+    mode check. So the mutant this was written to kill survives, and it is named
+    in the PR rather than pretended about.
+
+    What the fixture does prove is worth keeping: a type change is refused, and
+    the file the link pointed at -- outside the repository -- is untouched.
+    """
+
+    NAME = ".config/thing"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.victim = self.tmp / "victim"
+        self.victim.write_text("SECRET-ORIGINAL\n", encoding="utf-8")
+        for machine in (self.first, self.second):
+            (machine.repo / self.NAME).parent.mkdir(parents=True, exist_ok=True)
+        # `machine-b` keeps it a file; `machine-a` replaces it with a link.
+        (self.second.repo / self.NAME).write_text("still a file\n", encoding="utf-8")
+        (self.first.repo / self.NAME).symlink_to(self.victim)
+        for machine in (self.second, self.first):
+            machine.git("add", "-A")
+            machine.git("commit", "-m", "by hand")
+        # **Exit 1, and that is correct.** `manifest` walks the repository, so
+        # `machine-a`'s own symlink is picked up as a managed item -- and
+        # `copies.read` uses `lstat`, so `settle` refuses it and the run reports
+        # a file it would not touch. It still commits and pushes, which is all
+        # this fixture needs. (The broken-link fixture above exits 0 instead,
+        # because `is_file()` is false for a link to nothing, so it is never
+        # managed at all.)
+        self.assertEqual(1, self.first.call("sync"))
+
+    def test_git_splits_a_type_change_into_two_single_staged_paths(self) -> None:
+        """Recorded as a test because it is the reason the mode check cannot be
+        exercised through a type change, and because a future git that stopped
+        doing it would change which branch refuses this."""
+        self.second.git("fetch", "origin")
+        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        stages = gitrepo.conflicted(self.second.repo)
+        self.assertEqual({gitrepo.THEIRS: 0o120000}, stages[self.NAME])
+        self.assertEqual({gitrepo.OURS: 0o100644}, stages[f"{self.NAME}~HEAD"])
+        support.git_aborted(self.second.repo, self.second.env)
+
+    def test_it_is_refused_and_the_link_target_is_untouched(self) -> None:
+        self.assertEqual(2, self.second.call("sync", "--ours"))
+        self.assertEqual("SECRET-ORIGINAL\n", self.victim.read_text(encoding="utf-8"))
+
+
+class TestAConflictAboutNothingButTheMode(support.TwoMachines):
+    """Same bytes, different modes: git conflicts and `merge-file` does not.
+
+    The one case where the tree-level merge fails and the file-level one
+    succeeds, so `resolve` returns settled bytes with no `Sides` and **nobody is
+    asked**. Nothing reached it before, so `if outcome.sides is not None` could
+    be made unconditional and the suite stayed green.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        for machine, mode in ((self.second, 0o755), (self.first, 0o644)):
+            machine.write(MANAGED, "identical\n")
+            (machine.home / MANAGED).chmod(mode)
+            self.assertEqual(0, machine.call("add", str(machine.home / MANAGED)))
+        self.assertEqual(0, self.first.call("sync"))
+
+    def test_the_two_sides_differ_only_in_the_mode(self) -> None:
+        self.second.git("fetch", "origin")
+        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        stages = gitrepo.conflicted(self.second.repo)[MANAGED]
+        self.assertNotEqual(stages[gitrepo.OURS], stages[gitrepo.THEIRS])
+        self.assertEqual(
+            gitrepo.version(self.second.repo, gitrepo.OURS, MANAGED),
+            gitrepo.version(self.second.repo, gitrepo.THEIRS, MANAGED),
+        )
+        support.git_aborted(self.second.repo, self.second.env)
+
+    def test_it_settles_with_nobody_asked(self) -> None:
+        """`--no-input` is enough, which is the assertion: a run that had to ask
+        would report the conflict and exit 1."""
+        self.assertEqual(0, self.second.call("sync", "--no-input"))
+        self.assertEqual("identical\n", self.second.read(MANAGED))
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
