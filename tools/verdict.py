@@ -55,6 +55,7 @@ import json
 import resource
 import signal
 import sys
+import time
 import traceback
 import unittest
 from types import TracebackType
@@ -196,13 +197,21 @@ class Verdicts(unittest.TextTestResult):
         #: Seconds one test may take. 0 disables the alarm, which is what a
         #: platform without `SIGALRM` gets.
         self.each: float = 0.0
+        #: What each test that ran cost, by id. `mutate.Killers` accumulates
+        #: these so it can order the cheap high-yield tests first; the *baseline*
+        #: runs are where they mostly come from, since those alone run a whole
+        #: selection to the end without `failfast` cutting it short.
+        self.times: dict[str, float] = {}
+        self._began = 0.0
 
     def startTest(self, test: unittest.TestCase) -> None:
         super().startTest(test)
+        self._began = time.perf_counter()
         if self.each:
             signal.setitimer(signal.ITIMER_REAL, self.each)
 
     def stopTest(self, test: unittest.TestCase) -> None:
+        self.times[test.id()] = time.perf_counter() - self._began
         # Cancelled here rather than only on the next `startTest`, or a fast test
         # would be charged for the timer its predecessor set and the alarm would
         # land in whatever ran next.
@@ -313,6 +322,7 @@ def collect(names: list[str], failfast: bool, each: float = 0.0) -> dict[str, An
             "ran": 0,
             "noticed": [],
             "killers": [],
+            "times": {},
             # `str()` because typeshed types `errors` as exception classes while
             # `unittest` actually appends formatted tracebacks; the first line is
             # the "Failed to import test module: x" that says which.
@@ -334,6 +344,7 @@ def collect(names: list[str], failfast: bool, each: float = 0.0) -> dict[str, An
         "ran": result.testsRun,
         "noticed": result.noticed,
         "killers": result.killers,
+        "times": result.times,
         "broke": result.broke,
     }
 

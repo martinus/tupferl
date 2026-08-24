@@ -82,8 +82,9 @@ class Mutation(NamedTuple):
     span: tuple[int, int] | None = None
     #: Which operator produced this. Empty for a hand-written row.
     operator: str = ""
-    #: One test to run *before* `tests`, when a previous sweep recorded which
-    #: test caught this mutation. Separate from `tests` and not folded into it,
+    #: Tests to run *before* `tests`: the one a previous sweep recorded as
+    #: catching this mutation, or -- when none was -- a cheap high-yield prefix.
+    #: Separate from `tests` and not folded into it,
     #: which was the first shape and cost twice the wall clock: `run` shards the
     #: baseline check by distinct `tests` string, so a killer prepended there
     #: made every row its own shard -- 1 baseline run became 42, each a full

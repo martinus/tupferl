@@ -262,7 +262,7 @@ class TestWhatTheCacheLearns(unittest.TestCase):
         with support.tempdir() as box:
             cache = mutate.Killers(box / "killers.json")
             cache.known = {mutate._key(one): "tests.test_old.C.t"}
-            cache.learn([mutate.Result(one, mutate.Verdict(outcome, "", killer))])
+            cache.learn(mutate.Report([mutate.Result(one, mutate.Verdict(outcome, "", killer))]))
             return cache.known
 
     def test_a_catch_is_remembered(self) -> None:
@@ -398,3 +398,93 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         only ever say "it did not finish in three seconds"."""
         self.assertEqual(0.0, verdict.each_test(0))
         self.assertEqual(2.0, verdict.each_test(2))
+
+
+class TestTheCheapPrefix(unittest.TestCase):
+    """`Killers.prefix`: cheap tests that between them catch a lot, first.
+
+    The remembered killer (above) helps a row that has been seen. This helps
+    every row, including one seen for the first time -- which is exactly the case
+    a per-row cache cannot serve.
+
+    Greedy on rows-newly-caught-per-second, which is the 4-approximation for
+    Min-Sum Set Cover and the best any polynomial algorithm gets unless P=NP.
+    """
+
+    def cache(self, known: dict[str, str], cost: dict[str, float]) -> mutate.Killers:
+        made = mutate.Killers(None)
+        made.known, made.cost = known, cost
+        return made
+
+    def test_a_cheap_test_that_catches_a_lot_comes_first(self) -> None:
+        """The ordering is by *rate*, not by either half alone: `slow` catches
+        the most and `rare` is the cheapest, and neither is the answer."""
+        cache = self.cache(
+            {f"k{n}": "tests.m.C.slow" for n in range(50)}
+            | {f"c{n}": "tests.m.C.quick" for n in range(20)}
+            | {"r0": "tests.m.C.rare"},
+            {"tests.m.C.slow": 0.40, "tests.m.C.quick": 0.02, "tests.m.C.rare": 0.001},
+        )
+        self.assertEqual(["tests.m.C.quick", "tests.m.C.rare", "tests.m.C.slow"], cache.prefix())
+
+    def test_it_stops_at_the_budget(self) -> None:
+        """Every row pays this up front, so it is bounded in seconds rather than
+        in tests -- tests do not all cost the same."""
+        cache = self.cache(
+            {f"k{n}": f"tests.m.C.t{n}" for n in range(20)},
+            {f"tests.m.C.t{n}": 0.2 for n in range(20)},
+        )
+        chosen = cache.prefix()
+        self.assertLessEqual(sum(0.2 for _ in chosen), mutate.PREFIX)
+        self.assertLess(len(chosen), 20)
+
+    def test_a_test_with_no_measured_cost_is_not_guessed_at(self) -> None:
+        """A killer recorded before costs existed has no denominator, and
+        inventing one would put it anywhere at all in the order."""
+        cache = self.cache({"k": "tests.m.C.unmeasured"}, {})
+        self.assertEqual([], cache.prefix())
+
+    def test_nothing_is_covered_twice(self) -> None:
+        """Greedy credits a test only with rows nothing before it caught, or the
+        second-best test rides on the first one's coverage and the prefix fills
+        with duplicates."""
+        cache = self.cache(
+            {"a": "tests.m.C.one", "b": "tests.m.C.one", "c": "tests.m.C.two"},
+            {"tests.m.C.one": 0.01, "tests.m.C.two": 0.02},
+        )
+        self.assertEqual(["tests.m.C.one", "tests.m.C.two"], cache.prefix())
+
+
+class TestWhichRowsGetThePrefix(unittest.TestCase):
+    def rows(self, tests: str = "tests.test_sync") -> list[Mutation]:
+        return [row()._replace(tests=tests)]
+
+    def cache(self) -> mutate.Killers:
+        made = mutate.Killers(None)
+        made.cost = {REAL: 0.001}
+        return made
+
+    def test_a_row_with_a_remembered_killer_does_not_pay_for_it(self) -> None:
+        """Exact beats general: that test is known to catch *this* row, so the
+        prefix would only be work in front of the answer."""
+        cache = self.cache()
+        one = self.rows("tests.test_mutate")[0]
+        cache.known = {mutate._key(one): REAL}
+        (ahead,) = cache.ahead_of([one])
+        self.assertEqual(REAL, ahead.first)
+
+    def test_a_row_with_nothing_remembered_gets_the_prefix(self) -> None:
+        cache = self.cache()
+        cache.known = {"someone-else": REAL}
+        with support.quiet():
+            (ahead,) = cache.ahead_of(self.rows("tests.test_mutate"))
+        self.assertEqual(REAL, ahead.first)
+
+    def test_the_prefix_is_cut_to_what_the_row_can_reach(self) -> None:
+        """A test in a module that does not import the mutated file cannot see
+        the mutation, so running it would be pure cost."""
+        cache = self.cache()
+        cache.known = {"someone-else": REAL}
+        with support.quiet():
+            (ahead,) = cache.ahead_of(self.rows("tests.test_paths"))
+        self.assertEqual("", ahead.first)
