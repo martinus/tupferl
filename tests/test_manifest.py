@@ -246,24 +246,18 @@ class TestWhatTheRepositoryHolds(ManifestCase):
             [PurePosixPath(".aaa"), PurePosixPath(".zshrc")], [item.name for item in found]
         )
 
-    def test_the_walk_is_sorted_rather_than_in_readdir_order(self) -> None:
-        """Sorted because the order reaches the user twice — in what `add`
-        prints and in the commit message it writes — and an order that depends
-        on the filesystem makes two machines' commits differ for no visible
-        reason.
+    def test_the_listing_comes_back_sorted_whatever_the_filesystem_says(self) -> None:
+        """Five names created in an order no filesystem returns alphabetically.
 
-        Five names created in an order the filesystem will not hand back
-        alphabetically. The fixture asserts that: on a filesystem that happens
-        to return entries sorted, this test cannot fail, and would then be
-        decoration rather than a guard.
+        No skip and no dependence on readdir order: `managed` sorts
+        unconditionally, so this is deterministic everywhere. An earlier version
+        skipped when readdir happened to be sorted, which under CI's
+        `--no-skips` would have turned a lucky filesystem into a red build.
         """
         for name in (".yyy", ".bbb", ".aaa", ".mmm", ".zshrc"):
             self.write(self.repo / name, "x")
-        raw = [child.name for child in self.repo.iterdir() if child.name != paths.META]
-        if raw == sorted(raw):
-            self.skipTest("this filesystem returns directory entries already sorted")
         found = [str(item.name) for item in manifest.managed(self.repo, support.HOST)]
-        self.assertEqual(sorted(raw), found)
+        self.assertEqual([".aaa", ".bbb", ".mmm", ".yyy", ".zshrc"], found)
 
     def test_an_overlay_replaces_the_shared_file_rather_than_doubling_it(self) -> None:
         """Plan §3.3: the overlay *replaces* the shared version on this host. So
@@ -274,6 +268,16 @@ class TestWhatTheRepositoryHolds(ManifestCase):
         found = manifest.managed(self.repo, support.HOST)
         self.assertEqual([PurePosixPath(".gitconfig")], [item.name for item in found])
         self.assertEqual([True], [item.host for item in found])
+
+    def test_something_that_is_not_a_file_in_the_repository_is_not_listed(self) -> None:
+        """A socket cannot be a managed dotfile, and `add` refuses to store one
+        — but the repository is a directory on disk that other things can put
+        entries in, and `list` reads whatever is there."""
+        self.write(self.repo / ".bashrc", "x")
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.bind(str(self.repo / "stray.sock"))
+            found = manifest.managed(self.repo, support.HOST)
+        self.assertEqual([PurePosixPath(".bashrc")], [item.name for item in found])
 
     def test_another_hosts_overlay_is_not_listed(self) -> None:
         """The overlay belongs to one machine. Two hosts is the fixture that

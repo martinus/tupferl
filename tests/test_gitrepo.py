@@ -148,6 +148,16 @@ class TestTheReasonGitGives(unittest.TestCase):
         "Please make sure you have the correct access rights\n"
         "and the repository exists.\n"
     )
+    #: The `ls-remote` shape, and the one with *two* `fatal:` lines. It is the
+    #: only fixture here that can tell "the first one git marked" from "the last
+    #: one": the first names the repository, the second is the generic follow-up.
+    TWO_FATALS = (
+        "fatal: '/tmp/absent.git' does not appear to be a git repository\n"
+        "fatal: Could not read from remote repository.\n"
+        "\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n"
+    )
     MISSING = "fatal: repository '/tmp/absent.git' does not exist\n"
     PROMPTS = "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"
 
@@ -161,6 +171,13 @@ class TestTheReasonGitGives(unittest.TestCase):
 
     def test_the_trailing_advice_is_not_either(self) -> None:
         self.assertNotIn("repository exists", self.reason(self.CLONE))
+
+    def test_the_first_fatal_line_wins_when_there_are_two(self) -> None:
+        """The specific one, not the generic follow-up. Every other transcript
+        here has a single `fatal:`, where first and last are the same string —
+        so without this fixture the choice between them is untested."""
+        found = self.reason(self.TWO_FATALS)
+        self.assertEqual("fatal: '/tmp/absent.git' does not appear to be a git repository", found)
 
     def test_a_single_line_failure_is_itself(self) -> None:
         self.assertEqual(self.MISSING.strip(), self.reason(self.MISSING))

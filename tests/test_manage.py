@@ -304,6 +304,41 @@ class TestAdd(Machine):
         self.assertEqual(1, done.stdout.count("init.lua"), done.stdout)
         self.assertEqual(1, self.log()[0].count("init.lua"), self.log()[0])
 
+    def test_the_order_it_stores_in_does_not_depend_on_the_argument_order(self) -> None:
+        """Two files named in reverse order. The set `add` iterates is a dict
+        built in argument order, so this is the fixture that tells a sort from
+        no sort — and the order reaches the user twice, in what is printed and
+        in the commit message."""
+        self.write(self.home / ".zshrc", "z")
+        self.write(self.home / ".aaa", "a")
+        done = self.run_cli("add", str(self.home / ".zshrc"), str(self.home / ".aaa"))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertLess(done.stdout.index(".aaa"), done.stdout.index(".zshrc"), done.stdout)
+        self.assertEqual("add from test-host: .aaa, .zshrc", self.log()[0])
+
+    def test_a_directory_where_everything_is_refused_says_so(self) -> None:
+        """Not "no change", which is what an empty admitted set would otherwise
+        fall through to — and which reads as "already stored" rather than
+        "stored nothing"."""
+        (self.home / ".config" / "one").symlink_to(self.tmp / "elsewhere")
+        (self.home / ".config" / "two").symlink_to(self.tmp / "elsewhere")
+        done = self.run_cli("add", str(self.home / ".config"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("nothing to add", done.stderr)
+
+    def test_a_failing_commit_is_reported_rather_than_ignored(self) -> None:
+        """A brand-new machine with no git identity: `git commit` refuses, and
+        without the guard `add` would report success having stored nothing.
+
+        The fixture removes the identity `seed_home` wrote, which is exactly
+        the state a user is in before their first `git config --global user.email`.
+        """
+        (self.home / ".gitconfig").unlink()
+        self.write(self.home / ".bashrc", "x")
+        done = self.run_cli("add", str(self.home / ".bashrc"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("could not commit", done.stderr)
+
     def test_it_needs_a_repository(self) -> None:
         """Run in a home where `init` never was."""
         with support.tempdir() as box:
@@ -370,6 +405,18 @@ class TestRemove(Machine):
         self.assertTrue(self.repo.is_dir(), "it pruned the repository itself")
         self.assertTrue(self.home.is_dir(), "it climbed out of the repository")
         self.assertTrue(paths.config_file(self.repo).is_file(), "it pruned .tupferl/")
+
+    def test_pruning_stops_at_a_directory_that_still_holds_something(self) -> None:
+        """The ordinary case, and the one that tells `and` from `or` in a loop
+        that calls `rmdir`: with `or`, the walk enters a non-empty directory and
+        `rmdir` raises."""
+        self.write(self.home / ".config" / "nvim" / "init.lua", "x")
+        self.write(self.home / ".config" / "nvim" / "other.lua", "x")
+        self.run_cli("add", str(self.home / ".config"))
+        done = self.run_cli("remove", str(self.home / ".config" / "nvim" / "init.lua"))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertTrue((self.repo / ".config" / "nvim" / "other.lua").is_file())
+        self.assertNotIn("Traceback", done.stderr)
 
     def test_removing_something_unmanaged_is_an_error(self) -> None:
         done = self.run_cli("remove", str(self.home / ".never-added"))
@@ -563,11 +610,21 @@ class TestWhatEachCommandPrints(Machine):
         done = self.run_cli("remove", str(self.home / ".bashrc"))
         self.assertIn("was not touched", done.stdout)
 
-    def test_init_says_where_it_put_things_and_what_to_do_next(self) -> None:
-        done = self.run_cli("list")
-        self.assertEqual(0, done.returncode)
-        fresh = support.run_cli(["init", str(self.remote)], self.env)
-        self.assertIn("already a tupferl repository", fresh.stderr)
+    def test_init_says_what_it_did_and_what_to_do_next(self) -> None:
+        """Three lines, and each is the only place the user learns something:
+        where the repository went, that a settings file was created for them,
+        and what to type next. `TestInit` asserts the *effects*; these are the
+        words, which nothing else covers."""
+        with support.tempdir() as box:
+            home = box / "home"
+            home.mkdir()
+            support.seed_home(home)
+            env = support.sandbox_env(home)
+            done = support.run_cli(["init", str(self.remote)], env)
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("cloned", done.stdout)
+        self.assertIn("the remote was empty", done.stdout)
+        self.assertIn("tupferl add", done.stdout)
 
     def test_list_counts_what_it_showed(self) -> None:
         self.run_cli("add", str(self.home / ".bashrc"))

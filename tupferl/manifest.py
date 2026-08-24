@@ -236,19 +236,35 @@ def managed(repo: Path, host: str) -> list[Managed]:
     A host overlay *replaces* the shared file (plan §3.3), so a name present in
     both appears once, marked as the overlay -- which is the file that would
     actually be written to `$HOME` on this machine.
+
+    Sorted here and nowhere else. The order reaches a user twice -- in `list`
+    and in the commit messages `add` writes -- so one that depended on the
+    filesystem would make two machines disagree for no visible reason.
     """
     shared = {name: Managed(name, host=False) for name in _under(repo, repo)}
     overlay = paths.host_overlay(repo, host)
-    for name in _under(overlay, overlay) if overlay.is_dir() else []:
+    for name in _under(overlay, overlay):
         shared[name] = Managed(name, host=True)
     return [shared[name] for name in sorted(shared)]
 
 
 def _under(where: Path, root: Path) -> Iterator[PurePosixPath]:
-    """Every file under `where`, named relative to `root`, skipping git and us."""
+    """Every file under `where`, named relative to `root`, skipping git and us.
+
+    Nothing for a path that is not a directory, which is the ordinary answer
+    rather than an edge case: a host that has never run `add --host` has no
+    overlay directory, and that is most runs. `managed` used to ask the same
+    question again before calling -- two checks for one fact, the second of
+    which nothing could reach.
+
+    The order is *not* sorted here. It was, until the mutation sweep pointed
+    out that nothing could tell: `managed` sorts what it returns, so this walk's
+    order never reaches anyone. Sorting twice reads as though one of them
+    mattered.
+    """
     if not where.is_dir():
         return
-    for child in sorted(where.iterdir()):
+    for child in where.iterdir():
         if child.name in (".git", paths.META):
             continue
         if child.is_dir() and not child.is_symlink():
