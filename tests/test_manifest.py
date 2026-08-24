@@ -64,7 +64,15 @@ class TestWhatIsRefused(ManifestCase):
         outside.write_text("token\n", encoding="utf-8")
         link = self.home / ".aws-credentials"
         link.symlink_to(outside)
-        self.assertIn("symlink", self.refusal(link))
+        found = self.refusal(link)
+        # On "is a symlink", not on "symlink": *both* refusals contain the bare
+        # word, so asserting it alone passes with the direct check removed --
+        # `links_between` then catches the same file one rule later and says the
+        # path "goes through" a symlink, which is confusing when the path *is*
+        # one. The mutation sweep found this; it is the third time this exact
+        # shape has appeared in these tests.
+        self.assertIn("is a symlink", found)
+        self.assertNotIn("goes through", found)
 
     def test_a_path_through_a_symlinked_parent(self) -> None:
         """The same hazard one level up, and the one a naive check misses: the
