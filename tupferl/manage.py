@@ -11,11 +11,10 @@ run was interrupted, and a design where the normal state of the repository is
 record of what the user asked for, which is the thing they will read when a file
 turns out to be missing.
 
-**Only the executable bit is preserved** (plan §5). The copy is written 0o644,
-or 0o755 when the source was executable by anyone -- not `copy2`, which carries
-the whole mode across. That is not laziness: git records exactly this one bit,
-so any other bit stored in the working tree would be lost on the first clone and
-the two machines would disagree about a file neither of them changed.
+**What a stored copy *is* lives in `tupferl/copies.py`**, not here: the bytes,
+the one mode bit that travels, and the single rule for "the target is already
+this file". `sync` needs all three too, and the two modules had briefly grown
+their own answers to the third.
 
 **`remove` does not require the file to exist.** Plan §4 says it keeps the file
 in `$HOME`, which is the usual case -- but the reason someone reaches for it is
@@ -25,12 +24,9 @@ it to their other machine. Requiring existence would refuse exactly then.
 
 from __future__ import annotations
 
-import filecmp
-import shutil
-import stat
 from pathlib import Path, PurePosixPath
 
-from tupferl import gitrepo, manifest, paths
+from tupferl import copies, gitrepo, manifest, paths
 from tupferl.config import Config, load
 from tupferl.errors import TupferlError
 
@@ -48,20 +44,6 @@ TEMPLATE = """\
 # ignore = ["*.log", ".cache"]  # a pattern also hides everything under it
 # max_file_size = 1048576       # bytes
 """
-
-#: Executable by anyone. The one mode bit git records, and therefore the only
-#: one worth reading off a file -- see `mode_for`. Named here rather than in
-#: `sync`, which reads the same bit to decide whether a `chmod +x` on one machine
-#: is a change to carry to the other: two spellings of "executable" would let the
-#: two commands disagree about a file neither of them edited.
-EXEC_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-
-#: The two modes a stored copy can have. Everything else about the source's mode
-#: is dropped on purpose (plan §5): git records exactly this one bit, so any
-#: other bit kept in the working tree is lost on the first clone and the two
-#: machines then disagree about a file neither of them changed.
-EXECUTABLE = 0o755
-PLAIN = 0o644
 
 #: How many names a generated commit message lists before it summarises. Long
 #: enough that an ordinary `add` names everything it did, short enough that
@@ -128,46 +110,6 @@ def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
     return True
 
 
-def mode_for(source: Path) -> int:
-    """The mode a stored copy gets: `EXECUTABLE` if the source is, else `PLAIN`.
-
-    Executable by *anyone*, not by the owner alone. A script that arrived from a
-    tarball as 0o711 is a script, and storing it as non-executable would put it
-    back on the other machine unrunnable -- a failure the user would blame on the
-    program that reads it.
-    """
-    return EXECUTABLE if source.stat().st_mode & EXEC_BITS else PLAIN
-
-
-def store(source: Path, target: Path) -> str | None:
-    """Copy `source` to `target`; say what happened, or `None` if nothing did.
-
-    `copyfile` then `chmod`, rather than `copy2`. See the module docstring: git
-    records one mode bit, so storing more is storing something that cannot
-    survive a clone.
-
-    The comparison before writing is not an optimisation -- the files are a
-    megabyte at most by default and the copy is not worth avoiding. It is so `add` can
-    say "added", "updated" or nothing at all rather than printing "added" and
-    then, three lines later, that the repository did not change. Mode is part of
-    the comparison because a `chmod +x` with no edit is a real change that git
-    will record. `filecmp` rather than reading both files whole, because
-    `max_file_size` is a setting and someone will raise it.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    mode = mode_for(source)
-    existed = target.is_file()
-    if (
-        existed
-        and target.stat().st_mode & 0o777 == mode
-        and filecmp.cmp(source, target, shallow=False)
-    ):
-        return None
-    shutil.copyfile(source, target)
-    target.chmod(mode)
-    return "updated" if existed else "added"
-
-
 def init(url: str) -> int:
     """Clone `url` into the repository directory, or explain why not.
 
@@ -230,8 +172,7 @@ def add(wanted: list[str], to_host: bool) -> int:
     repo, config = open_repo()
     home = paths.home()
     host = paths.hostname(config.hostname)
-    tree, overlay = manifest.roots(repo, host)
-    root = overlay if to_host else tree
+    root = manifest.location(repo, host, to_host)
 
     # A dict used as an ordered set: keys only, because the source is always
     # `home / name` and a derived value stored beside the key it comes from is
@@ -268,14 +209,14 @@ def add(wanted: list[str], to_host: bool) -> int:
     touched: list[PurePosixPath] = []
     written: list[Path] = []
     for name in sorted(admitted):
-        did = store(home / name, root / name)
+        did = copies.store(home / name, root / name)
         # The merge base starts here. `add` has just made the two copies
         # identical, which is exactly what a snapshot records -- and without one
         # the first `sync` after an edit has no common ancestor and reports the
         # file as conflicting *with its own copy*. Found by a milestone 3 test
         # that edited a file between `add` and `sync`, which is an ordinary
         # thing to do.
-        store(home / name, snapshots / name)
+        copies.store(home / name, snapshots / name)
         written.extend([root / name, snapshots / name])
         if did is not None:
             touched.append(name)

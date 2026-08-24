@@ -71,11 +71,9 @@ settings.register_profile(
 #: about which run this is. `mutation` gets three: a sweep runs the suite once
 #: per mutant, and a stateful machine that took thirty seconds would put a sweep
 #: into hours for signal the example tests already carry.
-STATEFUL, STEPS = {
-    "dev": (20, 8),
-    "ci": (20, 8),
-    "mutation": (3, 4),
-}.get(os.environ.get(ENV, "dev"), (20, 8))
+#: Only the row that differs is written out: `dev` and `ci` are the fallback, and
+#: spelling them as their own entries was three copies of one pair.
+STATEFUL, STEPS = {"mutation": (3, 4)}.get(os.environ.get(ENV, "dev"), (20, 8))
 
 #: Every profile above states every field it cares about, so that this line is
 #: the only thing that decides which settings are in force. `tests/test_profiles.py`

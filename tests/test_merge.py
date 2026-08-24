@@ -13,10 +13,11 @@ them is here because it decides something the sync engine does:
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest import mock
 
-from tupferl import gitrepo, merge
+from tupferl import merge
 from tupferl.errors import TupferlError
 
 BASE = b"one\ntwo\nthree\n"
@@ -108,15 +109,20 @@ class TestAMergeThatCouldNotRun(unittest.TestCase):
         not run would mean skipping every file and reporting them as the user's
         problem.
 
-        Driven by making `git` unfindable rather than by a mock of `merge_file`:
-        a mock would assert that this function reads a field, where this asserts
-        what happens when git is missing, which is the thing that goes wrong.
+        Driven by making `git` genuinely unfindable rather than by a mock of
+        `merge_file` -- plan §7.1 forbids mocking git, and a mock would assert
+        that this function reads a field where this asserts what happens when
+        git is missing, which is the thing that goes wrong.
+
+        `PATH=""` and not `del PATH`: with the variable *absent*, `subprocess`
+        falls back to `confstr("CS_PATH")` and finds `/usr/bin/git` anyway, so
+        the obvious spelling of this fixture would have merged successfully and
+        the test would have failed for the wrong reason. Measured both ways.
         """
-        broken = mock.patch.object(gitrepo, "git", return_value=gitrepo.Result(False, "", "boom"))
-        with broken, self.assertRaises(TupferlError) as caught:
+        with mock.patch.dict(os.environ, {"PATH": ""}), self.assertRaises(TupferlError) as caught:
             merge.three_way(".bashrc", BASE, b"ours\n", b"theirs\n")
         self.assertIn(".bashrc", str(caught.exception))
-        self.assertIn("boom", str(caught.exception))
+        self.assertIn("not installed", str(caught.exception))
 
 
 if __name__ == "__main__":

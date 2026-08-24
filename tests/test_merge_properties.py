@@ -31,26 +31,17 @@ import unittest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from tests import profiles  # noqa: F401  -- registers and loads the profile
+from tests import (
+    profiles,  # noqa: F401  -- registers and loads the profile
+    support,
+)
 from tupferl import merge
 
-#: One line of a file, without the two bytes that would make the fixture mean
-#: something else.
-#:
-#: `\n` and `\r`, because newlines are added by the fixture: a generated one
-#: would silently change how many lines a region has, and the whole construction
-#: rests on that count.
-#:
-#: `\x00`, because a file containing one is not text and has no 3-way merge --
-#: `merge.is_text` reports the whole file as one conflict, which is the honest
-#: answer and not what properties 1 and 2 are about. Excluded here rather than
-#: `assume`d away so the reason is stated once; the excluded case is covered by
-#: `test_merge.TestBinaryFilesHaveNoMerge`, which is what stops this exclusion
-#: from being a hole. Hypothesis found it on this file's first run.
-TEXT = st.text(
-    alphabet=st.characters(blacklist_characters="\n\r\x00", blacklist_categories=("Cs",)),
-    max_size=12,
-)
+#: The generated line, the three-line region and the joiner all live in
+#: `tests/support.py`: `tests/test_sync_properties.py` builds the same fixture,
+#: and the excluded characters are a fact about how *both* are constructed. The
+#: argument for each exclusion, and for the index in every line, is there.
+TEXT = support.line(max_size=12)
 
 #: Which side edits a region, or neither. Weighted towards editing, because a
 #: run where both sides changed nothing tests that the merge returns the base
@@ -58,33 +49,24 @@ TEXT = st.text(
 SIDES = st.sampled_from(["ours", "theirs", "neither"])
 
 
-def region(index: int, middle: str) -> list[str]:
-    """Three lines, the middle one editable, all three naming their region.
-
-    The index in every line is what keeps regions textually distinct; see the
-    module docstring for what happens without it.
-    """
-    return [f"{index}: top", f"{index}: {middle}", f"{index}: bottom"]
-
-
-def joined(lines: list[str]) -> bytes:
-    return ("".join(line + "\n" for line in lines)).encode("utf-8")
-
-
 class TestOneSidedChangeWins(unittest.TestCase):
     """Property 1."""
 
     @given(base=st.lists(TEXT, max_size=8), edit=st.lists(TEXT, max_size=8))
     def test_only_ours_changed(self, base: list[str], edit: list[str]) -> None:
-        got = merge.three_way(".bashrc", joined(base), joined(edit), joined(base))
+        got = merge.three_way(
+            ".bashrc", support.joined(base), support.joined(edit), support.joined(base)
+        )
         self.assertEqual(0, got.conflicts)
-        self.assertEqual(joined(edit), got.data)
+        self.assertEqual(support.joined(edit), got.data)
 
     @given(base=st.lists(TEXT, max_size=8), edit=st.lists(TEXT, max_size=8))
     def test_only_theirs_changed(self, base: list[str], edit: list[str]) -> None:
-        got = merge.three_way(".bashrc", joined(base), joined(base), joined(edit))
+        got = merge.three_way(
+            ".bashrc", support.joined(base), support.joined(base), support.joined(edit)
+        )
         self.assertEqual(0, got.conflicts)
-        self.assertEqual(joined(edit), got.data)
+        self.assertEqual(support.joined(edit), got.data)
 
 
 class TestANonOverlappingMergeKeepsBothSides(unittest.TestCase):
@@ -113,16 +95,18 @@ class TestANonOverlappingMergeKeepsBothSides(unittest.TestCase):
             # it is the unedited region -- and it would make this test pass for
             # a merge that dropped one side entirely.
             assume(original != edited)
-            base.extend(region(index, original))
-            ours.extend(region(index, edited if side == "ours" else original))
-            theirs.extend(region(index, edited if side == "theirs" else original))
-            want.extend(region(index, original if side == "neither" else edited))
+            base.extend(support.region(index, original))
+            ours.extend(support.region(index, edited if side == "ours" else original))
+            theirs.extend(support.region(index, edited if side == "theirs" else original))
+            want.extend(support.region(index, original if side == "neither" else edited))
 
-        got = merge.three_way(".bashrc", joined(base), joined(ours), joined(theirs))
+        got = merge.three_way(
+            ".bashrc", support.joined(base), support.joined(ours), support.joined(theirs)
+        )
         # The merged text in the failure message: a conflict here means the
         # fixture's regions overlapped, and the markers say which two.
         self.assertEqual(0, got.conflicts, got.data)
-        self.assertEqual(joined(want), got.data)
+        self.assertEqual(support.joined(want), got.data)
 
 
 if __name__ == "__main__":

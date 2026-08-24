@@ -60,25 +60,11 @@ REGIONS = 4
 #: leading dots.
 MANAGED = ".bashrc"
 
-#: What a region's middle line can say. Short and without newlines: a generated
-#: newline would change how many lines a region has, and the whole construction
-#: rests on that count.
-TEXT = st.text(
-    alphabet=st.characters(blacklist_characters="\n\r\x00", blacklist_categories=("Cs",)),
-    max_size=8,
-)
-
-
-def content(middles: list[str]) -> str:
-    """The whole file, from the middle line of each region.
-
-    The index appears in every line so that no two regions are textually
-    identical; see the module docstring for what goes wrong without it.
-    """
-    lines = []
-    for index, middle in enumerate(middles):
-        lines.extend([f"{index}: top", f"{index}: {middle}", f"{index}: bottom"])
-    return "".join(line + "\n" for line in lines)
+#: The generated line and the three-line region shape come from
+#: `tests/support.py`, shared with `tests/test_merge_properties.py`. The reason
+#: for every excluded character, and for the index in every line, is stated
+#: there once.
+TEXT = support.line(max_size=8)
 
 
 def fingerprint(*trees: Path) -> list[tuple[str, str]]:
@@ -123,7 +109,7 @@ class SyncMachine(RuleBasedStateMachine):
         #: The model: what each region's middle line should say. The initial file
         #: is written before anything is managed, so both machines start from it.
         self.middles = [f"start-{index}" for index in range(REGIONS)]
-        (first.home / MANAGED).write_text(content(self.middles), encoding="utf-8")
+        first.write(MANAGED, support.regions(self.middles))
 
         assert first.call("init", str(remote)) == 0
         assert first.call("add", str(first.home / MANAGED)) == 0
@@ -131,7 +117,7 @@ class SyncMachine(RuleBasedStateMachine):
         # `init` runs a first sync (plan §4), which is what puts the file on the
         # second machine -- so this is also the two-machine setup a user performs.
         assert second.call("init", str(remote)) == 0
-        assert (second.home / MANAGED).read_text(encoding="utf-8") == content(self.middles)
+        assert second.read(MANAGED) == support.regions(self.middles)
 
     @rule(who=st.integers(0, 1), slot=st.integers(0, 1), text=TEXT)
     def edit(self, who: int, slot: int, text: str) -> None:
@@ -143,9 +129,7 @@ class SyncMachine(RuleBasedStateMachine):
         """
         region = slot * 2 + who
         self.middles[region] = f"{self.machines[who].name}-{text}"
-        (self.machines[who].home / MANAGED).write_text(
-            content(self.middles_seen_by(who)), encoding="utf-8"
-        )
+        self.machines[who].write(MANAGED, support.regions(self.middles_seen_by(who)))
 
     def middles_seen_by(self, who: int) -> list[str]:
         """What this machine's copy should say after an edit to one of its own
@@ -159,7 +143,7 @@ class SyncMachine(RuleBasedStateMachine):
         This machine found it on its second run, with `text='m\x882\x1d'`. git
         splits on `\n` alone, which is why the file itself was never wrong.
         """
-        on_disk = (self.machines[who].home / MANAGED).read_text(encoding="utf-8").split("\n")
+        on_disk = self.machines[who].read(MANAGED).split("\n")
         middles = []
         for index in range(REGIONS):
             mine = index % 2 == who
@@ -194,11 +178,9 @@ class SyncMachine(RuleBasedStateMachine):
         try:
             for who in (0, 1, 0, 1):
                 assert self.machines[who].call("sync") == 0
-            want = content(self.middles)
+            want = support.regions(self.middles)
             for machine in self.machines:
-                assert (machine.home / MANAGED).read_text(encoding="utf-8") == want, (
-                    f"{machine.name} did not converge"
-                )
+                assert machine.read(MANAGED) == want, f"{machine.name} did not converge"
         finally:
             self.box.cleanup()
 

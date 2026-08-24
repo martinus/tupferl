@@ -45,10 +45,6 @@ from typing import NamedTuple
 from tupferl import gitrepo
 from tupferl.errors import TupferlError
 
-#: The most conflict hunks `git merge-file` will report. Above this its exit
-#: status saturates, so a larger number cannot be distinguished from an error.
-MOST_CONFLICTS = 127
-
 #: How much of a file git looks at before deciding it is binary, and therefore
 #: how much `is_text` looks at. The same number as git's `FIRST_FEW_BYTES`: a
 #: probe that read *more* would call a file binary that git would merge, and one
@@ -128,7 +124,7 @@ def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merg
         yours.write_bytes(theirs)
 
         done = gitrepo.merge_file(mine, common, yours, labels_for(name))
-        if done.code is None or not 0 <= done.code <= MOST_CONFLICTS:
+        if done.code is None or not 0 <= done.code <= gitrepo.MOST_CONFLICTS:
             # Not a conflict: git could not run, or refused the inputs. Reported
             # rather than folded into "conflicted", because the two need
             # different actions from the user and a merge that never happened

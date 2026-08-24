@@ -15,41 +15,18 @@ cannot tell an overlay that works from one that silently applies everywhere.
 from __future__ import annotations
 
 import stat
-import subprocess
 import unittest
 from pathlib import Path, PurePosixPath
 
 from tests import support
-from tupferl import gitrepo, manage, manifest, paths
+from tupferl import copies, gitrepo, manage, paths
 from tupferl.config import Config, load
 from tupferl.errors import TupferlError
 
-
-class Machine(support.SandboxCase):
-    """A sandboxed home with a bare remote beside it, and the CLI pointed there."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.remote = support.make_remote(self.tmp / "remote.git", self.env)
-        self.repo = paths.repo_dir()
-
-    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return support.run_cli(list(args), self.env)
-
-    def init(self) -> subprocess.CompletedProcess[str]:
-        done = self.run_cli("init", str(self.remote))
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        return done
-
-    def log(self) -> list[str]:
-        return support.git(["log", "--format=%s"], self.repo, self.env).splitlines()
-
-    def stored(self, name: str, host: bool = False) -> Path:
-        """Where a managed file lives, from `manifest.roots` rather than from a
-        ternary retyped here -- a test that spells the rule out itself cannot
-        notice the rule changing."""
-        tree, overlay = manifest.roots(self.repo, support.HOST)
-        return (overlay if host else tree) / name
+#: The one-machine fixture, now in `tests/support.py` because `test_sync.py`
+#: builds the same one. Bound here so the six `class Test...(Machine)` below read
+#: as they always did.
+Machine = support.Machine
 
 
 class TestInit(Machine):
@@ -745,17 +722,17 @@ class TestModes(support.SandboxCase):
     def test_an_executable_file_is_stored_executable(self) -> None:
         script = self.write(self.home / "script.sh", "#!/bin/sh\n")
         script.chmod(0o700)
-        self.assertEqual(0o755, manage.mode_for(script))
+        self.assertEqual(0o755, copies.mode_for(script))
 
     def test_a_plain_file_is_not(self) -> None:
-        self.assertEqual(0o644, manage.mode_for(self.write(self.home / "plain", "x")))
+        self.assertEqual(0o644, copies.mode_for(self.write(self.home / "plain", "x")))
 
     def test_executable_by_anyone_counts(self) -> None:
         """0o711 arrives from tarballs and is a script. Storing it
         non-executable puts it back unrunnable on the other machine."""
         script = self.write(self.home / "odd.sh", "#!/bin/sh\n")
         script.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXOTH)
-        self.assertEqual(0o755, manage.mode_for(script))
+        self.assertEqual(0o755, copies.mode_for(script))
 
 
 class TestOpenRepo(support.SandboxCase):

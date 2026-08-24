@@ -370,6 +370,7 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/` | the package. `__main__.py` is the CLI and the only entry point |
 | `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — four of the six are there to stop the wrong file being pushed |
 | `tupferl/gitrepo.py` | every call to git. Nothing else in the package spawns a subprocess |
+| `tupferl/copies.py` | what a stored copy is: bytes, the one mode bit that travels, and the single rule for "the target is already this file". Below `manage` and `sync`, because both write the same snapshots |
 | `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |
 | `tupferl/merge.py` | the 3-way merge, over `git merge-file`. Bytes in, bytes out, and the conflict count is git's exit status |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
@@ -451,6 +452,17 @@ Two things are not where a newcomer would guess, both on purpose:
   `--done` at `<json>.done`, never at the `--json` report, which under `--batch`
   and `--all` is rewritten after every file and so exists long before the run
   ends.
+- **git never starts `receive-pack` for an up-to-date push**, so no hook on the
+  remote can observe one: it compares the ref advertisement first and prints
+  "Everything up-to-date". A `pre-receive` hook counting pushes therefore reports
+  zero whether or not the push was skipped, and the test built on it passed with
+  the code under test disabled. To tell the two apart, point `remote.origin.
+  pushurl` somewhere that does not exist -- `fetch` still uses the real URL, so a
+  sync that decides to push fails and one that skips it does not.
+- **`PATH=""` makes git unfindable; deleting `PATH` does not.** With the variable
+  absent, `subprocess` falls back to `confstr("CS_PATH")` and finds
+  `/usr/bin/git` anyway. The obvious spelling of a "git is not installed" fixture
+  merges successfully and passes for the wrong reason.
 - **`str.splitlines()` splits on far more than `\n`** — `\x0b \x0c \x1c \x1d
   \x1e \x85 \u2028 \u2029` as well. A generated line containing one of those
   becomes two lines, and anything indexing by line number is then off by one for

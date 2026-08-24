@@ -35,7 +35,9 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from tupferl import paths
+from hypothesis import strategies as st
+
+from tupferl import manifest, paths
 
 #: The repository root, so a subprocess can import the package under test without
 #: it being installed. Derived from this file rather than from `os.getcwd()`,
@@ -70,6 +72,16 @@ CARRIES = (
     "PYTHONWARNINGS",
     "TUPFERL_MUTATE_BUDGET",
 )
+
+#: What the branch is called in every fixture -- `seed_home` writes it as
+#: `init.defaultBranch`, both repository builders pass it to `--initial-branch`,
+#: and `move_on_first_push` names it in a hook. Written down rather than left to
+#: git, whose default changed between versions: a test naming a branch would
+#: otherwise pass on one machine and fail on another for a reason invisible in
+#: its own text. Declared before the fixtures so all four use it -- it began as a
+#: constant with one use beside four literals, which is a claim of
+#: single-sourcing that was not true.
+BRANCH = "main"
 
 #: What a sandboxed hostname is, unless a test says otherwise. A plain name with
 #: a hyphen, because that is the shape of a real hostname and a fixture that used
@@ -136,13 +148,7 @@ def seed_home(home: Path, host: str = HOST) -> None:
     for part in (".local/share", ".local/state", ".config"):
         (home / part).mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
-        gitconfig(host) + "[init]\n"
-        # Written down rather than left to git: the default changed between git
-        # versions, so a test that names a branch would pass on one machine and
-        # fail on another for a reason invisible in its own text.
-        "\tdefaultBranch = main\n"
-        "[commit]\n"
-        "\tgpgsign = false\n",
+        gitconfig(host) + f"[init]\n\tdefaultBranch = {BRANCH}\n[commit]\n\tgpgsign = false\n",
         encoding="utf-8",
     )
 
@@ -235,7 +241,7 @@ def break_commits(home: Path) -> None:
 def make_remote(where: Path, env: dict[str, str]) -> Path:
     """A bare repository standing in for the remote. No network, ever."""
     where.mkdir(parents=True, exist_ok=True)
-    git(["init", "--bare", "--initial-branch=main", str(where)], cwd=where.parent, env=env)
+    git(["init", "--bare", f"--initial-branch={BRANCH}", str(where)], cwd=where.parent, env=env)
     return where
 
 
@@ -248,14 +254,14 @@ def make_repo(where: Path, env: dict[str, str], remote: Path | None = None) -> P
     practice.
     """
     where.mkdir(parents=True, exist_ok=True)
-    git(["init", "--initial-branch=main"], cwd=where, env=env)
+    git(["init", f"--initial-branch={BRANCH}"], cwd=where, env=env)
     (where / paths.META).mkdir(exist_ok=True)
     (where / paths.META / ".keep").write_text("", encoding="utf-8")
     git(["add", "-A"], cwd=where, env=env)
     git(["commit", "-m", "initial"], cwd=where, env=env)
     if remote is not None:
         git(["remote", "add", "origin", str(remote)], cwd=where, env=env)
-        git(["push", "-u", "origin", "main"], cwd=where, env=env)
+        git(["push", "-u", "origin", BRANCH], cwd=where, env=env)
     return where
 
 
@@ -342,7 +348,14 @@ class Computer:
         self.home.mkdir(parents=True)
         seed_home(self.home, name)
         self.env = sandbox_env(self.home, name)
-        self.repo = self.home / ".local" / "share" / "tupferl" / "repo"
+        # Asked of `tupferl.paths` under this machine's environment rather than
+        # retyped as `.local/share/tupferl/repo`. A test that spells the layout
+        # out itself cannot notice the layout changing -- and the assertions
+        # built on these are `assertFalse(...exists())`, which passes vacuously
+        # against a path nothing ever writes.
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.repo = paths.repo_dir()
+            self.backups = paths.backup_dir()
 
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         """One command, as a subprocess, the way a user runs it."""
@@ -369,18 +382,13 @@ class Computer:
     def read(self, name: str) -> str:
         return (self.home / name).read_text(encoding="utf-8")
 
-    def stored(self, name: str) -> Path:
-        """Where the shared copy of `name` lives in this machine's repository."""
-        return self.repo / name
+    def stored(self, name: str, host: bool = False) -> Path:
+        """Where the copy of `name` this machine would use lives, shared or overlay."""
+        return manifest.location(self.repo, self.name, host) / name
 
     def snapshot(self, name: str) -> Path:
         """Where this machine's merge base for `name` lives."""
-        return self.repo / paths.META / "state" / self.name / name
-
-
-#: What the branch is called in every fixture. Written down rather than asked of
-#: git, for `seed_home`'s reason: the default has changed between git versions.
-BRANCH = "main"
+        return paths.snapshot_dir(self.repo, self.name) / name
 
 
 def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
@@ -427,3 +435,89 @@ def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
         encoding="utf-8",
     )
     hook.chmod(0o755)
+
+
+#: One line of a generated file, without the characters that would make the
+#: fixtures below mean something else. Shared by both property-test modules,
+#: because the excluded set is a fact about how those fixtures are *built* and a
+#: character found to break one construction must not be excluded in only one of
+#: them.
+#:
+#: - `\n` and `\r`, because `joined` adds the newlines: a generated one would
+#:   change how many lines a region has, and both constructions rest on that
+#:   count.
+#: - `\x00`, because a file containing one is not text and has no 3-way merge --
+#:   `merge.is_text` reports the whole file as one conflict, which is the honest
+#:   answer and not what the merge properties are about. Hypothesis found that on
+#:   `tests/test_merge_properties.py`'s first run; the excluded case is covered
+#:   by `test_merge.TestBinaryFilesHaveNoMerge`, which is what stops the
+#:   exclusion being a hole.
+def line(max_size: int) -> st.SearchStrategy[str]:
+    return st.text(
+        alphabet=st.characters(blacklist_characters="\n\r\x00", blacklist_categories=("Cs",)),
+        max_size=max_size,
+    )
+
+
+def region(index: int, middle: str) -> list[str]:
+    """Three lines whose middle one is editable, all three naming their region.
+
+    The shape both property modules merge over, and the reason each is decidable
+    by construction: an edit to one region's middle line has two unchanged lines
+    between it and the next, and `git merge-file` merges hunks that *touch* --
+    adjacent single-line changes are one hunk, and therefore a conflict.
+
+    The index appears in every line so that no two regions are textually
+    identical. Without it git's diff can attribute a change to the wrong region,
+    two edits meant for different places land on top of each other, and the
+    result is an intermittent conflict that reads as a bug in the merge.
+    """
+    return [f"{index}: top", f"{index}: {middle}", f"{index}: bottom"]
+
+
+def joined(lines: list[str]) -> bytes:
+    return ("".join(line + "\n" for line in lines)).encode("utf-8")
+
+
+def regions(middles: list[str]) -> str:
+    """A whole file built from the middle line of each region, as text."""
+    return joined(
+        [part for index, middle in enumerate(middles) for part in region(index, middle)]
+    ).decode()
+
+
+class Machine(SandboxCase):
+    """A sandboxed home with a bare remote beside it, and the CLI pointed there.
+
+    The one-machine fixture, here rather than in a test module because two of
+    them build it -- `test_manage.py` for the repository commands and
+    `test_sync.py` for the engine. `Computer` above is the same idea for the
+    *two*-machine tests, which cannot use this one: `SandboxCase` patches
+    `os.environ` for a single `$HOME`, and two hostnames have to exist at once.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.remote = make_remote(self.tmp / "remote.git", self.env)
+        self.repo = paths.repo_dir()
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return run_cli(list(args), self.env)
+
+    def init(self) -> subprocess.CompletedProcess[str]:
+        done = self.run_cli("init", str(self.remote))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        return done
+
+    def log(self) -> list[str]:
+        return git(["log", "--format=%s"], self.repo, self.env).splitlines()
+
+    def stored(self, name: str, host: bool = False) -> Path:
+        """Where a managed file lives, from `manifest.location` rather than from a
+        ternary retyped here -- a test that spells the rule out itself cannot
+        notice the rule changing."""
+        return manifest.location(self.repo, self.host, host) / name
+
+    def snapshot(self, name: str) -> Path:
+        """Where this machine's merge base for `name` lives."""
+        return paths.snapshot_dir(self.repo, self.host) / name

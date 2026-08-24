@@ -41,7 +41,6 @@ class Result(NamedTuple):
     are asking a question ("is this a repository?") where the answer "no" is not
     exceptional."""
 
-    ok: bool
     out: str
     err: str
     #: True when the call was killed by `TIMEOUT` rather than exiting. A separate
@@ -52,14 +51,24 @@ class Result(NamedTuple):
     #: git's exit status, or `None` when git never got as far as exiting -- the
     #: timeout and not-installed paths, where there is no status to report.
     #:
-    #: `ok` is what every other caller wants and stays the primary reader. This
-    #: exists for `merge_file` alone, where "did it work" and "how did it go" are
-    #: the same number: `git merge-file` exits with the *count of conflict hunks*,
-    #: so a caller reading only `ok` learns that there was at least one conflict
-    #: and nothing more. Counting `<<<<<<<` markers in the output instead would
-    #: be a second way to produce the same observable, and wrong for a file that
-    #: legitimately contains one -- a merge driver's own documentation, say.
+    #: Only `merge_file` reads it, and it is why the field exists: `git
+    #: merge-file` exits with the *count of conflict hunks*, so a caller reading
+    #: only `ok` learns that there was at least one conflict and nothing more.
+    #: Counting `<<<<<<<` markers in the output instead would be a second way to
+    #: produce the same observable, and wrong for a file that legitimately
+    #: contains one -- a merge driver's own documentation, say.
     code: int | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Whether git exited 0. Almost every caller wants this and nothing else.
+
+        Derived rather than stored. It was a field beside `code` for about an
+        hour, and two fields that must agree is one that can be set wrong:
+        `Result(True, "", "", code=1)` was constructible and meaningless. `None`
+        -- git never ran -- is not success.
+        """
+        return self.code == 0
 
 
 def env() -> dict[str, str]:
@@ -94,7 +103,7 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
         # and a plain file raises `NotADirectoryError`, which nothing caught at
         # all and which reached the user as a traceback. Both were found by
         # reviewing this milestone rather than by anything failing.
-        return Result(False, "", f"{cwd} is not a directory")
+        return Result("", f"{cwd} is not a directory")
     try:
         done = subprocess.run(
             ["git", *args],
@@ -110,14 +119,12 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
         # the subcommand -- "git -c did not answer" names a flag and sends the
         # reader looking for a command by that name.
         shown = " ".join(args)
-        return Result(False, "", f"`git {shown}` did not answer within {waiting:g}s", True)
+        return Result("", f"`git {shown}` did not answer within {waiting:g}s", True)
     except FileNotFoundError:
         # Now unambiguous: `cwd` was checked above, so the only file `subprocess`
         # can fail to find here is `git` itself.
-        return Result(False, "", "git is not installed, or not on PATH")
-    return Result(
-        done.returncode == 0, done.stdout.strip(), done.stderr.strip(), code=done.returncode
-    )
+        return Result("", "git is not installed, or not on PATH")
+    return Result(done.stdout.strip(), done.stderr.strip(), code=done.returncode)
 
 
 def reason(result: Result) -> str:
@@ -224,18 +231,6 @@ def commit(repo: Path, message: str) -> Result:
     return git(["commit", "-m", message], cwd=repo)
 
 
-def remotes(repo: Path) -> list[str]:
-    """Every configured remote, in git's order. Empty when there is none.
-
-    A list rather than "the first one": `doctor` reports on the first and `sync`
-    pushes to it, and both were spelling `git remote` plus a `splitlines` out for
-    themselves. Which one is *the* remote is a decision, and it is made once, in
-    `first_remote`.
-    """
-    named = git(["remote"], cwd=repo)
-    return named.out.splitlines() if named.ok else []
-
-
 def first_remote(repo: Path) -> str | None:
     """The remote tupferl syncs with, or `None` if there is none.
 
@@ -243,9 +238,12 @@ def first_remote(repo: Path) -> str | None:
     `origin` and the only one. Someone who has added a second has said something
     tupferl has no way to interpret -- plan §4 has one `sync` and no `--remote`
     flag -- so the alternative to picking one is refusing to sync at all.
+
+    `doctor` and `sync` both call this rather than reading `git remote`
+    themselves, so the two cannot report on and push to different remotes.
     """
-    found = remotes(repo)
-    return found[0] if found else None
+    named = git(["remote"], cwd=repo)
+    return named.out.splitlines()[0] if named.ok and named.out else None
 
 
 def branch(repo: Path) -> str | None:
@@ -314,16 +312,6 @@ def push(repo: Path, remote: str, ref: str) -> Result:
     return git(["push", remote, ref], cwd=repo)
 
 
-def dirty(repo: Path) -> Result:
-    """`git status --porcelain`: empty output means the tree matches HEAD.
-
-    The `Result` rather than a `bool`, because "git could not answer" and "there
-    is nothing to commit" are the same empty string, and a caller that folded
-    them together would commit nothing and report success.
-    """
-    return git(["status", "--porcelain"], cwd=repo)
-
-
 #: Files git leaves in the git directory while an operation is half-done. A
 #: killed `tupferl sync` leaves one behind, and the next sync would otherwise
 #: build on top of a merge nobody finished.
@@ -345,6 +333,13 @@ def unfinished(repo: Path) -> str | None:
     return next((name for name in UNFINISHED if (git_dir / name).exists()), None)
 
 
+#: The most conflict hunks `git merge-file` will report. Above this its exit
+#: status saturates, so a larger number cannot be told from an error -- which is
+#: a fact about the git binary, and so lives here beside the call rather than in
+#: `merge.py` beside the caller.
+MOST_CONFLICTS = 127
+
+
 def merge_file(ours: Path, base: Path, theirs: Path, labels: tuple[str, str, str]) -> Result:
     """3-way merge `ours` against `theirs` over `base`, rewriting `ours` in place.
 
@@ -361,21 +356,8 @@ def merge_file(ours: Path, base: Path, theirs: Path, labels: tuple[str, str, str
     conflict hunks, and negative (255 here) on an error such as an unreadable
     input. `ok` is therefore true only for a clean merge.
     """
-    return git(
-        [
-            "merge-file",
-            "-L",
-            labels[0],
-            "-L",
-            labels[1],
-            "-L",
-            labels[2],
-            str(ours),
-            str(base),
-            str(theirs),
-        ],
-        cwd=ours.parent,
-    )
+    marks = [argument for label in labels for argument in ("-L", label)]
+    return git(["merge-file", *marks, str(ours), str(base), str(theirs)], cwd=ours.parent)
 
 
 def staged(repo: Path) -> bool:

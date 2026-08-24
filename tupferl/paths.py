@@ -40,7 +40,7 @@ ENV_KEYS = (
 #: snapshots. A constant because a walk that forgot it would manage tupferl's own
 #: state as if it were a dotfile.
 #:
-#: One module excludes it today, `manifest._under`. This said "three modules"
+#: One module excludes it today, `manifest.under`. This said "three modules"
 #: when it was written, which was before any of them existed.
 META = ".tupferl"
 

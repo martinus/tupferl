@@ -9,6 +9,11 @@ side.
 
 Four things decide the shape of this module.
 
+**A stored copy is `tupferl/copies.py`'s idea, not this module's.** `Blob`,
+`read` and `write` come from there, and so does `add`'s -- so the merge base
+written when a file is first managed and the one written by every sync
+afterwards are the same bytes decided by the same rule.
+
 **Three versions, and a snapshot is what makes them three.** `.tupferl/state/
 <hostname>/<name>` holds each file as it was after this machine's last
 successful sync, so a change in `$HOME` and a change in the repository can be
@@ -42,12 +47,12 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 from tupferl import gitrepo, manage, manifest, merge, paths
+from tupferl.copies import Blob, read, write
 from tupferl.errors import TupferlError
 
 #: How many times a push may be re-tried after the remote turned out to have
@@ -67,8 +72,7 @@ BACKUPS_KEPT = 5
 STAMP = "%Y%m%dT%H%M%S.%f"
 
 #: What happened to one file. Strings rather than an enum because they are also
-#: what the report prints, and a second table mapping enum to word is a second
-#: table to keep in step.
+#: the word the report prints for the four ordinary ones.
 UNCHANGED = "unchanged"
 TO_REPO = "stored"
 TO_HOME = "updated"
@@ -78,54 +82,45 @@ CONFLICT = "conflict"
 REFUSED = "refused"
 
 
-class Blob(NamedTuple):
-    """A file as tupferl cares about it: its bytes, and the one mode bit git keeps.
+class Rule(NamedTuple):
+    """What an action *means*, for the three functions that ask."""
 
-    The executable bit is part of the *value*, not metadata beside it, because it
-    is a thing the user changes and expects to travel: `chmod +x ~/.local/bin/x`
-    with no edit is a real change, and a comparison that ignored it would leave
-    the two machines permanently disagreeing about a file neither had edited.
-    """
-
-    data: bytes
-    executable: bool
-
-
-def read(path: Path) -> Blob | None:
-    """The file at `path`, or `None` if there is no *regular* file there.
-
-    `lstat` rather than `stat`: a symlink where a managed file should be is not
-    the file, and following it would read -- and later overwrite -- something the
-    user never asked tupferl to manage. `manifest` refuses symlinks at `add`
-    time; this is the same rule at sync time, for a path that has become one
-    since.
-
-    `None` for missing and for not-a-file alike. The caller separates them, and
-    only where the difference matters: `$HOME` missing the file means restore it,
-    where `$HOME` holding a socket means leave it alone and say so.
-    """
-    try:
-        found = os.lstat(path)
-    except OSError:
-        return None
-    if not stat.S_ISREG(found.st_mode):
-        return None
-    return Blob(path.read_bytes(), bool(found.st_mode & manage.EXEC_BITS))
+    #: Write the repository's copy.
+    to_repo: bool
+    #: Write the `$HOME` copy -- which is also exactly when a backup is taken,
+    #: since the backup is of the file about to be replaced.
+    to_home: bool
+    #: Something is left for a person, so `sync` exits 1. Not derivable from the
+    #: two above: an unchanged file writes nothing either, and is fine.
+    needs_user: bool
 
 
-def write(path: Path, blob: Blob) -> bool:
-    """Put `blob` at `path`; `False` if it was already exactly that.
+#: One row per action, because the alternative was five tuple-membership tests
+#: spread over `apply`, `report` and `main`, each re-deriving one property of one
+#: action from its name. Milestone 4 adds at least *kept local*, *kept remote*,
+#: *kept both*, *edited* and *skipped*; with the tuples, each had to be entered
+#: correctly in five places, and a missed entry in `apply` writes nothing while
+#: the report says it did -- silent, and only a per-action test would see it.
+#: Here it is one row, and a row that is missing is a `KeyError`.
+#:
+#: "Did anything change?" is deliberately *not* a column: it is exactly
+#: `to_repo or to_home`, and a stored copy of a derivable fact is one that can go
+#: out of step with what it was derived from.
+RULES: dict[str, Rule] = {
+    UNCHANGED: Rule(to_repo=False, to_home=False, needs_user=False),
+    TO_REPO: Rule(to_repo=True, to_home=False, needs_user=False),
+    TO_HOME: Rule(to_repo=False, to_home=True, needs_user=False),
+    RESTORED: Rule(to_repo=False, to_home=True, needs_user=False),
+    MERGED: Rule(to_repo=True, to_home=True, needs_user=False),
+    CONFLICT: Rule(to_repo=False, to_home=False, needs_user=True),
+    REFUSED: Rule(to_repo=False, to_home=False, needs_user=True),
+}
 
-    The comparison is not an optimisation. It is what makes a second `sync` with
-    no edits touch nothing at all -- plan §7.2's idempotence property -- and what
-    keeps a run's report and its commit naming the same files.
-    """
-    if read(path) == blob:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(blob.data)
-    path.chmod(manage.EXECUTABLE if blob.executable else manage.PLAIN)
-    return True
+
+def changed(outcome: Outcome) -> bool:
+    """Whether this outcome put new bytes anywhere the user can see."""
+    rule = RULES[outcome.action]
+    return rule.to_repo or rule.to_home
 
 
 class Outcome(NamedTuple):
@@ -206,9 +201,8 @@ class Backups:
     it.
     """
 
-    def __init__(self, root: Path, keep: int = BACKUPS_KEPT) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = root
-        self.keep = keep
         self.where: Path | None = None
 
     def take(self, name: PurePosixPath, blob: Blob) -> Path:
@@ -222,32 +216,34 @@ class Backups:
         return target
 
     def forget_old(self) -> None:
-        """Keep the newest `keep` backup directories and delete the rest.
+        """Keep the newest `BACKUPS_KEPT` backup directories and delete the rest.
 
         By name, which sorts by time because `STAMP` puts the units in that
         order. Directories only: something a user dropped in here by hand is
         theirs, and this deletes trees.
         """
         made = sorted(found for found in self.root.iterdir() if found.is_dir())
-        for old in made[: max(0, len(made) - self.keep)]:
+        for old in made[: max(0, len(made) - BACKUPS_KEPT)]:
             shutil.rmtree(old)
 
 
-def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[Path]:
-    """Snapshots for files nothing manages any more.
+def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[PurePosixPath]:
+    """Names of snapshots for files nothing manages any more.
 
     They appear when another machine runs `tupferl remove`: the file leaves the
     repository, and this machine's merge base for it would otherwise sit in the
     tree for ever, committed, and be the base for a file that came back later
     under the same name.
+
+    `manifest.under` does the walking, rather than an `rglob` of this module's
+    own. This list feeds an `unlink`, and a delete whose walk rule is maintained
+    apart from the walk that decides what *is* managed is a delete that can
+    disagree with it.
+
+    Names rather than paths, because that is what the caller needs twice over --
+    to build the path to remove, and to name the file in the commit message.
     """
-    if not snapshots.is_dir():
-        return []
-    found: list[Path] = []
-    for where in sorted(snapshots.rglob("*")):
-        if where.is_file() and PurePosixPath(where.relative_to(snapshots).as_posix()) not in keep:
-            found.append(where)
-    return found
+    return sorted(name for name in manifest.under(snapshots, snapshots) if name not in keep)
 
 
 def integrate(repo: Path, remote: str, branch: str) -> bool:
@@ -294,7 +290,6 @@ def settle(repo: Path, home: Path, host: str) -> list[Outcome]:
     gives them, which is sorted -- so the report and the commit message list
     files in the same order on every machine.
     """
-    tree, overlay = manifest.roots(repo, host)
     snapshots = paths.snapshot_dir(repo, host)
     backups = Backups(paths.backup_dir())
 
@@ -303,8 +298,9 @@ def settle(repo: Path, home: Path, host: str) -> list[Outcome]:
     touched: list[PurePosixPath] = []
 
     for item in items:
-        where = (overlay if item.host else tree) / item.name
+        where = manifest.location(repo, host, item.host) / item.name
         target = home / item.name
+        snapshot = snapshots / item.name
         stored = read(where)
         if stored is None:
             outcomes.append(Outcome(item.name, REFUSED, None, why=f"{where} is not a regular file"))
@@ -316,9 +312,9 @@ def settle(repo: Path, home: Path, host: str) -> list[Outcome]:
             )
             continue
 
-        outcome = resolve(item.name, read(snapshots / item.name), found, stored)
+        outcome = resolve(item.name, read(snapshot), found, stored)
         try:
-            wrote = apply(outcome, target, where, snapshots / item.name, found, backups)
+            wrote = apply(outcome, target, where, snapshot, found, backups)
         except OSError as unwritable:
             # One unwritable path does not stop the sync, for `manifest.collect`'s
             # reason: forty files of which one now sits under a directory that has
@@ -333,8 +329,9 @@ def settle(repo: Path, home: Path, host: str) -> list[Outcome]:
         if wrote:
             touched.append(item.name)
 
-    for gone in stale(snapshots, {item.name for item in items}):
-        touched.append(PurePosixPath(gone.relative_to(snapshots).as_posix()))
+    for name in stale(snapshots, {item.name for item in items}):
+        touched.append(name)
+        gone = snapshots / name
         gone.unlink()
         manage.prune(gone.parent, repo)
 
@@ -383,13 +380,18 @@ def apply(
         # agreed on or the next run would merge against something neither of
         # them ever had.
         return False
-    if outcome.action in (TO_HOME, MERGED) and found is not None:
+    rule = RULES[outcome.action]
+    if rule.to_home and found is not None:
+        # `found is not None` and not a fourth action: RESTORED is the case where
+        # `$HOME` had no file, so there is nothing to back up, and `resolve` is
+        # what guarantees that. Plan §5 wants a copy of what is replaced, not of
+        # what was not there.
         backups.take(outcome.name, found)
 
     wrote = False
-    if outcome.action in (TO_REPO, MERGED):
+    if rule.to_repo:
         wrote |= write(where, outcome.blob)
-    if outcome.action in (TO_HOME, RESTORED, MERGED):
+    if rule.to_home:
         wrote |= write(target, outcome.blob)
     wrote |= write(snapshot, outcome.blob)
     return wrote
@@ -420,9 +422,9 @@ def report(outcomes: list[Outcome]) -> str:
             lines.append(f"{outcome.action} {outcome.name}")
 
     conflicts = sum(1 for outcome in outcomes if outcome.action == CONFLICT)
-    changed = sum(1 for outcome in outcomes if outcome.action not in (UNCHANGED, CONFLICT, REFUSED))
+    moved = sum(1 for outcome in outcomes if changed(outcome))
     lines.append(
-        f"\n{manage.count(len(outcomes))} managed, {changed} changed, {conflicts} in conflict"
+        f"\n{manage.count(len(outcomes))} managed, {moved} changed, {conflicts} in conflict"
     )
     return "\n".join(lines)
 
@@ -458,23 +460,20 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
 
     remote = gitrepo.first_remote(repo)
     branch = gitrepo.branch(repo)
-    if remote is not None and branch is None:
-        raise TupferlError(
-            f"{repo} has no branch checked out, so there is nothing to push; "
-            f"run `git -C {repo} checkout main`."
-        )
-
-    if remote is not None and branch is not None:
-        integrate(repo, remote, branch)
-    outcomes = settle(repo, home, host)
-
-    if remote is not None and branch is not None:
-        outcomes = deliver(repo, home, host, remote, branch, outcomes)
-    else:
+    if remote is None:
+        outcomes = settle(repo, home, host)
         print(f"no remote configured, so nothing was pushed; {repo} is a git repository")
+    else:
+        if branch is None:
+            raise TupferlError(
+                f"{repo} has no branch checked out, so there is nothing to push; "
+                f"run `git -C {repo} checkout main`."
+            )
+        integrate(repo, remote, branch)
+        outcomes = deliver(repo, home, host, remote, branch, settle(repo, home, host))
 
     print(report(outcomes))
-    return 1 if any(outcome.action in (CONFLICT, REFUSED) for outcome in outcomes) else 0
+    return 1 if any(RULES[outcome.action].needs_user for outcome in outcomes) else 0
 
 
 def deliver(
@@ -491,7 +490,18 @@ def deliver(
     may need merging into `$HOME` -- and doing it again is cheap: every file that
     is already settled resolves to UNCHANGED and writes nothing.
     """
+    there = f"{remote}/{branch}"
     for _ in range(ATTEMPTS):
+        if gitrepo.is_ancestor(repo, "HEAD", there):
+            # Everything here is already on the remote, so there is nothing to
+            # push. Worth one local `merge-base` to skip: a push that prints
+            # "Everything up-to-date" still opens the connection and negotiates
+            # refs, and a machine that syncs on a timer takes this path almost
+            # every time. `integrate` fetched, so `there` is current -- and when
+            # it does not exist at all (an empty remote, before the first push)
+            # `merge-base` fails, which is `False`, which pushes. That is the
+            # answer wanted, from the same call.
+            return outcomes
         pushed = gitrepo.push(repo, remote, branch)
         if pushed.ok:
             return outcomes
