@@ -145,8 +145,9 @@ def init(url: str) -> int:
 
     done = gitrepo.clone(url, repo)
     if not done.ok:
-        reason = done.err.splitlines()[0] if done.err else "no reason given"
-        raise TupferlError(f"could not clone {url}: {reason}; check the URL and your access.")
+        raise TupferlError(
+            f"could not clone {url}: {gitrepo.reason(done)}; check the URL and your access."
+        )
 
     print(f"cloned {url} into {repo}")
     if not gitrepo.has_commits(repo):
@@ -158,10 +159,7 @@ def init(url: str) -> int:
         gitrepo.stage(repo, [settings])
         made = gitrepo.commit(repo, f"tupferl: start a repository on {paths.hostname()}")
         if not made.ok:
-            raise TupferlError(
-                f"could not make the first commit in {repo}: "
-                f"{made.err.splitlines()[0] if made.err else 'no reason given'}"
-            )
+            raise TupferlError(f"could not make the first commit in {repo}: {gitrepo.reason(made)}")
         print(f"the remote was empty, so {settings.name} was created and committed")
     print("next: `tupferl add <path>...` to start managing files")
     return 0

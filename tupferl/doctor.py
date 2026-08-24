@@ -46,29 +46,6 @@ class Check(NamedTuple):
     detail: str
 
 
-def _why(result: gitrepo.Result) -> str:
-    """The first line of git's stderr, which is where the reason is.
-
-    This said *last* line until a test asked what was actually in there. git
-    leads with the specific failure and follows it with generic advice, so the
-    last line is the least informative one it printed. Measured on three
-    failures, each ending in the same four-line block:
-
-        fatal: '/tmp/absent.git' does not appear to be a git repository
-        fatal: Could not read from remote repository.
-        <blank>
-        Please make sure you have the correct access rights
-        and the repository exists.
-
-    "and the repository exists." was what a `doctor` run reported as the reason
-    a remote refused.
-
-    Empty stderr is possible (a killed process), so there is a fallback rather
-    than an `IndexError` inside a message about something else going wrong.
-    """
-    return result.err.splitlines()[0] if result.err else "no reason given"
-
-
 def git_present() -> Check:
     """Is there a git to call at all? Everything else depends on it."""
     found = gitrepo.git(["--version"])
@@ -146,7 +123,7 @@ def remote(repo: Path, ok: bool) -> Check:
     if reached.timed_out:
         return Check(False, "remote", f"{first} did not answer within {gitrepo.TIMEOUT:g}s")
     if not reached.ok:
-        detail = f"{first} refused: {_why(reached)}; check the URL and your credentials"
+        detail = f"{first} refused: {gitrepo.reason(reached)}; check the URL and your credentials"
         return Check(False, "remote", detail)
     return Check(True, "remote", f"{first} answers")
 
@@ -182,7 +159,7 @@ def dangling(repo: Path, ok: bool) -> Check:
         # A failed git call is not "nothing in progress". Folding the two
         # together is CLAUDE.md §8's pass nobody can explain: this check would
         # report ✔ for a repository git could not read at all.
-        return Check(False, "state", f"git cannot read {repo}: {_why(inside)}")
+        return Check(False, "state", f"git cannot read {repo}: {gitrepo.reason(inside)}")
     git_dir = repo / inside.out
     marker = next((name for name in UNFINISHED if (git_dir / name).exists()), None)
     if marker is not None:
@@ -194,7 +171,7 @@ def dangling(repo: Path, ok: bool) -> Check:
         )
     changed = gitrepo.git(["status", "--porcelain"], cwd=repo)
     if not changed.ok:
-        return Check(False, "state", f"`git status` failed in {repo}: {_why(changed)}")
+        return Check(False, "state", f"`git status` failed in {repo}: {gitrepo.reason(changed)}")
     if changed.out:
         count = len(changed.out.splitlines())
         return Check(

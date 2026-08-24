@@ -129,6 +129,63 @@ class TestWhenGitCannotAnswer(unittest.TestCase):
         self.assertIn("not a git repository", found.err)
 
 
+class TestTheReasonGitGives(unittest.TestCase):
+    """Which line of git's stderr a user is shown.
+
+    Two wrong answers shipped before this function existed, in opposite
+    directions, so both are asserted against here rather than left implied:
+    `doctor` reported the last line ("and the repository exists.") and `init`
+    reported the first ("Cloning into '...'"). The transcripts below are real
+    ones, kept verbatim so the rule is tested against what git prints rather
+    than against a paraphrase of it.
+    """
+
+    CLONE = (
+        "Cloning into '/tmp/x'...\n"
+        "ssh: connect to host 127.0.0.1 port 1: Connection refused\n"
+        "fatal: Could not read from remote repository.\n"
+        "\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n"
+    )
+    MISSING = "fatal: repository '/tmp/absent.git' does not exist\n"
+    PROMPTS = "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"
+
+    def reason(self, err: str) -> str:
+        return gitrepo.reason(gitrepo.Result(False, "", err))
+
+    def test_progress_on_stderr_is_not_the_reason(self) -> None:
+        found = self.reason(self.CLONE)
+        self.assertEqual("fatal: Could not read from remote repository.", found)
+        self.assertNotIn("Cloning into", found)
+
+    def test_the_trailing_advice_is_not_either(self) -> None:
+        self.assertNotIn("repository exists", self.reason(self.CLONE))
+
+    def test_a_single_line_failure_is_itself(self) -> None:
+        self.assertEqual(self.MISSING.strip(), self.reason(self.MISSING))
+
+    def test_the_credential_case(self) -> None:
+        self.assertEqual(self.PROMPTS.strip(), self.reason(self.PROMPTS))
+
+    def test_a_failure_with_no_fatal_line_still_says_something(self) -> None:
+        """Not every git command marks its complaint. The fallback is the first
+        line that is neither blank nor progress."""
+        self.assertEqual(
+            "error: pathspec 'x' did not match", self.reason("error: pathspec 'x' did not match\n")
+        )
+
+    def test_empty_stderr_does_not_raise(self) -> None:
+        """A killed process leaves nothing. A message about something going
+        wrong must not itself be an `IndexError`."""
+        self.assertEqual("no reason given", self.reason(""))
+
+    def test_progress_alone_does_not_raise(self) -> None:
+        """The pathological case the two filters make possible: every line was
+        dropped."""
+        self.assertEqual("no reason given", self.reason("Cloning into 'x'...\n"))
+
+
 class TestIsRepository(unittest.TestCase):
     def setUp(self) -> None:
         box = tempfile.TemporaryDirectory(prefix="tupferl-gitrepo-")

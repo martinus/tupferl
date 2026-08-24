@@ -90,6 +90,51 @@ class TestInit(Machine):
         self.assertIn("could not clone", done.stderr)
         self.assertFalse(gitrepo.is_repository(self.repo))
 
+    def test_an_empty_directory_in_the_way_is_cloned_into(self) -> None:
+        """`~/.local/share/tupferl/` exists on any machine that has run
+        `doctor`, and an empty directory is not something to refuse. It is also
+        what tells `any(...)` from `all(...)`: `all([])` is True, so that mutant
+        turns every ordinary first run into "already exists and is not empty"."""
+        self.repo.mkdir(parents=True)
+        self.init()
+        self.assertTrue(gitrepo.has_commits(self.repo))
+
+    def test_the_parent_directory_already_existing_is_fine(self) -> None:
+        """The state `doctor` leaves behind when it checks the backup path: the
+        XDG data directory is there and the repository is not."""
+        self.repo.parent.mkdir(parents=True)
+        self.init()
+        self.assertTrue(gitrepo.is_repository(self.repo))
+
+    def test_the_clone_failure_quotes_the_line_that_explains(self) -> None:
+        """Neither the first line nor the last, and this fixture is why.
+
+        `git clone` writes progress to stderr, so its *first* line is "Cloning
+        into '...'" — which says nothing went wrong, and is what `init` reported
+        for about an hour until this test was written. Its *last* is "and the
+        repository exists.", half a sentence of generic advice, which is what
+        `doctor` reported for a milestone. `gitrepo.reason` takes the line git
+        marked `fatal:` instead.
+
+        The URL is ssh at a refused local port rather than the missing directory
+        the test above uses: a local path that is not a repository produces one
+        line, and one line cannot tell any of these rules apart. No packet
+        leaves the machine — 127.0.0.1:1 refuses instantly.
+        """
+        unreachable = "ssh://127.0.0.1:1/x"
+        done = self.run_cli("init", unreachable)
+        self.assertEqual(2, done.returncode)
+
+        said = gitrepo.git(["clone", "--", unreachable, str(self.tmp / "x")], cwd=self.tmp)
+        lines = [line.strip() for line in said.err.splitlines() if line.strip()]
+        self.assertGreater(len(lines), 2, "the fixture produced too few lines to tell these apart")
+        self.assertTrue(lines[0].startswith("Cloning into"), lines[0])
+
+        self.assertIn(gitrepo.reason(said), done.stderr)
+        self.assertTrue(gitrepo.reason(said).startswith("fatal:"), gitrepo.reason(said))
+        self.assertNotIn("Cloning into", done.stderr)
+        self.assertNotIn(lines[-1], done.stderr)
+
     def test_running_it_twice_is_refused(self) -> None:
         self.init()
         done = self.run_cli("init", str(self.remote))
@@ -137,11 +182,17 @@ class TestAdd(Machine):
         self.assertEqual([], gitrepo.changed(self.repo))
 
     def test_a_directory_adds_every_file_under_it(self) -> None:
+        """Two files in the *same* subdirectory, and a third one deeper. The
+        pair sharing a parent is what tells `mkdir(exist_ok=True)` from dropping
+        it: with distinct parents throughout, the second `mkdir` never sees a
+        directory that is already there."""
         self.write(self.home / ".config" / "nvim" / "init.lua", "vim.opt.number = true\n")
+        self.write(self.home / ".config" / "nvim" / "other.lua", "return {}\n")
         self.write(self.home / ".config" / "nvim" / "lua" / "opts.lua", "return {}\n")
         done = self.run_cli("add", str(self.home / ".config"))
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertTrue(self.stored(".config/nvim/init.lua").is_file())
+        self.assertTrue(self.stored(".config/nvim/other.lua").is_file())
         self.assertTrue(self.stored(".config/nvim/lua/opts.lua").is_file())
 
     def test_the_executable_bit_survives_and_nothing_else_does(self) -> None:
@@ -263,7 +314,11 @@ class TestAdd(Machine):
             (home / ".bashrc").write_text("x", encoding="utf-8")
             done = support.run_cli(["add", str(home / ".bashrc")], env)
         self.assertEqual(2, done.returncode)
-        self.assertIn("tupferl init", done.stderr)
+        # On "no repository at", not on "tupferl init": *both* of `open_repo`'s
+        # messages end in that command, so asserting it alone passes with the
+        # existence check removed entirely. The mutation sweep found this, in
+        # the same shape it found in `doctor.repository` a milestone ago.
+        self.assertIn("no repository at", done.stderr)
 
 
 class TestRemove(Machine):

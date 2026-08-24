@@ -107,6 +107,39 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
     return Result(done.returncode == 0, done.stdout.strip(), done.stderr.strip())
 
 
+def reason(result: Result) -> str:
+    """The one line of git's stderr worth showing a user.
+
+    Not the first line, and not the last. Both were tried and both are wrong on
+    a real failure, in opposite directions -- measured across four of them:
+
+        $ git clone ssh://unreachable/x
+        Cloning into 'x'...                      <- progress, on stderr
+        ssh: connect ...: Connection refused
+        fatal: Could not read from remote repository.
+        <blank>
+        Please make sure you have the correct access rights
+        and the repository exists.               <- the last line
+
+    Taking the first gives "Cloning into 'x'...", which says nothing went wrong.
+    Taking the last gives "and the repository exists.", half a sentence of
+    generic advice. `doctor` shipped the second of those for a milestone, and
+    `init` shipped the first for about an hour.
+
+    So: the first line git marked `fatal:`, which is git's own word for the line
+    that explains. The fallbacks are for the commands that fail without one --
+    the first line that is neither blank nor progress, and then a placeholder,
+    because a message about something going wrong must not itself raise
+    `IndexError`.
+    """
+    lines = [line.strip() for line in result.err.splitlines() if line.strip()]
+    fatal = [line for line in lines if line.startswith("fatal:")]
+    if fatal:
+        return fatal[0]
+    speaking = [line for line in lines if not line.startswith("Cloning into")]
+    return speaking[0] if speaking else "no reason given"
+
+
 def is_repository(where: Path) -> bool:
     """Whether `where` is the top of a git working tree.
 
