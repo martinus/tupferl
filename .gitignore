@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Mutation sweep artefacts. `python -m tools.mutate --json <name>` writes
+# `<name>.json` and, when it has finished confirming, `<name>.json.done` --
+# into whatever directory it was run from, which is this one. They are a
+# machine-specific snapshot that is stale the moment anything changes, and the
+# numbers that matter belong in the pull request, quoted verbatim. Three of them
+# reached a commit before this rule existed.
+#
+# Anchored to the root on purpose: `.github/rulesets/main.json` is real, checked
+# in, and must not match.
+/*.json
+/*.json.done
+/*.pid
