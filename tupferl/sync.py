@@ -242,8 +242,13 @@ def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[PurePosixPath]:
 
     Names rather than paths, because that is what the caller needs twice over --
     to build the path to remove, and to name the file in the commit message.
+
+    Not sorted. It was, until the mutation sweep pointed out that nothing could
+    tell: these names go into `touched`, and `message` sorts that. Sorting twice
+    reads as though one of them mattered -- the same note `manifest.under` already
+    carries for the same reason.
     """
-    return sorted(name for name in manifest.under(snapshots, snapshots) if name not in keep)
+    return [name for name in manifest.under(snapshots, snapshots) if name not in keep]
 
 
 def integrate(repo: Path, remote: str, branch: str) -> bool:

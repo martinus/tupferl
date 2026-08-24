@@ -19,7 +19,9 @@ shared copy. That test is here for the same reason the rule is in `manifest`.
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import unittest
 from pathlib import PurePosixPath
 
@@ -222,6 +224,27 @@ class TestBackups(support.SandboxCase):
         self.assertNotIn("20260820T000000.000000", left)
         self.assertIn("20260827T000000.000000", left)
 
+    def test_one_directory_per_run_however_many_files_it_saves(self) -> None:
+        """`self.where` is set on the first save and reused. A fixture that backs
+        up one file cannot tell that from a directory per *file*, which is what
+        the mutation that always takes the branch produces -- and which would
+        push the last real backup out of the window of five after five files."""
+        backups = sync.Backups(self.root)
+        backups.take(PurePosixPath(".bashrc"), copies.Blob(b"a", False))
+        backups.take(PurePosixPath(".vimrc"), copies.Blob(b"b", False))
+        self.assertEqual(1, len(list(self.root.iterdir())))
+
+    def test_nothing_is_deleted_while_there_is_room(self) -> None:
+        """The other side of the window, and the one that loses data if it is
+        wrong: with five or fewer runs kept there is nothing to forget. A test
+        that only ever overflows the window cannot tell `max(0, ...)` from
+        `max(1, ...)`, which quietly deletes the oldest backup every run."""
+        for index in range(4):
+            (self.root / f"2026082{index}T000000.000000").mkdir()
+        sync.Backups(self.root).take(NAME, copies.Blob(b"x", False))
+        self.assertEqual(5, len(list(self.root.iterdir())))
+        self.assertTrue((self.root / "20260820T000000.000000").is_dir())
+
     def test_a_file_a_user_left_here_is_not_deleted(self) -> None:
         """This removes trees. Anything that is not one of its own directories
         belongs to somebody else."""
@@ -347,6 +370,89 @@ class TestSyncOneMachine(OneMachine):
         self.assertEqual(0, status)
         self.assertContains(out, "no remote configured")
         self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+
+
+class TestWhatSyncWillNotTouch(OneMachine):
+    """`settle`'s two refusal branches. Both are the `manifest` admission rules
+    applied again at sync time, for a path that has changed *kind* since it was
+    added -- and both were unreached until the mutation sweep said so."""
+
+    def test_a_symlink_in_the_repository_is_refused_rather_than_followed(self) -> None:
+        """`manifest.managed` finds it, because `is_file()` follows links; the
+        read does not, because it `lstat`s. Following it would copy whatever it
+        points at into `$HOME` under a name the user never associated with it."""
+        self.sync()
+        (self.repo / ".vimrc").symlink_to(self.repo / ".bashrc")
+        support.git(["add", "-A"], self.repo, self.env)
+        support.git(["commit", "-m", "a link crept in"], self.repo, self.env)
+
+        status, out, _ = self.sync()
+        self.assertEqual(1, status)
+        self.assertContains(out, "skipped .vimrc")
+        self.assertContains(out, "not a regular file")
+        self.assertFalse((self.home / ".vimrc").exists(), "the link was followed into $HOME")
+
+    def test_something_that_is_not_a_file_in_home_is_left_alone(self) -> None:
+        """A fifo where a managed file should be. `os.mkfifo` rather than a unix
+        socket: `sun_path` is 104 bytes on macOS and a sandboxed repository path
+        exceeds it, so the socket version errors instead of testing."""
+        self.sync()
+        (self.home / ".bashrc").unlink()
+        os.mkfifo(self.home / ".bashrc")
+
+        status, out, _ = self.sync()
+        self.assertEqual(1, status)
+        self.assertContains(out, "skipped .bashrc")
+        self.assertTrue(stat.S_ISFIFO(os.lstat(self.home / ".bashrc").st_mode))
+
+    def test_a_detached_head_is_named_as_the_problem(self) -> None:
+        """A real state -- someone checked out a commit in the repository to look
+        at it. Without this the branch is `None`, and what reaches the user is
+        git complaining about a ref called "None"."""
+        support.git(["checkout", "--detach", "HEAD"], self.repo, self.env)
+        status, _, err = self.sync()
+        self.assertEqual(2, status)
+        self.assertContains(err, "no branch checked out")
+
+
+class TestWhatTheCommitNames(OneMachine):
+    """The commit message names what this run decided, and nothing else.
+
+    Three survivors lived here, all of the same shape: a mutation that adds a
+    name to the message is invisible to a fixture that manages *one* file, since
+    "the file that changed" and "every managed file" are then the same list.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".vimrc"))
+        self.sync()
+
+    def subject(self) -> str:
+        return support.git(["log", "-1", "--format=%s"], self.repo, self.env)
+
+    def test_only_the_file_that_changed_is_named(self) -> None:
+        self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
+        self.sync()
+        self.assertEqual(f"sync from {self.host}: .bashrc", self.subject())
+
+    def test_a_conflicted_file_is_not_named_as_something_that_changed(self) -> None:
+        """A conflict writes nothing, so naming it in the commit would describe a
+        change the commit does not contain. Needs a second file that *did*
+        change, or there is no commit to inspect."""
+        support.git(["checkout", "-q", "-b", "elsewhere"], self.repo, self.env)
+        self.write(self.repo / ".vimrc", "set number\n")
+        support.git(["commit", "-qam", "another machine"], self.repo, self.env)
+        support.git(["checkout", "-q", "main"], self.repo, self.env)
+        support.git(["merge", "-q", "--no-edit", "elsewhere"], self.repo, self.env)
+        self.write(self.home / ".vimrc", "set nonumber\n")
+        self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
+
+        status, out, _ = self.sync()
+        self.assertEqual(1, status)
+        self.assertContains(out, "conflict in .vimrc")
+        self.assertEqual(f"sync from {self.host}: .bashrc", self.subject())
 
 
 class TestWhatMilestoneThreeRefuses(OneMachine):
@@ -485,6 +591,25 @@ class TestTwoMachines(TwoMachines):
         self.second.run("sync")
         self.assertEqual(copies.EXECUTABLE, (self.second.home / ".bashrc").stat().st_mode & 0o777)
 
+    def test_a_pruned_snapshot_is_named_and_leaves_no_empty_directory(self) -> None:
+        """git does not track directories, so one left empty here is invisible in
+        the commit and present in every clone. The name is asserted too: this run
+        did decide something about that file, and a commit message that named
+        nothing would be the "an earlier run" sentence, which would be a lie."""
+        self.first.write(".config/nvim/init.lua", "vim.o.number = true\n")
+        self.first.run("add", str(self.first.home / ".config"))
+        self.first.run("sync")
+        self.second.run("init", str(self.remote))
+        self.assertTrue(self.second.snapshot(".config/nvim/init.lua").is_file())
+
+        self.first.run("remove", str(self.first.home / ".config" / "nvim" / "init.lua"))
+        self.first.run("sync")
+        self.second.run("sync")
+
+        self.assertIn(".config/nvim/init.lua", self.second.git("log", "-1", "--format=%s"))
+        left = self.second.snapshot(".config")
+        self.assertFalse(left.exists(), f"{left} was left behind empty")
+
     def test_a_removal_elsewhere_prunes_this_machines_snapshot(self) -> None:
         """A snapshot left behind is committed, and would become the merge base
         for a file that came back later under the same name."""
@@ -542,6 +667,75 @@ class TestTwoMachines(TwoMachines):
         done = self.first.run("sync")
         self.assertEqual(2, done.returncode)
         self.assertIn("could not fetch", done.stderr)
+
+
+class TestAGitLevelConflict(TwoMachines):
+    """Two machines that have each *committed* a change to the same lines.
+
+    The path the mutation sweep found untested, and six of its survivors lived
+    here: `sync.integrate`'s failure branch and the two `gitrepo` calls it makes.
+    It is reached whenever a machine has an unpushed commit -- which `tupferl
+    add` creates, since it commits without pushing -- and the remote has moved.
+
+    git's own merge has the real merge base and is a better answer than anything
+    this module could compute, so a conflict there is two committed versions
+    disagreeing: milestone 4's prompt, not milestone 3's business. What milestone
+    3 owes the user is a sentence naming the file and a repository left exactly
+    as it was found.
+    """
+
+    def commit_locally(self, machine: support.Computer, text: str) -> None:
+        """Edit and `add`, which commits without pushing -- the ordinary way a
+        machine ends up holding a commit the remote has not seen."""
+        machine.write(".bashrc", text)
+        self.assertEqual(0, machine.run("add", str(machine.home / ".bashrc")).returncode)
+
+    def test_it_names_the_file_and_the_milestone_that_settles_it(self) -> None:
+        self.second.run("init", str(self.remote))
+        self.commit_locally(self.second, "THEIRS\ntwo\nthree\nfour\nfive\n")
+        self.first.write(".bashrc", "MINE\ntwo\nthree\nfour\nfive\n")
+        self.assertEqual(0, self.first.run("sync").returncode)
+
+        done = self.second.run("sync")
+        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
+        self.assertIn(".bashrc", done.stderr)
+        self.assertIn("milestone 4", done.stderr)
+
+    def test_the_repository_is_left_exactly_as_it_was_found(self) -> None:
+        """The abort is the point. A half-merged tree makes the *next* run refuse
+        to start, which turns one conflict into a machine that cannot sync at
+        all -- and `sync` would then be committing on top of a merge nobody
+        resolved."""
+        self.second.run("init", str(self.remote))
+        self.commit_locally(self.second, "THEIRS\ntwo\nthree\nfour\nfive\n")
+        self.first.write(".bashrc", "MINE\ntwo\nthree\nfour\nfive\n")
+        self.first.run("sync")
+        was = self.second.git("rev-parse", "HEAD")
+
+        self.assertEqual(2, self.second.run("sync").returncode)
+        self.assertIsNone(gitrepo.unfinished(self.second.repo), "the merge was not aborted")
+        self.assertEqual("", self.second.git("status", "--porcelain"), "the tree was left dirty")
+        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        self.assertNotIn("<<<<<<<", self.second.stored(".bashrc").read_text())
+
+    def test_a_merge_that_fails_without_conflicting_files_says_so_instead(self) -> None:
+        """The other half of `if stuck:`, and it needs its own fixture: a merge
+        can fail with *no* unmerged paths. Pointing the machine at a remote with
+        an unrelated history is the honest way to produce one -- git refuses
+        outright, so there is no file to name, and a message that named none
+        would read as a bug in the naming."""
+        stranger = support.make_remote(self.tmp / "stranger.git", self.second.env)
+        seed = support.make_repo(self.tmp / "seed", self.second.env, remote=stranger)
+        self.assertTrue(seed.is_dir())
+        self.second.run("init", str(self.remote))
+        support.git(
+            ["remote", "set-url", "origin", str(stranger)], self.second.repo, self.second.env
+        )
+
+        done = self.second.run("sync")
+        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
+        self.assertIn("could not merge", done.stderr)
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
 
 
 class TestTheSnapshotIsWrittenLast(TwoMachines):
@@ -621,6 +815,30 @@ class TestUnfinishedMarkers(support.SandboxCase):
                     self.assertEqual(marker, gitrepo.unfinished(repo))
                 finally:
                     where.unlink()
+
+    def test_a_marker_outside_a_repository_is_not_reported_as_one(self) -> None:
+        """The guard's whole job, and the fixture that can see it: when git
+        cannot say where the git directory is, `inside.out` is empty and the
+        lookup falls back to `repo` itself. A directory holding a file called
+        `MERGE_HEAD` would then be reported as a half-finished merge -- and
+        `sync` refuses to run on one, so a stray file would wedge the command.
+        """
+        empty = self.tmp / "not-a-repo-either"
+        empty.mkdir()
+        (empty / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
+        self.assertIsNone(gitrepo.unfinished(empty))
+
+    def test_staging_nothing_is_refused_rather_than_staging_everything(self) -> None:
+        """`git add --all --` with an empty pathspec stages the whole repository,
+        untracked files included -- measured. A caller whose list came out empty
+        means "nothing", and git's default reading is the most destructive one
+        available, so it is answered rather than passed on."""
+        repo = support.make_repo(self.tmp / "guarded", self.env)
+        (repo / "stray.txt").write_text("not mine\n", encoding="utf-8")
+        refused = gitrepo.stage(repo, [])
+        self.assertFalse(refused.ok)
+        self.assertIn("nothing to stage", refused.err)
+        self.assertEqual("?? stray.txt", support.git(["status", "--porcelain"], repo, self.env))
 
     def test_a_directory_git_cannot_read_reports_nothing_rather_than_guessing(self) -> None:
         """`None` because there is no answer, not because the answer is "no" --

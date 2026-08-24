@@ -17,7 +17,8 @@ import os
 import unittest
 from unittest import mock
 
-from tupferl import merge
+from tests import support
+from tupferl import gitrepo, merge
 from tupferl.errors import TupferlError
 
 BASE = b"one\ntwo\nthree\n"
@@ -64,8 +65,13 @@ class TestBinaryFilesHaveNoMerge(unittest.TestCase):
     """
 
     def test_a_nul_byte_makes_the_whole_file_one_conflict(self) -> None:
+        """`1`, not `merge.WHOLE_FILE`. Written against the constant, this test
+        passed with the constant mutated to 0 and to 2 -- a test containing a
+        copy of the code it checks cannot fail (CLAUDE.md §2), and the mutation
+        sweep is what found it. 0 in particular matters: `report` prints the
+        count, and "0 to settle" reads as nothing to do."""
         got = merge.three_way(".keyring", b"\x00base\n", b"\x00ours\n", b"\x00theirs\n")
-        self.assertEqual(merge.WHOLE_FILE, got.conflicts)
+        self.assertEqual(1, got.conflicts)
         self.assertIsNone(got.data)
 
     def test_one_binary_side_is_enough(self) -> None:
@@ -76,7 +82,7 @@ class TestBinaryFilesHaveNoMerge(unittest.TestCase):
                 sides = {"base": b"a\n", "ours": b"b\n", "theirs": b"c\n"}
                 sides[side] = b"\x00\n"
                 got = merge.three_way(".keyring", sides["base"], sides["ours"], sides["theirs"])
-                self.assertEqual(merge.WHOLE_FILE, got.conflicts)
+                self.assertEqual(1, got.conflicts)
 
     def test_a_nul_past_gits_probe_is_still_text(self) -> None:
         """git looks at the first 8000 bytes and no further, and so does
@@ -123,6 +129,31 @@ class TestAMergeThatCouldNotRun(unittest.TestCase):
             merge.three_way(".bashrc", BASE, b"ours\n", b"theirs\n")
         self.assertIn(".bashrc", str(caught.exception))
         self.assertIn("not installed", str(caught.exception))
+
+
+class TestAGitThatDiedRatherThanAnswered(unittest.TestCase):
+    def test_a_signal_killed_git_is_an_error_not_a_conflict_count(self) -> None:
+        """`git merge-file` reports conflicts *as its exit status*, so the guard
+        has to reject a status that is not a count. A process killed by a signal
+        exits `-signal`, and SIGHUP is `-1` -- which reads as "one conflict" to
+        any guard that accepts negative numbers. The user would then be told
+        their file conflicts in `-1` places.
+
+        This is the one test in the project that puts a stub on `PATH` instead of
+        driving the real binary, and plan §7.1's rule is aimed at something else:
+        asserting against a fake git rather than exercising a real one. The
+        subject here is what *tupferl* does with a hostile exit status, and no
+        argument to the real git produces one on demand.
+        """
+        with support.tempdir() as box:
+            stub = box / "git"
+            stub.write_text("#!/bin/sh\nkill -HUP $$\n", encoding="utf-8")
+            stub.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{box}:{os.environ['PATH']}"}):
+                self.assertEqual(-1, gitrepo.git(["merge-file"]).code)
+                with self.assertRaises(TupferlError) as caught:
+                    merge.three_way(".bashrc", BASE, b"ours\n", b"theirs\n")
+        self.assertIn(".bashrc", str(caught.exception))
 
 
 if __name__ == "__main__":

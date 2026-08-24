@@ -216,6 +216,13 @@ def stage(repo: Path, paths: list[Path]) -> Result:
     names the path instead of handing git something it will interpret against
     its own working directory.
     """
+    if not paths:
+        # Measured, and it is why this guard exists: `git add --all --` with an
+        # empty pathspec stages the *whole repository*, untracked files included.
+        # So the most dangerous possible reading is what git does by default with
+        # a list a caller built and got wrong. A caller that means "everything"
+        # says so by passing `repo` itself, which `sync` does.
+        return Result("", f"nothing to stage in {repo}", code=1)
     relative = [str(path.relative_to(repo)) for path in paths]
     return git(["add", "--all", "--", *relative], cwd=repo)
 

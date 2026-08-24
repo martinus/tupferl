@@ -14,6 +14,7 @@ cannot tell an overlay that works from one that silently applies everywhere.
 
 from __future__ import annotations
 
+import os
 import stat
 import unittest
 from pathlib import Path, PurePosixPath
@@ -650,6 +651,58 @@ class TestWhatEachCommandPrints(Machine):
     def test_add_names_each_file_it_stored(self) -> None:
         done = self.run_cli("add", str(self.home / ".bashrc"))
         self.assertIn("added .bashrc", done.stdout)
+        # The negative half. `record` reports whether git had anything staged,
+        # and a version that always answered "no" still printed "added" above --
+        # it printed *both*, which is the shape only this assertion sees.
+        self.assertNotIn("no change", done.stdout)
+
+    def test_add_names_only_what_it_actually_stored(self) -> None:
+        """Two files, one of them already stored. A fixture where every named
+        file is also a stored file cannot tell "what changed" from "what was
+        named" -- they are the same list."""
+        self.run_cli("add", str(self.home / ".bashrc"))
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".bashrc"), str(self.home / ".vimrc"))
+        self.assertEqual(f"add from {self.host}: .vimrc", self.log()[0])
+
+    def test_recording_a_stale_merge_base_does_not_claim_to_have_added(self) -> None:
+        """`add` commits when the copies are identical but a snapshot is not --
+        which is what an earlier run that died between the copy and the commit
+        leaves. Naming the files there would describe something that did not
+        happen, so the message says what did.
+
+        The stale merge base has to be **committed**, and that took two goes.
+        Deleting the snapshot only removes it from the working tree, so `add`
+        rewrites the same bytes and the tree matches HEAD again; editing it
+        without committing has exactly the same effect for the same reason. Both
+        versions reached the branch they were written for not at all, and passed
+        against the message they were written to reject.
+        """
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".bashrc"), str(self.home / ".vimrc"))
+        self.snapshot(".bashrc").write_text("an older merge base\n", encoding="utf-8")
+        support.git(["commit", "-qam", "a merge base from an older run"], self.repo, self.env)
+
+        done = self.run_cli("add", str(self.home / ".vimrc"), str(self.home / ".bashrc"))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(f"add from {self.host}: record the merge base for 2 files", self.log()[0])
+        self.assertTrue(self.snapshot(".bashrc").is_file())
+
+    def test_add_commits_what_it_stored_and_not_what_it_found(self) -> None:
+        """`git add --all --` with an *empty* pathspec stages the whole
+        repository -- measured, and the reason dropping `add`'s staging list
+        changed nothing observable until this test existed. `sync` stages
+        everything on purpose; `add` must not, or a file dropped in the
+        repository by hand rides along in a commit that names something else.
+        """
+        self.run_cli("add", str(self.home / ".bashrc"))
+        stray = self.repo / "not-mine.txt"
+        stray.write_text("dropped here by hand\n", encoding="utf-8")
+
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".vimrc"))
+        staged = support.git(["status", "--porcelain"], self.repo, self.env)
+        self.assertIn("not-mine.txt", staged, "the stray file was committed by `add`")
 
     def test_add_marks_the_overlay(self) -> None:
         """`(host)` is the only thing distinguishing the two destinations in the
@@ -726,6 +779,17 @@ class TestModes(support.SandboxCase):
 
     def test_a_plain_file_is_not(self) -> None:
         self.assertEqual(0o644, copies.mode_for(self.write(self.home / "plain", "x")))
+
+    def test_storing_something_that_stopped_being_a_file_is_an_error(self) -> None:
+        """`manifest.check` saw a regular file; by the time the copy is made it
+        is a fifo. That is a race rather than a rule the caller broke -- and
+        answering `None` would report it as "nothing to do", which is how a file
+        the user asked to manage ends up silently unmanaged."""
+        where = self.home / "vanished"
+        os.mkfifo(where)
+        with self.assertRaises(OSError) as caught:
+            copies.store(where, self.tmp / "target")
+        self.assertIn("vanished", str(caught.exception))
 
     def test_executable_by_anyone_counts(self) -> None:
         """0o711 arrives from tarballs and is a script. Storing it

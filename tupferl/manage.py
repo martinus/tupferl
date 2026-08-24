@@ -76,6 +76,21 @@ def describe(what: str, names: list[PurePosixPath], host: str) -> str:
     return f"{what} from {host}: {shown}"
 
 
+def added(touched: list[PurePosixPath], admitted: int, host: str) -> str:
+    """What an `add` commit says it did.
+
+    Naming files is only true when files were *stored*. `add` also commits when
+    every copy was already byte-for-byte identical and only a merge base was
+    missing -- a repository whose `.tupferl/state` was deleted, or an earlier run
+    that died between the copy and the commit -- and "add from laptop: .bashrc"
+    then describes something that did not happen. `sync.message` has the same
+    split for the same reason.
+    """
+    if touched:
+        return describe("add", touched, host)
+    return f"add from {host}: record the merge base for {count(admitted)}"
+
+
 def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
     """Stage `paths_` and commit them; `False` if there was nothing to commit.
 
@@ -222,7 +237,7 @@ def add(wanted: list[str], to_host: bool) -> int:
             touched.append(name)
             print(f"{did} {name}{' (host)' if to_host else ''}")
 
-    if not record(repo, written, describe("add", touched or sorted(admitted), host), "the copies"):
+    if not record(repo, written, added(touched, len(admitted), host), "the copies"):
         # Every file was already stored, byte for byte and bit for bit, and its
         # snapshot was already there. Not an error: `add` is how someone
         # re-stores a file they have since edited, and this is what it does when
