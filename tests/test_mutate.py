@@ -26,6 +26,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from tests import support
 from tools import mutants, mutate, verdict
@@ -651,3 +652,401 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
     # probe's own two-test tree in milliseconds. Adding a minute to every run to
     # re-state something is the mistake `test_zero_disables_it` already made
     # once today.
+
+
+class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
+    """A `MUTATIONS` table honours the command line it was run with.
+
+    It did not. The dispatch was `run(mutations)` -- no arguments -- so
+    `argparse` accepted `--workers`, `--memory`, `--timeout`, `--each-test`,
+    `--no-baseline`, `--no-confirm` and `--json`, and every one of them was
+    dropped on the floor. Asking for one lane got two. Asking for a report got no
+    file, which reads as the run having failed to write one rather than as the
+    flag never having been consulted, and cost an hour of this author's time
+    diagnosing the wrong thing.
+
+    Each test below fails against `run(mutations)`, because that call cannot
+    carry the value being asserted.
+    """
+
+    #: A real row against a real file, because the `--json` test below drives the
+    #: actual run rather than a stub: `check` refuses a path that is not there,
+    #: and a report of nothing would not tell us the flag was honoured.
+    #: `tests.test_merge` is eleven tests in 0.09s.
+    #:
+    #: One that is *caught*, deliberately. With a surviving row, a mutant that
+    #: forces confirmation on sends the `--json` test into a whole-suite re-run
+    #: and past the harness's 30s per-test alarm -- reported `BROKE`, which is no
+    #: verdict at all. Nothing here asserts on the survivor count, so the cheaper
+    #: row costs the tests nothing and gives the sweep two answers back.
+    TABLE = (
+        "from tools.mutants import Mutation\n"
+        "MUTATIONS = [\n"
+        "    Mutation(\n"
+        '        label="probe",\n'
+        '        path="tupferl/merge.py",\n'
+        '        old="WHOLE_FILE = 1",\n'
+        '        new="WHOLE_FILE = 2",\n'
+        '        tests="tests.test_merge",\n'
+        "    )\n"
+        "]\n"
+    )
+
+    def spec(self, box: Path) -> Path:
+        where = box / "spec.py"
+        where.write_text(self.TABLE, encoding="utf-8")
+        return where
+
+    def asked(self, *flags: str) -> dict[str, Any]:
+        """Run a spec file with `flags` and return the kwargs `run` received.
+
+        `run` is replaced rather than driven, because what is under test is the
+        wiring between the parser and the call -- not what a mutation does, which
+        every other class here covers and which would cost a suite run per flag.
+        """
+        seen: dict[str, Any] = {}
+
+        def watch(table: Any, *args: Any, **kwargs: Any) -> mutate.Report:
+            seen.update(kwargs)
+            seen["positional"] = args
+            return mutate.Report([])
+
+        with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
+            box = Path(name)
+            with mock.patch.object(mutate, "run", watch):
+                mutate.main([str(self.spec(box)), "--no-confirm", *flags])
+        return seen
+
+    def test_workers_reaches_the_run(self) -> None:
+        self.assertEqual(1, self.asked("--workers", "1")["workers"])
+
+    def test_memory_reaches_the_run(self) -> None:
+        self.assertEqual(0, self.asked("--memory", "0")["memory"])
+
+    def test_the_timeout_reaches_the_run(self) -> None:
+        self.assertEqual(7.0, self.asked("--timeout", "7")["timeout"])
+
+    def test_the_per_test_alarm_reaches_the_run(self) -> None:
+        self.assertEqual(3.0, self.asked("--each-test", "3")["each"])
+
+    def test_no_baseline_reaches_the_run(self) -> None:
+        self.assertFalse(self.asked("--no-baseline")["baseline"])
+
+    def test_the_baseline_is_on_by_default(self) -> None:
+        """The other half: a wiring that hard-coded `False` would pass the test
+        above and quietly stop checking the untouched tree."""
+        self.assertTrue(self.asked()["baseline"])
+
+    def test_json_is_written_and_marked_done(self) -> None:
+        """Not through the `run` stub -- this one drives the real thing, because
+        the report and its `.done` marker are what a watcher reads and a stub
+        cannot produce them."""
+        with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
+            box = Path(name)
+            report = box / "out.json"
+            mutate.main(
+                [str(self.spec(box)), "--no-baseline", "--no-confirm", "--json", str(report)]
+            )
+            self.assertTrue(report.is_file(), "--json wrote nothing")
+            self.assertIn("results", json.loads(report.read_text(encoding="utf-8")))
+            self.assertTrue(
+                report.with_suffix(".json.done").is_file(), "the run left no done marker"
+            )
+
+
+class TestWhatASpecFileExitsWith(unittest.TestCase):
+    """The exit status, and whether survivors get confirmed.
+
+    Eight mutants survived the first sweep of `_run_spec`, every one of them
+    here: the tests above stub `run` to read its kwargs, which cannot see what
+    the function *returns* or which branch it takes afterwards. A stub that
+    proves the wiring says nothing about the answer.
+    """
+
+    def spec(self, box: Path, old: str, new: str) -> Path:
+        where = box / "spec.py"
+        where.write_text(
+            "from tools.mutants import Mutation\n"
+            "MUTATIONS = [\n"
+            "    Mutation(\n"
+            '        label="probe",\n'
+            f'        path="tupferl/merge.py",\n'
+            f"        old={old!r},\n"
+            f"        new={new!r},\n"
+            '        tests="tests.test_merge",\n'
+            "    )\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        return where
+
+    def status(self, old: str, new: str, *flags: str) -> int:
+        with tempfile.TemporaryDirectory(prefix="tupferl-exit-") as name, support.quiet():
+            return mutate.main([str(self.spec(Path(name), old, new)), "--no-baseline", *flags])
+
+    #: A mutation `tests.test_merge` notices, and one it does not. Both were
+    #: measured rather than assumed: `PROBE` shrinking to 1 survives, which is
+    #: itself a fair finding about that constant and not this test's business.
+    CAUGHT = ("WHOLE_FILE = 1", "WHOLE_FILE = 2")
+    SURVIVES = ("PROBE = 8000", "PROBE = 1")
+
+    def test_a_caught_table_exits_zero(self) -> None:
+        self.assertEqual(0, self.status(*self.CAUGHT, "--no-confirm"))
+
+    def test_a_surviving_table_exits_one(self) -> None:
+        """The other half. Without it, "always returns 0" passes the test above
+        and a spec file full of decoration reports success.
+
+        `--no-confirm` is stubbed out rather than trusted: a mutant that forces
+        confirmation on would otherwise send this into a whole-suite re-run and
+        past the harness's 30s alarm, which is `BROKE` -- no verdict for the
+        line under test. What this asserts is the exit status, and confirmation
+        of a survivor cannot change it.
+        """
+        with mock.patch.object(mutate, "confirm", lambda report, *a, **k: report):
+            self.assertEqual(1, self.status(*self.SURVIVES, "--no-confirm"))
+
+    def test_survivors_are_confirmed_against_the_whole_suite_by_default(self) -> None:
+        """CLAUDE.md's promise about a survivor before it is reported. This path
+        never kept it, so `--no-confirm` turned off something that was not
+        happening."""
+        seen: list[bool] = []
+        real = mutate.confirm
+
+        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.append(True)
+            return real(report, *args, **kwargs)
+
+        with mock.patch.object(mutate, "confirm", watch):
+            self.status(*self.CAUGHT)
+        self.assertEqual([True], seen, "survivors were reported without being confirmed")
+
+    def test_confirmation_is_told_what_the_run_was_told(self) -> None:
+        """Its `baseline` comes from `--no-baseline` like the run's does. Nothing
+        looked at what `confirm` was handed, so a wiring that passed the flag
+        through un-negated -- checking a baseline the caller asked to skip --
+        went unnoticed."""
+        seen: dict[str, Any] = {}
+
+        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return report
+
+        with mock.patch.object(mutate, "confirm", watch):
+            self.status(*self.CAUGHT)
+        self.assertFalse(seen["baseline"], "confirmation re-checked a skipped baseline")
+
+    def test_no_confirm_really_turns_it_off(self) -> None:
+        """The precondition for the test above: if `confirm` ran either way, the
+        assertion there would hold against a wiring that ignored the flag."""
+        seen: list[bool] = []
+
+        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.append(True)
+            return report
+
+        with mock.patch.object(mutate, "confirm", watch):
+            self.status(*self.CAUGHT, "--no-confirm")
+        self.assertEqual([], seen, "--no-confirm confirmed anyway")
+
+
+class TestASpecFileWithNothingInIt(unittest.TestCase):
+    """A script that defines no table and never calls `verify` is a mistake, and
+    saying so is the only useful thing left to do.
+
+    Guarded because the branch that reaches it is one `if mutations:` away from
+    handing `None` to a function that expects a table -- which the sweep found
+    unguarded, and which would report the mistake as a traceback from inside the
+    harness rather than as the sentence that says what shape a spec file takes.
+    """
+
+    def test_it_says_what_a_spec_file_should_look_like(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tupferl-empty-") as name:
+            where = Path(name) / "spec.py"
+            where.write_text("x = 1\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as raised:
+                mutate.main([str(where)])
+        self.assertIn("MUTATIONS", str(raised.exception))
+
+
+class TestWhoOwnsTheMachine(unittest.TestCase):
+    """`_budget` halves a shared machine and does not halve a dedicated one.
+
+    The halving was unconditional, and on a machine with nobody else on it that
+    is waste rather than thrift: 16 GiB and four cores gave a budget of 8037 MiB,
+    which `_share` turned into **three** lanes where the cores wanted eight.
+    Measured on one interleaved pair of the same 17-mutant table: 283.7s at three
+    lanes against 154.7s at seven.
+    """
+
+    #: Bigger than `_SPARE` and than `_FLOOR`, so "leave a gibibyte" and "never
+    #: go under the floor" are both visible rather than clipping each other.
+    VISIBLE = 16 << 30
+
+    def budget(self, **environment: str) -> int:
+        seen = mock.patch.object(mutate, "_visible_memory", lambda: self.VISIBLE)
+        with seen, mock.patch.dict(os.environ, environment, clear=True):
+            return mutate._budget()
+
+    def test_a_shared_machine_keeps_half_for_the_person_using_it(self) -> None:
+        self.assertEqual(self.VISIBLE // 2, self.budget())
+
+    def test_a_ci_runner_is_not_shared(self) -> None:
+        """Nobody is waiting for their editor on a CI runner, and every CI
+        system sets this.
+
+        The gibibyte is written out rather than taken from `mutate._SPARE`:
+        against the constant this assertion changes with the code it checks and
+        holds for any value of it, which is CLAUDE.md §2's copy-of-the-code by
+        name. The sweep found it -- both mutations of `_SPARE` survived.
+        """
+        self.assertEqual(self.VISIBLE - (1 << 30), self.budget(CI="true"))
+
+    def test_a_cgroup_limit_means_the_share_is_already_carved_out(self) -> None:
+        """Halving a cgroup limit double-counts the same reservation: the
+        container has no other half to leave, because nobody else is in it."""
+        with mock.patch.object(mutate, "_confined", lambda: 1 << 30):
+            self.assertEqual(self.VISIBLE - (1 << 30), self.budget())
+
+    def test_being_told_beats_both(self) -> None:
+        asked = 12 << 30
+        self.assertEqual(asked, self.budget(**{mutate._TOTAL: str(asked)}))
+        self.assertEqual(asked, self.budget(CI="true", **{mutate._TOTAL: str(asked)}))
+
+    def test_nonsense_in_the_variable_is_ignored_rather_than_obeyed(self) -> None:
+        for said in ("", "0", "-1", "lots"):
+            with self.subTest(said=said):
+                self.assertEqual(self.VISIBLE // 2, self.budget(**{mutate._TOTAL: said}))
+
+    def test_a_tiny_dedicated_machine_never_drops_under_the_floor(self) -> None:
+        """Otherwise subtracting `_SPARE` hands it less than one lane's ceiling
+        and it gets *fewer* lanes than the shared rule would have given -- the
+        opposite of the point."""
+        tiny = mock.patch.object(mutate, "_visible_memory", lambda: (1 << 30) + (1 << 20))
+        with tiny, mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
+            self.assertEqual(mutate._FLOOR, mutate._budget())
+
+    def test_the_run_says_which_rule_it_used(self) -> None:
+        """A lane count nobody can account for is what sent this author reading
+        `_share` in the first place."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIn("shared", mutate._why())
+        with mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
+            self.assertIn("dedicated", mutate._why())
+        with mock.patch.dict(os.environ, {mutate._TOTAL: "123"}, clear=True):
+            self.assertEqual("--budget", mutate._why())
+
+
+class TestReadingACgroupLimit(unittest.TestCase):
+    """`_confined` tells a real limit from the two ways of saying "no limit"."""
+
+    HOST = 16 << 30
+
+    def confined(self, written: str) -> int:
+        def reads(where: str, **kwargs: object) -> str:
+            del where, kwargs
+            return written
+
+        # Both patched by name rather than through `mutate.<attr>`: the module
+        # imports `os` and `Path`, it does not re-export them, and mypy is right
+        # to say so.
+        host = mock.patch(
+            "os.sysconf", lambda name: {"SC_PAGE_SIZE": 1, "SC_PHYS_PAGES": self.HOST}[name]
+        )
+        with mock.patch("pathlib.Path.read_text", reads), host:
+            return mutate._confined()
+
+    def test_a_real_limit_below_the_host_total_counts(self) -> None:
+        self.assertEqual(2 << 30, self.confined(str(2 << 30)))
+
+    def test_cgroup_v2_writes_max_for_no_limit(self) -> None:
+        self.assertEqual(0, self.confined("max"))
+
+    def test_cgroup_v1_writes_a_sentinel_near_two_to_the_sixty_three(self) -> None:
+        """Which is what this machine's `memory.limit_in_bytes` actually holds:
+        9223372036854771712. Read as a limit it would look like the largest
+        dedicated machine ever built."""
+        self.assertEqual(0, self.confined("9223372036854771712"))
+
+
+class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
+    """`_confined`'s answers when the question cannot be asked.
+
+    Every one of these lines survived the first sweep of the budget change: the
+    tests above mock `_confined` wholesale, which proves what `_budget` does with
+    its answer and nothing about how the answer is reached.
+    """
+
+    def test_no_host_total_means_no_limit_can_be_judged(self) -> None:
+        """`sysconf` is not POSIX everywhere. Without a host total there is
+        nothing to compare a cgroup file against, and calling any number a limit
+        would be guessing -- a v1 sentinel would read as a machine with eight
+        exabytes."""
+        with mock.patch("os.sysconf", side_effect=OSError):
+            self.assertEqual(0, mutate._confined())
+
+    def test_no_cgroup_file_means_the_host_bounds_us(self) -> None:
+        with mock.patch("pathlib.Path.read_text", side_effect=OSError):
+            self.assertEqual(0, mutate._confined())
+
+    def test_a_shared_machine_is_reported_as_the_empty_string(self) -> None:
+        """`dedicated` returns a *reason*, and "no reason" has to be falsy for
+        `_budget` to read it. `None` would work there and break the line that
+        prints it."""
+        alone = mock.patch.object(mutate, "_confined", lambda: 0)
+        with mock.patch.dict(os.environ, {}, clear=True), alone:
+            self.assertEqual("", mutate.dedicated())
+
+    def test_a_budget_of_one_byte_is_still_a_budget(self) -> None:
+        """The boundary on `int(said) > 0`. A fixture using a comfortable number
+        cannot tell that from `> 1`."""
+        with mock.patch.dict(os.environ, {mutate._TOTAL: "1"}, clear=True):
+            self.assertEqual(1, mutate._budget())
+
+
+class TestTheRunAccountsForItsLanes(unittest.TestCase):
+    """The line is printed when the machine cut the run down, and not when it
+    did not.
+
+    Both halves: a run that always explains itself is noise, and one that never
+    does is what sent this author reading `_share` to find where three lanes on
+    a four-core box came from.
+    """
+
+    #: One real row, because `run` returns before any of this on an empty table.
+    #: `_attempt` is stubbed, so the row is never applied and its content only
+    #: has to survive `check`.
+    ROW = Mutation(
+        label="probe",
+        path="tupferl/merge.py",
+        old="PROBE = 8000",
+        new="PROBE = 1",
+        tests="tests.test_merge",
+    )
+
+    def lines(self, wanted: int, given: mutate.Share) -> str:
+        answered = mock.patch.object(
+            mutate, "_attempt", lambda *a, **k: mutate.Verdict("caught", "probe")
+        )
+        with (
+            mock.patch.object(mutate, "_share", lambda *a, **k: given),
+            mock.patch.object(mutate, "usable_cpus", lambda: wanted),
+            answered,
+            support.quiet() as spill,
+        ):
+            mutate.run([self.ROW], baseline=False, summarise=False)
+        return spill.getvalue()
+
+    #: What `run` asks for here: one row and one shard, so `len(table) + shards`
+    #: caps it at two whatever the cores say.
+    WANTED = 2
+
+    def test_it_says_so_when_the_machine_cut_the_lanes_down(self) -> None:
+        said = self.lines(8, mutate.Share(self.WANTED - 1, mutate.MEMORY))
+        self.assertIn("1 lane(s)", said)
+        self.assertIn("see tools.mutate._share", said)
+
+    def test_it_stays_quiet_when_nothing_was_taken_away(self) -> None:
+        """The other half. Without it, "always print" passes the test above and
+        every run carries a line about a limit that did not bind."""
+        self.assertNotIn("lane(s)", self.lines(8, mutate.Share(self.WANTED, mutate.MEMORY)))

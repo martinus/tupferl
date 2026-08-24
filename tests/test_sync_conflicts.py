@@ -27,6 +27,7 @@ pass, which is a slower way to the same answer.
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from tests import support
 
@@ -336,3 +337,37 @@ class TestAFileWithWindowsLineEndings(Conflicted):
         self.assertEqual(want, (self.second.home / ".bashrc").read_bytes())
         self.assertEqual(0, self.first.call("sync"))
         self.assertEqual(want, (self.first.home / ".bashrc").read_bytes())
+
+
+class TestAPromptNobodyAnswers(Conflicted):
+    """What the fixture does when the keys run out: fails, and says what it saw.
+
+    `support.FALLBACK` normally makes this impossible -- that is its whole job --
+    so it is removed here to build the case it prevents. The child then sits at
+    the prompt until `PROMPTED`, and is killed.
+
+    The assertion is on the *output*, and it is what collecting to a file buys.
+    With a pipe, the parent holds the child's bytes and `communicate` on a killed
+    child hands back nothing, so the failure reads as a bare timeout with no clue
+    which file was being asked about. With a file, whatever the child managed to
+    say is still on disk.
+    """
+
+    def test_it_is_killed_and_what_it_printed_survives(self) -> None:
+        with (
+            mock.patch.object(support, "FALLBACK", ""),
+            mock.patch.object(support, "PROMPTED", 5.0),
+        ):
+            done = self.second.run("sync", keys="")
+
+        self.assertNotEqual(0, done.returncode, "the prompt answered a key nobody typed")
+        self.assertIn(".bashrc: 1 conflict to settle", done.stdout)
+        self.assertIn("[l] keep local", done.stdout)
+
+    def test_the_precondition_that_the_fallback_is_what_normally_saves_it(self) -> None:
+        """Without this, the test above is equally satisfied by a fixture whose
+        prompt never appears at all -- and `support.FALLBACK` would be free to
+        stop working with nothing to notice."""
+        done = self.second.run("sync", keys="")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("conflict in .bashrc", done.stdout)

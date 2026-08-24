@@ -108,7 +108,10 @@ class Prompted(unittest.TestCase):
         self.addCleanup(self.terminal.close)
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        self.out = io.StringIO()
+        # Bounded: `ask` prints into this, and a mutant that loops fills it. See
+        # `support.Spill` -- an unbounded one is charged to a mutation lane's
+        # memory share and kills the session before any test can report.
+        self.out = support.Spill()
         self.config = Config()
 
     def ask(self, sides: conflicts.Sides, keys: str) -> conflicts.Answer:
@@ -411,8 +414,17 @@ class TestTheKeys(Prompted):
         self.assertEqual(conflicts.Answer(conflicts.SKIP), self.ask(one_conflict(), "s"))
 
     def test_end_of_input_skips(self) -> None:
-        """The one answer that cannot lose something the user meant to keep."""
-        got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
+        """The one answer that cannot lose something the user meant to keep.
+
+        Under a deadline, because this drives `ask` directly rather than through
+        `Prompted.ask` and so gets none of that helper's bounds. Removing the
+        guard being tested here makes `ask` loop for ever on an exhausted stream:
+        without the deadline the row came back `BROKE` -- the harness's 30s
+        per-test alarm, which is not a verdict -- so the very line this test
+        exists for was guarded by nothing a sweep could see.
+        """
+        with support.deadline(support.PATIENCE, "ask never settled at end of input"):
+            got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
         self.assertEqual(conflicts.Answer(conflicts.SKIP), got)
 
     def test_b_keeps_both_sides_in_turn(self) -> None:
@@ -598,7 +610,7 @@ class TestWhichSettler(unittest.TestCase):
         terminal = support.Terminal()
         self.addCleanup(terminal.close)
         terminal.type("r" + support.FALLBACK)
-        spill = io.StringIO()
+        spill = support.Spill()
         patched = mock.patch("sys.stdin", terminal.source), mock.patch("sys.stdout", spill)
         with patched[0], patched[1], support.deadline(support.PATIENCE, "the prompt never settled"):
             settler = conflicts.answering(Config(), no_input=False, ours=False, theirs=False)
@@ -961,6 +973,7 @@ class TestWhatTheWeakFixturesMissed(Prompted):
     def test_end_of_input_says_so(self) -> None:
         """Not just that it skips -- that it tells the user why. A sync that
         exits 1 having silently skipped every conflict is one nobody can debug."""
-        got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
+        with support.deadline(support.PATIENCE, "ask never settled at end of input"):
+            got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
         self.assertEqual(conflicts.SKIP, got.choice)
         self.assertIn("end of input", self.out.getvalue())
