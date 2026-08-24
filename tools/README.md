@@ -18,10 +18,10 @@ off-the-shelf equivalents. Read the docstring before changing a module.
 | a long job is running detached and silence is ambiguous | [`watch.py`](watch.py) |
 
 ```sh
-python -m tools.mutate --base main        # generated from the diff
+python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
 python -m tools.mutate <spec>.py          # a table you wrote
-python -m tools.reached r.json c.json     # which survivors are missing tests
-python -m tools.watch $PID --log sweep.log --done r.json.done --match 'caught|SURVIVED'
+python -m tools.reached sweeps/r.json sweeps/c.json   # survivors missing tests
+python -m tools.watch $PID --log sweeps/r.log --done sweeps/r.json.done --match 'caught|SURVIVED'
 ```
 
 `mutants.py`, `verdict.py` and `cpus.py` are not run directly: they are what
