@@ -516,3 +516,44 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         cache = mutate.Killers(None)
         cache.learn(found)
         self.assertEqual(found.times or {}, cache.cost)
+
+
+class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
+    """Which rows the prefix is cut to, and the two it used to be cut *out* of.
+
+    The first version compared module names -- `test.rsplit(".", 2)[0] in
+    reachable` -- which dropped the prefix in the two places it was worth most.
+    Both are here because neither is visible in a `tupferl/` sweep: every file
+    there has an importer, so every row names modules and matches. It is the
+    `tools/` sweeps, and any new file nothing imports yet, that hit them.
+    """
+
+    def cache(self) -> mutate.Killers:
+        made = mutate.Killers(None)
+        made.cost = {REAL: 0.001}
+        made.known = {"a-row-that-is-not-this-one": REAL}
+        return made
+
+    def ahead(self, tests: str) -> Mutation:
+        with support.quiet():
+            (ahead,) = self.cache().ahead_of([row()._replace(tests=tests)])
+        return ahead
+
+    def test_a_row_that_runs_everything_gets_the_whole_prefix(self) -> None:
+        """`WHOLE_SUITE` is the empty string -- what a file nothing imports gets,
+        so its rows run the entire suite at ~51s each. Cutting the prefix to
+        "modules named in an empty selection" left them with nothing, which is
+        the most expensive row in the table paying the most for the omission."""
+        self.assertEqual(REAL, self.ahead(mutate.WHOLE_SUITE).first)
+
+    def test_a_selection_naming_a_class_still_matches_its_tests(self) -> None:
+        """`tests.test_mutate.TestX` selects `tests.test_mutate.TestX.test_y`.
+        Comparing module names made this never match, so any row selected at
+        class granularity silently lost the prefix."""
+        klass = REAL.rsplit(".", 1)[0]
+        self.assertEqual(REAL, self.ahead(klass).first)
+
+    def test_a_row_that_cannot_reach_it_still_does_not_pay(self) -> None:
+        """The guard the two above must not break: a test in a module that does
+        not import the mutated file cannot see the mutation."""
+        self.assertEqual("", self.ahead("tests.test_paths").first)

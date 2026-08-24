@@ -118,7 +118,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Literal, NamedTuple
 
-from tools import mutants
+from tools import mutants, run_tests
 from tools.cpus import usable_cpus
 from tools.mutants import Mutation, check
 
@@ -1465,11 +1465,22 @@ class Killers:
                 ahead.append(row._replace(first=killer))
                 continue
             # Nothing remembered -- a new row, or one whose killer stopped
-            # working. Intersected with what this row can reach: a test in a
-            # module that does not import the mutated file cannot see the
-            # mutation, so running it is pure cost.
-            reachable = set(row.tests.split())
-            mine = [test for test in head if test.rsplit(".", 2)[0] in reachable]
+            # working. Cut to what this row can reach: a test in a module that
+            # does not import the mutated file cannot see the mutation, so
+            # running it is pure cost.
+            #
+            # `run_tests.selects` rather than comparing module names, which was
+            # the first version and dropped the prefix in the two places it was
+            # most wanted. An empty selection is `WHOLE_SUITE` -- what a file
+            # nothing imports gets -- so its rows run *everything*, ~51s each,
+            # and the prefix was cut to nothing for exactly them. And a selection
+            # naming a class rather than a module never matched at all.
+            reachable = row.tests.split()
+            mine = [
+                test
+                for test in head
+                if not reachable or any(run_tests.selects(test, only) for only in reachable)
+            ]
             ahead.append(row._replace(first=" ".join(mine)) if mine else row)
         return ahead
 
