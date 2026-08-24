@@ -53,7 +53,7 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 from tupferl import conflicts, gitrepo, manage, manifest, merge, paths
-from tupferl.copies import Blob, read, write
+from tupferl.copies import EXEC_BITS, Blob, read, write
 from tupferl.errors import TupferlError
 
 #: How many times a push may be re-tried after the remote turned out to have
@@ -336,7 +336,7 @@ def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[PurePosixPath]:
     return [name for name in manifest.under(snapshots, snapshots) if name not in keep]
 
 
-def integrate(repo: Path, remote: str, branch: str) -> bool:
+def integrate(repo: Path, remote: str, branch: str, settler: conflicts.Settler) -> bool:
     """Fetch, and merge the remote branch if it holds anything new. Did it?
 
     The answer is what tells `sync` whether a rejected push is worth re-trying:
@@ -359,24 +359,114 @@ def integrate(repo: Path, remote: str, branch: str) -> bool:
     done = gitrepo.merge(repo, there)
     if done.ok:
         return True
-    stuck = gitrepo.unmerged(repo)
+
+    # **Conflicted files first, and only then the prompt.** A merge can fail with
+    # nothing unmerged at all -- a hook that refuses the commit, a tree that
+    # cannot be written -- and there is no conflict to settle in that case and
+    # nothing to conclude. Reconciling unconditionally made this branch commit a
+    # merge that had not happened, and report the commit's failure instead of the
+    # merge's. `TestAGitLevelConflict`'s second fixture is what said so.
+    if not gitrepo.unmerged(repo):
+        gitrepo.abort_merge(repo)
+        raise TupferlError(f"could not merge {there}: {gitrepo.reason(done)}")
+
+    # Settle what can be settled through the same prompt every other conflict
+    # goes through -- see `reconcile` -- and conclude the merge. Only what is
+    # left over aborts.
+    left = reconcile(repo, settler)
+    if not left and not gitrepo.unmerged(repo):
+        finished = gitrepo.commit(repo, f"sync: settle the merge of {there}")
+        if finished.ok:
+            return True
+        gitrepo.abort_merge(repo)
+        raise TupferlError(
+            f"settled every file of the merge of {there} and then could not commit it: "
+            f"{gitrepo.reason(finished)}; the merge was undone, so nothing is half-done."
+        )
+
+    stuck = left or gitrepo.unmerged(repo)
     # Abort before raising, so the repository is left in the state it was found
     # in. A half-merged tree would make the *next* run refuse to start, turning
     # one conflict into a machine that cannot sync at all.
     gitrepo.abort_merge(repo)
-    if stuck:
-        # Not the conflict prompt's case, though it looks like one. The prompt
-        # settles `$HOME` against the repository over this machine's snapshot;
-        # this is two *commits* that git could not merge, which needs the three
-        # index stages rather than the three files. Reachable when a machine
-        # commits, fails to push, and the other machine pushes a change to the
-        # same lines in the window -- so it is a real path, and it has an issue.
-        raise TupferlError(
-            f"{there} and this machine have both committed changes to "
-            f"{', '.join(stuck)}; tupferl cannot settle a conflict between two "
-            f"commits yet, so resolve it with `git -C {repo} pull` and try again."
-        )
-    raise TupferlError(f"could not merge {there}: {gitrepo.reason(done)}")
+    # What is left is what the prompt has no answer for: a file one side deleted
+    # and the other edited, or one the user skipped. Both are a person's
+    # decision, and neither is a choice between lines.
+    raise TupferlError(
+        f"{there} and this machine disagree about {', '.join(stuck)} in a way "
+        f"the prompt cannot settle -- one side changed the file and the other "
+        f"removed it, or you skipped it; the merge was undone, so resolve it "
+        f"with `git -C {repo} pull` and sync again."
+    )
+
+
+def held(repo: Path, number: int, name: str, modes: dict[int, int]) -> Blob | None:
+    """One stage of a conflicted file as a `Blob`, or `None` when that side has none.
+
+    The mode comes from the index rather than from disk: during a conflict the
+    working tree holds git's marked-up merge, whose bits say nothing about what
+    either side recorded. Plan §5 asks for the executable bit to travel, and this
+    is where it is.
+    """
+    data = gitrepo.version(repo, number, name)
+    if data is None:
+        return None
+    return Blob(data, bool(modes.get(number, 0) & EXEC_BITS))
+
+
+def reconcile(repo: Path, settler: conflicts.Settler) -> list[str]:
+    """Settle every file git could not merge. Returns the names still unsettled.
+
+    This is plan §3.4's prompt over the *index* rather than over three files: a
+    conflict between two commits, which happens whenever a machine has committed
+    without pushing -- `tupferl add` does exactly that -- and the other machine
+    has pushed to the same lines meanwhile.
+
+    The three versions are the index's three stages, and which is which is a fact
+    about git that `tests/test_gitrepo.py` asserts rather than assumes: stage 2
+    is the branch being merged into, so it is this computer's, and stage 3 is the
+    branch being merged in, so it is the repository's. Backwards, `--ours` keeps
+    the side the user asked to discard.
+
+    **A file only one side still has is not settled here.** A delete against an
+    edit is not a disagreement about lines, and the prompt has no key that means
+    "keep it" or "let it go" -- offering `[l]` and `[r]` for it would be inventing
+    an answer to a question nobody asked. Those names come back for the caller to
+    report, and the merge is aborted around them.
+    """
+    left: list[str] = []
+    for name, modes in sorted(gitrepo.conflicted(repo).items()):
+        ours = held(repo, gitrepo.OURS, name, modes)
+        theirs = held(repo, gitrepo.THEIRS, name, modes)
+        if ours is None or theirs is None:
+            left.append(name)
+            continue
+        base = held(repo, gitrepo.BASE, name, modes)
+        merged = merge.three_way(name, None if base is None else base.data, ours.data, theirs.data)
+        if merged.data is not None and not merged.conflicts:
+            # git's own merge failed on this file and this one did not. That is
+            # not a contradiction -- `git merge` and `git merge-file` are
+            # different algorithms over different inputs -- and a merge nobody
+            # has to be asked about is the best answer available.
+            settled_here = Blob(merged.data, executable_after(base, ours, theirs))
+        else:
+            sides = conflicts.Sides(
+                PurePosixPath(name), base, ours, theirs, merged.data, merged.conflicts
+            )
+            outcome = settled(sides, settler(sides))
+            if outcome.blob is None:
+                # `[s]`, or a flag that skips. The file stays conflicted and the
+                # caller aborts the whole merge around it.
+                left.append(name)
+                continue
+            settled_here = outcome.blob
+        write(repo / name, settled_here)
+        staged = gitrepo.stage(repo, [repo / name])
+        if not staged.ok:
+            raise TupferlError(
+                f"could not stage the settled {name} in {repo}: {gitrepo.reason(staged)}"
+            )
+    return left
 
 
 def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> list[Outcome]:
@@ -580,7 +670,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
                 f"{repo} has no branch checked out, so there is nothing to push; "
                 f"run `git -C {repo} checkout main`."
             )
-        integrate(repo, remote, branch)
+        integrate(repo, remote, branch, settler)
         outcomes = deliver(repo, home, host, remote, branch, settler)
 
     print(report(outcomes))
@@ -627,7 +717,7 @@ def deliver(
         pushed = gitrepo.push(repo, remote, branch)
         if pushed.ok:
             return outcomes
-        if not integrate(repo, remote, branch):
+        if not integrate(repo, remote, branch, settler):
             raise TupferlError(
                 f"could not push to {remote}: {gitrepo.reason(pushed)}; "
                 f"run `tupferl doctor` to check the remote."

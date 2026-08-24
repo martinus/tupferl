@@ -127,6 +127,48 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
     return Result(done.stdout.strip(), done.stderr.strip(), code=done.returncode)
 
 
+#: The three stages a conflicted index holds for one path: the merge base, the
+#: version on this branch, and the version being merged in. git numbers them,
+#: and the numbering is what `sync` has to get right -- see `version`.
+BASE, OURS, THEIRS = 1, 2, 3
+
+
+def version(repo: Path, number: int, name: str) -> bytes | None:
+    """One stage of `name` from a conflicted index, as bytes. `None` if absent.
+
+    **Not through `git` above**, and that is the whole reason this exists. That
+    function is `text=True` and returns `stdout.strip()`, which would decode a
+    dotfile on the user's behalf and eat its trailing newline and any leading
+    blank line -- the same loss `merge_file`'s docstring records as its reason
+    for rewriting a file in place rather than reading `-p` back. A file's
+    *content* cannot travel through a function that strips it.
+
+    `cat-file` rather than `show`: `show` is porcelain and applies the
+    repository's filters, so a `.gitattributes` with a clean/smudge rule would
+    hand back something other than what is stored. This is the plumbing command
+    for "give me these bytes".
+
+    `None` for a stage that is not there, which is a real answer rather than an
+    error: a file added on both branches independently has no stage 1, and that
+    is exactly the "no common ancestor" that `conflicts.Sides.base` models as
+    `None` already.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "cat-file", "blob", f":{number}:{name}"],
+            cwd=repo,
+            capture_output=True,
+            timeout=TIMEOUT,
+            env=env(),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # Same three failures `git` guards, and the same answer: nothing to
+        # return. The caller is already in the "could not settle this" branch.
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
 def reason(result: Result) -> str:
     """The one line of git's stderr worth showing a user.
 
@@ -307,6 +349,38 @@ def unmerged(repo: Path) -> list[str]:
     """The paths git left with conflict markers, relative to the repository."""
     found = git(["diff", "--name-only", "--diff-filter=U"], cwd=repo)
     return found.out.splitlines() if found.ok else []
+
+
+def conflicted(repo: Path) -> dict[str, dict[int, int]]:
+    """Every unmerged path, and the file mode git recorded for each of its stages.
+
+    One `ls-files -u` rather than a call per path: a merge that went wrong across
+    forty files would otherwise spawn forty processes to ask a question git
+    already answered in one.
+
+    The mode is what carries the executable bit through a merge git could not
+    finish. Without it a resolved script comes back `0644` and fails the moment
+    the user runs it -- plan §5 asks for that one bit to be preserved, and the
+    index is where it is during a conflict.
+
+    Lines look like `100644 <sha> 2\t.bashrc`. A path is absent from the answer
+    when it is not conflicted, and a *stage* is absent when that side has no
+    version of the file -- a delete against an edit, which `sync` cannot settle
+    by picking lines and does not pretend to.
+    """
+    found = git(["ls-files", "-u", "-z"], cwd=repo)
+    if not found.ok:
+        return {}
+    stages: dict[str, dict[int, int]] = {}
+    # `-z` and a NUL split, because a dotfile may legitimately have a newline in
+    # its name and `splitlines` would then invent a path that does not exist.
+    for row in found.out.split("\0"):
+        head, _, name = row.partition("\t")
+        parts = head.split()
+        if not name or len(parts) != 3 or not parts[0].isdigit() or not parts[2].isdigit():
+            continue
+        stages.setdefault(name, {})[int(parts[2])] = int(parts[0], 8)
+    return stages
 
 
 def push(repo: Path, remote: str, ref: str) -> Result:

@@ -258,3 +258,79 @@ class TestIsRepository(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReadingAConflictedIndex(support.SandboxCase):
+    """`gitrepo.version`, and which stage is which side.
+
+    **The numbering is the point.** git's stage 2 is the branch being merged
+    *into* and stage 3 is the branch being merged *in*, which lines up with the
+    prompt's "this computer" and "the repository" -- but it lines up by luck
+    rather than by construction, and backwards it means `--ours` silently keeps
+    the side the user asked to discard. That is the class of defect milestone
+    4's review caught three of, so it is asserted rather than commented.
+
+    The two sides are given distinct content for the same reason every fixture
+    in that milestone does: symmetric inputs make "which side was written"
+    unobservable.
+    """
+
+    OURS = b"from the local branch\nshared\n"
+    THEIRS = b"from the remote branch\nshared\n"
+    BASE = b"from neither\nshared\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.home / "repo", self.env)
+        self.write(self.repo / ".gitignore", "")  # something to commit onto
+        self.conflict()
+
+    def commit(self, content: bytes, message: str) -> None:
+        (self.repo / ".bashrc").write_bytes(content)
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", message], cwd=self.repo, env=self.env)
+
+    def conflict(self) -> None:
+        """Two branches that changed the same line, merged into a dirty index."""
+        self.commit(self.BASE, "the base")
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(self.OURS, "ours")
+        support.git(["checkout", "other"], cwd=self.repo, env=self.env)
+        self.commit(self.THEIRS, "theirs")
+        support.git(["checkout", support.BRANCH], cwd=self.repo, env=self.env)
+        # Left to fail: that is what puts the three stages in the index.
+        gitrepo.merge(self.repo, "other")
+
+    def test_the_fixture_really_left_a_conflicted_index(self) -> None:
+        """Every assertion below is vacuous against a merge that succeeded."""
+        self.assertEqual([".bashrc"], gitrepo.unmerged(self.repo))
+
+    def test_stage_two_is_the_branch_being_merged_into(self) -> None:
+        self.assertEqual(self.OURS, gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"))
+
+    def test_stage_three_is_the_branch_being_merged_in(self) -> None:
+        self.assertEqual(self.THEIRS, gitrepo.version(self.repo, gitrepo.THEIRS, ".bashrc"))
+
+    def test_stage_one_is_the_merge_base(self) -> None:
+        self.assertEqual(self.BASE, gitrepo.version(self.repo, gitrepo.BASE, ".bashrc"))
+
+    def test_a_stage_that_is_not_there_is_none(self) -> None:
+        """A path nothing conflicts over has no stages at all."""
+        self.assertIsNone(gitrepo.version(self.repo, gitrepo.OURS, ".gitignore"))
+
+    def test_bytes_come_back_exactly(self) -> None:
+        """The reason this does not go through `gitrepo.git`, which returns
+        `stdout.strip()`: a dotfile's trailing newline and any leading blank line
+        are content, and stripping them corrupts the file on its way to the
+        prompt."""
+        gitrepo.abort_merge(self.repo)
+        self.commit(b"\n\nleading and trailing blank lines\n\n", "spacey")
+        support.git(["branch", "-D", "other"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-b", "other", "HEAD~1"], cwd=self.repo, env=self.env)
+        self.commit(b"\n\nthe other side\n\n", "spacey too")
+        support.git(["checkout", support.BRANCH], cwd=self.repo, env=self.env)
+        gitrepo.merge(self.repo, "other")
+        self.assertEqual(
+            b"\n\nleading and trailing blank lines\n\n",
+            gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"),
+        )
