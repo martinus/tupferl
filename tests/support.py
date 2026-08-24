@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import os
+import pty
 import subprocess
 import sys
 import tempfile
@@ -266,7 +267,7 @@ def make_repo(where: Path, env: dict[str, str], remote: Path | None = None) -> P
 
 
 def run_cli(
-    args: list[str], env: dict[str, str], cwd: Path | None = None
+    args: list[str], env: dict[str, str], cwd: Path | None = None, keys: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Drive the CLI the way a user does: a separate process, through `-m`.
 
@@ -274,15 +275,70 @@ def run_cli(
     these are milliseconds -- and it is the only way to check what actually
     reaches stdout, stderr and the exit status, which is `tupferl doctor`'s whole
     product.
+
+    **`keys=None` gives the child no terminal at all**, and that is the load-
+    bearing part rather than a detail. `sync` asks `sys.stdin.isatty()` to decide
+    whether anyone is there to answer a conflict; inheriting this process's stdin
+    makes the answer depend on how the *suite* was launched, so the same test
+    prompts and blocks for ever in a developer's terminal and skips silently in
+    CI. `DEVNULL` makes "nobody is there" a property of the fixture.
+
+    `keys` opens a real pty and types them, which is the only way to exercise the
+    prompt: `conflicts.one_key` clears `ICANON` with `termios`, and there is no
+    pipe that behaves like that.
     """
-    return subprocess.run(
-        [sys.executable, "-m", "tupferl", *args],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if keys is None:
+        return subprocess.run(
+            [sys.executable, "-m", "tupferl", *args],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+
+    master, slave = pty.openpty()
+    try:
+        os.write(master, keys.encode("utf-8"))
+        started = subprocess.Popen(
+            [sys.executable, "-m", "tupferl", *args],
+            cwd=cwd,
+            env=env,
+            stdin=slave,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        os.close(slave)
+        # A timeout, because the failure this fixture can produce is a prompt
+        # that asks once more than `keys` answers -- and that is a suite which
+        # hangs rather than one which fails.
+        out, err = started.communicate(timeout=60)
+    finally:
+        os.close(master)
+    return subprocess.CompletedProcess(started.args, started.returncode, out, err)
+
+
+@contextmanager
+def typing(keys: str | None) -> Iterator[None]:
+    """Replace `sys.stdin` for an in-process run. `None` means nobody is there.
+
+    `run_cli`'s argument, for the half of the suite that calls `tupferl.__main__`
+    directly -- and for the same reason: what stdin *is* has to come from the
+    fixture, never from how the suite was launched.
+    """
+    if keys is None:
+        with mock.patch("sys.stdin", io.StringIO()):
+            yield
+        return
+    master, slave = pty.openpty()
+    try:
+        os.write(master, keys.encode("utf-8"))
+        with os.fdopen(slave, "r") as source, mock.patch("sys.stdin", source):
+            yield
+    finally:
+        os.close(master)
 
 
 class SandboxCase(unittest.TestCase):
@@ -357,15 +413,19 @@ class Computer:
             self.repo = paths.repo_dir()
             self.backups = paths.backup_dir()
 
-    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
-        """One command, as a subprocess, the way a user runs it."""
-        return run_cli(list(args), self.env)
+    def run(self, *args: str, keys: str | None = None) -> subprocess.CompletedProcess[str]:
+        """One command, as a subprocess, the way a user runs it.
 
-    def call(self, *args: str) -> int:
+        `keys` gives it a terminal to read them from -- see `run_cli`. Without
+        one it has no stdin at all, so a conflict is reported and skipped.
+        """
+        return run_cli(list(args), self.env, keys=keys)
+
+    def call(self, *args: str, keys: str | None = None) -> int:
         """One command, in this process. Returns the exit status; output is eaten."""
         from tupferl import __main__ as cli
 
-        with mock.patch.dict(os.environ, self.env, clear=True), quiet():
+        with mock.patch.dict(os.environ, self.env, clear=True), quiet(), typing(keys):
             return cli.main(list(args))
 
     def git(self, *args: str) -> str:
@@ -389,6 +449,34 @@ class Computer:
     def snapshot(self, name: str) -> Path:
         """Where this machine's merge base for `name` lives."""
         return paths.snapshot_dir(self.repo, self.name) / name
+
+
+class TwoMachines(unittest.TestCase):
+    """Two `$HOME`s and one bare remote, with `.bashrc` already managed and
+    synced from the first -- plan §3.5's daily flow, at the point where a second
+    computer can be brought up.
+
+    Not `SandboxCase`, which patches `os.environ` for *one* machine; these drive
+    the CLI as subprocesses with one environment each, which is also the only way
+    two hostnames can exist at once.
+
+    Here rather than in a test module because three of them build it, and a
+    fixture that drifts between them is one where a failure in one file cannot be
+    reproduced in another.
+    """
+
+    def setUp(self) -> None:
+        box = tempdir()
+        self.tmp = box.__enter__()
+        self.addCleanup(box.__exit__, None, None, None)
+        self.first = Computer(self.tmp, "machine-a")
+        self.second = Computer(self.tmp, "machine-b")
+        self.remote = make_remote(self.tmp / "remote.git", self.first.env)
+
+        self.first.write(".bashrc", "one\ntwo\nthree\nfour\nfive\n")
+        self.assertEqual(0, self.first.run("init", str(self.remote)).returncode)
+        self.assertEqual(0, self.first.run("add", str(self.first.home / ".bashrc")).returncode)
+        self.assertEqual(0, self.first.run("sync").returncode)
 
 
 def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:

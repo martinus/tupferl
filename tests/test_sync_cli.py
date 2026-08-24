@@ -16,7 +16,6 @@ from __future__ import annotations
 import os
 import shutil
 import stat
-import unittest
 from pathlib import PurePosixPath
 
 from tests import support
@@ -213,18 +212,18 @@ class TestWhatTheCommitNames(OneMachine):
         self.assertEqual(f"sync from {self.host}: .bashrc", self.subject())
 
 
-class TestWhatMilestoneThreeRefuses(OneMachine):
-    def test_ours_and_theirs_name_the_milestone_that_builds_them(self) -> None:
-        """Refused rather than ignored: a flag that silently does nothing is how
-        a script ends up believing its conflicts were resolved."""
-        for flag in ("--ours", "--theirs"):
-            with self.subTest(flag=flag):
-                status, _, err = self.sync(flag)
-                self.assertEqual(2, status)
-                self.assertContains(err, "milestone 4")
+class TestWhatStopsASync(OneMachine):
+    """What a run refuses, and what it survives. The resolution flags are
+    `tests/test_conflict_cli.py`, which needs a conflict to point them at."""
 
-    def test_no_input_is_accepted_because_it_is_already_what_happens(self) -> None:
-        self.assertEqual(0, self.sync("--no-input")[0])
+    def test_the_resolution_flags_change_nothing_when_there_is_no_conflict(self) -> None:
+        """All three, on a run with nothing to settle. Not a placeholder: each
+        one installs a settler that is never called, and a settler that ran
+        anyway would have to invent three versions of a file nobody disagreed
+        about."""
+        for flag in ("--ours", "--theirs", "--no-input"):
+            with self.subTest(flag=flag):
+                self.assertEqual(0, self.sync(flag)[0])
 
     def test_an_unfinished_merge_stops_it(self) -> None:
         """A killed sync leaves this behind, and committing on top of it would
@@ -253,29 +252,7 @@ class TestWhatMilestoneThreeRefuses(OneMachine):
         self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
 
 
-class TwoMachines(unittest.TestCase):
-    """Two `$HOME`s and one bare remote -- plan §3.5's daily flow.
-
-    Not `SandboxCase`, which patches `os.environ` for *one* machine; these drive
-    the CLI as subprocesses with one environment each, which is also the only way
-    two hostnames can exist at once.
-    """
-
-    def setUp(self) -> None:
-        box = support.tempdir()
-        self.tmp = box.__enter__()
-        self.addCleanup(box.__exit__, None, None, None)
-        self.first = support.Computer(self.tmp, "machine-a")
-        self.second = support.Computer(self.tmp, "machine-b")
-        self.remote = support.make_remote(self.tmp / "remote.git", self.first.env)
-
-        self.first.write(".bashrc", "one\ntwo\nthree\nfour\nfive\n")
-        self.assertEqual(0, self.first.run("init", str(self.remote)).returncode)
-        self.assertEqual(0, self.first.run("add", str(self.first.home / ".bashrc")).returncode)
-        self.assertEqual(0, self.first.run("sync").returncode)
-
-
-class TestTwoMachines(TwoMachines):
+class TestTwoMachines(support.TwoMachines):
     def test_init_on_the_second_machine_brings_everything_down(self) -> None:
         """The README's promise: `tupferl init <url>` alone sets up a second
         computer, because plan §4 says init "then runs a first sync"."""
@@ -427,7 +404,7 @@ class TestTwoMachines(TwoMachines):
         self.assertIn("could not fetch", done.stderr)
 
 
-class TestAGitLevelConflict(TwoMachines):
+class TestAGitLevelConflict(support.TwoMachines):
     """Two machines that have each *committed* a change to the same lines.
 
     The path the mutation sweep found untested, and six of its survivors lived
@@ -436,10 +413,11 @@ class TestAGitLevelConflict(TwoMachines):
     add` creates, since it commits without pushing -- and the remote has moved.
 
     git's own merge has the real merge base and is a better answer than anything
-    this module could compute, so a conflict there is two committed versions
-    disagreeing: milestone 4's prompt, not milestone 3's business. What milestone
-    3 owes the user is a sentence naming the file and a repository left exactly
-    as it was found.
+    this module could compute, so a conflict there is two *commits* disagreeing.
+    That is not the conflict prompt's case, which settles `$HOME` against the
+    repository over this machine's snapshot -- three files, where this needs the
+    three index stages. What `sync` owes the user until then is a sentence naming
+    the file, a way out, and a repository left exactly as it was found.
     """
 
     def commit_locally(self, machine: support.Computer, text: str) -> None:
@@ -448,7 +426,7 @@ class TestAGitLevelConflict(TwoMachines):
         machine.write(".bashrc", text)
         self.assertEqual(0, machine.run("add", str(machine.home / ".bashrc")).returncode)
 
-    def test_it_names_the_file_and_the_milestone_that_settles_it(self) -> None:
+    def test_it_names_the_file_and_a_way_out(self) -> None:
         self.second.run("init", str(self.remote))
         self.commit_locally(self.second, "THEIRS\ntwo\nthree\nfour\nfive\n")
         self.first.write(".bashrc", "MINE\ntwo\nthree\nfour\nfive\n")
@@ -457,7 +435,9 @@ class TestAGitLevelConflict(TwoMachines):
         done = self.second.run("sync")
         self.assertEqual(2, done.returncode, done.stdout + done.stderr)
         self.assertIn(".bashrc", done.stderr)
-        self.assertIn("milestone 4", done.stderr)
+        # The sentence has to be actionable, which is what plan §5 asks of every
+        # error. `git pull` is the way out until tupferl settles this itself.
+        self.assertIn("git", done.stderr)
 
     def test_the_repository_is_left_exactly_as_it_was_found(self) -> None:
         """The abort is the point. A half-merged tree makes the *next* run refuse
@@ -496,7 +476,7 @@ class TestAGitLevelConflict(TwoMachines):
         self.assertIsNone(gitrepo.unfinished(self.second.repo))
 
 
-class TestTheSnapshotIsWrittenLast(TwoMachines):
+class TestTheSnapshotIsWrittenLast(support.TwoMachines):
     """Plan §7.4 item 4: a sync killed part-way must leave the state consistent.
 
     The ordering in `apply` is the whole of that guarantee, and it is invisible

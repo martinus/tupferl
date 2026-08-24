@@ -95,7 +95,9 @@ def labels_for(name: str) -> tuple[str, str, str]:
     return (f"{name} (this computer)", f"{name} (last sync)", f"{name} (the repository)")
 
 
-def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merged:
+def three_way(
+    name: str, base: bytes | None, ours: bytes, theirs: bytes, keep_both: bool = False
+) -> Merged:
     """Merge `ours` and `theirs` over their common ancestor `base`.
 
     `name` is the managed file's name -- it reaches the conflict markers and the
@@ -103,6 +105,15 @@ def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merg
 
     A side that is not text makes the whole file one conflict, with no merged
     bytes to return. See `is_text`.
+
+    `keep_both` is the conflict prompt's `[b]`, and it is git's `--union`: every
+    hunk the two sides disagree about keeps both versions in turn, unmarked, so
+    the result never conflicts. Delegated for the same reason the merge itself
+    is: the alternative is stripping the markers out of the merged text here,
+    which means re-deriving hunk boundaries git has already computed -- and
+    getting that wrong silently deletes a line the user wrote. A union merge
+    that produced a conflict count above zero would mean git had changed what
+    `--union` means, so it is asserted rather than assumed.
 
     The three sides are written to a throwaway directory rather than merged from
     memory: `git merge-file` takes file names, and the alternative is feeding it
@@ -123,7 +134,7 @@ def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merg
         yours = where / "theirs"
         yours.write_bytes(theirs)
 
-        done = gitrepo.merge_file(mine, common, yours, labels_for(name))
+        done = gitrepo.merge_file(mine, common, yours, labels_for(name), union=keep_both)
         if done.code is None or not 0 <= done.code <= gitrepo.MOST_CONFLICTS:
             # Not a conflict: git could not run, or refused the inputs. Reported
             # rather than folded into "conflicted", because the two need
@@ -131,6 +142,12 @@ def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merg
             # must not look like one that happened badly.
             raise TupferlError(
                 f"could not merge {name}: {gitrepo.reason(done)}; "
+                f"run `tupferl doctor` to check your git installation."
+            )
+        if keep_both and done.code:
+            raise TupferlError(
+                f"could not keep both versions of {name}: git reported {done.code} "
+                f"conflicts from a union merge, which should have none; "
                 f"run `tupferl doctor` to check your git installation."
             )
         return Merged(mine.read_bytes(), done.code)

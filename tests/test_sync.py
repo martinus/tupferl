@@ -21,7 +21,7 @@ import unittest
 from pathlib import PurePosixPath
 
 from tests import support
-from tupferl import copies, gitrepo, sync
+from tupferl import conflicts, copies, gitrepo, sync
 
 #: Three versions of one file whose edits do not overlap, so a merge of any two
 #: of them is decidable. Named rather than spelled out per test: half the table
@@ -64,7 +64,14 @@ class TestTheDecisionTable(unittest.TestCase):
         got = sync.resolve(NAME, BASE, mine, theirs)
         self.assertEqual(sync.CONFLICT, got.action)
         self.assertIsNone(got.blob)
-        self.assertEqual(1, got.conflicts)
+        assert got.sides is not None
+        self.assertEqual(1, got.sides.conflicts)
+        # The three versions travel with the conflict, so whoever settles it has
+        # what the prompt needs without reading anything back off disk.
+        self.assertEqual((BASE, mine, theirs), (got.sides.base, got.sides.home, got.sides.stored))
+        assert got.sides.marked is not None
+        self.assertIn(b"mine", got.sides.marked)
+        self.assertIn(b"theirs", got.sides.marked)
 
     def test_both_arrived_at_the_same_content(self) -> None:
         """Two machines edited the same file to the same bytes. There is nothing
@@ -291,7 +298,9 @@ class TestTheReport(unittest.TestCase):
         self.assertIn("2 files managed, 1 changed, 0 in conflict", text)
 
     def test_a_conflict_says_how_much_there_is_to_settle(self) -> None:
-        text = sync.report([sync.Outcome(PurePosixPath(".bashrc"), sync.CONFLICT, None, 3)])
+        name = PurePosixPath(".bashrc")
+        sides = conflicts.Sides(name, BASE, HOME_EDIT, REPO_EDIT, b"<<<<<<<\n", 3)
+        text = sync.report([sync.Outcome(name, sync.CONFLICT, None, sides)])
         self.assertIn("conflict in .bashrc (3 to settle)", text)
         self.assertIn("1 in conflict", text)
 
