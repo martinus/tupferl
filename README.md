@@ -23,27 +23,55 @@ pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
-## Status: milestone 3 of 7
+## Status: milestone 4 of 7
 
 **`init`, `add`, `remove`, `list`, `sync` and `doctor` work.** Two computers can
 share dotfiles today: `tupferl sync` pulls, merges in both directions, commits
-and pushes, and resolves everything it can without asking.
+and pushes, resolves everything it can without asking — and asks about the rest.
 
-**What it does not do yet is ask.** When both computers changed the same lines,
-milestone 3 reports the file and leaves *both* copies exactly as they are — no
-conflict markers, no side chosen — and exits 1 so a script notices:
+**When both computers changed the same lines, it asks.** One question per file,
+one keypress per answer:
 
 ```
 $ tupferl sync
+
+.bashrc: 1 conflict to settle.
+
+  1 of 1, lines 12-16 of the merged file
+  this computer
+  | export EDITOR=nvim
+  the repository
+  | export EDITOR=vim
+
+  [l] keep local   [r] keep remote   [b] keep both
+  [e] edit merged file   [d] show full diff   [s] skip
+```
+
+`[b]` keeps both versions in turn, with no markers left behind. `[e]` opens the
+merged file — conflict markers and all — in `$VISUAL`, `$EDITOR`, or whatever
+`editor` in `.tupferl/config.toml` names, and refuses a save that still has the
+markers in it. `[s]` leaves both copies exactly as they were and reports the
+file at the end, which is also what a `sync` with nobody at the keyboard does:
+
+```
+$ tupferl sync < /dev/null
 conflict in .bashrc (1 to settle); both copies left as they are
 
 1 file managed, 0 changed, 1 in conflict
 ```
 
-Settle it with git in the repository for now. The interactive prompt, and
-`--ours` / `--theirs`, are milestone 4; passing those flags today is an error
-rather than a silent no-op. The two remaining unbuilt commands say so
-themselves:
+That exit status is 1, so a script notices. For scripts that want an answer
+rather than a report, `--ours` keeps this computer's version and `--theirs` the
+repository's, for every conflict, and both exit 0; `--no-input` is the skipping
+behaviour above, asked for explicitly. A stdin that is not a terminal is
+`--no-input` whether or not you said so — a sync on a timer must not block on a
+question nobody will see.
+
+**One conflict it cannot settle yet** is two *commits* that git could not merge,
+which happens when a computer has committed without pushing and the other pushes
+to the same lines meanwhile. It says so, and `git -C <repo> pull` is the way out.
+
+The two remaining unbuilt commands say so themselves:
 
 ```
 $ tupferl status
@@ -59,7 +87,7 @@ are in [`CLAUDE.md`](CLAUDE.md).
 | 1 | package skeleton, `doctor`, config loading, test infrastructure | **done** |
 | 2 | `init`, `add`, `remove`, `list` | **done** |
 | 3 | sync engine: snapshots, change detection, automatic merges | **done** |
-| 4 | 3-way merge and the interactive conflict prompt | |
+| 4 | 3-way merge and the interactive conflict prompt | **done** |
 | 5 | host overlays | |
 | 6 | backups, error messages, `status` and `diff` | |
 | 7 | PyPI packaging | |
@@ -95,10 +123,9 @@ repository, and that snapshot — and resolves everything it safely can:
 | only `$HOME` | the copy in the repository is updated and committed |
 | only the repository | your file is updated, after a backup |
 | both, in different places | a 3-way merge, applied without asking |
-| both, in the same place | reported; **both copies left untouched** |
+| both, in the same place | one question, one keypress |
 
-Only the last row needs a person, and milestone 4 is the prompt that asks —
-one keypress per file, with `--ours` / `--theirs` / `--no-input` for scripts.
+Only the last row needs a person, and it is the only one that asks.
 
 **Nothing is overwritten without a copy.** Before `tupferl sync` replaces a file
 in `$HOME` it writes the old one to `~/.local/state/tupferl/backup/<timestamp>/`,

@@ -80,6 +80,11 @@ run "$A" sync
 after="$(cd "$A/.local/share/tupferl/repo" && git rev-parse HEAD)"
 expect "$before" "$after" "a quiet sync wrote a commit"
 
+# From here on the runs rely on stdin not being a terminal: `sync` asks
+# `isatty()` to decide whether anyone is there to answer, and with a terminal
+# these two commands would *prompt* and this script would hang rather than fail.
+# `env -i` does not change stdin, so this is a fact about how CI invokes it --
+# stated here because a hang is the one failure nobody can read from a log.
 echo "--- both edit the same line: reported, and nothing is written"
 sed -i 's/PAGER=less/PAGER=most/' "$A/.bashrc"
 sed -i 's/PAGER=less/PAGER=bat/' "$B/.bashrc"
@@ -94,8 +99,25 @@ if grep -q '<<<<<<<' "$B/.bashrc"; then
   exit 1
 fi
 
+echo "--- --theirs settles it without asking, and both machines converge"
+status=0
+run "$B" sync --theirs || status=$?
+expect "0" "$status" "--theirs must settle the conflict and exit 0"
+grep -q 'PAGER=most' "$B/.bashrc" || { echo "::error::--theirs did not take A's line"; exit 1; }
+run "$A" sync
+expect "$(cat "$A/.bashrc")" "$(cat "$B/.bashrc")" "the settled file did not reach A"
+
+echo "--- --ours keeps this machine's line, on a fresh conflict"
+sed -i 's/alias ll=ls/alias ll="ls -l"/' "$A/.bashrc"
+sed -i 's/alias ll=ls/alias ll="ls -la"/' "$B/.bashrc"
+run "$A" sync
+run "$B" sync --ours
+grep -q 'ls -la' "$B/.bashrc" || { echo "::error::--ours did not keep B's line"; exit 1; }
+run "$A" sync
+grep -q 'ls -la' "$A/.bashrc" || { echo "::error::B's choice did not reach A"; exit 1; }
+
 echo "--- a backup of the file that was overwritten exists"
 test -n "$(find "$B/.local/state/tupferl/backup" -name .bashrc -print -quit)" \
   || { echo "::error::no backup was taken"; exit 1; }
 
-echo "two machines synced, converged, and reported the one conflict they had"
+echo "two machines synced, converged, reported a conflict and settled two more"
