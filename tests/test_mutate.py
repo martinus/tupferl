@@ -180,12 +180,12 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
             return mutate.Killers(where)
 
     def test_a_remembered_test_runs_first(self) -> None:
-        """In front, and the original selection still behind it."""
+        """In front, and the original selection untouched behind it."""
         one = row()
         cached = self.cache({mutate._key(one): REAL})
         (ahead,) = cached.ahead_of([one])
-        self.assertEqual(REAL, ahead.tests.split()[0])
-        self.assertIn("tests.test_sync", ahead.tests.split())
+        self.assertEqual(REAL, ahead.first)
+        self.assertEqual("tests.test_sync", ahead.tests)
 
     def test_the_whole_selection_is_kept_behind_it(self) -> None:
         """The safety argument, asserted rather than assumed. Substituting the
@@ -195,7 +195,20 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         one = row()._replace(tests="tests.test_sync tests.test_sync_cli")
         cached = self.cache({mutate._key(one): REAL})
         (ahead,) = cached.ahead_of([one])
-        self.assertEqual([REAL, "tests.test_sync", "tests.test_sync_cli"], ahead.tests.split())
+        self.assertEqual("tests.test_sync tests.test_sync_cli", ahead.tests)
+        self.assertEqual(REAL, ahead.first)
+
+    def test_the_selection_stays_identical_across_rows(self) -> None:
+        """`run` shards the baseline check by distinct `tests` string, so a
+        killer folded into `tests` gives every row its own shard -- and one
+        baseline run of `tupferl/sync.py`'s selection became 42 of them, 27s
+        each. That was the whole of a 372s -> 730s regression, and it is
+        invisible in every functional assertion above: the verdicts were
+        identical. Only the clock saw it."""
+        rows = [row(old=f"a{n}") for n in range(5)]
+        cached = self.cache({mutate._key(r): REAL for r in rows})
+        ahead = cached.ahead_of(rows)
+        self.assertEqual(1, len({r.tests for r in ahead}), "the baseline would shard per row")
 
     def test_a_test_that_no_longer_exists_is_dropped(self) -> None:
         """A renamed test leaves its module in place, so `unittest`'s loader
@@ -206,17 +219,18 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         cached = self.cache({mutate._key(one): "tests.test_mutate.NoSuchClass.no_such_test"})
         with support.quiet():
             (ahead,) = cached.ahead_of([one])
-        self.assertEqual("tests.test_sync", ahead.tests)
+        self.assertEqual("", ahead.first)
 
     def test_a_module_that_no_longer_exists_is_dropped_too(self) -> None:
         one = row()
         cached = self.cache({mutate._key(one): "tests.test_gone.Class.test_x"})
         with support.quiet():
             (ahead,) = cached.ahead_of([one])
-        self.assertEqual("tests.test_sync", ahead.tests)
+        self.assertEqual("", ahead.first)
 
     def test_a_row_nothing_is_remembered_about_is_left_alone(self) -> None:
         (ahead,) = mutate.Killers(None).ahead_of([row()])
+        self.assertEqual("", ahead.first)
         self.assertEqual("tests.test_sync", ahead.tests)
 
 

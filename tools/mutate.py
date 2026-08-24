@@ -819,8 +819,14 @@ def _attempt(
         original = source.read_text(encoding="utf-8")
         source.write_text(_applied(original, mutation), encoding="utf-8")
         try:
+            # `first` ahead of the selection, and the selection entire behind it.
+            targets = mutation.tests.split()
             return _run(
-                mutation.tests.split(), root, failfast=failfast, timeout=timeout, memory=memory
+                ([mutation.first, *targets] if mutation.first else targets),
+                root,
+                failfast=failfast,
+                timeout=timeout,
+                memory=memory,
             )
         finally:
             # Into the sandbox, not the working tree. Only so the next mutation
@@ -1294,6 +1300,14 @@ class Killers:
     the run continues exactly as it would have. Substituting instead would turn
     every stale entry into a `caught` that nothing verified -- flattering the
     tests, which is the direction every bug in this class has erred.
+
+    **It goes on `Mutation.first`, not into `Mutation.tests`.** Folding it into
+    `tests` was the first shape and it *doubled* the wall clock: `run` shards the
+    baseline check by distinct `tests` string, so giving every row its own killer
+    gave every row its own shard, and one baseline run of `tupferl/sync.py`'s
+    selection became 42 of them -- 42 x 27s, which is the whole regression and
+    nothing to do with the ordering it was meant to fix. Measured at 372s against
+    730s before the field existed.
     """
 
     def __init__(self, where: Path | None) -> None:
@@ -1325,8 +1339,7 @@ class Killers:
         ahead = []
         for row in table:
             killer = self.known.get(_key(row), "")
-            first = killer and killer in usable
-            ahead.append(row._replace(tests=f"{killer} {row.tests}") if first else row)
+            ahead.append(row._replace(first=killer) if killer in usable and killer else row)
         return ahead
 
     def learn(self, results: Sequence[Result]) -> None:
