@@ -9,8 +9,7 @@ language, no name mangling, no hooks. One command does the daily work, and the
 one thing it does better is what happens when two computers changed the same
 file.
 
-The whole of it, once it is finished — see **Status** below for what works
-today, which is not this:
+The first four lines work today; `sync` is the next milestone. See **Status**.
 
 ```sh
 pipx install tupferl
@@ -22,16 +21,15 @@ pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
-## Status: milestone 1 of 7
+## Status: milestone 2 of 7
 
-**Nothing above works yet except `tupferl doctor`.** This repository currently
-holds the plan, the test infrastructure and the skeleton the rest is built on.
-Every other command is registered and tells you which milestone builds it:
+**`init`, `add`, `remove`, `list` and `doctor` work. Nothing syncs yet** — the
+repository is a normal git repository, so until milestone 3 you can `git push`
+it yourself. The three unbuilt commands say which milestone builds them:
 
 ```
 $ tupferl sync
-tupferl: `tupferl sync` is not built yet; it is milestone 3 of docs/plan.md,
-and this version only has `doctor`.
+tupferl: `tupferl sync` is not built yet; it is milestone 3 of docs/plan.md.
 ```
 
 The design, the scope boundary and the build order are in
@@ -41,7 +39,7 @@ are in [`CLAUDE.md`](CLAUDE.md).
 | milestone | what it adds | state |
 |---|---|---|
 | 1 | package skeleton, `doctor`, config loading, test infrastructure | **done** |
-| 2 | `init`, `add`, `remove`, `list` | |
+| 2 | `init`, `add`, `remove`, `list` | **done** |
 | 3 | sync engine: snapshots, change detection, one-sided merges | |
 | 4 | 3-way merge and the interactive conflict prompt | |
 | 5 | host overlays | |
@@ -58,8 +56,15 @@ their config file, and a copy is what makes a real 3-way merge possible.
 `dot_` prefix, no name mangling — the mapping is the path.
 
 **Per-machine differences without templates.** A file in
-`.tupferl/hosts/<hostname>/` replaces the shared one on that host. Whole files
-only; no variables, no merging.
+`.tupferl/hosts/<hostname>/` replaces the shared one on that host — `tupferl add
+--host ~/.gitconfig` puts it there. Whole files only; no variables, no merging.
+
+**Some files are refused, on purpose.** Symlinks, anything reached *through* a
+symlink, anything outside `$HOME`, sockets and devices, files over
+`max_file_size`, and tupferl's own repository. The first two matter most: a copy
+cannot represent a link, so following one would store what it points at — which
+is how a credentials file ends up committed under a name nobody would search
+for.
 
 **Conflicts are the point.** tupferl keeps a snapshot of every file as it was
 after the last successful sync, so it has a merge base. `tupferl sync` resolves

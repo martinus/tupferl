@@ -1,16 +1,17 @@
-"""The CLI: eight verbs, one of which works so far.
+"""The CLI: eight verbs, five of which work so far.
 
 `argparse` rather than `click`, which plan §9 leaves to this decision. The
 command set is eight verbs with a handful of flags, `argparse` is in the standard
 library, and plan §5 says to prefer fewer dependencies -- a dependency that buys
 decorators for a parser this shape is not worth the install.
 
-**Every command in the plan is registered, including the seven that are not
+**Every command in the plan is registered, including the three that are not
 built.** The alternative -- registering only what works -- makes `tupferl sync`
 say "invalid choice: 'sync'", which reads as "this tool has no sync" rather than
 "not in this version". A verb that names its milestone tells the user which
-release to wait for, and it fixes the CLI's shape now, while it is cheap to
-argue about.
+release to wait for, and it fixed the CLI's shape while it was cheap to argue
+about -- `add --host` and `sync --ours/--theirs` were parsed and tested a
+milestone before anything read them.
 """
 
 from __future__ import annotations
@@ -18,17 +19,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from tupferl import __version__, doctor
+from tupferl import __version__, doctor, manage
 from tupferl.errors import TupferlError
 
 #: Which milestone of `docs/plan.md` builds each unimplemented verb. The message
 #: is generated from this rather than written out per command, so a verb cannot
 #: be added here and left without one.
 PLANNED: dict[str, int] = {
-    "init": 2,
-    "add": 2,
-    "remove": 2,
-    "list": 2,
     "sync": 3,
     "status": 6,
     "diff": 6,
@@ -96,10 +93,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "doctor":
             return doctor.main()
+        if args.command == "init":
+            return manage.init(args.url)
+        if args.command == "add":
+            return manage.add(args.paths, to_host=args.host)
+        if args.command == "remove":
+            return manage.remove(args.path)
+        if args.command == "list":
+            return manage.listing()
         milestone = PLANNED[args.command]
         raise TupferlError(
             f"`tupferl {args.command}` is not built yet; it is milestone {milestone} of "
-            f"docs/plan.md, and this version only has `doctor`."
+            f"docs/plan.md."
         )
     except TupferlError as wrong:
         # To stderr, and 2 rather than 1: 1 is `doctor`'s "a check failed", which

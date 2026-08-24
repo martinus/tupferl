@@ -75,6 +75,15 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
     waited the full thirty seconds and was told it had waited half of one.
     """
     waiting = TIMEOUT if timeout is None else timeout
+    if cwd is not None and not cwd.is_dir():
+        # Checked before spawning, because `subprocess` reports both of these as
+        # errors about the *command*: a missing directory raises
+        # `FileNotFoundError`, indistinguishable from git not being installed, so
+        # `doctor` on a machine with no repository said "git is not installed";
+        # and a plain file raises `NotADirectoryError`, which nothing caught at
+        # all and which reached the user as a traceback. Both were found by
+        # reviewing this milestone rather than by anything failing.
+        return Result(False, "", f"{cwd} is not a directory")
     try:
         done = subprocess.run(
             ["git", *args],
@@ -92,8 +101,43 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
         shown = " ".join(args)
         return Result(False, "", f"`git {shown}` did not answer within {waiting:g}s", True)
     except FileNotFoundError:
+        # Now unambiguous: `cwd` was checked above, so the only file `subprocess`
+        # can fail to find here is `git` itself.
         return Result(False, "", "git is not installed, or not on PATH")
     return Result(done.returncode == 0, done.stdout.strip(), done.stderr.strip())
+
+
+def reason(result: Result) -> str:
+    """The one line of git's stderr worth showing a user.
+
+    Not the first line, and not the last. Both were tried and both are wrong on
+    a real failure, in opposite directions -- measured across four of them:
+
+        $ git clone ssh://unreachable/x
+        Cloning into 'x'...                      <- progress, on stderr
+        ssh: connect ...: Connection refused
+        fatal: Could not read from remote repository.
+        <blank>
+        Please make sure you have the correct access rights
+        and the repository exists.               <- the last line
+
+    Taking the first gives "Cloning into 'x'...", which says nothing went wrong.
+    Taking the last gives "and the repository exists.", half a sentence of
+    generic advice. `doctor` shipped the second of those for a milestone, and
+    `init` shipped the first for about an hour.
+
+    So: the first line git marked `fatal:`, which is git's own word for the line
+    that explains. The fallbacks are for the commands that fail without one --
+    the first line that is neither blank nor progress, and then a placeholder,
+    because a message about something going wrong must not itself raise
+    `IndexError`.
+    """
+    lines = [line.strip() for line in result.err.splitlines() if line.strip()]
+    fatal = [line for line in lines if line.startswith("fatal:")]
+    if fatal:
+        return fatal[0]
+    speaking = [line for line in lines if not line.startswith("Cloning into")]
+    return speaking[0] if speaking else "no reason given"
 
 
 def is_repository(where: Path) -> bool:
@@ -113,3 +157,55 @@ def is_repository(where: Path) -> bool:
     # repository reached through a symlink -- which `/tmp` is on macOS -- would
     # otherwise compare unequal to the path the caller holds.
     return Path(found.out).resolve() == where.resolve()
+
+
+def has_commits(repo: Path) -> bool:
+    """Whether anything has been committed yet.
+
+    A freshly cloned *empty* remote is a real state -- it is what someone gets
+    on the first run, having just created the repository on their host -- and it
+    is the one state where `HEAD` does not resolve. Asking before assuming keeps
+    every caller from having to interpret a `rev-parse HEAD` failure, which is
+    also what "the repository is broken" looks like.
+    """
+    return git(["rev-parse", "--verify", "HEAD"], cwd=repo).ok
+
+
+def clone(url: str, into: Path) -> Result:
+    """Clone `url` into `into`, which must not exist yet.
+
+    `--` before the URL: a URL beginning with a dash would otherwise be read as
+    an option by git. tupferl passes whatever the user typed straight through, so
+    this is the one place to stop it.
+    """
+    into.parent.mkdir(parents=True, exist_ok=True)
+    return git(["clone", "--", url, str(into)], cwd=into.parent)
+
+
+def stage(repo: Path, paths: list[Path]) -> Result:
+    """Stage exactly these paths, including deletions.
+
+    `--` again, and for a sharper reason than the URL case: a managed file is
+    named by the user and can legitimately begin with a dash. `git add -- -x`
+    stages a file called `-x`; without the separator git reports "unknown
+    switch" for a dotfile somebody really has.
+
+    Paths are given absolute and passed relative, which is what git records.
+    `relative_to` raising is the point rather than a nuisance: every caller
+    builds these from `repo`, so one that does not is a bug, and failing here
+    names the path instead of handing git something it will interpret against
+    its own working directory.
+    """
+    relative = [str(path.relative_to(repo)) for path in paths]
+    return git(["add", "--all", "--", *relative], cwd=repo)
+
+
+def commit(repo: Path, message: str) -> Result:
+    """Commit what is staged. Returns git's own answer, unexamined.
+
+    Deliberately *not* checking "is anything staged" first: that is a race, and
+    git already answers it. A caller that cares looks at `changed` before
+    staging, which is a question about the working tree rather than about a
+    moment in the middle of this function.
+    """
+    return git(["commit", "-m", message], cwd=repo)

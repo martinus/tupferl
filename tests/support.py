@@ -113,6 +113,18 @@ def sandbox_env(home: Path, host: str = HOST) -> dict[str, str]:
     }
 
 
+def gitconfig(host: str) -> str:
+    """A complete `~/.gitconfig` for `host` -- identity included.
+
+    Shared with the tests that *manage* `.gitconfig` as a dotfile, which is plan
+    §3.3's own example of a host overlay. Writing only the line that differs per
+    host silently removes git's identity, and the next commit fails with "Author
+    identity unknown" -- so the fixture and the subject need the same generator,
+    or one of them is a trap.
+    """
+    return f"[user]\n\tname = {host}\n\temail = {host}@example.invalid\n"
+
+
 def seed_home(home: Path, host: str = HOST) -> None:
     """Make `home` look like a real one: the directories, and git's identity.
 
@@ -124,10 +136,7 @@ def seed_home(home: Path, host: str = HOST) -> None:
     for part in (".local/share", ".local/state", ".config"):
         (home / part).mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
-        "[user]\n"
-        f"\tname = {host}\n"
-        f"\temail = {host}@example.invalid\n"
-        "[init]\n"
+        gitconfig(host) + "[init]\n"
         # Written down rather than left to git: the default changed between git
         # versions, so a test that names a branch would pass on one machine and
         # fail on another for a reason invisible in its own text.
@@ -181,6 +190,46 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
     if done.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed in {cwd}:\n{done.stderr}")
     return done.stdout.strip()
+
+
+#: What the refusing hook writes. Two lines: the first is the reason, the second
+#: is the trailer `gitrepo.reason` must drop -- which is the shape git's own
+#: failures have, and the shape that told `doctor` and `init` apart from each
+#: other's bugs.
+HOOK_REFUSED = "refusing: policy check failed"
+HOOK_TRAILER = "see docs/policy.md"
+
+
+def break_commits(home: Path) -> None:
+    """Make every subsequent `git commit` under `home` fail, on any platform.
+
+    A `core.hooksPath` pointing at a `pre-commit` that exits 1. The obvious
+    fixture -- delete `~/.gitconfig` so git has no identity -- was tried first
+    and is **wrong**: git falls back to `user@hostname`, and whether that
+    succeeds depends on the machine. In a Linux container the hostname is
+    `(none)` and git refuses; on a macOS runner it is a real name and the commit
+    goes through. Three tests written that way passed on every Linux leg and
+    failed on macOS, which is CLAUDE.md §2's "a test that can only fail on one
+    platform" in its least obvious form -- it was not even the half anyone
+    intended.
+
+    A hook is also a real reason a user's commit fails, which the identity case
+    stopped being the moment git learned to guess.
+    """
+    hooks = home / "hooks"
+    hooks.mkdir(exist_ok=True)
+    refuse = hooks / "pre-commit"
+    # Two lines on stderr, not silence. A real hook explains itself, and the
+    # *shape* matters to what tupferl prints: `gitrepo.reason` must reduce a
+    # multi-line complaint to the line that explains, so a fixture producing no
+    # output at all could not tell that from printing the whole blob.
+    refuse.write_text(
+        f"#!/bin/sh\necho '{HOOK_REFUSED}' >&2\necho '{HOOK_TRAILER}' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    refuse.chmod(0o755)
+    with (home / ".gitconfig").open("a", encoding="utf-8") as config:
+        config.write(f"[core]\n\thooksPath = {hooks}\n")
 
 
 def make_remote(where: Path, env: dict[str, str]) -> Path:
