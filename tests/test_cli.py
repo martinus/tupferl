@@ -75,16 +75,18 @@ class TestTheCommandSet(unittest.TestCase):
         self.assertIn("invalid choice", said.getvalue())
 
 
-#: Which milestone of `docs/plan.md` builds each unbuilt verb, written out from
-#: the plan rather than read from `PLANNED`. The first version of the test below
-#: took the number from the code it was checking, so every mutation of those
-#: numbers survived: a test containing a copy of its subject cannot fail
+#: The verbs that do something, written out from what has actually been built.
+#: Milestone 2 moved four of them out of `MILESTONES` and into here; the two
+#: sets together must be the whole command set, which is what
+#: `test_every_command_is_either_built_or_planned` asserts.
+BUILT = {"doctor", "init", "add", "remove", "list"}
+
+#: Which milestone of `docs/plan.md` builds each verb that is *not*. Written out
+#: from the plan rather than read from `PLANNED`: the first version of the test
+#: below took the number from the code it was checking, so every mutation of
+#: those numbers survived -- a test containing a copy of its subject cannot fail
 #: (CLAUDE.md §2). The mutation sweep is what found it.
 MILESTONES = {
-    "init": 2,
-    "add": 2,
-    "remove": 2,
-    "list": 2,
     "sync": 3,
     "status": 6,
     "diff": 6,
@@ -115,10 +117,13 @@ class TestTheUnbuiltCommands(unittest.TestCase):
         self.assertIn("milestone 3", done.stderr)
         self.assertEqual("", done.stdout)
 
-    def test_every_planned_command_has_a_milestone(self) -> None:
-        """The other direction: a verb registered but missing from `PLANNED`
-        would raise `KeyError` at runtime rather than saying anything useful."""
-        self.assertEqual(set(COMMANDS) - {"doctor"}, set(PLANNED))
+    def test_every_command_is_either_built_or_planned(self) -> None:
+        """A verb registered but in neither set raises `KeyError` at runtime
+        rather than saying anything useful. The two halves must partition the
+        command set exactly -- no gaps, and no verb claiming to be both."""
+        self.assertEqual(set(COMMANDS), BUILT | set(PLANNED))
+        self.assertEqual(set(), BUILT & set(PLANNED))
+        self.assertEqual(set(PLANNED), set(MILESTONES))
 
 
 class TestTheFlags(unittest.TestCase):

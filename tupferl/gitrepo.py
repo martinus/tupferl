@@ -113,3 +113,64 @@ def is_repository(where: Path) -> bool:
     # repository reached through a symlink -- which `/tmp` is on macOS -- would
     # otherwise compare unequal to the path the caller holds.
     return Path(found.out).resolve() == where.resolve()
+
+
+def has_commits(repo: Path) -> bool:
+    """Whether anything has been committed yet.
+
+    A freshly cloned *empty* remote is a real state -- it is what someone gets
+    on the first run, having just created the repository on their host -- and it
+    is the one state where `HEAD` does not resolve. Asking before assuming keeps
+    every caller from having to interpret a `rev-parse HEAD` failure, which is
+    also what "the repository is broken" looks like.
+    """
+    return git(["rev-parse", "--verify", "HEAD"], cwd=repo).ok
+
+
+def clone(url: str, into: Path) -> Result:
+    """Clone `url` into `into`, which must not exist yet.
+
+    `--` before the URL: a URL beginning with a dash would otherwise be read as
+    an option by git. tupferl passes whatever the user typed straight through, so
+    this is the one place to stop it.
+    """
+    into.parent.mkdir(parents=True, exist_ok=True)
+    return git(["clone", "--", url, str(into)], cwd=into.parent)
+
+
+def stage(repo: Path, paths: list[Path]) -> Result:
+    """Stage exactly these paths, including deletions.
+
+    `--` again, and for a sharper reason than the URL case: a managed file is
+    named by the user and can legitimately begin with a dash. `git add -- -x`
+    stages a file called `-x`; without the separator git reports "unknown
+    switch" for a dotfile somebody really has.
+
+    Paths are passed relative to the repository. Absolute ones work too, but the
+    relative form is what git records and what the tests can compare against
+    without knowing where the sandbox put things.
+    """
+    relative = [str(path.relative_to(repo)) if path.is_absolute() else str(path) for path in paths]
+    return git(["add", "--all", "--", *relative], cwd=repo)
+
+
+def commit(repo: Path, message: str) -> Result:
+    """Commit what is staged. Returns git's own answer, unexamined.
+
+    Deliberately *not* checking "is anything staged" first: that is a race, and
+    git already answers it. A caller that cares looks at `changed` before
+    staging, which is a question about the working tree rather than about a
+    moment in the middle of this function.
+    """
+    return git(["commit", "-m", message], cwd=repo)
+
+
+def changed(repo: Path) -> list[str]:
+    """The porcelain status lines: what differs from HEAD, staged or not.
+
+    Lines rather than a bool, because two callers need the count and one needs
+    the names. `--porcelain` is the stable machine format git documents; the
+    human one is explicitly not.
+    """
+    found = git(["status", "--porcelain"], cwd=repo)
+    return found.out.splitlines() if found.ok and found.out else []
