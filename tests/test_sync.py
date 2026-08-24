@@ -231,14 +231,28 @@ class TestBackups(support.SandboxCase):
 
     def test_nothing_is_deleted_while_there_is_room(self) -> None:
         """The other side of the window, and the one that loses data if it is
-        wrong: with five or fewer runs kept there is nothing to forget. A test
-        that only ever overflows the window cannot tell `max(0, ...)` from
-        `max(1, ...)`, which quietly deletes the oldest backup every run."""
-        for index in range(4):
-            (self.root / f"2026082{index}T000000.000000").mkdir()
-        sync.Backups(self.root).take(NAME, copies.Blob(b"x", False))
-        self.assertEqual(5, len(list(self.root.iterdir())))
-        self.assertTrue((self.root / "20260820T000000.000000").is_dir())
+        wrong: with `BACKUPS_KEPT` or fewer runs kept there is nothing to forget.
+
+        **Every count below the window, not one of them.** The first version of
+        this test put four directories in and expected five out -- and five is
+        the *single* count at which the correct `max(0, n - 5)` and a mutated
+        `max(-1, n - 5)` agree, because both come to zero. At two, three and four
+        the mutant deletes everything but the newest: it loses the user's saved
+        copies precisely when there are fewest of them. The mutation sweep found
+        it; the test as written could not.
+        """
+        for existing in range(5):
+            with self.subTest(existing=existing):
+                root = self.tmp / f"window-{existing}"
+                root.mkdir()
+                for index in range(existing):
+                    (root / f"2026082{index}T000000.000000").mkdir()
+                sync.Backups(root).take(NAME, copies.Blob(b"x", False))
+                self.assertEqual(
+                    existing + 1,
+                    len(list(root.iterdir())),
+                    f"a run with {existing + 1} backups deleted one",
+                )
 
     def test_a_file_a_user_left_here_is_not_deleted(self) -> None:
         """This removes trees. Anything that is not one of its own directories
