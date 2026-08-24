@@ -185,6 +185,13 @@ class TestTheReasonGitGives(unittest.TestCase):
     def test_the_credential_case(self) -> None:
         self.assertEqual(self.PROMPTS.strip(), self.reason(self.PROMPTS))
 
+    def test_the_first_speaking_line_wins_when_none_is_fatal(self) -> None:
+        """Two lines, neither marked. The fallback takes the first for the same
+        reason the `fatal:` rule does — git leads with the specific complaint —
+        and with a one-line fixture that choice is untested."""
+        found = self.reason("error: pathspec 'x' did not match\nerror: see git help\n")
+        self.assertEqual("error: pathspec 'x' did not match", found)
+
     def test_a_failure_with_no_fatal_line_still_says_something(self) -> None:
         """Not every git command marks its complaint. The fallback is the first
         line that is neither blank nor progress."""

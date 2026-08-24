@@ -141,6 +141,16 @@ class TestInit(Machine):
         self.assertEqual(2, done.returncode)
         self.assertIn("already a tupferl repository", done.stderr)
 
+    def test_a_first_commit_that_fails_is_reported(self) -> None:
+        """`init` on an empty remote makes the repository's first commit, and a
+        machine with no git identity cannot. Without the guard `init` reports
+        success and leaves a clone with no branch — the one state where `HEAD`
+        does not resolve, which is what the commit exists to avoid."""
+        (self.home / ".gitconfig").unlink()
+        done = self.run_cli("init", str(self.remote))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("could not make the first commit", done.stderr)
+
     def test_a_file_where_the_repository_belongs_is_refused(self) -> None:
         """One stray `touch` produces this, and `iterdir` raises
         `NotADirectoryError` on it -- a traceback where a sentence belongs."""
@@ -339,6 +349,22 @@ class TestAdd(Machine):
         self.assertEqual(2, done.returncode)
         self.assertIn("could not commit", done.stderr)
 
+    def test_a_failing_stage_is_reported_rather_than_ignored(self) -> None:
+        """A corrupted index: `.git/index` replaced by a directory, so `git add`
+        cannot map it. Without the guard `add` walks on and commits nothing
+        while reporting success.
+
+        A directory rather than a `chmod`, because the suite runs as root in
+        some containers and root ignores the mode bits.
+        """
+        index = self.repo / ".git" / "index"
+        index.unlink()
+        index.mkdir()
+        self.write(self.home / ".bashrc", "x")
+        done = self.run_cli("add", str(self.home / ".bashrc"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("could not stage", done.stderr)
+
     def test_it_needs_a_repository(self) -> None:
         """Run in a home where `init` never was."""
         with support.tempdir() as box:
@@ -417,6 +443,26 @@ class TestRemove(Machine):
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertTrue((self.repo / ".config" / "nvim" / "other.lua").is_file())
         self.assertNotIn("Traceback", done.stderr)
+
+    def test_a_failing_stage_during_removal_is_reported(self) -> None:
+        """Same corrupted index, on the other command. The copy is already gone
+        from the working tree by the time staging fails, so a run that ignored
+        it would leave the repository committed-clean and the file still
+        tracked."""
+        index = self.repo / ".git" / "index"
+        index.unlink()
+        index.mkdir()
+        done = self.run_cli("remove", str(self.home / ".bashrc"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("could not stage", done.stderr)
+
+    def test_a_failing_commit_during_removal_is_reported(self) -> None:
+        """No git identity, which is the state of a machine before its owner has
+        run `git config --global user.email`."""
+        (self.home / ".gitconfig").unlink()
+        done = self.run_cli("remove", str(self.home / ".bashrc"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn("could not commit", done.stderr)
 
     def test_removing_something_unmanaged_is_an_error(self) -> None:
         done = self.run_cli("remove", str(self.home / ".never-added"))
