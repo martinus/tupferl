@@ -1753,6 +1753,51 @@ def _persist(report: Report, where: Path) -> None:
     print(f"\nwrote {len(rows)} row(s) to {where}")
 
 
+def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
+    """A `MUTATIONS` table from a spec file, run the way the caller asked for.
+
+    This used to be `run(mutations)` -- no arguments at all -- so every flag on
+    the command line was accepted by `argparse` and then silently dropped:
+    `--workers`, `--memory`, `--timeout`, `--each-test`, `--no-baseline`,
+    `--no-confirm` and `--json`. Asking for one lane got two; asking for a report
+    got no file, which reads as the run having failed to write one rather than as
+    the flag never having been consulted. A flag that silently does nothing is
+    the failure this project refuses everywhere else -- `sync` rejects `--ours`
+    outright rather than ignore it -- and the tool that checks the tests is a bad
+    place to keep an exception.
+
+    `strict` stays on, which `_run_generated` turns off: a spec file is written
+    by hand, so a row that cannot be answered is a mistake in the table, and
+    stopping is what gets it fixed.
+
+    Survivors are confirmed against the whole suite unless `--no-confirm`, which
+    is the promise CLAUDE.md makes about a survivor before it is reported. The
+    spec path never kept it, so `--no-confirm` was doubly inert here: it turned
+    off something that was not happening.
+    """
+    report = run(
+        mutations,
+        baseline=not args.no_baseline,
+        workers=args.workers,
+        timeout=args.timeout,
+        memory=args.memory,
+        each=args.each_test,
+    )
+    if not args.no_confirm:
+        report = confirm(
+            report,
+            args.workers,
+            args.timeout,
+            args.memory,
+            each=args.each_test,
+            baseline=not args.no_baseline,
+        )
+    if args.json:
+        _persist(report, args.json)
+        _marker(args.json).touch()
+    return 0 if report.clean else 1
+
+
 def _run_generated(
     rows: Sequence[Mutation],
     args: argparse.Namespace,
@@ -2144,7 +2189,7 @@ def main(argv: list[str] | None = None) -> int:
     if ran_itself:
         return 0 if all(report.clean for report in mine) else 1
     if mutations:
-        return 0 if run(mutations).clean else 1
+        return _run_spec(mutations, args)
     raise SystemExit(
         f"{args.script} defines no MUTATIONS and never called verify(), so there was "
         f"nothing to run. The shape this takes is `MUTATIONS = [Mutation(...), ...]` "

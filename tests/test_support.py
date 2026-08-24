@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from tests import support
@@ -161,3 +162,58 @@ class TestTheFixturesAreReal(Boxed):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestADrivenChildIsNotCollectedThroughAPipe(Boxed):
+    """`run_cli` hands the child real files, never `subprocess.PIPE`.
+
+    A pipe makes *this* process hold everything the child writes -- measured at
+    724 MiB of parent RSS in three seconds against a child printing 4 KiB at a
+    time. Under `tools/mutate.py` the parent's memory is charged to the lane's
+    share, so a mutant that made `conflicts.ask` loop at EOF killed the whole
+    session and was reported `BROKE`: no verdict at all, for a line that
+    `test_end_of_input_skips` does guard. It was the only `BROKE` in milestone
+    4's sweep.
+
+    This asserts the mechanism rather than the megabytes, and that is the honest
+    shape here: `run_cli` always runs `python -m tupferl`, and no tupferl command
+    prints without end, so a fixture built to measure growth through this
+    function measures a child that exits immediately. The first attempt did
+    exactly that and passed in 0.256s. Handing Popen a file is the *only* way the
+    parent avoids accumulating, so it is the whole property, and
+    `tests/test_sync_conflicts.py` asserts the consequence a file buys.
+    """
+
+    def test_popen_is_given_files_for_both_streams(self) -> None:
+        seen: dict[str, object] = {}
+        real = subprocess.Popen
+
+        def watch(*args: Any, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(subprocess, "Popen", watch):
+            support.run_cli(["--version"], self.env, keys="s")
+
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                self.assertIsNot(seen[stream], subprocess.PIPE, "collected through a pipe")
+                self.assertTrue(
+                    hasattr(seen[stream], "fileno"), f"{stream} is not a file: {seen[stream]!r}"
+                )
+
+    def test_the_precondition_that_the_pty_path_was_taken(self) -> None:
+        """Both assertions above are vacuous if `keys` was ignored and the
+        pipe-free `subprocess.run` branch ran instead -- that branch uses
+        `capture_output`, which never reaches Popen's kwargs as this test reads
+        them."""
+        seen: dict[str, object] = {}
+        real = subprocess.Popen
+
+        def watch(*args: Any, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(subprocess, "Popen", watch):
+            support.run_cli(["--version"], self.env, keys="s")
+        self.assertTrue(hasattr(seen.get("stdin"), "__index__"), "no pty was attached")

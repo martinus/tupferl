@@ -26,6 +26,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from tests import support
 from tools import mutants, mutate, verdict
@@ -651,3 +652,97 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
     # probe's own two-test tree in milliseconds. Adding a minute to every run to
     # re-state something is the mistake `test_zero_disables_it` already made
     # once today.
+
+
+class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
+    """A `MUTATIONS` table honours the command line it was run with.
+
+    It did not. The dispatch was `run(mutations)` -- no arguments -- so
+    `argparse` accepted `--workers`, `--memory`, `--timeout`, `--each-test`,
+    `--no-baseline`, `--no-confirm` and `--json`, and every one of them was
+    dropped on the floor. Asking for one lane got two. Asking for a report got no
+    file, which reads as the run having failed to write one rather than as the
+    flag never having been consulted, and cost an hour of this author's time
+    diagnosing the wrong thing.
+
+    Each test below fails against `run(mutations)`, because that call cannot
+    carry the value being asserted.
+    """
+
+    #: A real row against a real file, because the `--json` test below drives the
+    #: actual run rather than a stub: `check` refuses a path that is not there,
+    #: and a report of nothing would not tell us the flag was honoured.
+    #: `tests.test_merge` is eleven tests in 0.09s.
+    TABLE = (
+        "from tools.mutants import Mutation\n"
+        "MUTATIONS = [\n"
+        "    Mutation(\n"
+        '        label="probe",\n'
+        '        path="tupferl/merge.py",\n'
+        '        old="PROBE = 8000",\n'
+        '        new="PROBE = 1",\n'
+        '        tests="tests.test_merge",\n'
+        "    )\n"
+        "]\n"
+    )
+
+    def spec(self, box: Path) -> Path:
+        where = box / "spec.py"
+        where.write_text(self.TABLE, encoding="utf-8")
+        return where
+
+    def asked(self, *flags: str) -> dict[str, Any]:
+        """Run a spec file with `flags` and return the kwargs `run` received.
+
+        `run` is replaced rather than driven, because what is under test is the
+        wiring between the parser and the call -- not what a mutation does, which
+        every other class here covers and which would cost a suite run per flag.
+        """
+        seen: dict[str, Any] = {}
+
+        def watch(table: Any, *args: Any, **kwargs: Any) -> mutate.Report:
+            seen.update(kwargs)
+            seen["positional"] = args
+            return mutate.Report([])
+
+        with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
+            box = Path(name)
+            with mock.patch.object(mutate, "run", watch):
+                mutate.main([str(self.spec(box)), "--no-confirm", *flags])
+        return seen
+
+    def test_workers_reaches_the_run(self) -> None:
+        self.assertEqual(1, self.asked("--workers", "1")["workers"])
+
+    def test_memory_reaches_the_run(self) -> None:
+        self.assertEqual(0, self.asked("--memory", "0")["memory"])
+
+    def test_the_timeout_reaches_the_run(self) -> None:
+        self.assertEqual(7.0, self.asked("--timeout", "7")["timeout"])
+
+    def test_the_per_test_alarm_reaches_the_run(self) -> None:
+        self.assertEqual(3.0, self.asked("--each-test", "3")["each"])
+
+    def test_no_baseline_reaches_the_run(self) -> None:
+        self.assertFalse(self.asked("--no-baseline")["baseline"])
+
+    def test_the_baseline_is_on_by_default(self) -> None:
+        """The other half: a wiring that hard-coded `False` would pass the test
+        above and quietly stop checking the untouched tree."""
+        self.assertTrue(self.asked()["baseline"])
+
+    def test_json_is_written_and_marked_done(self) -> None:
+        """Not through the `run` stub -- this one drives the real thing, because
+        the report and its `.done` marker are what a watcher reads and a stub
+        cannot produce them."""
+        with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
+            box = Path(name)
+            report = box / "out.json"
+            mutate.main(
+                [str(self.spec(box)), "--no-baseline", "--no-confirm", "--json", str(report)]
+            )
+            self.assertTrue(report.is_file(), "--json wrote nothing")
+            self.assertIn("results", json.loads(report.read_text(encoding="utf-8")))
+            self.assertTrue(
+                report.with_suffix(".json.done").is_file(), "the run left no done marker"
+            )

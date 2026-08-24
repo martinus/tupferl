@@ -76,6 +76,12 @@ CARRIES = (
     "TUPFERL_MUTATE_BUDGET",
 )
 
+#: How long a fixture waits for a CLI driven through a pty to exit. Generous
+#: against a sync that takes milliseconds, because the only thing it bounds is a
+#: prompt asking more times than the fixture answered -- and a child killed here
+#: still has its partial output read back, so the failure says what it was doing.
+PROMPTED = 60.0
+
 #: How long a fixture will wait for a read from a terminal before calling it a
 #: failure. Five seconds against a suite that runs 500 tests in twelve, so a
 #: legitimate prompt has three orders of magnitude of headroom -- and a mutant
@@ -230,6 +236,38 @@ def sandboxed(home: Path, host: str = HOST) -> Iterator[dict[str, str]]:
         yield env
 
 
+#: The most output an in-process run is allowed to accumulate, in characters.
+#: Eight mebibytes is three orders of magnitude above the largest thing any test
+#: here asserts on, and three orders below the memory share a mutation lane gets.
+KEPT = 8 * 1024 * 1024
+
+
+class Spill(io.StringIO):
+    """A `StringIO` that stops growing once it holds `KEPT` characters.
+
+    The bound is the point. `Computer.call` runs the CLI *in this process*, so a
+    program that prints without end fills this object rather than a pipe -- and
+    under `tools/mutate.py` that is charged to the lane's memory share, which
+    kills the session and reports the mutant `BROKE`. `BROKE` is never `caught`,
+    so the line the mutant touched ends up guarded by nothing.
+
+    That is not hypothetical: removing `conflicts.ask`'s end-of-input guard makes
+    it loop for ever printing, and the row came back `BROKE` at 4019 MiB against
+    a 4018 MiB share -- tipping over whatever the share was, which is the
+    signature of an unbounded grower rather than of a lane that is slightly too
+    small. `support.run_cli` has the same defect through a pipe and the same fix.
+
+    Truncating rather than raising: the test's own assertion is what should
+    report the failure, and an exception from inside `print` would arrive as a
+    fixture error pointing here instead of at the code.
+    """
+
+    def write(self, text: str) -> int:
+        if self.tell() >= KEPT:
+            return len(text)
+        return super().write(text)
+
+
 @contextmanager
 def quiet() -> Iterator[io.StringIO]:
     """Swallow stdout and stderr, and hand back what was written.
@@ -238,8 +276,10 @@ def quiet() -> Iterator[io.StringIO]:
     output it never asserts on is one that would pass if the output stopped
     happening. Used where the *noise* is argparse's usage message and the
     assertion is about the exit status.
+
+    Bounded -- see `Spill`.
     """
-    spill = io.StringIO()
+    spill = Spill()
     with redirect_stdout(spill), redirect_stderr(spill):
         yield spill
 
@@ -348,6 +388,19 @@ def run_cli(
     `keys` opens a real pty and types them, which is the only way to exercise the
     prompt: `conflicts.one_key` clears `ICANON` with `termios`, and there is no
     pipe that behaves like that. `FALLBACK` is typed after them -- see there.
+
+    **The child's output goes to a file, never a pipe.** A pipe makes the
+    *parent* hold everything the child writes, so a child that prints without end
+    -- which is what `conflicts.ask` becomes if its end-of-input guard is removed
+    -- balloons this process instead of that one. Measured: 724 MiB of parent RSS
+    in three seconds. Under `tools/mutate.py` that is charged to the lane's
+    memory share, so the whole session is killed and the mutant is reported
+    `BROKE` -- no verdict at all, for a line that *is* guarded.
+    `tools/mutate.py`'s `_run` writes its probe's output to a file for the same
+    reason and says so in a comment.
+
+    A file also survives the timeout: whatever the child managed to say is still
+    there to read, where `communicate` on a killed pipe gives back nothing.
     """
     if keys is None:
         return subprocess.run(
@@ -361,26 +414,41 @@ def run_cli(
         )
 
     master, slave = pty.openpty()
-    try:
-        hush(slave)
-        os.write(master, (keys + FALLBACK).encode("utf-8"))
-        started = subprocess.Popen(
-            [sys.executable, "-m", "tupferl", *args],
-            cwd=cwd,
-            env=env,
-            stdin=slave,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+    with tempfile.TemporaryDirectory(prefix="tupferl-cli-") as box:
+        spoken = Path(box) / "stdout"
+        complained = Path(box) / "stderr"
+        try:
+            hush(slave)
+            os.write(master, (keys + FALLBACK).encode("utf-8"))
+            with spoken.open("w") as out, complained.open("w") as err:
+                started = subprocess.Popen(
+                    [sys.executable, "-m", "tupferl", *args],
+                    cwd=cwd,
+                    env=env,
+                    stdin=slave,
+                    stdout=out,
+                    stderr=err,
+                    text=True,
+                )
+                os.close(slave)
+                try:
+                    # A timeout, because the failure this fixture can produce is
+                    # a prompt that asks once more than `keys` answers -- a suite
+                    # that hangs rather than one that fails.
+                    started.wait(timeout=PROMPTED)
+                except subprocess.TimeoutExpired:
+                    # Killed and reaped before the files are read, so whatever it
+                    # had already written is part of the failure the caller sees.
+                    started.kill()
+                    started.wait()
+        finally:
+            os.close(master)
+        return subprocess.CompletedProcess(
+            started.args,
+            started.returncode,
+            spoken.read_text(encoding="utf-8", errors="replace"),
+            complained.read_text(encoding="utf-8", errors="replace"),
         )
-        os.close(slave)
-        # A timeout, because the failure this fixture can produce is a prompt
-        # that asks once more than `keys` answers -- and that is a suite which
-        # hangs rather than one which fails.
-        out, err = started.communicate(timeout=60)
-    finally:
-        os.close(master)
-    return subprocess.CompletedProcess(started.args, started.returncode, out, err)
 
 
 def hush(slave: int) -> None:
