@@ -112,7 +112,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -1000,6 +1000,7 @@ def run(
     each: float = EACH_TEST,
     summarise: bool = True,
     scope: str = "nothing above",
+    landed: Callable[[Result], None] | None = None,
 ) -> Report:
     """Apply each mutation in its own copy of the tree; report what each answered.
 
@@ -1076,6 +1077,11 @@ def run(
         for mutation, future in zip(table, futures, strict=True):
             verdict = future.result()
             results.append(Result(mutation, verdict))
+            if landed is not None:
+                # In table order, because that is the order results are
+                # collected in -- so a caller can tell when a *file* is finished
+                # by counting, without knowing anything about the pool.
+                landed(results[-1])
             print(f"  {_HEADLINE[verdict.outcome]:9} {mutation.label}")
             if verdict.answered:
                 continue
@@ -1560,7 +1566,10 @@ def _persist(report: Report, where: Path) -> None:
 
 
 def _run_generated(
-    rows: Sequence[Mutation], args: argparse.Namespace, scope: str = "nothing above"
+    rows: Sequence[Mutation],
+    args: argparse.Namespace,
+    scope: str = "nothing above",
+    landed: Callable[[Result], None] | None = None,
 ) -> Report:
     """One batch of generated rows. Both the whole table and `sweep` use this.
 
@@ -1592,6 +1601,7 @@ def _run_generated(
         memory=args.memory,
         each=args.each_test,
         scope=scope,
+        landed=landed,
     )
 
 
@@ -1635,58 +1645,75 @@ def _recorded(where: Path | None) -> list[Result]:
 
 
 def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
-    """Run a large table a file at a time, writing answers out as they land.
+    """Run a large table in one pool, writing answers out as each file finishes.
 
     One table of three thousand rows reports nothing until it ends, and the run
     it was written for took 151 minutes and was killed twice by an out-of-memory
     machine before the guard in woswoar#223 existed. A crash then cost the afternoon.
-    Batched by file, a crash costs one file, and re-running with the same
+    Recorded per file, a crash costs one file, and re-running with the same
     `--json` skips what is already recorded -- there is no separate flag.
 
-    Confirmation is pooled to the end rather than run per batch, and that is not
-    an optimisation detail: per batch, a file with a single survivor pays a whole
-    suite run with fifteen lanes idle. Measured on the first sweep here,
-    `credentials.py` spent 68 s on 13 mutants, almost all of it confirming one
-    row.
+    **Scheduled per row, recorded per file**, and separating those two is the
+    whole of tupferl#7. This ran a *pool per file* until then, so a batch could
+    not return until its slowest row did: one hung mutant held a lane for the
+    full `--timeout` while the other two idled, and the two hangs in milestone
+    3's table sat in different files, so they were serialised -- ~600s of a 913s
+    run, most of it with the machine two thirds empty. Batching was never about
+    parallelism; it is about when the report is safe to write.
+
+    It also cost the baseline. Each batch checked its own shard, and with one
+    selection per file that shard had no second shard to run beside it: nine
+    files meant nine serialised suite runs. Pooled with everything else they
+    overlap.
+
+    A `--json` written mid-run says `baseline_red: false` until the run ends,
+    because the baseline shards are collected after the rows -- see `run`. That
+    is the exposure the per-batch version had too, one batch later, and it is
+    bounded the same way: a resumed run re-checks the baseline for whatever files
+    it still has to do.
     """
     collected = _recorded(args.json)
-    # Keyed by file, not by row: `_persist` writes after a whole batch, so a
-    # file is recorded entirely or not at all, and a label is not unique anyway
-    # -- 7 are duplicated in the `--all` table, for the reason `confirm`'s
-    # docstring gives.
+    # Keyed by file, not by row: a file is recorded entirely or not at all, and
+    # a label is not unique anyway -- 7 are duplicated in the `--all` table, for
+    # the reason `confirm`'s docstring gives.
     done = {result.mutation.path for result in collected}
+
     by_file: dict[str, list[Mutation]] = {}
     for row in table:
-        by_file.setdefault(row.path, []).append(row)
+        if row.path not in done:
+            by_file.setdefault(row.path, []).append(row)
+    for path in sorted(done & {row.path for row in table}):
+        print(f"{path}: already recorded, skipping")
+    if not by_file:
+        return Report(collected)
 
-    red = False
-    #: Rows from a batch whose baseline was red. They are kept -- dropping them
-    #: would make a resumed sweep re-run work it has already paid for -- but
-    #: they have no verdict, and until woswoar#271 nothing said how many there were.
-    #: The per-batch line said "nothing above means anything" about one file of
-    #: twelve, and the summary said nothing at all, so a reader could take a
-    #: `caught` row out of a void batch and believe it. One did.
-    unanswered = 0
+    # Smallest file first, and its rows contiguous. The pool ignores this -- it
+    # takes whatever is next -- but results are *collected* in table order, so
+    # contiguous rows are what let `finished` count a file down to zero.
     order = sorted(by_file, key=lambda path: len(by_file[path]))
-    for at, path in enumerate(order, start=1):
-        if path in done:
-            print(f"[{at}/{len(order)}] {path}: already recorded, skipping")
-            continue
-        rows = by_file[path]
-        print(f"\n[{at}/{len(order)}] {path}: {len(rows)} mutant(s)")
-        batch = _run_generated(rows, args, scope=f"nothing above about {path}")
-        red |= batch.baseline_red
-        if batch.baseline_red:
-            unanswered += len(batch.results)
-        collected.extend(batch.results)
+    rows = [row for path in order for row in by_file[path]]
+    left = {path: len(by_file[path]) for path in order}
+    print(f"\n{len(rows)} mutant(s) across {len(order)} file(s), in one pool")
+
+    fresh: list[Result] = []
+
+    def finished(result: Result) -> None:
+        fresh.append(result)
+        path = result.mutation.path
+        left[path] -= 1
+        if left[path]:
+            return
+        print(f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded")
         if args.json:
-            _persist(Report(collected, red), args.json)
-    if unanswered:
-        print(
-            f"\n{unanswered} of {len(collected)} row(s) came from a batch whose baseline "
-            f"was red, so they have no verdict -- the rest stand."
-        )
-    return Report(collected, red)
+            _persist(Report([*collected, *fresh]), args.json)
+
+    report = _run_generated(rows, args, landed=finished)
+    collected.extend(report.results)
+    if args.json:
+        _persist(Report(collected, report.baseline_red), args.json)
+    if report.baseline_red:
+        print(f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.")
+    return Report(collected, report.baseline_red)
 
 
 def main(argv: list[str] | None = None) -> int:
