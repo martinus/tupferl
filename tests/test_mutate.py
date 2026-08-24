@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from tests import support
-from tools import mutants, mutate
+from tools import mutants, mutate, verdict
 from tools.mutants import Mutation, check
 
 #: The deliberate bug: `tupferl/config.py` stops refusing keys it does not know.
@@ -334,7 +334,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
     not.
     """
 
-    def collect(self, each: float) -> dict[str, Any]:
+    def collect(self, each: float, wait: float = 60) -> dict[str, Any]:
         """Drive the real probe, in a real subprocess, on a real fifo."""
         with support.tempdir() as box:
             (box / "tests").mkdir()
@@ -357,7 +357,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                 env={**os.environ, "HANGDIR": str(box), "PYTHONPATH": str(box)},
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=wait,
             )
             self.assertTrue(report.is_file(), done.stderr[-800:])
             return dict(json.loads(report.read_text(encoding="utf-8")))
@@ -382,6 +382,19 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
     def test_zero_disables_it(self) -> None:
         """So a platform without `SIGALRM`, or someone debugging a genuinely slow
         test, can turn it off -- and then the whole-run `TIMEOUT` is what bounds
-        the hang, which is the behaviour before this existed."""
+        the hang, which is the behaviour before this existed.
+
+        Three seconds, not sixty. The first version waited a minute for the
+        subprocess timeout and so *was* a sixty-second test: it added that to
+        every suite run, and once `EACH_TEST` existed the alarm killed it and
+        broke two unrelated mutation rows, which is how it was noticed. A test
+        that hangs on purpose has to be the cheapest possible version of itself.
+        """
         with self.assertRaises(subprocess.TimeoutExpired):
-            self.collect(0)
+            self.collect(0, wait=3)
+
+    def test_zero_arms_nothing(self) -> None:
+        """The same claim without a subprocess at all, because the one above can
+        only ever say "it did not finish in three seconds"."""
+        self.assertEqual(0.0, verdict.each_test(0))
+        self.assertEqual(2.0, verdict.each_test(2))
