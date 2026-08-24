@@ -1,0 +1,145 @@
+name: CI
+
+# One workflow, and one required status check at the bottom of it. See `gate`
+# for why it is shaped the way it is; `tests/test_ci.py` asserts that shape,
+# because the two ways it goes wrong both produce a green tick.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # A DeprecationWarning is a future failure with a date on it, and the suite
+  # drives subprocesses that would otherwise swallow it.
+  PYTHONWARNINGS: error::DeprecationWarning
+  # Derandomised, and it prints the seed of a falsifying example so a
+  # contributor can reproduce a CI failure locally. See `tests/profiles.py`.
+  TUPFERL_HYPOTHESIS_PROFILE: ci
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      # These four lines are the preflight in CLAUDE.md §7, in the same order.
+      # `tests/test_ci.py` asserts they match: a preflight that has drifted from
+      # CI is worse than none, because it is trusted.
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy tupferl tests tools
+      - run: python -m tools.run_tests
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor, and it is the leg that proves the `tomli` fallback
+        # in `tupferl/config.py` is reachable at all -- `tomllib` is 3.11+, so
+        # every other leg takes the other branch. 3.14 is "latest"; when it
+        # stops being, this list is what moves.
+        python-version: ["3.10", "3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e .[test]
+      - run: git --version
+      # `--no-skips`: a suite that quietly skips half of itself looks exactly
+      # like one that passed, and every optional tool this project needs (git)
+      # is installed above.
+      - run: python -m tools.run_tests --no-skips
+
+  macos:
+    # Plan §2 targets Linux and macOS. This leg is not redundant with `test`:
+    # `/tmp` is a symlink to `/private/tmp` there, so every fixture that builds
+    # a repository in a temporary directory sees a path that does not compare
+    # equal to its own resolved form -- which is exactly what
+    # `gitrepo.is_repository` resolves both sides for.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The system python3 on the runner image is older than the floor.
+          python-version: "3.12"
+      - run: pip install -e .[test]
+      - run: python -m tools.run_tests --no-skips
+
+  install:
+    # Plan §6: the install a user actually performs. Not `pip install -e .`,
+    # which is what every other job here does and which would not notice a
+    # missing `packages`, a broken entry point, or a dependency that is only
+    # present because the source tree is on `sys.path`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx install .
+      - name: the console script exists and reports the packaged version
+        # Read out of the source rather than repeated here: `pyproject.toml`
+        # takes the version from the same line, so this also catches the wheel
+        # and the module disagreeing about what is installed.
+        run: |
+          want="tupferl $(sed -n 's/^__version__ = "\(.*\)"/\1/p' tupferl/__init__.py)"
+          got=$(tupferl --version)
+          test "$got" = "$want" || { echo "::error::got '$got', wanted '$want'"; exit 1; }
+      - name: doctor runs on a machine with nothing installed
+        # Exit 1 is `doctor`'s "a check failed", which is the correct answer
+        # here: there is no repository. Exit 2 would mean tupferl could not run
+        # at all, and that is what this job is looking for.
+        run: |
+          set +e
+          HOME=$(mktemp -d) tupferl doctor
+          status=$?
+          set -e
+          test "$status" -eq 1 || { echo "::error::doctor exited $status, wanted 1"; exit 1; }
+
+  # The two-machine end-to-end sync job plan §7.5 asks for arrives with the sync
+  # engine in milestone 3. It is named here and not written, because a job that
+  # runs nothing is a green tick that means nothing -- see CLAUDE.md §8.
+
+  gate:
+    # THE required status check. Branch protection names this job and no other,
+    # so a leg added above is covered without anyone editing a setting -- as
+    # long as it is added to `needs` below, which `tests/test_ci.py` enforces.
+    #
+    # Both parts are load-bearing and both are easy to get wrong:
+    #
+    # - `if: always()`, because a job whose dependency failed is *skipped*, and
+    #   a skipped gate does not fail the build;
+    # - an explicit test of every dependency's result, because a skipped
+    #   required check counts as **satisfied**.
+    #
+    # Without both, the gate goes green exactly when the matrix did not.
+    if: always()
+    needs: [lint, test, macos, install]
+    runs-on: ubuntu-latest
+    steps:
+      - name: every dependency must have succeeded
+        run: |
+          echo '${{ toJSON(needs) }}' > needs.json
+          cat needs.json
+          # A gate with no dependencies passes every check below vacuously, so
+          # the count is asserted before the results are.
+          count=$(jq 'length' needs.json)
+          test "$count" -ge 1 || { echo "::error::the gate has no dependencies"; exit 1; }
+          bad=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' needs.json)
+          if [ -n "$bad" ]; then
+            echo "::error::not successful: $bad"
+            exit 1
+          fi
+          echo "all $count dependencies succeeded"

@@ -1,0 +1,58 @@
+name: mutation sweep
+
+# Separate from `ci.yml`, and deliberately not a required check.
+#
+# Plan §7.5 asks for the full sweep on a schedule, "not per PR -- it takes hours
+# by design". The per-PR half of that rule lives with the author instead of here:
+# CLAUDE.md requires `python -m tools.mutate --base main` before the pull request
+# opens, with the output pasted in verbatim. A CI job repeating that would be a
+# second, slower copy of a number the PR already carries, and one nobody can act
+# on without the tree in front of them.
+#
+# So this exists for the sweep no human runs by hand: everything, weekly, against
+# whatever `main` has become.
+
+on:
+  schedule:
+    # Sunday 03:17 UTC. Not on the hour: GitHub queues scheduled workflows and
+    # the busy minutes are the round ones.
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "sweep only what changed against this ref (empty = everything)"
+        required: false
+        default: ""
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    # Hours by design, and the ceiling is here so a wedged run is reported
+    # rather than silently holding a runner until GitHub's own limit.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `--base` needs history to diff against, and the default checkout is
+          # a single commit.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[test]
+      - name: sweep
+        run: |
+          if [ -n "${{ inputs.base }}" ]; then
+            python -m tools.mutate --base "${{ inputs.base }}" --json results.json
+          else
+            python -m tools.mutate --all --json results.json
+          fi
+      - name: what survived, and why
+        # `if: always()`: the sweep exits non-zero when anything survived, which
+        # is the case the report is most worth keeping.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-results
+          path: results.json
+          if-no-files-found: warn

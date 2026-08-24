@@ -1,0 +1,70 @@
+name: Bug report
+description: Something tupferl does that it should not, or does not do that it should
+# No `labels:`. Every issue here carries exactly one of P0-P3, and which one is
+# a triage judgement about impact and reachability that a reporter cannot make
+# and a template must not guess.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a file was **lost or overwritten**, say so in the first line: that is
+        a P0 and it is triaged before anything else.
+
+        If this is a security problem, **stop** and use
+        [the private channel](https://github.com/martinus/tupferl/security/advisories/new)
+        instead — a public issue is a disclosure.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        Ran `tupferl sync` on my laptop after editing .bashrc on both machines,
+        and the version that came back had the desktop's line only.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`tupferl doctor` output"
+      description: |
+        Paste the whole thing. It answers most of what would otherwise be a
+        round trip of questions — where the repository is, whether git can
+        reach the remote, whether anything is left half-finished from an
+        interrupted sync.
+
+        It prints **no file contents**, only paths, versions and counts. The
+        paths do contain your username, so redact them if you would rather not
+        have it here.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: "`tupferl --version`"
+      placeholder: tupferl 0.0.1
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and distribution
+      placeholder: Fedora 44, or Ubuntu 24.04, or macOS 15
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        A reproduction, however rough. How many machines sync into this
+        repository, if that might matter. Whether it started after an upgrade,
+        and from which version. Whether the file has a host overlay.
+    validations:
+      required: false
