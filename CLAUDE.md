@@ -305,10 +305,10 @@ committed; the only recovery is writing it again from memory.
   | a long job is running detached and silence is ambiguous | [`tools/watch.py`](tools/watch.py) |
 
   ```sh
-  python -m tools.mutate --base main        # generated from the diff
+  python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
   python -m tools.mutate <spec>.py          # a table you wrote
-  python -m tools.reached r.json c.json     # which survivors are missing tests
-  python -m tools.watch $PID --log sweep.log --done r.json.done --match 'caught|SURVIVED'
+  python -m tools.reached sweeps/r.json sweeps/c.json   # survivors missing tests
+  python -m tools.watch $PID --log sweeps/r.log --done sweeps/r.json.done --match 'caught|SURVIVED'
   ```
 
   All four were ported from `martinus/woswoar` (Apache-2.0), where they were
@@ -370,6 +370,9 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/` | the package. `__main__.py` is the CLI and the only entry point |
 | `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — four of the six are there to stop the wrong file being pushed |
 | `tupferl/gitrepo.py` | every call to git. Nothing else in the package spawns a subprocess |
+| `tupferl/copies.py` | what a stored copy is: bytes, the one mode bit that travels, and the single rule for "the target is already this file". Below `manage` and `sync`, because both write the same snapshots |
+| `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |
+| `tupferl/merge.py` | the 3-way merge, over `git merge-file`. Bytes in, bytes out, and the conflict count is git's exit status |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` |
 | `docs/plan.md` | the plan this is built from |
@@ -385,7 +388,16 @@ Two things are not where a newcomer would guess, both on purpose:
 - **`tests/profiles.py` holds every Hypothesis profile.** Selected by
   `TUPFERL_HYPOTHESIS_PROFILE`; `tools/mutate.py` sets it to `mutation` for the
   suites it runs. Without that, every mutant pays the full example budget and a
-  sweep takes hours for no extra signal.
+  sweep takes hours for no extra signal. It also holds `STATEFUL`/`STEPS`, which
+  are *not* `max_examples`: one example of the sync state machine is a dozen
+  real `tupferl sync` runs (~0.4s) against one `three_way` call (~3ms), and a
+  single budget cannot suit both.
+- **`sync` writes the snapshot last, and that ordering is a guarantee.** A run
+  killed part-way then leaves the merge base *older* than both copies, so the
+  next run merges conservatively. Written first, the same interruption leaves a
+  snapshot claiming `$HOME` was already updated, and the next run copies the
+  stale `$HOME` file over the new one. `tests/test_sync.py`'s
+  `TestTheSnapshotIsWrittenLast` is the only thing that can see it.
 
 ### Testing rules this project adds to §2
 
@@ -440,6 +452,47 @@ Two things are not where a newcomer would guess, both on purpose:
   `--done` at `<json>.done`, never at the `--json` report, which under `--batch`
   and `--all` is rewritten after every file and so exists long before the run
   ends.
+- **git never starts `receive-pack` for an up-to-date push**, so no hook on the
+  remote can observe one: it compares the ref advertisement first and prints
+  "Everything up-to-date". A `pre-receive` hook counting pushes therefore reports
+  zero whether or not the push was skipped, and the test built on it passed with
+  the code under test disabled. To tell the two apart, point `remote.origin.
+  pushurl` somewhere that does not exist -- `fetch` still uses the real URL, so a
+  sync that decides to push fails and one that skips it does not.
+- **`PATH=""` makes git unfindable; deleting `PATH` does not.** With the variable
+  absent, `subprocess` falls back to `confstr("CS_PATH")` and finds
+  `/usr/bin/git` anyway. The obvious spelling of a "git is not installed" fixture
+  merges successfully and passes for the wrong reason.
+- **Patching `sys.version_info` does not conjure the module.** A test that fakes
+  3.11 and then lets the code `import tomllib` fails on a real 3.10 interpreter,
+  where that module does not exist -- so it passes on every leg *except* the one
+  that exists to check the branch. Stub the module in `sys.modules` instead: the
+  claim under test is "this branch imports that name", and standing something
+  there and watching it come back is exactly that claim.
+- **The preflight passing locally does not mean CI's will.** `hypothesis`'s
+  `blacklist_categories` is a compatibility shim whose stub is typed in newer
+  releases; the same file passed `mypy` here and failed it on the runner. Prefer
+  the modern spellings (`exclude_characters`, `exclude_categories`, `codec`),
+  and when a lint fails only in CI, suspect the dependency's version before the
+  code. Clearing `.mypy_cache` was the first guess here and it was wrong.
+- **`str.splitlines()` splits on far more than `\n`** — `\x0b \x0c \x1c \x1d
+  \x1e \x85 \u2028 \u2029` as well. A generated line containing one of those
+  becomes two lines, and anything indexing by line number is then off by one for
+  the rest of the file. It bit the sync state machine's *model*, not the code:
+  git splits on `\n` alone, so the file under test was right and the expectation
+  was wrong. Use `split("\n")` wherever the line count is load-bearing.
+- **`git merge-file` refuses a file with a NUL byte in its first 8000 bytes**,
+  with "Cannot merge binary files" and exit 255 — indistinguishable by exit code
+  from git not being installed. `merge.is_text` asks the same question first, so
+  a binary file both machines changed is reported as one conflict rather than as
+  a broken git. Found by the merge property test on its first run.
+- **A git receiving hook cannot update refs**: "ref updates forbidden inside
+  quarantine environment". `unset GIT_QUARANTINE_PATH` first. Needed by
+  `support.move_on_first_push`, which is the only way to make a push fail
+  *because the remote moved* — pushing beforehand does not work, since a sync
+  fetches before it pushes and would simply merge it.
+- **A ref pushed to a name directly under `refs/` is a "funny refname"** and is
+  rejected. Park a prepared commit under `refs/heads/`.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every

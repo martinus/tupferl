@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Where mutation sweeps write. `python -m tools.mutate --json sweeps/<name>.json`
+# leaves that file, a `.json.done` marker and a `.json.pid` beside it: a
+# machine-specific snapshot that is stale the moment anything changes, and the
+# numbers that matter belong in the pull request, quoted verbatim. Three of them
+# reached a commit before any rule existed.
+#
+# A directory rather than `/*.json` and friends, which was the first attempt and
+# is worse than the problem: it silently hides `package.json`, `renovate.json`
+# and anything else a root-level config might be called, so a contributor adds
+# one, git never sees it, CI never runs it, and nothing says why. Measured with
+# `git check-ignore -v --no-index` rather than reasoned about -- and `.done` is
+# *not* covered by `*.json`, which is the sort of thing that check is for.
+/sweeps/

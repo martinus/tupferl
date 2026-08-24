@@ -76,10 +76,10 @@ class TestTheCommandSet(unittest.TestCase):
 
 
 #: The verbs that do something, written out from what has actually been built.
-#: Milestone 2 moved four of them out of `MILESTONES` and into here; the two
-#: sets together must be the whole command set, which is what
-#: `test_every_command_is_either_built_or_planned` asserts.
-BUILT = {"doctor", "init", "add", "remove", "list"}
+#: Milestone 2 moved four of them out of `MILESTONES` and into here, milestone 3
+#: moved `sync`; the two sets together must be the whole command set, which is
+#: what `test_every_command_is_either_built_or_planned` asserts.
+BUILT = {"doctor", "init", "add", "remove", "list", "sync"}
 
 #: Which milestone of `docs/plan.md` builds each verb that is *not*. Written out
 #: from the plan rather than read from `PLANNED`: the first version of the test
@@ -87,7 +87,6 @@ BUILT = {"doctor", "init", "add", "remove", "list"}
 #: those numbers survived -- a test containing a copy of its subject cannot fail
 #: (CLAUDE.md §2). The mutation sweep is what found it.
 MILESTONES = {
-    "sync": 3,
     "status": 6,
     "diff": 6,
 }
@@ -111,10 +110,10 @@ class TestTheUnbuiltCommands(unittest.TestCase):
         """Checked through the real process, because the message goes to stderr
         and an in-process call cannot show that it did."""
         env = support.sandbox_env(paths.home())
-        done = support.run_cli(["sync"], env)
+        done = support.run_cli(["status"], env)
         self.assertEqual(2, done.returncode)
-        self.assertIn("tupferl sync", done.stderr)
-        self.assertIn("milestone 3", done.stderr)
+        self.assertIn("tupferl status", done.stderr)
+        self.assertIn("milestone 6", done.stderr)
         self.assertEqual("", done.stdout)
 
     def test_every_command_is_either_built_or_planned(self) -> None:

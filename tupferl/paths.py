@@ -19,7 +19,6 @@ for `..` writes above the directory that was supposed to contain it.
 from __future__ import annotations
 
 import os
-import socket
 from pathlib import Path
 
 from tupferl.errors import TupferlError
@@ -40,7 +39,7 @@ ENV_KEYS = (
 #: snapshots. A constant because a walk that forgot it would manage tupferl's own
 #: state as if it were a dotfile.
 #:
-#: One module excludes it today, `manifest._under`. This said "three modules"
+#: One module excludes it today, `manifest.under`. This said "three modules"
 #: when it was written, which was before any of them existed.
 META = ".tupferl"
 
@@ -165,6 +164,12 @@ def hostname(configured: str | None = None) -> str:
         return check_hostname(said)
     if configured:
         return check_hostname(configured)
+    # Imported here rather than at the top: `socket` costs 4.1ms of a 63.7ms
+    # `tupferl --version`, and this is the only line that needs it -- a machine
+    # that has said its own name in the environment or the settings never asks
+    # the system. Measured; see CLAUDE.md.
+    import socket
+
     return check_hostname(socket.gethostname().split(".")[0])
 
 

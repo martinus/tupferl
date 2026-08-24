@@ -1,4 +1,4 @@
-"""The CLI: eight verbs, five of which work so far.
+"""The CLI: eight verbs, six of which work so far.
 
 `argparse` rather than `click`, which plan §9 leaves to this decision. The
 command set is eight verbs with a handful of flags, `argparse` is in the standard
@@ -19,14 +19,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from tupferl import __version__, doctor, manage
+from tupferl import __version__, doctor, manage, sync
 from tupferl.errors import TupferlError
 
 #: Which milestone of `docs/plan.md` builds each unimplemented verb. The message
 #: is generated from this rather than written out per command, so a verb cannot
 #: be added here and left without one.
 PLANNED: dict[str, int] = {
-    "sync": 3,
     "status": 6,
     "diff": 6,
 }
@@ -60,19 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
     drop = verbs.add_parser("remove", help="stop managing a file, keeping it in $HOME")
     drop.add_argument("path", help="a managed file")
 
-    sync = verbs.add_parser("sync", help="pull, merge both directions, resolve, commit, push")
+    syncing = verbs.add_parser("sync", help="pull, merge both directions, resolve, commit, push")
     # Plan §3.4: the flag set that makes a conflict resolvable without a human.
     # Mutually exclusive because "keep mine" and "keep theirs" cannot both be the
     # answer, and a run that silently honoured the last one would resolve real
     # conflicts the wrong way round.
-    resolution = sync.add_mutually_exclusive_group()
+    resolution = syncing.add_mutually_exclusive_group()
     resolution.add_argument(
         "--ours", action="store_true", help="resolve conflicts in favour of $HOME"
     )
     resolution.add_argument(
         "--theirs", action="store_true", help="resolve conflicts in favour of the repository"
     )
-    sync.add_argument(
+    syncing.add_argument(
         "--no-input", action="store_true", help="never prompt; report conflicts and skip them"
     )
 
@@ -94,13 +93,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             return doctor.main()
         if args.command == "init":
-            return manage.init(args.url)
+            # Plan §4: init clones "then runs a first sync", which is what makes
+            # `tupferl init <url>` alone set up a second machine. Composed here
+            # rather than inside `manage.init`, because `sync` already imports
+            # `manage` for the repository and the commit -- the other direction
+            # would be a cycle, and a command calling a command is what this
+            # function is for.
+            return manage.init(args.url) or sync.main()
         if args.command == "add":
             return manage.add(args.paths, to_host=args.host)
         if args.command == "remove":
             return manage.remove(args.path)
         if args.command == "list":
             return manage.listing()
+        if args.command == "sync":
+            return sync.main(no_input=args.no_input, ours=args.ours, theirs=args.theirs)
         milestone = PLANNED[args.command]
         raise TupferlError(
             f"`tupferl {args.command}` is not built yet; it is milestone {milestone} of "

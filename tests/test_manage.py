@@ -14,42 +14,20 @@ cannot tell an overlay that works from one that silently applies everywhere.
 
 from __future__ import annotations
 
+import os
 import stat
-import subprocess
 import unittest
 from pathlib import Path, PurePosixPath
 
 from tests import support
-from tupferl import gitrepo, manage, manifest, paths
+from tupferl import copies, gitrepo, manage, paths
 from tupferl.config import Config, load
 from tupferl.errors import TupferlError
 
-
-class Machine(support.SandboxCase):
-    """A sandboxed home with a bare remote beside it, and the CLI pointed there."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.remote = support.make_remote(self.tmp / "remote.git", self.env)
-        self.repo = paths.repo_dir()
-
-    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return support.run_cli(list(args), self.env)
-
-    def init(self) -> subprocess.CompletedProcess[str]:
-        done = self.run_cli("init", str(self.remote))
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        return done
-
-    def log(self) -> list[str]:
-        return support.git(["log", "--format=%s"], self.repo, self.env).splitlines()
-
-    def stored(self, name: str, host: bool = False) -> Path:
-        """Where a managed file lives, from `manifest.roots` rather than from a
-        ternary retyped here -- a test that spells the rule out itself cannot
-        notice the rule changing."""
-        tree, overlay = manifest.roots(self.repo, support.HOST)
-        return (overlay if host else tree) / name
+#: The one-machine fixture, now in `tests/support.py` because `test_sync.py`
+#: builds the same one. Bound here so the six `class Test...(Machine)` below read
+#: as they always did.
+Machine = support.Machine
 
 
 class TestInit(Machine):
@@ -69,10 +47,15 @@ class TestInit(Machine):
         self.init()
         self.assertEqual(Config(), load(paths.config_file(self.repo)))
 
-    def test_a_remote_with_content_is_cloned_untouched(self) -> None:
-        """The second-machine path. Nothing is written and nothing is committed:
-        the repository already has a shape, and `init` inventing a settings file
-        here would be a commit the user did not ask for."""
+    def test_a_remote_with_content_is_cloned_and_then_synced(self) -> None:
+        """The second-machine path, and the README's one-line promise.
+
+        No settings file is invented -- the repository already has a shape -- but
+        plan §4 says `init` "then runs a first sync", and milestone 3 made that
+        true. So the file arrives in `$HOME`, and the one commit `init` adds is
+        this host's merge base: without it the machine could not merge anything
+        later, because it would have no common ancestor to merge against.
+        """
         first = support.make_repo(self.tmp / "seed", self.env, remote=self.remote)
         (first / ".bashrc").write_text("export EDITOR=nvim\n", encoding="utf-8")
         support.git(["add", "-A"], first, self.env)
@@ -82,7 +65,9 @@ class TestInit(Machine):
         self.init()
         stored = (self.repo / ".bashrc").read_text(encoding="utf-8")
         self.assertEqual("export EDITOR=nvim\n", stored)
-        self.assertEqual(["seeded", "initial"], self.log())
+        self.assertEqual("export EDITOR=nvim\n", (self.home / ".bashrc").read_text())
+        self.assertEqual([f"sync from {self.host}: .bashrc", "seeded", "initial"], self.log())
+        self.assertFalse(paths.config_file(self.repo).is_file())
 
     def test_a_url_that_cannot_be_cloned_is_reported(self) -> None:
         """And nothing is created. The alternative — falling back to a local
@@ -666,6 +651,58 @@ class TestWhatEachCommandPrints(Machine):
     def test_add_names_each_file_it_stored(self) -> None:
         done = self.run_cli("add", str(self.home / ".bashrc"))
         self.assertIn("added .bashrc", done.stdout)
+        # The negative half. `record` reports whether git had anything staged,
+        # and a version that always answered "no" still printed "added" above --
+        # it printed *both*, which is the shape only this assertion sees.
+        self.assertNotIn("no change", done.stdout)
+
+    def test_add_names_only_what_it_actually_stored(self) -> None:
+        """Two files, one of them already stored. A fixture where every named
+        file is also a stored file cannot tell "what changed" from "what was
+        named" -- they are the same list."""
+        self.run_cli("add", str(self.home / ".bashrc"))
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".bashrc"), str(self.home / ".vimrc"))
+        self.assertEqual(f"add from {self.host}: .vimrc", self.log()[0])
+
+    def test_recording_a_stale_merge_base_does_not_claim_to_have_added(self) -> None:
+        """`add` commits when the copies are identical but a snapshot is not --
+        which is what an earlier run that died between the copy and the commit
+        leaves. Naming the files there would describe something that did not
+        happen, so the message says what did.
+
+        The stale merge base has to be **committed**, and that took two goes.
+        Deleting the snapshot only removes it from the working tree, so `add`
+        rewrites the same bytes and the tree matches HEAD again; editing it
+        without committing has exactly the same effect for the same reason. Both
+        versions reached the branch they were written for not at all, and passed
+        against the message they were written to reject.
+        """
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".bashrc"), str(self.home / ".vimrc"))
+        self.snapshot(".bashrc").write_text("an older merge base\n", encoding="utf-8")
+        support.git(["commit", "-qam", "a merge base from an older run"], self.repo, self.env)
+
+        done = self.run_cli("add", str(self.home / ".vimrc"), str(self.home / ".bashrc"))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(f"add from {self.host}: record the merge base for 2 files", self.log()[0])
+        self.assertTrue(self.snapshot(".bashrc").is_file())
+
+    def test_add_commits_what_it_stored_and_not_what_it_found(self) -> None:
+        """`git add --all --` with an *empty* pathspec stages the whole
+        repository -- measured, and the reason dropping `add`'s staging list
+        changed nothing observable until this test existed. `sync` stages
+        everything on purpose; `add` must not, or a file dropped in the
+        repository by hand rides along in a commit that names something else.
+        """
+        self.run_cli("add", str(self.home / ".bashrc"))
+        stray = self.repo / "not-mine.txt"
+        stray.write_text("dropped here by hand\n", encoding="utf-8")
+
+        self.write(self.home / ".vimrc", "set nocompatible\n")
+        self.run_cli("add", str(self.home / ".vimrc"))
+        staged = support.git(["status", "--porcelain"], self.repo, self.env)
+        self.assertIn("not-mine.txt", staged, "the stray file was committed by `add`")
 
     def test_add_marks_the_overlay(self) -> None:
         """`(host)` is the only thing distinguishing the two destinations in the
@@ -690,7 +727,10 @@ class TestWhatEachCommandPrints(Machine):
             home.mkdir()
             support.seed_home(home)
             env = support.sandbox_env(home)
-            done = support.run_cli(["init", str(self.remote)], env)
+            # Its own remote, and freshly empty. Since milestone 3 `init` ends in
+            # a sync, so it *pushes* -- and the class's shared remote has already
+            # been initialised into by `setUp`, which makes it no longer empty.
+            done = support.run_cli(["init", str(support.make_remote(box / "r.git", env))], env)
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertIn("cloned", done.stdout)
         self.assertIn("the remote was empty", done.stdout)
@@ -735,17 +775,28 @@ class TestModes(support.SandboxCase):
     def test_an_executable_file_is_stored_executable(self) -> None:
         script = self.write(self.home / "script.sh", "#!/bin/sh\n")
         script.chmod(0o700)
-        self.assertEqual(0o755, manage.mode_for(script))
+        self.assertEqual(0o755, copies.mode_for(script))
 
     def test_a_plain_file_is_not(self) -> None:
-        self.assertEqual(0o644, manage.mode_for(self.write(self.home / "plain", "x")))
+        self.assertEqual(0o644, copies.mode_for(self.write(self.home / "plain", "x")))
+
+    def test_storing_something_that_stopped_being_a_file_is_an_error(self) -> None:
+        """`manifest.check` saw a regular file; by the time the copy is made it
+        is a fifo. That is a race rather than a rule the caller broke -- and
+        answering `None` would report it as "nothing to do", which is how a file
+        the user asked to manage ends up silently unmanaged."""
+        where = self.home / "vanished"
+        os.mkfifo(where)
+        with self.assertRaises(OSError) as caught:
+            copies.store(where, self.tmp / "target")
+        self.assertIn("vanished", str(caught.exception))
 
     def test_executable_by_anyone_counts(self) -> None:
         """0o711 arrives from tarballs and is a script. Storing it
         non-executable puts it back unrunnable on the other machine."""
         script = self.write(self.home / "odd.sh", "#!/bin/sh\n")
         script.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXOTH)
-        self.assertEqual(0o755, manage.mode_for(script))
+        self.assertEqual(0o755, copies.mode_for(script))
 
 
 class TestOpenRepo(support.SandboxCase):

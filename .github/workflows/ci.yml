@@ -108,9 +108,19 @@ jobs:
           set -e
           test "$status" -eq 1 || { echo "::error::doctor exited $status, wanted 1"; exit 1; }
 
-  # The two-machine end-to-end sync job plan §7.5 asks for arrives with the sync
-  # engine in milestone 3. It is named here and not written, because a job that
-  # runs nothing is a green tick that means nothing -- see CLAUDE.md §8.
+  twomachine:
+    # Plan §7.5's two-machine end-to-end sync, and the only job that runs the
+    # *installed* console script rather than the source tree. See the script's
+    # header for why that is not the suite again: it is what would notice a test
+    # fixture having become load-bearing, which nothing inside the suite can.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx install .
+      - run: .github/scripts/two-machines.sh
 
   gate:
     # THE required status check. Branch protection names this job and no other,
@@ -126,7 +136,7 @@ jobs:
     #
     # Without both, the gate goes green exactly when the matrix did not.
     if: always()
-    needs: [lint, test, macos, install]
+    needs: [lint, test, macos, install, twomachine]
     runs-on: ubuntu-latest
     steps:
       - name: every dependency must have succeeded

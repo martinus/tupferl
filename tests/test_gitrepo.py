@@ -162,7 +162,7 @@ class TestTheReasonGitGives(unittest.TestCase):
     PROMPTS = "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"
 
     def reason(self, err: str) -> str:
-        return gitrepo.reason(gitrepo.Result(False, "", err))
+        return gitrepo.reason(gitrepo.Result("", err))
 
     def test_progress_on_stderr_is_not_the_reason(self) -> None:
         found = self.reason(self.CLONE)

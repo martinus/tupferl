@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -65,17 +65,32 @@ class Managed(NamedTuple):
     # data; presentation on the model makes the second one a change to the first.
     #
     # `path` -- the file on disk this host would actually use -- is what
-    # milestone 3's sync will want, and adding it now would have been a field
-    # with no reader. `roots` below is the part that earns its place today,
-    # because three callers were each spelling its rule out.
+    # milestone 3's sync would want, and adding it then would have been a field
+    # with no reader. The reader arrived, and what it wanted was `location`
+    # below: a function of `(repo, host, on_host)` that `add` can also call
+    # without having a `Managed` at all. Waiting is what got the shape right.
+
+
+def location(repo: Path, host: str, on_host: bool) -> Path:
+    """The tree a file belongs in: this host's overlay, or the shared one.
+
+    Plan §3.3's rule, resolved. `add --host` passes its flag, `sync` passes the
+    `Managed.host` it got from `managed`, and milestone 6's `status` and `diff`
+    will pass the same -- so the ternary is written once instead of at every
+    command that has to find a file. The comment on `Managed` predicted this
+    reader and declined to add a `path` field for it; this is the shape that
+    turned out to be wanted, which is the argument for having waited.
+    """
+    tree, overlay = roots(repo, host)
+    return overlay if on_host else tree
 
 
 def roots(repo: Path, host: str) -> tuple[Path, Path]:
     """The two trees a managed file can live in: shared, then this host's overlay.
 
-    Plan §3.3's rule in one place. `add --host` writes into the second, `remove`
-    clears both, `managed` merges them with the second winning, and milestone 3's
-    sync will read them the same way rather than spelling it a fifth time.
+    Both, for the callers that need both: `remove` clears them and `managed`
+    merges them with the second winning. A caller that wants *one* of them wants
+    `location` above, which is the same rule with the choice already made.
     """
     return repo, paths.host_overlay(repo, host)
 
@@ -120,7 +135,7 @@ def links_between(where: Path, home: Path) -> Path | None:
     return None
 
 
-def ignored(name: PurePosixPath, patterns: list[str]) -> bool:
+def ignored(name: PurePosixPath, patterns: Sequence[str]) -> bool:
     """Whether `name` or any directory above it matches an ignore pattern.
 
     The parent check is what makes `ignore = [".cache"]` mean the whole subtree
@@ -266,14 +281,19 @@ def managed(repo: Path, host: str) -> list[Managed]:
     filesystem would make two machines disagree for no visible reason.
     """
     tree, overlay = roots(repo, host)
-    shared = {name: Managed(name, host=False) for name in _under(tree, tree)}
-    for name in _under(overlay, overlay):
+    shared = {name: Managed(name, host=False) for name in under(tree, tree)}
+    for name in under(overlay, overlay):
         shared[name] = Managed(name, host=True)
     return [shared[name] for name in sorted(shared)]
 
 
-def _under(where: Path, root: Path) -> Iterator[PurePosixPath]:
+def under(where: Path, root: Path) -> Iterator[PurePosixPath]:
     """Every file under `where`, named relative to `root`, skipping git and us.
+
+    Public because `sync.stale` walks the snapshot directory looking for merge
+    bases nothing manages any more -- and that list feeds an `unlink`. A delete
+    whose walk rule is maintained apart from the walk that decides what *is*
+    managed is a delete that can disagree with it.
 
     Nothing for a path that is not a directory, which is the ordinary answer
     rather than an edge case: a host that has never run `add --host` has no
@@ -292,6 +312,6 @@ def _under(where: Path, root: Path) -> Iterator[PurePosixPath]:
         if child.name in (".git", paths.META):
             continue
         if child.is_dir() and not child.is_symlink():
-            yield from _under(child, root)
+            yield from under(child, root)
         elif child.is_file():
             yield PurePosixPath(child.relative_to(root).as_posix())

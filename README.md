@@ -9,7 +9,9 @@ language, no name mangling, no hooks. One command does the daily work, and the
 one thing it does better is what happens when two computers changed the same
 file.
 
-The first four lines work today; `sync` is the next milestone. See **Status**.
+Every *command* in those lines works today. The install does not yet —
+publishing to PyPI is milestone 7, so for now it is
+`pipx install git+https://github.com/martinus/tupferl`. See **Status**.
 
 ```sh
 pipx install tupferl
@@ -21,15 +23,31 @@ pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
-## Status: milestone 2 of 7
+## Status: milestone 3 of 7
 
-**`init`, `add`, `remove`, `list` and `doctor` work. Nothing syncs yet** — the
-repository is a normal git repository, so until milestone 3 you can `git push`
-it yourself. The three unbuilt commands say which milestone builds them:
+**`init`, `add`, `remove`, `list`, `sync` and `doctor` work.** Two computers can
+share dotfiles today: `tupferl sync` pulls, merges in both directions, commits
+and pushes, and resolves everything it can without asking.
+
+**What it does not do yet is ask.** When both computers changed the same lines,
+milestone 3 reports the file and leaves *both* copies exactly as they are — no
+conflict markers, no side chosen — and exits 1 so a script notices:
 
 ```
 $ tupferl sync
-tupferl: `tupferl sync` is not built yet; it is milestone 3 of docs/plan.md.
+conflict in .bashrc (1 to settle); both copies left as they are
+
+1 file managed, 0 changed, 1 in conflict
+```
+
+Settle it with git in the repository for now. The interactive prompt, and
+`--ours` / `--theirs`, are milestone 4; passing those flags today is an error
+rather than a silent no-op. The two remaining unbuilt commands say so
+themselves:
+
+```
+$ tupferl status
+tupferl: `tupferl status` is not built yet; it is milestone 6 of docs/plan.md.
 ```
 
 The design, the scope boundary and the build order are in
@@ -40,13 +58,13 @@ are in [`CLAUDE.md`](CLAUDE.md).
 |---|---|---|
 | 1 | package skeleton, `doctor`, config loading, test infrastructure | **done** |
 | 2 | `init`, `add`, `remove`, `list` | **done** |
-| 3 | sync engine: snapshots, change detection, one-sided merges | |
+| 3 | sync engine: snapshots, change detection, automatic merges | **done** |
 | 4 | 3-way merge and the interactive conflict prompt | |
 | 5 | host overlays | |
 | 6 | backups, error messages, `status` and `diff` | |
 | 7 | PyPI packaging | |
 
-## How it will work
+## How it works
 
 **Copies, not symlinks.** The repository holds a copy of each managed file and
 tupferl copies between it and `$HOME`. Symlinks break with programs that rewrite
@@ -67,9 +85,30 @@ is how a credentials file ends up committed under a name nobody would search
 for.
 
 **Conflicts are the point.** tupferl keeps a snapshot of every file as it was
-after the last successful sync, so it has a merge base. `tupferl sync` resolves
-everything it safely can and asks only when both sides changed the same lines —
+after the last successful sync, under `.tupferl/state/<hostname>/`, so it has a
+real merge base. `tupferl sync` compares three versions — your `$HOME`, the
+repository, and that snapshot — and resolves everything it safely can:
+
+| what changed | what happens |
+|---|---|
+| nothing | nothing |
+| only `$HOME` | the copy in the repository is updated and committed |
+| only the repository | your file is updated, after a backup |
+| both, in different places | a 3-way merge, applied without asking |
+| both, in the same place | reported; **both copies left untouched** |
+
+Only the last row needs a person, and milestone 4 is the prompt that asks —
 one keypress per file, with `--ours` / `--theirs` / `--no-input` for scripts.
+
+**Nothing is overwritten without a copy.** Before `tupferl sync` replaces a file
+in `$HOME` it writes the old one to `~/.local/state/tupferl/backup/<timestamp>/`,
+and keeps the last five syncs' worth.
+
+**A managed file you deleted comes back.** `tupferl remove` is how you stop
+managing something (it leaves the file in `$HOME`); a file that is simply *gone*
+is far more likely to be an `rm`, a reinstall or a new machine, so sync restores
+it. Reading a missing file as "delete it everywhere" would let one mistake take
+a dotfile off every computer you own.
 
 ## Decisions
 

@@ -8,11 +8,15 @@ here is a boundary around that decision.
 
 from __future__ import annotations
 
+import sys
 import tempfile
+import types
 import unittest
 from dataclasses import fields
 from pathlib import Path
+from unittest import mock
 
+from tupferl import config
 from tupferl.config import DEFAULT_MAX_FILE_SIZE, KNOWN, Config, load, parse
 from tupferl.errors import TupferlError
 
@@ -55,7 +59,7 @@ class TestReadingTheSettings(unittest.TestCase):
         self.assertEqual([], found.ignore)
 
 
-class TestTheTableAndTheDataclassAgree(unittest.TestCase):
+class TestTheTableAndTheRecordAgree(unittest.TestCase):
     """`parse` ends in `Config(**raw)`, so the two definitions of "a setting"
     have to be the same one.
 
@@ -74,6 +78,50 @@ class TestTheTableAndTheDataclassAgree(unittest.TestCase):
             with self.subTest(key=name):
                 said = Config.__annotations__[name]
                 self.assertIn(expected.__name__, said)
+
+
+class TestWhichTomlParserIsUsed(unittest.TestCase):
+    """`config.toml()` picks stdlib `tomllib` on 3.11+ and the `tomli` backport
+    below it, and the choice is deferred so that `tupferl --version` does not pay
+    for a parser it will not use.
+
+    Both branches are asserted here by saying which version this *is*, because a
+    mutation sweep runs on one interpreter and cannot otherwise see the branch it
+    did not take -- all three mutations of this function survived a full sweep
+    for exactly that reason. The 3.10 CI leg proves the fallback works against a
+    real 3.10; this proves the *choice* is the right way round on any of them.
+    """
+
+    def test_three_eleven_and_later_use_the_standard_library(self) -> None:
+        """Stubbed, for the same reason the 3.10 case is: patching the version
+        number does not conjure the module. On a real 3.10 interpreter `import
+        tomllib` raises `ModuleNotFoundError`, so the first version of this test
+        passed everywhere except the one leg that runs 3.10 -- which is the leg
+        that exists to check exactly this branch."""
+        stdlib = types.ModuleType("tomllib")
+        stubbed = mock.patch.dict(sys.modules, {"tomllib": stdlib})
+        for version in ((3, 11, 0), (3, 14, 1)):
+            said = mock.patch.object(sys, "version_info", version)
+            with self.subTest(version=version), stubbed, said:
+                self.assertIs(stdlib, config.toml())
+
+    def test_three_ten_uses_the_backport_it_was_taken_from(self) -> None:
+        """`(3, 11, 0)` above and `(3, 10, 7)` here are the two sides of the
+        comparison: with `>` instead of `>=`, 3.11 itself would fall through to
+        the backport.
+
+        `tomli` is a *conditional* dependency -- it is only installed below 3.11
+        -- so on the interpreter this suite usually runs on, importing it fails.
+        A stub in `sys.modules` is what makes the branch reachable from any
+        version: the claim under test is "this branch imports `tomli`", and
+        standing something there and watching it come back is exactly that
+        claim, with no opinion about what the real backport does. The 3.10 CI
+        leg is what exercises the real one.
+        """
+        backport = types.ModuleType("tomli")
+        stubbed = mock.patch.dict(sys.modules, {"tomli": backport})
+        with stubbed, mock.patch.object(sys, "version_info", (3, 10, 7)):
+            self.assertIs(backport, config.toml())
 
 
 class TestRejectingAnUnknownKey(unittest.TestCase):

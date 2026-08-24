@@ -61,6 +61,20 @@ settings.register_profile(
     suppress_health_check=list(HealthCheck),
 )
 
+#: How many examples the *stateful* sync machine runs, and how many rules each
+#: one fires. Not `max_examples` on the profile, because one example there is one
+#: `three_way` call and one here is a dozen `tupferl sync` runs against real git
+#: -- about 0.4s measured, against 3ms. A profile budget that suited one would
+#: make the other either useless or unbearable.
+#:
+#: Keyed by the same variable that picks the profile, so the two cannot disagree
+#: about which run this is. `mutation` gets three: a sweep runs the suite once
+#: per mutant, and a stateful machine that took thirty seconds would put a sweep
+#: into hours for signal the example tests already carry.
+#: Only the row that differs is written out: `dev` and `ci` are the fallback, and
+#: spelling them as their own entries was three copies of one pair.
+STATEFUL, STEPS = {"mutation": (3, 4)}.get(os.environ.get(ENV, "dev"), (20, 8))
+
 #: Every profile above states every field it cares about, so that this line is
 #: the only thing that decides which settings are in force. `tests/test_profiles.py`
 #: asserts that by running this module in a subprocess with and without `CI`.
