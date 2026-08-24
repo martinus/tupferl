@@ -47,11 +47,12 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
-from tupferl import gitrepo, manage, manifest, merge, paths
+from tupferl import conflicts, gitrepo, manage, manifest, merge, paths
 from tupferl.copies import Blob, read, write
 from tupferl.errors import TupferlError
 
@@ -80,6 +81,15 @@ RESTORED = "restored"
 MERGED = "merged"
 CONFLICT = "conflict"
 REFUSED = "refused"
+
+#: The four answers to plan §3.4's prompt that write something. The fifth,
+#: `[s] skip`, is `CONFLICT`: skipping is the conflict standing, so it needs no
+#: action of its own -- and a second constant with the same rule and the same
+#: report line is one that can drift from it.
+KEPT_LOCAL = "kept local"
+KEPT_REMOTE = "kept remote"
+KEPT_BOTH = "kept both"
+EDITED = "edited"
 
 
 class Rule(NamedTuple):
@@ -114,6 +124,40 @@ RULES: dict[str, Rule] = {
     MERGED: Rule(to_repo=True, to_home=True, needs_user=False),
     CONFLICT: Rule(to_repo=False, to_home=False, needs_user=True),
     REFUSED: Rule(to_repo=False, to_home=False, needs_user=True),
+    # `[l]` writes only the repository and `[r]` only `$HOME`, because in each
+    # case the other side already holds exactly those bytes. It is not an
+    # optimisation: `to_home` is also what takes the backup, and backing up a
+    # file that is about to be rewritten with its own contents would push a real
+    # backup out of plan §5's window of five.
+    KEPT_LOCAL: Rule(to_repo=True, to_home=False, needs_user=False),
+    KEPT_REMOTE: Rule(to_repo=False, to_home=True, needs_user=False),
+    KEPT_BOTH: Rule(to_repo=True, to_home=True, needs_user=False),
+    EDITED: Rule(to_repo=True, to_home=True, needs_user=False),
+}
+
+
+class Means(NamedTuple):
+    """What one answer to the prompt is."""
+
+    #: The action it becomes, whose `RULES` row decides what gets written.
+    action: str
+    #: Which of the two sides it keeps, for the two answers that name one.
+    #: `None` for the three that do not: `[b]` and `[e]` carry a file that is
+    #: neither side, and `[s]` writes nothing at all.
+    keeps: Callable[[conflicts.Sides], Blob] | None
+
+
+#: What each of the prompt's five answers means. A table for `RULES`' reason,
+#: and it holds the side as well as the action for the same one: with the action
+#: alone, `settled` had to re-derive "which side is that?" from the action
+#: string, so a sixth answer needed entering here, in `RULES`, *and* in a chain
+#: of comparisons -- three places, which is the thing the table exists to stop.
+MEANS: dict[str, Means] = {
+    conflicts.LOCAL: Means(KEPT_LOCAL, lambda sides: sides.home),
+    conflicts.REMOTE: Means(KEPT_REMOTE, lambda sides: sides.stored),
+    conflicts.BOTH: Means(KEPT_BOTH, None),
+    conflicts.EDIT: Means(EDITED, None),
+    conflicts.SKIP: Means(CONFLICT, None),
 }
 
 
@@ -131,8 +175,11 @@ class Outcome(NamedTuple):
     #: What to store on both sides, or `None` when nothing is to be written --
     #: a conflict, or a path tupferl will not touch.
     blob: Blob | None
-    #: Hunks git could not decide, for the report. 0 unless `action` is CONFLICT.
-    conflicts: int = 0
+    #: The three versions, for `CONFLICT` and for nothing else. Present exactly
+    #: when the action is `CONFLICT`, which is what lets `report` and `settle`
+    #: test *this* rather than the action string: the test is then also the
+    #: narrowing, so there is no second place to keep the two in step.
+    sides: conflicts.Sides | None = None
     #: Why, for REFUSED. Empty otherwise.
     why: str = ""
 
@@ -187,8 +234,46 @@ def resolve(name: PurePosixPath, base: Blob | None, home: Blob | None, stored: B
 
     merged = merge.three_way(str(name), None if base is None else base.data, home.data, stored.data)
     if merged.data is None or merged.conflicts:
-        return Outcome(name, CONFLICT, None, merged.conflicts)
+        # The marked bytes travel with the conflict rather than being recomputed
+        # by whoever settles it: `[e]` opens exactly the file the prompt showed,
+        # and a second `three_way` call could not be relied on to produce the
+        # same one -- git's merge is deterministic, but that is a property of a
+        # version rather than a promise, and this is the file the user edits.
+        return Outcome(
+            name,
+            CONFLICT,
+            None,
+            conflicts.Sides(name, base, home, stored, merged.data, merged.conflicts),
+        )
     return Outcome(name, MERGED, Blob(merged.data, executable_after(base, home, stored)))
+
+
+def settled(sides: conflicts.Sides, answer: conflicts.Answer) -> Outcome:
+    """What one answer to the prompt means on disk.
+
+    The single mapping from a choice to an action, which is why `--ours` and
+    `--theirs` are settlers that return an `Answer` rather than shortcuts around
+    the prompt: a flag reaches disk through this function and so cannot resolve
+    a conflict differently from the keypress it stands for.
+
+    `[l]` and `[r]` name a side this function already has, and take it from the
+    table rather than through the answer -- a copy of those bytes riding along
+    would be a second place for them to differ from the ones that were compared.
+    `[b]` and `[e]` produce a file that is neither side and hand it back. `[s]`
+    does neither, which is what the last arm is: the conflict stands.
+    """
+    means = MEANS[answer.choice]
+    if means.keeps is not None:
+        return Outcome(sides.name, means.action, means.keeps(sides))
+    if answer.data is not None:
+        bit = executable_after(sides.base, sides.home, sides.stored)
+        return Outcome(sides.name, means.action, Blob(answer.data, bit))
+    # `[s]`, and the one way this can be wrong: an answer of `[b]` or `[e]`
+    # built by hand with no bytes on it reads as a skip. Nothing constructs one
+    # -- `ask` always attaches the file and the three flags only ever answer
+    # `[l]`, `[r]` or `[s]` -- so this is named rather than guarded, since a
+    # guard here could only be reached by a test written to reach it.
+    return Outcome(sides.name, CONFLICT, None, sides)
 
 
 class Backups:
@@ -280,16 +365,27 @@ def integrate(repo: Path, remote: str, branch: str) -> bool:
     # one conflict into a machine that cannot sync at all.
     gitrepo.abort_merge(repo)
     if stuck:
+        # Not the conflict prompt's case, though it looks like one. The prompt
+        # settles `$HOME` against the repository over this machine's snapshot;
+        # this is two *commits* that git could not merge, which needs the three
+        # index stages rather than the three files. Reachable when a machine
+        # commits, fails to push, and the other machine pushes a change to the
+        # same lines in the window -- so it is a real path, and it has an issue.
         raise TupferlError(
             f"{there} and this machine have both committed changes to "
-            f"{', '.join(stuck)}; resolving that needs the conflict prompt, which is "
-            f"milestone 4 of docs/plan.md -- settle it with git for now."
+            f"{', '.join(stuck)}; tupferl cannot settle a conflict between two "
+            f"commits yet, so resolve it with `git -C {repo} pull` and try again."
         )
     raise TupferlError(f"could not merge {there}: {gitrepo.reason(done)}")
 
 
-def settle(repo: Path, home: Path, host: str) -> list[Outcome]:
+def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> list[Outcome]:
     """Resolve every managed file, write what was decided, and commit it.
+
+    `settler` answers the files no rule could decide -- the prompt, or one of
+    plan §3.4's flags answering for it. It is called between `resolve` and
+    `apply`, so a choice reaches disk through exactly the code every other
+    outcome does.
 
     Returns one `Outcome` per managed file, in the order `manifest.managed`
     gives them, which is sorted -- so the report and the commit message list
@@ -318,6 +414,8 @@ def settle(repo: Path, home: Path, host: str) -> list[Outcome]:
             continue
 
         outcome = resolve(item.name, read(snapshot), found, stored)
+        if outcome.sides is not None:
+            outcome = settled(outcome.sides, settler(outcome.sides))
         try:
             wrote = apply(outcome, target, where, snapshot, found, backups)
         except OSError as unwritable:
@@ -386,11 +484,21 @@ def apply(
         # them ever had.
         return False
     rule = RULES[outcome.action]
-    if rule.to_home and found is not None:
-        # `found is not None` and not a fourth action: RESTORED is the case where
-        # `$HOME` had no file, so there is nothing to back up, and `resolve` is
-        # what guarantees that. Plan §5 wants a copy of what is replaced, not of
-        # what was not there.
+    if rule.to_home and found is not None and found != outcome.blob:
+        # Three conditions, and each rules out a backup of nothing:
+        #
+        # - `to_home`, because only a write to `$HOME` replaces the user's file;
+        # - `found is not None`, because RESTORED is the case where `$HOME` had
+        #   no file at all and `resolve` is what guarantees it;
+        # - `found != outcome.blob`, because the write below would then change
+        #   nothing. `[e]` reaches it easily -- editing the merged file down to
+        #   exactly what `$HOME` already holds is how a user says "keep mine,
+        #   but let me look first" -- and MERGED reaches it whenever the merge
+        #   lands back on this side's bytes.
+        #
+        # The third is not thrift. A backup directory is created per run that
+        # takes one, and `forget_old` keeps five: a backup of a file nothing
+        # replaced evicts a real one, which is the copy plan §5 exists to keep.
         backups.take(outcome.name, found)
 
     wrote = False
@@ -415,21 +523,23 @@ def report(outcomes: list[Outcome]) -> str:
             continue
         if outcome.action == REFUSED:
             lines.append(f"skipped {outcome.name}: {outcome.why}")
-        elif outcome.action == CONFLICT:
-            # The count rather than "conflicted": milestone 4 asks the user
-            # about each one, and "3 to settle" is what tells them whether this
-            # is a keypress or an editor. A binary file is one -- the whole file.
+        elif outcome.sides is not None:
+            # `sides is not None` rather than `action == CONFLICT`: the two say
+            # the same thing, and this one also narrows the type for the line
+            # below. The count rather than "conflicted", because "3 to settle"
+            # told the user whether the prompt was a keypress or an editor --
+            # and this is the line they see when they skipped it.
             lines.append(
-                f"conflict in {outcome.name} ({outcome.conflicts} to settle); "
+                f"conflict in {outcome.name} ({outcome.sides.conflicts} to settle); "
                 f"both copies left as they are"
             )
         else:
             lines.append(f"{outcome.action} {outcome.name}")
 
-    conflicts = sum(1 for outcome in outcomes if outcome.action == CONFLICT)
+    unsettled = sum(1 for outcome in outcomes if outcome.sides is not None)
     moved = sum(1 for outcome in outcomes if changed(outcome))
     lines.append(
-        f"\n{manage.count(len(outcomes))} managed, {moved} changed, {conflicts} in conflict"
+        f"\n{manage.count(len(outcomes))} managed, {moved} changed, {unsettled} in conflict"
     )
     return "\n".join(lines)
 
@@ -437,21 +547,16 @@ def report(outcomes: list[Outcome]) -> str:
 def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> int:
     """Pull, resolve, commit, push. Plan §3.5's one command.
 
-    `--no-input` is accepted and is already what happens: milestone 3 never
-    prompts, so "report conflicts and skip them" is the only behaviour there is.
-    `--ours` and `--theirs` *choose* a side, which nothing here does, so they are
-    refused rather than ignored -- a flag that silently does nothing is how a
-    script ends up believing its conflicts were resolved.
+    The three flags are `conflicts.answering`'s subject, not this function's:
+    each is an answer given once for every conflict instead of at a prompt, and
+    all four routes -- three flags and the keypress -- reach disk through
+    `settled`.
 
     Returns 1 when something was left for the user, 0 when nothing was. Not 2:
-    that is "tupferl could not run", and a conflict is a result.
+    that is "tupferl could not run", and a conflict is a result. With `--ours`
+    or `--theirs` nothing is ever left, so a scripted sync that finds conflicts
+    still returns 0 -- which is the point of the flags.
     """
-    if ours or theirs:
-        raise TupferlError(
-            "`--ours` and `--theirs` pick a side in a conflict, and the conflict "
-            "prompt is milestone 4 of docs/plan.md; until then every conflict is "
-            "reported and left alone, which is what `--no-input` asks for."
-        )
     repo, config = manage.open_repo()
     host = paths.hostname(config.hostname)
     home = paths.home()
@@ -463,10 +568,11 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
             f"abort it with git, then sync again."
         )
 
+    settler = conflicts.answering(config, no_input, ours, theirs)
     remote = gitrepo.first_remote(repo)
     branch = gitrepo.branch(repo)
     if remote is None:
-        outcomes = settle(repo, home, host)
+        outcomes = settle(repo, home, host, settler)
         print(f"no remote configured, so nothing was pushed; {repo} is a git repository")
     else:
         if branch is None:
@@ -475,7 +581,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
                 f"run `git -C {repo} checkout main`."
             )
         integrate(repo, remote, branch)
-        outcomes = deliver(repo, home, host, remote, branch, settle(repo, home, host))
+        outcomes = deliver(repo, home, host, remote, branch, settler)
 
     print(report(outcomes))
     return 1 if any(RULES[outcome.action].needs_user for outcome in outcomes) else 0
@@ -487,14 +593,25 @@ def deliver(
     host: str,
     remote: str,
     branch: str,
-    outcomes: list[Outcome],
+    settler: conflicts.Settler,
 ) -> list[Outcome]:
     """Push, and plan §3.4 step 5: if the remote moved, pull, redo, push again.
 
     Redoing the whole of `settle` rather than just the push, because what came in
     may need merging into `$HOME` -- and doing it again is cheap: every file that
     is already settled resolves to UNCHANGED and writes nothing.
+
+    The same `settler`, so a redo can ask about a file the first pass never saw:
+    the remote moved, and what arrived may conflict with what this machine just
+    wrote. Asking again is the honest thing -- the alternative is a second pass
+    that silently skips a conflict the first pass would have prompted for.
+
+    A file the user *skipped* is asked about again too, up to `ATTEMPTS` times.
+    That is intended rather than overlooked: each retry follows a real change to
+    the repository's copy, so it is a different question from the one they
+    declined, and a `[s]` that stuck would hide it.
     """
+    outcomes = settle(repo, home, host, settler)
     there = f"{remote}/{branch}"
     for _ in range(ATTEMPTS):
         if gitrepo.is_ancestor(repo, "HEAD", there):
@@ -515,7 +632,7 @@ def deliver(
                 f"could not push to {remote}: {gitrepo.reason(pushed)}; "
                 f"run `tupferl doctor` to check the remote."
             )
-        outcomes = settle(repo, home, host)
+        outcomes = settle(repo, home, host, settler)
     raise TupferlError(
         f"{remote} moved again on each of {ATTEMPTS} attempts, so nothing was pushed; "
         f"try again when it is quieter."

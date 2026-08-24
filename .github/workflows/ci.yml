@@ -24,6 +24,11 @@ env:
 
 jobs:
   lint:
+    # A hang here is otherwise GitHub's six-hour default, and the gate
+    # `needs:` this job -- so one wedged leg holds the whole pull request
+    # with nothing in the log to read. Every leg but `macos` finishes in
+    # under a minute; this is a backstop, not a budget to fill.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +45,11 @@ jobs:
       - run: python -m tools.run_tests
 
   test:
+    # A hang here is otherwise GitHub's six-hour default, and the gate
+    # `needs:` this job -- so one wedged leg holds the whole pull request
+    # with nothing in the log to read. Every leg but `macos` finishes in
+    # under a minute; this is a backstop, not a budget to fill.
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -67,6 +77,11 @@ jobs:
     # a repository in a temporary directory sees a path that does not compare
     # equal to its own resolved form -- which is exactly what
     # `gitrepo.is_repository` resolves both sides for.
+    # A hang here is otherwise GitHub's six-hour default, and the gate
+    # `needs:` this job -- so one wedged leg holds the whole pull request
+    # with nothing in the log to read. Every leg but `macos` finishes in
+    # under a minute; this is a backstop, not a budget to fill.
+    timeout-minutes: 20
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +97,11 @@ jobs:
     # which is what every other job here does and which would not notice a
     # missing `packages`, a broken entry point, or a dependency that is only
     # present because the source tree is on `sys.path`.
+    # A hang here is otherwise GitHub's six-hour default, and the gate
+    # `needs:` this job -- so one wedged leg holds the whole pull request
+    # with nothing in the log to read. Every leg but `macos` finishes in
+    # under a minute; this is a backstop, not a budget to fill.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,6 +133,11 @@ jobs:
     # *installed* console script rather than the source tree. See the script's
     # header for why that is not the suite again: it is what would notice a test
     # fixture having become load-bearing, which nothing inside the suite can.
+    # A hang here is otherwise GitHub's six-hour default, and the gate
+    # `needs:` this job -- so one wedged leg holds the whole pull request
+    # with nothing in the log to read. Every leg but `macos` finishes in
+    # under a minute; this is a backstop, not a budget to fill.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +162,11 @@ jobs:
     # Without both, the gate goes green exactly when the matrix did not.
     if: always()
     needs: [lint, test, macos, install, twomachine]
+    # A hang here is otherwise GitHub's six-hour default, and the gate
+    # `needs:` this job -- so one wedged leg holds the whole pull request
+    # with nothing in the log to read. Every leg but `macos` finishes in
+    # under a minute; this is a backstop, not a budget to fill.
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
       - name: every dependency must have succeeded

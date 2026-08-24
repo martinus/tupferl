@@ -89,6 +89,19 @@ class TestTheParserWorks(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertIn("runs-on:", block)
 
+    def test_every_job_has_a_timeout(self) -> None:
+        """Without one a job gets GitHub's six-hour default, and the gate
+        `needs:` every job -- so one wedged leg holds the pull request open with
+        nothing in the log to read, because a running job's log is a 404.
+
+        That is not hypothetical: the `macos` leg hung for twenty minutes on a
+        `tcsetattr` waiting for output nobody was reading, while every other leg
+        finished in under a minute. A timeout would have said so in ten.
+        """
+        for name, block in jobs().items():
+            with self.subTest(job=name):
+                self.assertIn("timeout-minutes:", block)
+
 
 class TestTheGate(unittest.TestCase):
     def needs(self) -> set[str]:

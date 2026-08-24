@@ -158,3 +158,28 @@ class TestAGitThatDiedRatherThanAnswered(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestKeepingBothVersions(unittest.TestCase):
+    """`merge.keep_both`, the conflict prompt's `[b]`."""
+
+    def test_it_keeps_both_sides_of_every_hunk(self) -> None:
+        got = merge.keep_both(".bashrc", BASE, b"alpha\nMINE\ngamma\n", b"alpha\nTHEIRS\ngamma\n")
+        self.assertEqual(b"alpha\nMINE\nTHEIRS\ngamma\n", got)
+
+    def test_it_leaves_no_markers(self) -> None:
+        """The property, stated apart from the bytes: a union merge that kept a
+        marker would put `<<<<<<<` into the file on both computers."""
+        got = merge.keep_both(".bashrc", BASE, b"alpha\nMINE\ngamma\n", b"alpha\nTHEIRS\ngamma\n")
+        self.assertNotIn(b"<<<<<<<", got)
+        self.assertNotIn(b"=======", got)
+
+    def test_a_binary_side_is_refused_rather_than_returned_empty(self) -> None:
+        """The guard the prompt can never reach -- `[b]` is not offered for a file
+        with no lines -- but the function is callable and its contract is
+        `bytes`. Returning `None` from here would be a `TypeError` two frames
+        later, in `sync.settled`, about a file rather than about the merge.
+        """
+        with self.assertRaises(TupferlError) as raised:
+            merge.keep_both(".icon", b"\x00base", b"\x00mine", b"\x00theirs")
+        self.assertIn(".icon", str(raised.exception))

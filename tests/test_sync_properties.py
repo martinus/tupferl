@@ -203,3 +203,127 @@ TestSyncIsIdempotentAndConverges = SyncMachine.TestCase
 TestSyncIsIdempotentAndConverges.__module__ = __name__
 TestSyncIsIdempotentAndConverges.__name__ = "TestSyncIsIdempotentAndConverges"
 TestSyncIsIdempotentAndConverges.__qualname__ = "TestSyncIsIdempotentAndConverges"
+
+
+#: The lines after the first, which no rule below ever touches. They exist so
+#: that a file settled with `[b]` still has something in common with a file
+#: settled with `[l]`, and so "the chosen line is present" is a claim about a
+#: *line* rather than about the whole file.
+TAIL = "unchanged-one\nunchanged-two\nunchanged-three\n"
+
+#: The three answers this machine gives. `[s]` is excluded because skipping
+#: chooses nothing, and `[e]` because it needs an editor -- both are example
+#: tests in `tests/test_conflict_cli.py`. What is left is exactly the set of
+#: answers plan §7.2's property 5 is about: a choice that writes.
+CHOICES = ("l", "r", "b")
+
+
+class ChoiceMachine(RuleBasedStateMachine):
+    """Plan §7.2 property 5: nothing chosen at the prompt is silently lost.
+
+    Where `SyncMachine` above gives each computer its own regions so that every
+    edit merges, this one aims both computers at the **same line**, so that two
+    edits are always a real conflict and the prompt is always what settles it.
+
+    The property is stated as *presence of a line*, not as equality with a model,
+    and that is deliberate: `[b]` keeps both sides, so the settled file is not
+    either computer's and there is no third version to compare it to. What can be
+    said exactly is which lines must have survived:
+
+    - `[l]` keeps the line belonging to the computer that answered;
+    - `[r]` keeps the other computer's;
+    - `[b]` keeps both.
+
+    Machine order is fixed -- `machine-a` syncs first, so `machine-b` is always
+    the one that meets the conflict -- because otherwise "the computer that
+    answered" is not a thing the test knows, and the three rows above become one
+    row saying "one of them".
+
+    Every written line carries a counter as well as the generated text. Without
+    it Hypothesis can generate the same text twice, the second edit writes bytes
+    that are already there, and the run that was meant to produce a conflict
+    quietly produces nothing to settle -- a fixture too weak to tell the two
+    answers apart, and invisible in the test's own text.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.box = tempfile.TemporaryDirectory(prefix="tupferl-choices-")
+        root = Path(self.box.name)
+        self.machines = [support.Computer(root, name) for name in ("machine-a", "machine-b")]
+        first, second = self.machines
+        remote = support.make_remote(root / "remote.git", first.env)
+
+        self.step = 0
+        #: The line each computer last wrote and has not yet had settled. Cleared
+        #: after every settle, because a line the user overwrote afterwards is not
+        #: one the tool promised to keep.
+        self.wrote: dict[int, str] = {}
+
+        first.write(MANAGED, f"start\n{TAIL}")
+        assert first.call("init", str(remote)) == 0
+        assert first.call("add", str(first.home / MANAGED)) == 0
+        assert first.call("sync") == 0
+        assert second.call("init", str(remote)) == 0
+
+    @rule(who=st.integers(0, 1), text=TEXT)
+    def edit(self, who: int, text: str) -> None:
+        """Rewrite the first line -- the one line both computers write."""
+        self.step += 1
+        line = f"{self.machines[who].name}-{self.step}-{text}"
+        self.machines[who].write(MANAGED, f"{line}\n{TAIL}")
+        self.wrote[who] = line
+
+    @rule(choice=st.sampled_from(CHOICES))
+    def settle(self, choice: str) -> None:
+        """Sync both computers, answering every conflict with `choice`.
+
+        Three syncs: `machine-a` pushes what it has, `machine-b` meets the
+        conflict and answers and pushes, and `machine-a` takes it back. A fourth
+        on `machine-b` was there and was a no-op in every branch -- measured, 10
+        examples of 8 steps, derandomised: 10.11s with it and 7.55s without.
+
+        One key is typed at each. There is one managed file, so at most one
+        question, and a key nothing asks for is simply never read.
+        """
+        for who in (0, 1, 0):
+            assert self.machines[who].call("sync", keys=choice) == 0
+
+        texts = [machine.read(MANAGED) for machine in self.machines]
+        assert texts[0] == texts[1], "the two computers did not converge"
+        assert "<<<<<<<" not in texts[0], "a conflict marker reached a managed file"
+
+        for line in self.kept(choice):
+            for machine, text in zip(self.machines, texts, strict=True):
+                assert line in text, f"{line!r} was chosen but is not on {machine.name}"
+        self.wrote.clear()
+
+    def kept(self, choice: str) -> list[str]:
+        """Which of the written lines the answer promised to keep.
+
+        With only one computer having edited there was no conflict and no
+        question, so its line stands whatever `choice` says -- which is why this
+        is not simply a lookup on `choice`.
+        """
+        if len(self.wrote) < 2:
+            return list(self.wrote.values())
+        if choice == "b":
+            return [self.wrote[0], self.wrote[1]]
+        # `machine-b` answers, so `[l]` is its own line and `[r]` is the other's.
+        return [self.wrote[1]] if choice == "l" else [self.wrote[0]]
+
+    def teardown(self) -> None:
+        self.box.cleanup()
+
+
+ChoiceMachine.TestCase.settings = settings(
+    max_examples=profiles.STATEFUL,
+    stateful_step_count=profiles.STEPS,
+    deadline=None,
+)
+
+#: Renamed for discovery, for the reason spelled out above `SyncMachine`'s own.
+TestAChoiceIsNeverSilentlyLost = ChoiceMachine.TestCase
+TestAChoiceIsNeverSilentlyLost.__module__ = __name__
+TestAChoiceIsNeverSilentlyLost.__name__ = "TestAChoiceIsNeverSilentlyLost"
+TestAChoiceIsNeverSilentlyLost.__qualname__ = "TestAChoiceIsNeverSilentlyLost"

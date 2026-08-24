@@ -27,9 +27,12 @@ from tupferl.errors import TupferlError
 #: docstring: `tests/support.py` clears this list to build a sandbox, so a name
 #: that is read but missing here is a test that runs against the real machine.
 ENV_KEYS = (
+    "EDITOR",
     "HOME",
+    "NO_COLOR",
     "TUPFERL_DIR",
     "TUPFERL_HOSTNAME",
+    "VISUAL",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
 )

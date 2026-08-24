@@ -347,8 +347,20 @@ def unfinished(repo: Path) -> str | None:
 MOST_CONFLICTS = 127
 
 
-def merge_file(ours: Path, base: Path, theirs: Path, labels: tuple[str, str, str]) -> Result:
+def merge_file(
+    ours: Path,
+    base: Path,
+    theirs: Path,
+    labels: tuple[str, str, str],
+    union: bool = False,
+) -> Result:
     """3-way merge `ours` against `theirs` over `base`, rewriting `ours` in place.
+
+    `union=True` is git's `--union`: a hunk both sides changed keeps *both*
+    versions, one after the other, with no markers. That is the prompt's "keep
+    both", and it is git's own resolution rather than a marker-stripper written
+    here -- which would have to re-derive, from the marked text, the hunk
+    boundaries git had already worked out.
 
     In place, rather than `-p` to stdout, for a reason that is not style: `git`
     above strips the output it returns, so a merged file would lose its trailing
@@ -364,7 +376,19 @@ def merge_file(ours: Path, base: Path, theirs: Path, labels: tuple[str, str, str
     input. `ok` is therefore true only for a clean merge.
     """
     marks = [argument for label in labels for argument in ("-L", label)]
-    return git(["merge-file", *marks, str(ours), str(base), str(theirs)], cwd=ours.parent)
+    mode = ["--union"] if union else []
+    # The conflict style is pinned rather than left to the user's git config,
+    # because `conflicts.hunks` parses the markers back out to show them. git
+    # 2.43 ignores `merge.conflictStyle` for `merge-file` -- measured, with the
+    # setting at `merge`, `diff3` and `zdiff3`, all three giving the two-section
+    # form -- so this changes nothing today. It is here so that a git which
+    # started honouring it could not turn a base section into something the
+    # parser reads as the repository's version.
+    style = ["-c", "merge.conflictStyle=merge"]
+    return git(
+        [*style, "merge-file", *mode, *marks, str(ours), str(base), str(theirs)],
+        cwd=ours.parent,
+    )
 
 
 def staged(repo: Path) -> bool:

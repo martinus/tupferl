@@ -369,15 +369,16 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 |---|---|
 | `tupferl/` | the package. `__main__.py` is the CLI and the only entry point |
 | `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — four of the six are there to stop the wrong file being pushed |
-| `tupferl/gitrepo.py` | every call to git. Nothing else in the package spawns a subprocess |
+| `tupferl/gitrepo.py` | every call to git. The only other subprocess in the package is the user's `$EDITOR`, in `conflicts.edit` |
 | `tupferl/copies.py` | what a stored copy is: bytes, the one mode bit that travels, and the single rule for "the target is already this file". Below `manage` and `sync`, because both write the same snapshots |
 | `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |
 | `tupferl/merge.py` | the 3-way merge, over `git merge-file`. Bytes in, bytes out, and the conflict count is git's exit status |
+| `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` |
 | `docs/plan.md` | the plan this is built from |
 
-Two things are not where a newcomer would guess, both on purpose:
+Four things are not where a newcomer would guess, all on purpose:
 
 - **`tests/support.py` builds a sandbox environment from nothing, not from
   `os.environ`.** Every variable tupferl reads is listed once, in
@@ -392,6 +393,11 @@ Two things are not where a newcomer would guess, both on purpose:
   are *not* `max_examples`: one example of the sync state machine is a dozen
   real `tupferl sync` runs (~0.4s) against one `three_way` call (~3ms), and a
   single budget cannot suit both.
+- **A conflict carries its own three versions.** `sync.resolve` builds a
+  `conflicts.Sides` and hangs it on the `CONFLICT` outcome, so `home` is a
+  `Blob` rather than `Blob | None` wherever a conflict is settled, and
+  `outcome.sides is not None` is both the test for "is this a conflict" and the
+  narrowing that follows from it. There is no second place to keep in step.
 - **`sync` writes the snapshot last, and that ordering is a guarantee.** A run
   killed part-way then leaves the merge base *older* than both copies, so the
   next run merges conservatively. Written first, the same interruption leaves a
@@ -493,6 +499,70 @@ Two things are not where a newcomer would guess, both on purpose:
   fetches before it pushes and would simply merge it.
 - **A ref pushed to a name directly under `refs/` is a "funny refname"** and is
   rejected. Park a prepared commit under `refs/heads/`.
+- **`tty.setcbreak` behaves differently on 3.10 and 3.12.** Python 3.12 stopped
+  clearing `ECHO`, so the same call swallows the keypress on one and echoes it
+  on the other. `conflicts.one_key` sets `ICANON` and `ECHO` itself and echoes
+  the key deliberately, which is the same on every supported interpreter.
+- **`TestCase.enterContext` is 3.11.** On the 3.10 leg it is an
+  `AttributeError`, so the tests reach for `contextlib.ExitStack` instead. Same
+  family as the `tomllib` gotcha above, and the same leg catches it.
+- **A prompt in a test must fail, not block.** `conflicts.ask` loops, so a test
+  that types one fewer key than the prompt asks for reads an empty terminal and
+  waits for ever — a suite that hangs in CI rather than one that goes red. Both
+  fixtures that type keys append `support.FALLBACK` (`s`), so an unexpected
+  extra question is answered "skip", the run exits 1, and the test fails on its
+  own assertion instead. `run_cli`'s subprocess path also passes
+  `communicate(timeout=60)`, because a child that ignores its stdin entirely
+  would otherwise outlive the suite.
+- **git writes CRLF conflict markers into a CRLF file.** `split(b"\n")` leaves
+  the `\r` attached, so a marker arrives as `b"<<<<<<< … (this computer)\r"` and
+  matches nothing spelled without it. That made `conflicts.leftover` inert for
+  every CRLF dotfile — an `[e]` the user quit without resolving was accepted and
+  the markers reached `$HOME`, the repository *and* the snapshot on both
+  machines, with `sync` exiting 0. `conflicts.bare` is the one place that strips
+  it. Every fixture in the suite was LF until the review, which is why the run
+  was green with the bug in it.
+- **One keypress can be several bytes.** A press of the Down arrow is `\x1b[B`,
+  and read a byte at a time that is three answers — the last of which is `b`,
+  *keep both*. Reading the whole sequence is not simply `os.read(fd, 8)` either:
+  that returns everything the terminal holds, which includes the key pressed
+  *after* it. `conflicts.rest_of_escape` reads to the end of the sequence and no
+  further.
+- **`=======` has no label, so it cannot be matched the way the other two
+  markers can.** A line of a dotfile that is exactly seven equals signs ends the
+  local side of a hunk whether it was meant to or not, and the prompt then shows
+  that side empty and attributes its lines to the other computer — a display bug
+  whose consequence is the user pressing the other key and destroying their own
+  edit. `conflicts.trustworthy` checks the parse against the two real files and
+  `describe` shows nothing rather than showing it swapped.
+- **`git merge-file` ignores `merge.conflictStyle`.** Measured against git 2.43
+  with the setting at `merge`, `diff3` and `zdiff3`: all three gave the
+  two-section form. `gitrepo.merge_file` passes `-c merge.conflictStyle=merge`
+  anyway, because `conflicts.hunks` parses the markers back out and a git that
+  started honouring it would turn a base section into something the parser reads
+  as the repository's version.
+- **`tcsetattr` with `TCSADRAIN` can block for ever on a pty.** It waits for the
+  terminal's pending *output* to drain, and a pty starts with `ECHO` on — so
+  every key a fixture types is echoed into an output queue that, in these tests,
+  nobody reads. When it fills, the drain never completes. `conflicts.one_key`
+  sets only *input* flags, so it uses `TCSANOW`, which cannot wait; and
+  `support.hush` clears the pty's echo before anything is typed. The symptom was
+  a `macos` CI leg running for twenty minutes while every other leg finished in
+  under one — Linux's pty buffer is large enough to hide it. Every job now has a
+  `timeout-minutes`, and `tests/test_ci.py` asserts it, because a running job's
+  log is a 404: a hang is the one failure with nothing to read.
+- **A whole `termios` structure does not round-trip portably.** Asserting
+  `tcgetattr(fd)` is byte-identical before and after a raw-mode read passed on
+  every Linux leg and failed on macOS: `VMIN` and `VTIME` are meaningless once
+  `ICANON` is back on, so a driver may normalise them on restore. Assert the
+  flags the user would actually miss — `ICANON` and `ECHO` — and assert
+  separately that they really were cleared in between, or "unchanged before and
+  after" is trivially true of a function that changes nothing.
+- **The suite must never inherit the developer's stdin.** `sync` asks
+  `sys.stdin.isatty()` to decide whether anyone is there to answer a conflict,
+  so a test that inherits a terminal *prompts* and blocks, and the same test in
+  CI skips silently. `support.run_cli` passes `DEVNULL` and `support.typing`
+  patches `sys.stdin`; a real pty is opted into with `keys=`.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every

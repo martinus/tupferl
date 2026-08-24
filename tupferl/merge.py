@@ -95,7 +95,55 @@ def labels_for(name: str) -> tuple[str, str, str]:
     return (f"{name} (this computer)", f"{name} (last sync)", f"{name} (the repository)")
 
 
-def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merged:
+def markers_for(name: str) -> tuple[bytes, bytes]:
+    """The two marker lines `three_way` writes for `name`, as bytes.
+
+    Here rather than in `conflicts`, beside the labels they are built from.
+    Both the prompt's display and its "did you finish?" check match these
+    exactly, and a spelling that lives in two places is one that can be half
+    changed -- in the one module whose whole job is to agree with what git
+    wrote.
+
+    The separator, `=======`, is deliberately not here: it carries no label, so
+    it cannot be told apart from a line of a file that happens to be seven
+    equals signs. `describe` handles that by checking its own parse rather than
+    by matching harder.
+    """
+    mine_at, _, theirs_at = labels_for(name)
+    return f"<<<<<<< {mine_at}".encode(), f">>>>>>> {theirs_at}".encode()
+
+
+def keep_both(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> bytes:
+    """The conflict prompt's `[b]`: every hunk keeps both versions, in turn.
+
+    git's `--union`, not a marker-stripper written here. Stripping the markers
+    out of `three_way`'s output means re-deriving the hunk boundaries git has
+    already computed, and getting that wrong silently deletes a line somebody
+    wrote.
+
+    Returns bytes rather than a `Merged`, because a union merge has no conflict
+    count to report and always produces a file: both of `Merged`'s fields would
+    be dead for every caller, and the caller would have to assert them so. Only
+    valid for a file `is_text` admits -- `[b]` is not offered for one that is
+    not, since there are no lines to take from each side.
+    """
+    merged = three_way(name, base, ours, theirs, union=True)
+    if merged.data is None or merged.conflicts:
+        # Not reachable through the prompt, which offers `[b]` only for a text
+        # file. Reported rather than asserted because the two ways it could
+        # happen -- a binary side, or a git whose `--union` conflicts -- are
+        # both things about the machine rather than about this program.
+        raise TupferlError(
+            f"could not keep both versions of {name}: git returned "
+            f"{merged.conflicts} conflicts from a union merge, which should have "
+            f"none; run `tupferl doctor` to check your git installation."
+        )
+    return merged.data
+
+
+def three_way(
+    name: str, base: bytes | None, ours: bytes, theirs: bytes, union: bool = False
+) -> Merged:
     """Merge `ours` and `theirs` over their common ancestor `base`.
 
     `name` is the managed file's name -- it reaches the conflict markers and the
@@ -103,6 +151,10 @@ def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merg
 
     A side that is not text makes the whole file one conflict, with no merged
     bytes to return. See `is_text`.
+
+    `union` is git's `--union`, and `keep_both` above is the one caller: it
+    returns the bytes rather than this three-field answer, because a union
+    merge cannot conflict and cannot fail to produce a file.
 
     The three sides are written to a throwaway directory rather than merged from
     memory: `git merge-file` takes file names, and the alternative is feeding it
@@ -123,7 +175,7 @@ def three_way(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> Merg
         yours = where / "theirs"
         yours.write_bytes(theirs)
 
-        done = gitrepo.merge_file(mine, common, yours, labels_for(name))
+        done = gitrepo.merge_file(mine, common, yours, labels_for(name), union=union)
         if done.code is None or not 0 <= done.code <= gitrepo.MOST_CONFLICTS:
             # Not a conflict: git could not run, or refused the inputs. Reported
             # rather than folded into "conflicted", because the two need

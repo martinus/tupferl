@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import io
 import os
+import pty
+import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -72,6 +75,66 @@ CARRIES = (
     "PYTHONWARNINGS",
     "TUPFERL_MUTATE_BUDGET",
 )
+
+#: How long a fixture will wait for a read from a terminal before calling it a
+#: failure. Five seconds against a suite that runs 500 tests in twelve, so a
+#: legitimate prompt has three orders of magnitude of headroom -- and a mutant
+#: that leaves `one_key` blocking fails in five seconds rather than holding a
+#: mutation lane for the harness's full 30s per-test alarm.
+PATIENCE = 5.0
+
+
+@contextmanager
+def deadline(seconds: float, why: str) -> Iterator[None]:
+    """Fail the body if it has not finished in `seconds`.
+
+    **A test that hangs is not a test that guards anything.** `tools/mutate.py`
+    reports a mutant whose suite blocked as `BROKE`, and `BROKE` is never
+    `caught` -- so a line whose only tests hang when it is wrong is a line
+    nothing is watching. Six mutants of `conflicts.rest_of_escape`'s `VMIN`/
+    `VTIME` lines came back that way, and the fixture's own docstring described
+    the hang as if it were the assertion.
+
+    Raising from the handler rather than setting a flag, for `tools/verdict.py`'s
+    reason: PEP 475 makes Python *retry* a syscall interrupted by a signal, so a
+    handler that returned would be swallowed by exactly the blocking `read` this
+    exists to interrupt.
+
+    The previous handler is restored, not assumed to be the default: the harness
+    installs its own per-test alarm around this one.
+    """
+
+    def ring(signum: int, frame: object) -> None:
+        raise TimeoutError(why)
+
+    before = signal.signal(signal.SIGALRM, ring)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, before)
+
+
+#: Typed after every set of keys a fixture sends to a conflict prompt.
+#:
+#: The prompt loops, so a test that types fewer keys than it asks for reads an
+#: empty terminal and waits for ever -- a suite that *hangs* rather than one that
+#: goes red, which is the failure nobody can read from a log. With skips waiting,
+#: the unexpected extra question is answered "skip", the run exits 1, and the
+#: test fails on its own assertion instead.
+#:
+#: **Several, not one.** A mutation sweep is where this earns its keep, and there
+#: a mutant does not politely ask exactly one extra time: the first sweep of the
+#: conflict prompt produced 15 rows with no verdict at all, because one skip was
+#: not enough and each blocked test then held a lane for the full 30s per-test
+#: alarm. That load is also what turned an unrelated baseline red. Eight covers
+#: an off-by-one in any of the loop's arms; a mutant that loops without end is
+#: what the alarm is for, and it reports `BROKE`, which is honest.
+#:
+#: `s` and not something invalid: an unrecognised key re-asks, which is the
+#: behaviour this is guarding against.
+FALLBACK = "s" * 8
 
 #: What the branch is called in every fixture -- `seed_home` writes it as
 #: `init.defaultBranch`, both repository builders pass it to `--initial-branch`,
@@ -266,7 +329,7 @@ def make_repo(where: Path, env: dict[str, str], remote: Path | None = None) -> P
 
 
 def run_cli(
-    args: list[str], env: dict[str, str], cwd: Path | None = None
+    args: list[str], env: dict[str, str], cwd: Path | None = None, keys: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Drive the CLI the way a user does: a separate process, through `-m`.
 
@@ -274,15 +337,127 @@ def run_cli(
     these are milliseconds -- and it is the only way to check what actually
     reaches stdout, stderr and the exit status, which is `tupferl doctor`'s whole
     product.
+
+    **`keys=None` gives the child no terminal at all**, and that is the load-
+    bearing part rather than a detail. `sync` asks `sys.stdin.isatty()` to decide
+    whether anyone is there to answer a conflict; inheriting this process's stdin
+    makes the answer depend on how the *suite* was launched, so the same test
+    prompts and blocks for ever in a developer's terminal and skips silently in
+    CI. `DEVNULL` makes "nobody is there" a property of the fixture.
+
+    `keys` opens a real pty and types them, which is the only way to exercise the
+    prompt: `conflicts.one_key` clears `ICANON` with `termios`, and there is no
+    pipe that behaves like that. `FALLBACK` is typed after them -- see there.
     """
-    return subprocess.run(
-        [sys.executable, "-m", "tupferl", *args],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if keys is None:
+        return subprocess.run(
+            [sys.executable, "-m", "tupferl", *args],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+
+    master, slave = pty.openpty()
+    try:
+        hush(slave)
+        os.write(master, (keys + FALLBACK).encode("utf-8"))
+        started = subprocess.Popen(
+            [sys.executable, "-m", "tupferl", *args],
+            cwd=cwd,
+            env=env,
+            stdin=slave,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        os.close(slave)
+        # A timeout, because the failure this fixture can produce is a prompt
+        # that asks once more than `keys` answers -- and that is a suite which
+        # hangs rather than one which fails.
+        out, err = started.communicate(timeout=60)
+    finally:
+        os.close(master)
+    return subprocess.CompletedProcess(started.args, started.returncode, out, err)
+
+
+def hush(slave: int) -> None:
+    """Turn the pty's own echo off before anything is typed at it.
+
+    A pty starts with `ECHO` on, so every byte written to the master is echoed
+    straight back into the terminal's *output* queue -- and in these fixtures
+    nobody reads that queue. It fills, and the next `tcsetattr` that waits for
+    output to drain never returns.
+
+    `conflicts.one_key` no longer asks for that wait, which is the real fix; this
+    is the other half, and it is worth having on its own. The prompt echoes the
+    key it read deliberately, to its own output stream, so the terminal's echo
+    was never anything but noise queued behind the test.
+    """
+    mode = termios.tcgetattr(slave)
+    mode[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, mode)
+
+
+class Terminal:
+    """A pty, and the two halves of it as files.
+
+    `type` writes to the master, which is what a person pressing a key does;
+    `source` is the slave, which the prompt reads and which answers `isatty`
+    with `True`.
+
+    Here rather than in a test module because three fixtures in one commit
+    opened their own, and each has to get the same two things right: the keys go
+    in *before* the reader starts, and both ends are closed exactly once.
+    """
+
+    def __init__(self) -> None:
+        self.master, self.slave = pty.openpty()
+        hush(self.slave)
+        self.source = os.fdopen(self.slave, "r")
+
+    def type(self, keys: str) -> None:
+        os.write(self.master, keys.encode("utf-8"))
+
+    def close(self) -> None:
+        self.source.close()
+        os.close(self.master)
+
+
+def fake_editor(where: Path, body: str) -> Path:
+    """A real program to put in `$EDITOR`: a shell script whose body is `body`.
+
+    Returned rather than exported through the environment, because the two
+    callers set it in different places -- one in `os.environ`, one in a single
+    machine's environment dict -- and only one of them may touch the process's
+    own.
+    """
+    where.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    where.chmod(0o755)
+    return where
+
+
+@contextmanager
+def typing(keys: str | None) -> Iterator[None]:
+    """Replace `sys.stdin` for an in-process run. `None` means nobody is there.
+
+    `run_cli`'s argument, for the half of the suite that calls `tupferl.__main__`
+    directly -- and for the same reason: what stdin *is* has to come from the
+    fixture, never from how the suite was launched.
+    """
+    if keys is None:
+        with mock.patch("sys.stdin", io.StringIO()):
+            yield
+        return
+    terminal = Terminal()
+    try:
+        terminal.type(keys + FALLBACK)
+        with mock.patch("sys.stdin", terminal.source):
+            yield
+    finally:
+        terminal.close()
 
 
 class SandboxCase(unittest.TestCase):
@@ -357,15 +532,19 @@ class Computer:
             self.repo = paths.repo_dir()
             self.backups = paths.backup_dir()
 
-    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
-        """One command, as a subprocess, the way a user runs it."""
-        return run_cli(list(args), self.env)
+    def run(self, *args: str, keys: str | None = None) -> subprocess.CompletedProcess[str]:
+        """One command, as a subprocess, the way a user runs it.
 
-    def call(self, *args: str) -> int:
+        `keys` gives it a terminal to read them from -- see `run_cli`. Without
+        one it has no stdin at all, so a conflict is reported and skipped.
+        """
+        return run_cli(list(args), self.env, keys=keys)
+
+    def call(self, *args: str, keys: str | None = None) -> int:
         """One command, in this process. Returns the exit status; output is eaten."""
         from tupferl import __main__ as cli
 
-        with mock.patch.dict(os.environ, self.env, clear=True), quiet():
+        with mock.patch.dict(os.environ, self.env, clear=True), quiet(), typing(keys):
             return cli.main(list(args))
 
     def git(self, *args: str) -> str:
@@ -389,6 +568,56 @@ class Computer:
     def snapshot(self, name: str) -> Path:
         """Where this machine's merge base for `name` lives."""
         return paths.snapshot_dir(self.repo, self.name) / name
+
+
+class TwoMachines(unittest.TestCase):
+    """Two `$HOME`s and one bare remote, with `.bashrc` already managed and
+    synced from the first -- plan §3.5's daily flow, at the point where a second
+    computer can be brought up.
+
+    Not `SandboxCase`, which patches `os.environ` for *one* machine: each
+    `Computer` carries its own environment, and `run`/`call` apply it per
+    command, which is how two hostnames coexist without two processes.
+
+    **The setup runs in-process.** It was three subprocesses until the property
+    tests demonstrated the same fixture built with `call`; measured, interleaved,
+    five builds each: 0.45s per `setUp` through subprocesses against 0.24s
+    in-process, and 37 tests inherit it -- about 7.8s per suite run, paid again
+    for every mutant in a sweep. Nothing here inspects stdout or the exit status
+    beyond "it worked", which is the only thing a subprocess would add; the tests
+    that *do* still use `run`.
+
+    Here rather than in a test module because three of them build it, and a
+    fixture that drifts between them is one where a failure in one file cannot be
+    reproduced in another.
+    """
+
+    def setUp(self) -> None:
+        box = tempdir()
+        self.tmp = box.__enter__()
+        self.addCleanup(box.__exit__, None, None, None)
+        self.first = Computer(self.tmp, "machine-a")
+        self.second = Computer(self.tmp, "machine-b")
+        self.remote = make_remote(self.tmp / "remote.git", self.first.env)
+
+        self.first.write(".bashrc", "one\ntwo\nthree\nfour\nfive\n")
+        self.assertEqual(0, self.first.call("init", str(self.remote)))
+        self.assertEqual(0, self.first.call("add", str(self.first.home / ".bashrc")))
+        self.assertEqual(0, self.first.call("sync"))
+
+    def diverge(self, name: str, mine: bytes, theirs: bytes) -> None:
+        """Make the two machines disagree about `name`, with `machine-a` pushing.
+
+        `machine-b` is left holding `theirs` in its `$HOME` and the repository
+        holding `mine`, so its next sync is the conflict. Bytes rather than text
+        because one caller's fixture is a file with a NUL in it.
+
+        `machine-b` must already have run `init`; three tests built this by hand
+        and the one that forgot produced a first sync rather than a conflict.
+        """
+        (self.first.home / name).write_bytes(mine)
+        (self.second.home / name).write_bytes(theirs)
+        self.assertEqual(0, self.first.call("sync"))
 
 
 def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
