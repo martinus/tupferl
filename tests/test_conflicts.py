@@ -412,7 +412,12 @@ class TestTheKeys(Prompted):
     def test_a_binary_file_refuses_the_keys_it_did_not_offer(self) -> None:
         got = self.ask(binary(), "bs")
         self.assertEqual(conflicts.SKIP, got.choice)
-        self.assertIn("no lines", self.out.getvalue())
+        # The whole sentence, and the key in it. "no lines" alone also appears in
+        # `describe`'s "there are no lines to take from each side" three lines
+        # above, so the old assertion held with this message deleted -- a marker
+        # asserted that is also produced by something else, which is the shape
+        # CLAUDE.md §2 lists by name. The sweep is what found it.
+        self.assertIn("'b' is not one of the keys for a file with no lines", self.out.getvalue())
 
     def test_a_binary_file_still_takes_a_side(self) -> None:
         self.assertEqual(conflicts.LOCAL, self.ask(binary(), "l").choice)
@@ -867,3 +872,59 @@ class TestReadingAnEscapeSequence(unittest.TestCase):
         terminal that goes quiet mid-escape, or a paste. Without the bound the
         loop reads until the `VTIME` timeout on every byte."""
         self.assertEqual(conflicts.KEYPRESS + 1, len(self.read("\x1b[" + "1" * 12)))
+
+
+class TestWhatTheWeakFixturesMissed(Prompted):
+    """Each of these kills a mutant that survived a sweep of this file.
+
+    They are grouped because they share a shape: the original assertion was
+    true of *more* than the behaviour it meant to pin, so a mutation that
+    changed the behaviour left the assertion holding. CLAUDE.md §2 calls that
+    suspecting the fixture before the code, and every one of these was a
+    fixture.
+    """
+
+    def test_the_first_hunk_is_numbered_one(self) -> None:
+        """`enumerate(..., start=1)`. Asserting only "3 of 5" appears is true of
+        `start=2` as well, which numbers the shown hunks 2, 3, 4 -- so the old
+        assertion held while the user was told the first conflict was the
+        second."""
+        text = conflicts.describe(sides_for(*many(conflicts.SHOWN_HUNKS + 2)), colour=False)
+        self.assertIn(f"1 of {conflicts.SHOWN_HUNKS + 2}", text)
+
+    def test_an_escape_then_a_key_leaves_the_key_behind(self) -> None:
+        """`ESC` followed by neither `[` nor `O` ends the sequence at one byte.
+
+        Typing just `\\x1bl` cannot show it: with the check removed the loop reads
+        `l`, finds nothing more, and returns the same `\\x1bl`. It takes a *third*
+        keypress to tell the two apart -- without the check that one is swallowed
+        too, and the prompt then answers with a key the user pressed for the
+        question after it.
+        """
+        self.terminal.type("\x1blr")
+        with support.deadline(support.PATIENCE, "one_key never returned"):
+            self.assertEqual("\x1bl", conflicts.one_key(self.terminal.source))
+            self.assertEqual("r", conflicts.one_key(self.terminal.source))
+
+    def test_a_pipe_gives_up_everything_but_the_first_character(self) -> None:
+        """`[:1]`. A line of exactly one character is true of `[:2]` and of no
+        slice at all, so the fixture has to type more than one."""
+        self.assertEqual("l", conflicts.one_key(io.StringIO("ls\n")))
+
+    def test_a_pipe_line_of_two_keys_is_not_two_keys(self) -> None:
+        """The other half: what comes back is one character, so `ask` reads it as
+        a key rather than as "not a key"."""
+        self.assertEqual(1, len(conflicts.one_key(io.StringIO("ls\n"))))
+
+    def test_the_key_is_echoed_back(self) -> None:
+        """`ECHO` is cleared, so the terminal will not do it. Without this line
+        the user presses `l` and sees nothing at all happen."""
+        self.ask(one_conflict(), "l")
+        self.assertIn("\nl\n", self.out.getvalue())
+
+    def test_end_of_input_says_so(self) -> None:
+        """Not just that it skips -- that it tells the user why. A sync that
+        exits 1 having silently skipped every conflict is one nobody can debug."""
+        got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
+        self.assertEqual(conflicts.SKIP, got.choice)
+        self.assertIn("end of input", self.out.getvalue())
