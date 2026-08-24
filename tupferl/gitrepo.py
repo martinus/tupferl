@@ -190,11 +190,13 @@ def stage(repo: Path, paths: list[Path]) -> Result:
     stages a file called `-x`; without the separator git reports "unknown
     switch" for a dotfile somebody really has.
 
-    Paths are passed relative to the repository. Absolute ones work too, but the
-    relative form is what git records and what the tests can compare against
-    without knowing where the sandbox put things.
+    Paths are given absolute and passed relative, which is what git records.
+    `relative_to` raising is the point rather than a nuisance: every caller
+    builds these from `repo`, so one that does not is a bug, and failing here
+    names the path instead of handing git something it will interpret against
+    its own working directory.
     """
-    relative = [str(path.relative_to(repo)) if path.is_absolute() else str(path) for path in paths]
+    relative = [str(path.relative_to(repo)) for path in paths]
     return git(["add", "--all", "--", *relative], cwd=repo)
 
 
@@ -207,14 +209,3 @@ def commit(repo: Path, message: str) -> Result:
     moment in the middle of this function.
     """
     return git(["commit", "-m", message], cwd=repo)
-
-
-def changed(repo: Path) -> list[str]:
-    """The porcelain status lines: what differs from HEAD, staged or not.
-
-    Lines rather than a bool, because two callers need the count and one needs
-    the names. `--porcelain` is the stable machine format git documents; the
-    human one is explicitly not.
-    """
-    found = git(["status", "--porcelain"], cwd=repo)
-    return found.out.splitlines() if found.ok and found.out else []

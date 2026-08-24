@@ -58,10 +58,26 @@ class Managed(NamedTuple):
     #: shared tree. Plan §4 asks `list` to mark these.
     host: bool
 
-    @property
-    def marker(self) -> str:
-        """What `tupferl list` prints beside the name."""
-        return "host" if self.host else "    "
+    # No `path` field, and no `marker`. Both were tried while writing this.
+    #
+    # `marker` -- what `list` prints beside a name -- is that command's
+    # formatting, and `status` (plan §6) will want a different one from the same
+    # data; presentation on the model makes the second one a change to the first.
+    #
+    # `path` -- the file on disk this host would actually use -- is what
+    # milestone 3's sync will want, and adding it now would have been a field
+    # with no reader. `roots` below is the part that earns its place today,
+    # because three callers were each spelling its rule out.
+
+
+def roots(repo: Path, host: str) -> tuple[Path, Path]:
+    """The two trees a managed file can live in: shared, then this host's overlay.
+
+    Plan §3.3's rule in one place. `add --host` writes into the second, `remove`
+    clears both, `managed` merges them with the second winning, and milestone 3's
+    sync will read them the same way rather than spelling it a fifth time.
+    """
+    return repo, paths.host_overlay(repo, host)
 
 
 class Refused(NamedTuple):
@@ -116,6 +132,8 @@ def ignored(name: PurePosixPath, patterns: list[str]) -> bool:
     same repository would ignore different files on two machines -- and the
     repository is the thing both machines share.
     """
+    if not patterns:
+        return False  # the default, and the branch most runs take
     candidates = [name, *name.parents]
     return any(
         fnmatchcase(str(candidate), pattern)
@@ -132,13 +150,20 @@ def check(path: Path, home: Path, repo: Path, config: Config) -> PurePosixPath:
     settings, so a symlink is refused as a symlink rather than as "too large" if
     it happens to point at something big.
     """
-    if path.is_symlink():
+    # One `lstat` for all four questions asked below -- link-ness, existence,
+    # type and size. Three separate calls were three separate moments, which is
+    # what the comment further down already objected to for two of them; and
+    # `lstat` rather than `stat` because the first question is about the link
+    # itself, not about what it points at.
+    try:
+        found = os.lstat(path)
+    except OSError:
+        raise TupferlError(f"{path} does not exist; check the path.") from None
+    if stat.S_ISLNK(found.st_mode):
         raise TupferlError(
             f"{path} is a symlink, and tupferl stores copies rather than links; "
             f"add what it points at instead."
         )
-    if not path.exists():
-        raise TupferlError(f"{path} does not exist; check the path.")
 
     try:
         relative = PurePosixPath(path.relative_to(home).as_posix())
@@ -160,11 +185,10 @@ def check(path: Path, home: Path, repo: Path, config: Config) -> PurePosixPath:
             f"managing it would store the repository inside itself."
         )
 
-    # One `stat`, because the two questions below are about one moment. Asking
-    # twice lets a file be a socket for the type check and a regular file for the
-    # size check, which is not a race anyone will reproduce but is one that would
-    # be read as a bug in this function.
-    found = path.stat()
+    # The type and size questions are answered from the `lstat` above, so they
+    # are about one moment rather than two. Asking twice lets a file be a socket
+    # for the type check and a regular file for the size check -- not a race
+    # anyone will reproduce, but one that would be read as a bug in here.
     if not stat.S_ISREG(found.st_mode) and not stat.S_ISDIR(found.st_mode):
         raise TupferlError(
             f"{path} is not a regular file or directory, and tupferl only stores "
@@ -241,8 +265,8 @@ def managed(repo: Path, host: str) -> list[Managed]:
     and in the commit messages `add` writes -- so one that depended on the
     filesystem would make two machines disagree for no visible reason.
     """
-    shared = {name: Managed(name, host=False) for name in _under(repo, repo)}
-    overlay = paths.host_overlay(repo, host)
+    tree, overlay = roots(repo, host)
+    shared = {name: Managed(name, host=False) for name in _under(tree, tree)}
     for name in _under(overlay, overlay):
         shared[name] = Managed(name, host=True)
     return [shared[name] for name in sorted(shared)]

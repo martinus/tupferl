@@ -80,6 +80,29 @@ def describe(what: str, names: list[PurePosixPath], host: str) -> str:
     return f"{what} from {host}: {shown}"
 
 
+def record(repo: Path, paths_: list[Path], message: str, doing: str) -> None:
+    """Stage `paths_`, commit them, and raise a sentence if either step fails.
+
+    Written three times before this existed -- in `init`, `add` and `remove` --
+    and the three copies had already drifted in the two ways duplication
+    predicts. `init` threw `stage`'s result away entirely, so a staging failure
+    there was silent while the other two raised. And `add` and `remove`
+    interpolated raw `staged.err` / `made.err`, which is a multi-line blob ending
+    in generic advice, in the same file that used `gitrepo.reason` correctly
+    forty lines earlier -- `reason` having been extracted in that very change for
+    exactly this.
+
+    `doing` names what was being written, so the message stays as specific as the
+    three hand-written ones were.
+    """
+    staged = gitrepo.stage(repo, paths_)
+    if not staged.ok:
+        raise TupferlError(f"could not stage {doing} in {repo}: {gitrepo.reason(staged)}")
+    made = gitrepo.commit(repo, message)
+    if not made.ok:
+        raise TupferlError(f"could not commit {doing} in {repo}: {gitrepo.reason(made)}")
+
+
 def mode_for(source: Path) -> int:
     """The mode a stored copy gets: 0o755 if the source is executable, else 0o644.
 
@@ -110,8 +133,11 @@ def store(source: Path, target: Path) -> str | None:
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = mode_for(source)
     existed = target.is_file()
-    same = filecmp.cmp(source, target, shallow=False) if existed else False
-    if existed and target.stat().st_mode & 0o777 == mode and same:
+    if (
+        existed
+        and target.stat().st_mode & 0o777 == mode
+        and filecmp.cmp(source, target, shallow=False)
+    ):
         return None
     shutil.copyfile(source, target)
     target.chmod(mode)
@@ -129,19 +155,21 @@ def init(url: str) -> int:
     first-run path.
     """
     repo = paths.repo_dir()
-    if repo.exists() and gitrepo.is_repository(repo):
-        raise TupferlError(
-            f"{repo} is already a tupferl repository; use `tupferl sync` to update it, "
-            f"or move it aside to start over."
-        )
-    if repo.exists() and not repo.is_dir():
-        # Before `iterdir`, which raises `NotADirectoryError` here -- a traceback
-        # where a sentence belongs, for a state one stray `touch` produces.
-        raise TupferlError(f"{repo} exists and is not a directory; move it aside.")
-    if repo.exists() and any(repo.iterdir()):
-        raise TupferlError(
-            f"{repo} already exists and is not empty; move it aside before running init."
-        )
+    if repo.exists():
+        # The order matters and is asserted by tests: a repository first, then
+        # not-a-directory (before `iterdir`, which raises `NotADirectoryError`
+        # there -- a traceback where a sentence belongs), then non-empty.
+        if gitrepo.is_repository(repo):
+            raise TupferlError(
+                f"{repo} is already a tupferl repository; use `tupferl sync` to update it, "
+                f"or move it aside to start over."
+            )
+        if not repo.is_dir():
+            raise TupferlError(f"{repo} exists and is not a directory; move it aside.")
+        if any(repo.iterdir()):
+            raise TupferlError(
+                f"{repo} already exists and is not empty; move it aside before running init."
+            )
 
     done = gitrepo.clone(url, repo)
     if not done.ok:
@@ -156,10 +184,12 @@ def init(url: str) -> int:
         settings = paths.config_file(repo)
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(TEMPLATE, encoding="utf-8")
-        gitrepo.stage(repo, [settings])
-        made = gitrepo.commit(repo, f"tupferl: start a repository on {paths.hostname()}")
-        if not made.ok:
-            raise TupferlError(f"could not make the first commit in {repo}: {gitrepo.reason(made)}")
+        record(
+            repo,
+            [settings],
+            f"tupferl: start a repository on {paths.hostname()}",
+            "the settings file",
+        )
         print(f"the remote was empty, so {settings.name} was created and committed")
     print("next: `tupferl add <path>...` to start managing files")
     return 0
@@ -176,17 +206,27 @@ def add(wanted: list[str], to_host: bool) -> int:
     repo, config = open_repo()
     home = paths.home()
     host = paths.hostname(config.hostname)
-    root = paths.host_overlay(repo, host) if to_host else repo
+    tree, overlay = manifest.roots(repo, host)
+    root = overlay if to_host else tree
 
-    admitted: dict[PurePosixPath, Path] = {}
+    # A set, not a name -> source map: the source is always `home / name`, and a
+    # derived value stored beside the key it is derived from is one that can go
+    # out of step with it.
+    admitted: set[PurePosixPath] = set()
     refused: list[manifest.Refused] = []
     for raw in wanted:
         path = manifest.named(raw)
-        manifest.check(path, home, repo, config)  # raises for a named path
-        names, skipped = manifest.collect(path, home, repo, config)
-        refused.extend(skipped)
-        for name in names:
-            admitted[name] = home / name
+        # Checked here so a path the *user named* raises rather than being
+        # skipped. A directory is then walked; a file is already its own answer,
+        # and running the whole six-rule check over it a second time inside
+        # `collect` was work with no second opinion in it.
+        name = manifest.check(path, home, repo, config)
+        if path.is_dir():
+            names, skipped = manifest.collect(path, home, repo, config)
+            refused.extend(skipped)
+            admitted.update(names)
+        else:
+            admitted.add(name)
 
     for skip in refused:
         print(f"skipped {skip.path}: {skip.why}")
@@ -194,8 +234,8 @@ def add(wanted: list[str], to_host: bool) -> int:
         raise TupferlError("nothing to add: every path given was skipped.")
 
     touched: list[PurePosixPath] = []
-    for name, source in sorted(admitted.items()):
-        did = store(source, root / name)
+    for name in sorted(admitted):
+        did = store(home / name, root / name)
         if did is not None:
             touched.append(name)
             print(f"{did} {name}{' (host)' if to_host else ''}")
@@ -207,12 +247,7 @@ def add(wanted: list[str], to_host: bool) -> int:
         print(f"no change: the repository already held {count(len(admitted))}")
         return 0
 
-    staged = gitrepo.stage(repo, [root / name for name in touched])
-    if not staged.ok:
-        raise TupferlError(f"could not stage the copies in {repo}: {staged.err}")
-    made = gitrepo.commit(repo, describe("add", touched, host))
-    if not made.ok:
-        raise TupferlError(f"could not commit in {repo}: {made.err}")
+    record(repo, [root / name for name in touched], describe("add", touched, host), "the copies")
     return 0
 
 
@@ -240,20 +275,14 @@ def remove(wanted: str) -> int:
             f"{path} is outside {home}, so it was never managed; name a file under it."
         ) from None
 
-    holders = (repo, paths.host_overlay(repo, host))
-    gone = [where / name for where in holders if (where / name).is_file()]
+    gone = [where / name for where in manifest.roots(repo, host) if (where / name).is_file()]
     if not gone:
         raise TupferlError(f"{name} is not managed; `tupferl list` shows what is.")
     for where in gone:
         where.unlink()
         _prune(where.parent, repo)
 
-    staged = gitrepo.stage(repo, gone)
-    if not staged.ok:
-        raise TupferlError(f"could not stage the removal in {repo}: {staged.err}")
-    made = gitrepo.commit(repo, describe("remove", [name], host))
-    if not made.ok:
-        raise TupferlError(f"could not commit in {repo}: {made.err}")
+    record(repo, gone, describe("remove", [name], host), "the removal")
     print(f"removed {name} from the repository; the file in {home} was not touched")
     return 0
 
@@ -284,7 +313,7 @@ def listing() -> int:
         print("nothing is managed yet; `tupferl add <path>...` starts.")
         return 0
     for item in found:
-        print(f"{item.marker}  {item.name}")
+        print(f"{'host' if item.host else '    '}  {item.name}")
     hosts = sum(1 for item in found if item.host)
     print(f"\n{len(found)} managed, {hosts} from this host's overlay")
     return 0

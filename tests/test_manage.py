@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path, PurePosixPath
 
 from tests import support
-from tupferl import gitrepo, manage, paths
+from tupferl import gitrepo, manage, manifest, paths
 from tupferl.config import Config, load
 from tupferl.errors import TupferlError
 
@@ -45,8 +45,11 @@ class Machine(support.SandboxCase):
         return support.git(["log", "--format=%s"], self.repo, self.env).splitlines()
 
     def stored(self, name: str, host: bool = False) -> Path:
-        root = paths.host_overlay(self.repo, support.HOST) if host else self.repo
-        return root / name
+        """Where a managed file lives, from `manifest.roots` rather than from a
+        ternary retyped here -- a test that spells the rule out itself cannot
+        notice the rule changing."""
+        tree, overlay = manifest.roots(self.repo, support.HOST)
+        return (overlay if host else tree) / name
 
 
 class TestInit(Machine):
@@ -149,7 +152,7 @@ class TestInit(Machine):
         support.break_commits(self.home)
         done = self.run_cli("init", str(self.remote))
         self.assertEqual(2, done.returncode)
-        self.assertIn("could not make the first commit", done.stderr)
+        self.assertIn("could not commit the settings file", done.stderr)
 
     def test_a_file_where_the_repository_belongs_is_refused(self) -> None:
         """One stray `touch` produces this, and `iterdir` raises
@@ -189,7 +192,7 @@ class TestAdd(Machine):
         stays a real signal that a run was interrupted."""
         self.write(self.home / ".bashrc", "x")
         self.run_cli("add", str(self.home / ".bashrc"))
-        self.assertEqual([], gitrepo.changed(self.repo))
+        self.assertEqual("", support.git(["status", "--porcelain"], self.repo, self.env))
 
     def test_a_directory_adds_every_file_under_it(self) -> None:
         """Two files in the *same* subdirectory, and a third one deeper. The
@@ -366,6 +369,22 @@ class TestAdd(Machine):
         self.assertEqual(2, done.returncode)
         self.assertIn("could not stage", done.stderr)
 
+    def test_a_commit_failure_is_reduced_to_the_line_that_explains(self) -> None:
+        """Not the whole stderr blob.
+
+        `gitrepo.reason` exists for this, and `add` and `remove` interpolated
+        raw `.err` while `init` forty lines earlier did not -- three copies of
+        one block, drifted. They are one helper now, and this is the assertion
+        that would have noticed: the hook writes two lines, and only the first
+        may reach the user.
+        """
+        support.break_commits(self.home)
+        self.write(self.home / ".bashrc", "x")
+        done = self.run_cli("add", str(self.home / ".bashrc"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn(support.HOOK_REFUSED, done.stderr)
+        self.assertNotIn(support.HOOK_TRAILER, done.stderr)
+
     def test_it_needs_a_repository(self) -> None:
         """Run in a home where `init` never was."""
         with support.tempdir() as box:
@@ -465,6 +484,15 @@ class TestRemove(Machine):
         self.assertEqual(2, done.returncode)
         self.assertIn("could not commit", done.stderr)
 
+    def test_a_commit_failure_during_removal_is_reduced_too(self) -> None:
+        """The other half of the same helper. One assertion per call site,
+        because the drift this replaced was per call site."""
+        support.break_commits(self.home)
+        done = self.run_cli("remove", str(self.home / ".bashrc"))
+        self.assertEqual(2, done.returncode)
+        self.assertIn(support.HOOK_REFUSED, done.stderr)
+        self.assertNotIn(support.HOOK_TRAILER, done.stderr)
+
     def test_removing_something_unmanaged_is_an_error(self) -> None:
         done = self.run_cli("remove", str(self.home / ".never-added"))
         self.assertEqual(2, done.returncode)
@@ -532,22 +560,17 @@ class TestTwoMachines(support.SandboxCase):
             self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 
     def repo_of(self, host: str) -> Path:
-        return self.homes[host] / ".local" / "share" / "tupferl" / "repo"
+        """Derived from the sandbox's own `XDG_DATA_HOME` rather than spelled out.
 
-    def gitconfig_for(self, host: str) -> str:
-        """A *complete* `~/.gitconfig`, identity included.
-
-        The obvious fixture writes only the line that differs per host — and
-        silently removes git's identity, so the very next commit fails with
-        "Author identity unknown". That is not a tupferl bug and it is a real
-        one: `.gitconfig` is the plan's own example of a host overlay (§3.3), so
-        the file this test manages is a file git itself is reading.
+        `paths.repo_dir()` cannot be used: it reads the ambient environment,
+        which here belongs to neither machine. Taking the base from the env this
+        fixture built leaves only `paths`' own suffix repeated.
         """
-        return f"[user]\n\tname = {host}\n\temail = {host}@example.invalid\n"
+        return Path(self.envs[host]["XDG_DATA_HOME"]) / "tupferl" / "repo"
 
     def test_each_host_writes_into_its_own_overlay(self) -> None:
         for host in ("laptop", "desktop"):
-            (self.homes[host] / ".gitconfig").write_text(self.gitconfig_for(host), "utf-8")
+            (self.homes[host] / ".gitconfig").write_text(support.gitconfig(host), "utf-8")
             done = support.run_cli(
                 ["add", "--host", str(self.homes[host] / ".gitconfig")], self.envs[host]
             )
@@ -565,7 +588,7 @@ class TestTwoMachines(support.SandboxCase):
         laptop = self.repo_of("laptop")
         theirs = paths.host_overlay(laptop, "desktop") / ".gitconfig"
         theirs.parent.mkdir(parents=True, exist_ok=True)
-        theirs.write_text(self.gitconfig_for("desktop"), encoding="utf-8")
+        theirs.write_text(support.gitconfig("desktop"), encoding="utf-8")
 
         done = support.run_cli(["list"], self.envs["laptop"])
         self.assertIn("nothing is managed", done.stdout)
@@ -573,10 +596,10 @@ class TestTwoMachines(support.SandboxCase):
     def test_an_overlay_replaces_the_shared_file_for_that_host(self) -> None:
         """Plan §3.3, from the listing's point of view: one name, marked."""
         laptop = self.repo_of("laptop")
-        (laptop / ".gitconfig").write_text(self.gitconfig_for("shared"), encoding="utf-8")
+        (laptop / ".gitconfig").write_text(support.gitconfig("shared"), encoding="utf-8")
         mine = paths.host_overlay(laptop, "laptop") / ".gitconfig"
         mine.parent.mkdir(parents=True, exist_ok=True)
-        mine.write_text(self.gitconfig_for("laptop"), encoding="utf-8")
+        mine.write_text(support.gitconfig("laptop"), encoding="utf-8")
 
         done = support.run_cli(["list"], self.envs["laptop"])
         self.assertEqual(1, done.stdout.count(".gitconfig"), done.stdout)

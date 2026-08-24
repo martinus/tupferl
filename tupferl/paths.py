@@ -36,9 +36,12 @@ ENV_KEYS = (
 )
 
 #: The directory inside the repository that belongs to tupferl rather than to the
-#: user's dotfiles. One constant because three modules need to *exclude* it when
-#: walking managed files, and a walk that forgets would manage tupferl's own
+#: user's dotfiles: settings, host overlays, and from milestone 3 the sync
+#: snapshots. A constant because a walk that forgot it would manage tupferl's own
 #: state as if it were a dotfile.
+#:
+#: One module excludes it today, `manifest._under`. This said "three modules"
+#: when it was written, which was before any of them existed.
 META = ".tupferl"
 
 

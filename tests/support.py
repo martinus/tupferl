@@ -113,6 +113,18 @@ def sandbox_env(home: Path, host: str = HOST) -> dict[str, str]:
     }
 
 
+def gitconfig(host: str) -> str:
+    """A complete `~/.gitconfig` for `host` -- identity included.
+
+    Shared with the tests that *manage* `.gitconfig` as a dotfile, which is plan
+    §3.3's own example of a host overlay. Writing only the line that differs per
+    host silently removes git's identity, and the next commit fails with "Author
+    identity unknown" -- so the fixture and the subject need the same generator,
+    or one of them is a trap.
+    """
+    return f"[user]\n\tname = {host}\n\temail = {host}@example.invalid\n"
+
+
 def seed_home(home: Path, host: str = HOST) -> None:
     """Make `home` look like a real one: the directories, and git's identity.
 
@@ -124,10 +136,7 @@ def seed_home(home: Path, host: str = HOST) -> None:
     for part in (".local/share", ".local/state", ".config"):
         (home / part).mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
-        "[user]\n"
-        f"\tname = {host}\n"
-        f"\temail = {host}@example.invalid\n"
-        "[init]\n"
+        gitconfig(host) + "[init]\n"
         # Written down rather than left to git: the default changed between git
         # versions, so a test that names a branch would pass on one machine and
         # fail on another for a reason invisible in its own text.
@@ -183,6 +192,14 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
     return done.stdout.strip()
 
 
+#: What the refusing hook writes. Two lines: the first is the reason, the second
+#: is the trailer `gitrepo.reason` must drop -- which is the shape git's own
+#: failures have, and the shape that told `doctor` and `init` apart from each
+#: other's bugs.
+HOOK_REFUSED = "refusing: policy check failed"
+HOOK_TRAILER = "see docs/policy.md"
+
+
 def break_commits(home: Path) -> None:
     """Make every subsequent `git commit` under `home` fail, on any platform.
 
@@ -202,7 +219,14 @@ def break_commits(home: Path) -> None:
     hooks = home / "hooks"
     hooks.mkdir(exist_ok=True)
     refuse = hooks / "pre-commit"
-    refuse.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    # Two lines on stderr, not silence. A real hook explains itself, and the
+    # *shape* matters to what tupferl prints: `gitrepo.reason` must reduce a
+    # multi-line complaint to the line that explains, so a fixture producing no
+    # output at all could not tell that from printing the whole blob.
+    refuse.write_text(
+        f"#!/bin/sh\necho '{HOOK_REFUSED}' >&2\necho '{HOOK_TRAILER}' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
     refuse.chmod(0o755)
     with (home / ".gitconfig").open("a", encoding="utf-8") as config:
         config.write(f"[core]\n\thooksPath = {hooks}\n")
