@@ -673,14 +673,20 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
     #: actual run rather than a stub: `check` refuses a path that is not there,
     #: and a report of nothing would not tell us the flag was honoured.
     #: `tests.test_merge` is eleven tests in 0.09s.
+    #:
+    #: One that is *caught*, deliberately. With a surviving row, a mutant that
+    #: forces confirmation on sends the `--json` test into a whole-suite re-run
+    #: and past the harness's 30s per-test alarm -- reported `BROKE`, which is no
+    #: verdict at all. Nothing here asserts on the survivor count, so the cheaper
+    #: row costs the tests nothing and gives the sweep two answers back.
     TABLE = (
         "from tools.mutants import Mutation\n"
         "MUTATIONS = [\n"
         "    Mutation(\n"
         '        label="probe",\n'
         '        path="tupferl/merge.py",\n'
-        '        old="PROBE = 8000",\n'
-        '        new="PROBE = 1",\n'
+        '        old="WHOLE_FILE = 1",\n'
+        '        new="WHOLE_FILE = 2",\n'
         '        tests="tests.test_merge",\n'
         "    )\n"
         "]\n"
@@ -746,3 +752,110 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
             self.assertTrue(
                 report.with_suffix(".json.done").is_file(), "the run left no done marker"
             )
+
+
+class TestWhatASpecFileExitsWith(unittest.TestCase):
+    """The exit status, and whether survivors get confirmed.
+
+    Eight mutants survived the first sweep of `_run_spec`, every one of them
+    here: the tests above stub `run` to read its kwargs, which cannot see what
+    the function *returns* or which branch it takes afterwards. A stub that
+    proves the wiring says nothing about the answer.
+    """
+
+    def spec(self, box: Path, old: str, new: str) -> Path:
+        where = box / "spec.py"
+        where.write_text(
+            "from tools.mutants import Mutation\n"
+            "MUTATIONS = [\n"
+            "    Mutation(\n"
+            '        label="probe",\n'
+            f'        path="tupferl/merge.py",\n'
+            f"        old={old!r},\n"
+            f"        new={new!r},\n"
+            '        tests="tests.test_merge",\n'
+            "    )\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        return where
+
+    def status(self, old: str, new: str, *flags: str) -> int:
+        with tempfile.TemporaryDirectory(prefix="tupferl-exit-") as name, support.quiet():
+            return mutate.main([str(self.spec(Path(name), old, new)), "--no-baseline", *flags])
+
+    #: A mutation `tests.test_merge` notices, and one it does not. Both were
+    #: measured rather than assumed: `PROBE` shrinking to 1 survives, which is
+    #: itself a fair finding about that constant and not this test's business.
+    CAUGHT = ("WHOLE_FILE = 1", "WHOLE_FILE = 2")
+    SURVIVES = ("PROBE = 8000", "PROBE = 1")
+
+    def test_a_caught_table_exits_zero(self) -> None:
+        self.assertEqual(0, self.status(*self.CAUGHT, "--no-confirm"))
+
+    def test_a_surviving_table_exits_one(self) -> None:
+        """The other half. Without it, "always returns 0" passes the test above
+        and a spec file full of decoration reports success."""
+        self.assertEqual(1, self.status(*self.SURVIVES, "--no-confirm"))
+
+    def test_survivors_are_confirmed_against_the_whole_suite_by_default(self) -> None:
+        """CLAUDE.md's promise about a survivor before it is reported. This path
+        never kept it, so `--no-confirm` turned off something that was not
+        happening."""
+        seen: list[bool] = []
+        real = mutate.confirm
+
+        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.append(True)
+            return real(report, *args, **kwargs)
+
+        with mock.patch.object(mutate, "confirm", watch):
+            self.status(*self.CAUGHT)
+        self.assertEqual([True], seen, "survivors were reported without being confirmed")
+
+    def test_confirmation_is_told_what_the_run_was_told(self) -> None:
+        """Its `baseline` comes from `--no-baseline` like the run's does. Nothing
+        looked at what `confirm` was handed, so a wiring that passed the flag
+        through un-negated -- checking a baseline the caller asked to skip --
+        went unnoticed."""
+        seen: dict[str, Any] = {}
+
+        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return report
+
+        with mock.patch.object(mutate, "confirm", watch):
+            self.status(*self.CAUGHT)
+        self.assertFalse(seen["baseline"], "confirmation re-checked a skipped baseline")
+
+    def test_no_confirm_really_turns_it_off(self) -> None:
+        """The precondition for the test above: if `confirm` ran either way, the
+        assertion there would hold against a wiring that ignored the flag."""
+        seen: list[bool] = []
+
+        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.append(True)
+            return report
+
+        with mock.patch.object(mutate, "confirm", watch):
+            self.status(*self.CAUGHT, "--no-confirm")
+        self.assertEqual([], seen, "--no-confirm confirmed anyway")
+
+
+class TestASpecFileWithNothingInIt(unittest.TestCase):
+    """A script that defines no table and never calls `verify` is a mistake, and
+    saying so is the only useful thing left to do.
+
+    Guarded because the branch that reaches it is one `if mutations:` away from
+    handing `None` to a function that expects a table -- which the sweep found
+    unguarded, and which would report the mistake as a traceback from inside the
+    harness rather than as the sentence that says what shape a spec file takes.
+    """
+
+    def test_it_says_what_a_spec_file_should_look_like(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tupferl-empty-") as name:
+            where = Path(name) / "spec.py"
+            where.write_text("x = 1\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as raised:
+                mutate.main([str(where)])
+        self.assertIn("MUTATIONS", str(raised.exception))
