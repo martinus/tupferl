@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -154,6 +155,68 @@ class TestGeneratingFromADiff(unittest.TestCase):
         self.assertFalse(mutants.mutable("tests/test_config.py"))
         self.assertTrue(mutants.mutable("tupferl/config.py"))
         self.assertTrue(mutants.mutable("tools/mutate.py"))
+
+
+class TestWhatASandboxDoesNotCopy(unittest.TestCase):
+    """#32: the sandbox copy must not race a directory something else is writing.
+
+    `_sandboxes` copies the working tree per lane. `.hypothesis` is created and
+    removed *by Hypothesis while the suite runs*, and `tools/run_tests.py` shards
+    across eight workers with this module starting the harness inside one of
+    them -- so `copytree` scanned `.hypothesis/tmp` and it was gone before the
+    copy. CI went red on PR #31, whose diff touched no file in `tools/`.
+
+    Driven against a real `_sandboxes` rather than by reading `_SKIP`: the
+    constant is the mechanism, and a test that asserted its *contents* would
+    pass against a `copytree` that had stopped passing it.
+    """
+
+    #: Every name `_SKIP` exists to keep out, and one that must survive.
+    #: `sweeps` and `.hypothesis` are #32's; the rest were already there and are
+    #: here so that dropping one is a failure rather than a silence.
+    KEPT_OUT = (".git", "__pycache__", ".mypy_cache", ".ruff_cache", ".hypothesis", "sweeps")
+    KEPT = "tupferl"
+
+    def sandbox(self, tree: Path) -> Path:
+        """One lane's copy of `tree`, through the real `_sandboxes`."""
+        with (
+            mock.patch.object(Path, "cwd", return_value=tree),
+            mutate._sandboxes(1) as available,
+        ):
+            borrowed = available.get()
+            copy = Path(str(borrowed))
+            # Read while it is still borrowed: the context manager removes
+            # the whole thing on the way out.
+            return Path(shutil.copytree(copy, tree.parent / "seen"))
+
+    def test_none_of_them_reaches_a_lane(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tupferl-skip-") as box:
+            tree = Path(box) / "tree"
+            (tree / self.KEPT).mkdir(parents=True)
+            (tree / self.KEPT / "__init__.py").write_text("", encoding="utf-8")
+            for name in self.KEPT_OUT:
+                (tree / name).mkdir()
+                (tree / name / "inside").write_text("x", encoding="utf-8")
+
+            copy = self.sandbox(tree)
+            for name in self.KEPT_OUT:
+                with self.subTest(name=name):
+                    self.assertFalse((copy / name).exists(), f"{name} was copied")
+            self.assertTrue((copy / self.KEPT / "__init__.py").is_file(), "the tree was not copied")
+
+    def test_a_nested_one_is_kept_out_too(self) -> None:
+        """`shutil.ignore_patterns` matches the base name at any depth. A
+        pattern that only applied at the root would leave this copied, and
+        nothing would notice until the next red leg."""
+        with tempfile.TemporaryDirectory(prefix="tupferl-skip-") as box:
+            tree = Path(box) / "tree"
+            deep = tree / self.KEPT / "somewhere" / ".hypothesis"
+            deep.mkdir(parents=True)
+            (deep / "tmp").write_text("x", encoding="utf-8")
+
+            copy = self.sandbox(tree)
+            self.assertTrue((copy / self.KEPT / "somewhere").is_dir(), "the tree was not copied")
+            self.assertFalse((copy / self.KEPT / "somewhere" / ".hypothesis").exists())
 
 
 if __name__ == "__main__":
