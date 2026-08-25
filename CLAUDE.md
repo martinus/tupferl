@@ -493,11 +493,19 @@ Four things are not where a newcomer would guess, all on purpose:
   test no longer cares — but the general hazard stands for any fixture about
   signals, and a POSIX shell **cannot** reset a signal it inherited as ignored.
 - **A mutation sweep is minutes to hours.** Launch it detached, record the pid,
-  and watch it with `tools/watch.py` — never answer "is it stuck?" with `pgrep
-  -f`, whose pattern matches the asking shell's own command line. Point
-  `--done` at `<json>.done`, never at the `--json` report, which under `--batch`
-  and `--all` is rewritten after every file and so exists long before the run
-  ends.
+  and watch it with `tools/watch.py` — never identify the job by pattern.
+  `pgrep -f` matches the asking shell's own command line, which reported a dead
+  sweep alive twice in one session; and run a moment after `setsid`, it matched
+  a transient pid instead of the sweep's, so a watcher armed with it announced
+  a live sweep dead at 78 of 806 rows. **A pattern is not an identity, and it
+  fails in both directions** — the second is the one that reads as a real
+  failure and sends you looking for a crash that never happened. `setsid …
+  &` does not hand back the sweep's pid in `$!` the way plain `&` does, which is
+  exactly when reaching for `pgrep` is tempting; read the pid out of the sweep's
+  own output or `--json` path instead, and verify `kill -0` on it before
+  trusting a watcher. Point `--done` at `<json>.done`, never at the `--json`
+  report, which under `--batch` and `--all` is rewritten after every file and so
+  exists long before the run ends.
 - **git never starts `receive-pack` for an up-to-date push**, so no hook on the
   remote can observe one: it compares the ref advertisement first and prints
   "Everything up-to-date". A `pre-receive` hook counting pushes therefore reports
