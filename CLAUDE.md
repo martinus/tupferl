@@ -460,6 +460,15 @@ Four things are not where a newcomer would guess, all on purpose:
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.
+- **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
+  and a process started that way passes the *ignored* disposition to every
+  descendant — so `tests/test_merge.py`'s stub, which killed itself with SIGHUP
+  to produce an exit status of `-1`, silently exited 0 instead. The sweep's
+  baseline then went red on a file the change never touched, and every verdict
+  in it was void. Use `setsid`, or the shell's own backgrounding with output
+  redirected. The stub restores `SIG_DFL` itself since v0.5, so this particular
+  test no longer cares — but the general hazard stands for any fixture about
+  signals, and a POSIX shell **cannot** reset a signal it inherited as ignored.
 - **A mutation sweep is minutes to hours.** Launch it detached, record the pid,
   and watch it with `tools/watch.py` — never answer "is it stuck?" with `pgrep
   -f`, whose pattern matches the asking shell's own command line. Point
