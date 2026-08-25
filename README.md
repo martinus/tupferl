@@ -227,7 +227,10 @@ needs the environment variable.
 
 - Python 3.10 or newer. On 3.10 the `tomli` backport is installed for you;
   3.11+ uses the standard library's `tomllib`.
-- `git` on `PATH`.
+- **git 2.25 or newer** on `PATH` (January 2020). The floor is
+  `git add --pathspec-from-file`, which tupferl uses so that adding tens of
+  thousands of files at once cannot exceed the kernel's argument limit.
+  `tupferl doctor` checks it and names the version it found.
 - Linux or macOS. Windows is explicitly out of scope for version 1.
 
 ## Development

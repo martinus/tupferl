@@ -654,6 +654,24 @@ Five things are not where a newcomer would guess, all on purpose:
   three between its first and last lines. A test about a *count* of conflicts
   therefore wants a longer file; written on `START` it reports 1 and reads as
   a bug in the counting.
+- **`text=True` encodes stdin and argv by different rules.** `subprocess`
+  encodes an argv list with the filesystem encoding and `surrogateescape`, so a
+  path that is not valid UTF-8 goes through; it encodes `input=` with the
+  *stream's* handler, which is strict by default and raises
+  `UnicodeEncodeError`. That is a `ValueError`, so it sails past every `except`
+  arm in `gitrepo.git` — the class of escape #3 exists to close, reintroduced
+  by #3's own fix when `stage` moved its pathspecs to stdin. `git()` passes
+  `errors="surrogateescape"`, which answers the decoding half too. A dotfile
+  name need not be valid UTF-8 on Linux, and `TestAPathThatIsNotUtf8` has both
+  directions.
+- **A test about an argument-list limit wants long paths, not many files.**
+  `ARG_MAX` bounds bytes, so 4 600 paths of ~485 clear it where 40 000 short
+  ones also would — and the 40 000 version took over 30 seconds, tripping
+  `gitrepo.TIMEOUT` and failing for a reason unrelated to the fix. But not too
+  long either: **macOS's `PATH_MAX` is 1024**, a quarter of Linux's 4096, so a
+  component chain sized for Linux cannot be *created* on the macos leg and the
+  test errors rather than tests there. Assert the fixture's own byte total
+  before staging; that assertion caught a 20% miscount while it was written.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every
