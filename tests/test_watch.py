@@ -32,6 +32,12 @@ from tools import watch
 
 ANY = re.compile(".")
 
+#: Seconds one `python -m tools.watch` invocation may take before a test calls
+#: it hung. Between the ~10s the two pidfile tests legitimately spend and
+#: `tools/mutate.py`'s 30s per-test alarm -- see `TheCommandLine.ran` for why
+#: both bounds matter and why equalling the second one is useless.
+BOUND = 20
+
 
 class Fixture(unittest.TestCase):
     """A scratch log and report path, and a way to make a pid that is really gone."""
@@ -520,9 +526,21 @@ class TestTheCommandLine(Fixture):
         mutation run of this file spent ten minutes on its last ten rows for
         exactly that reason, with the tool's own per-mutant timeout the only
         thing left to catch them.
+
+        **The number has to beat the harness's, not merely exist.** It was 30
+        here and `tools/mutate.py`'s per-test alarm is also 30, so the two fired
+        together and the alarm won often enough that seven mutants of `main` and
+        `alive` came back `BROKE` -- and `BROKE` is never `caught`, so those
+        lines were left unguarded by a bound written to guard them. Measured on
+        this branch: 7 BROKE at 30s.
+
+        `BOUND` sits above the longest honest wait here and below the alarm. The
+        two tests that wait for a pidfile that never comes take just over 10s by
+        design, so anything at or under that would fail them for being slow
+        rather than for hanging.
         """
         return subprocess.run(
-            self.command(*extra), cwd=self.repo, capture_output=True, text=True, timeout=30
+            self.command(*extra), cwd=self.repo, capture_output=True, text=True, timeout=BOUND
         )
 
     def test_it_exits_zero_when_the_job_finished(self) -> None:
