@@ -295,6 +295,51 @@ class TestTheCommandLine(unittest.TestCase):
         self.assertRegex(done.stdout, r"2\s+a/one\.py")
         self.assertRegex(done.stdout, r"1\s+b/two\.py")
 
+    def test_the_unreached_tally_is_ordered_by_count_then_path(self) -> None:
+        """The tally above asserts each line independently, so *any* order
+        satisfies it. This asserts the sequence.
+
+        The fixture is built to separate four different wrong answers at once,
+        which is why the counts and the insertion order disagree with the
+        expected order on purpose:
+
+        - printed in insertion order (`sorted` dropped) -> z, a, m
+        - printed in reverse -> z, a, m
+        - ordered by ascending count -> a or z first
+        - tie-broken by the count again instead of the path -> m, z, a
+
+        The right answer is m, a, z, and none of those four produces it.
+        """
+        done = self.run_it(
+            results(
+                ("z/late.py", 1, "survived"),
+                ("a/early.py", 1, "survived"),
+                ("m/most.py", 1, "survived"),
+                ("m/most.py", 2, "survived"),
+                ("m/most.py", 3, "survived"),
+            ),
+            coverage(),
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tally = [
+            line.split()[1]
+            for line in done.stdout.splitlines()
+            if line.startswith("  ") and line.strip().split()[0].isdigit()
+        ]
+        self.assertEqual(["m/most.py", "a/early.py", "z/late.py"], tally, done.stdout)
+
+    def test_a_run_where_something_was_answered_does_not_say_otherwise(self) -> None:
+        """The other half of "nothing was answered". With `any` read as `all`,
+        the message appears for every run that has a single unanswered row in
+        it -- which is most of them -- and a real partition is printed under a
+        line saying no partition is possible."""
+        done = self.run_it(
+            results(("a/b.py", 10, "broke"), ("a/b.py", 11, "survived")),
+            coverage(a__b=[]),
+        )
+        self.assertNotIn("nothing was answered", done.stdout)
+        self.assertEqual(self.counts(done.stdout)["SURVIVED"], 1, done.stdout)
+
     def test_a_run_where_nothing_was_answered_says_so(self) -> None:
         """All broke: there is no partition, and printing 0 and 0 would read as
         a clean bill of health."""
