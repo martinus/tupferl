@@ -70,31 +70,51 @@ SLEPT = 0.2
 BOUND = 20
 
 
-def enforced() -> bool:
-    """Whether this kernel actually *applies* `RLIMIT_AS`, asked by trying it.
+def address_space_caps() -> bool:
+    """Whether `RLIMIT_AS` can be set here *and* is applied. Asked by trying.
 
-    macOS largely does not -- `tools/verdict.py`'s own docstring records that CI
-    discovered this rather than the documentation -- and CI has a macOS leg. A
-    test that allocates until the cap stops it would there allocate until the
-    subprocess timeout instead and go red for the platform rather than for the
-    code.
+    Three ways it can be unusable, and this run must tell them apart from a
+    working one rather than from each other:
 
-    Asked by trying rather than by reading `sys.platform`, so the guarantee is
-    tested wherever it really holds and skipped where it does not. Only the one
-    test that relies on the *consequence* needs this; the arithmetic tests read
-    `getrlimit` back, which works everywhere.
+    - `setrlimit` is refused outright (macOS refuses `RLIMIT_AS`);
+    - it is accepted and not reflected by `getrlimit`;
+    - it is accepted, reflected, and simply not enforced when memory is asked
+      for -- which `tools/verdict.py`'s own docstring records CI discovering
+      rather than the documentation.
+
+    The first draft of this asked only "did the probe exit non-zero", which is
+    true of a refused `setrlimit` as well as of a refused *allocation* -- so on
+    macOS it answered "enforced" and let five tests through to fail. A probe
+    that cannot tell its own failure from the failure it is probing for is the
+    §8 shape in miniature, so this one prints a marker and the caller looks for
+    exactly that.
+
+    Asked by trying rather than by reading `sys.platform`: the guarantee is then
+    tested wherever it really holds and skipped where it does not.
     """
     probe = (
         "import resource\n"
-        "resource.setrlimit(resource.RLIMIT_AS, (64 << 20, resource.RLIM_INFINITY))\n"
-        "bytearray(256 << 20)\n"
+        "want = 64 << 20\n"
+        "hard = resource.getrlimit(resource.RLIMIT_AS)[1]\n"
+        "resource.setrlimit(resource.RLIMIT_AS, (want, hard))\n"
+        "assert resource.getrlimit(resource.RLIMIT_AS)[0] == want\n"
+        "try:\n"
+        "    bytearray(256 << 20)\n"
+        "except MemoryError:\n"
+        "    print('applied')\n"
     )
-    return (
-        subprocess.run(
-            [sys.executable, "-B", "-c", probe], capture_output=True, timeout=30
-        ).returncode
-        != 0
-    )
+    try:
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", probe], capture_output=True, text=True, timeout=30
+        )
+    except subprocess.SubprocessError:  # pragma: no cover - a machine in trouble
+        return False
+    return done.stdout.strip() == "applied"
+
+
+#: Computed once. The probe forks, and gating two classes on it would otherwise
+#: pay for that at import *and* at every decorated method.
+CAPS = address_space_caps()
 
 
 class Probe(unittest.TestCase):
@@ -472,7 +492,19 @@ class TestACarrierThatDidNotAssert(Probe):
         self.assertEqual([], found["noticed"], "a hung subTest was credited with an answer")
         self.assertEqual(1, len(found["broke"]))
 
-    @unittest.skipUnless(enforced(), "this kernel does not apply RLIMIT_AS")
+
+@unittest.skipUnless(CAPS, "RLIMIT_AS is not usable here")
+class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
+    """The `_carrier` arm that needs the cap *enforced* rather than merely set.
+
+    Its own class so that a runner where `RLIMIT_AS` does not work can name
+    it to `--exclude` without losing the three tests beside it in
+    `TestACarrierThatDidNotAssert`, which need no such thing. `--no-skips`
+    exists to catch a suite quietly doing nothing, so a suite that *cannot*
+    run somewhere is named in the workflow rather than opting itself out --
+    the convention `tests/test_gitrepo.py`'s non-UTF-8 class already set.
+    """
+
     def test_a_test_that_exhausts_the_cap_is_broken_not_caught(self) -> None:
         """`cap` bounds address space, and a `MemoryError` raised inside a test
         arrives at `addError` looking exactly like an assertion.
@@ -720,6 +752,7 @@ class TestWhenTheToolItselfCannotRun(Probe):
         self.assertTrue(self.verdict("test_a")["loaded"])
 
 
+@unittest.skipUnless(CAPS, "RLIMIT_AS is not usable here")
 class TestTheMemoryCapsArithmetic(Probe):
     """`cap`'s four cases, asserted on the rlimit it sets rather than on a
     runaway allocation dying.
@@ -738,6 +771,13 @@ class TestTheMemoryCapsArithmetic(Probe):
     Reading `getrlimit` back is immediate and exact, and it distinguishes every
     branch. A child process each time, because `setrlimit` is not undoable
     upward once lowered.
+
+    **This class only runs where `RLIMIT_AS` is usable, which today means
+    Linux.** macOS refuses to set it at all and reports an unlimited ceiling as
+    `sys.maxsize` rather than `RLIM_INFINITY`; CI is what said so, twice. A
+    green macOS leg is therefore not evidence that any of this holds -- see
+    `address_space_caps`, and CLAUDE.md §2 on labelling a test that can only
+    fail on one platform.
     """
 
     #: Comfortably larger than anything the child allocates, and small enough
@@ -762,9 +802,15 @@ class TestTheMemoryCapsArithmetic(Probe):
         the existing one straight back to `setrlimit` -- so the ceiling this is
         restoring to is still there.
         """
+        # `(hard, hard)`, not `(RLIM_INFINITY, hard)`. macOS reports an
+        # unlimited ceiling as `sys.maxsize` rather than as `RLIM_INFINITY`
+        # (which is `-1`), so asking for `-1` against that hard limit is
+        # "current limit exceeds maximum limit" and the child dies. Raising
+        # soft to whatever hard actually says is legal everywhere and clears an
+        # inherited cap just as well.
         setup = (
             "hard = resource.getrlimit(resource.RLIMIT_AS)[1]\n"
-            "resource.setrlimit(resource.RLIMIT_AS, (resource.RLIM_INFINITY, hard))\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (hard, hard))\n"
         )
         if soft is not None:
             setup += f"resource.setrlimit(resource.RLIMIT_AS, ({soft}, {hard}))\n"

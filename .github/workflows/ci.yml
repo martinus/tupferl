@@ -92,10 +92,21 @@ jobs:
       - run: pip install -e .[test]
       # `--exclude`, not a skip: `--no-skips` exists to catch a test that quietly
       # does nothing, so a suite that *cannot* run here has to be named here
-      # rather than opt itself out. APFS and HFS+ reject a filename that is not
-      # valid UTF-8, so that fixture cannot be built on this runner at all --
-      # see the class's own docstring.
-      - run: python -m tools.run_tests --no-skips --exclude tests.test_gitrepo.TestAPathThatIsNotUtf8
+      # rather than opt itself out. Each class below carries the reason in its
+      # own docstring:
+      #
+      # - APFS and HFS+ reject a filename that is not valid UTF-8, so that
+      #   fixture cannot be built on this runner at all;
+      # - macOS refuses `setrlimit(RLIMIT_AS, ...)` outright and reports an
+      #   unlimited ceiling as `sys.maxsize` rather than `RLIM_INFINITY`, so
+      #   neither the arithmetic nor the enforcement of `verdict.cap` can be
+      #   observed here. `tools/verdict.py` has said macOS ignores that limit
+      #   since it was written; this is the first suite that depends on it.
+      - run: >
+          python -m tools.run_tests --no-skips
+          --exclude tests.test_gitrepo.TestAPathThatIsNotUtf8
+          --exclude tests.test_verdict.TestTheMemoryCapsArithmetic
+          --exclude tests.test_verdict.TestAnOutOfMemoryTestIsNotAnAnswer
 
   install:
     # Plan §6: the install a user actually performs. Not `pip install -e .`,
