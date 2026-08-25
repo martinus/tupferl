@@ -29,9 +29,14 @@ repository at all, and by `test_manage` through what `tupferl list` prints --
 and its *consequence for the file in `$HOME`* was not. Those are the two
 different questions plan §7.4.3 and §3.3 respectively ask.
 
-`tests/test_manage.py` keeps the listing side: `(host)` in `add`'s output, the
-counts, and one host not seeing another's overlay. What is here is what happens
-on disk during a `sync`, and what `remove --host` does.
+`tests/test_manage.py` covers the listing side against a repository built by
+hand -- `(host)` in `add`'s output, the counts, one host not seeing another's
+overlay. The one test here that also looks at `list`
+(`test_neither_overlay_is_offered_to_the_other_machine_as_managed`) is the
+stronger of the pair, because the foreign overlay arrives through a real `sync`
+rather than being planted; the hand-planted version is left alone as out of
+scope. Everything else here is what happens on disk during a `sync`, and what
+`remove --host` does.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from __future__ import annotations
 import shutil
 
 from tests import support
+from tupferl import paths
 
 #: The three versions of `.bashrc` this module works with. Distinct on every
 #: line that matters, so an assertion that the wrong one arrived cannot pass by
@@ -117,8 +123,11 @@ class TestReplacementWins(OverlaidOnB):
         with nothing but its hostname and the remote URL.
         """
         shutil.rmtree(self.second.home)
-        self.second.home.mkdir()
-        support.seed_home(self.second.home, self.second.name)
+        # Rebuilt through `Computer` rather than by repeating its first three
+        # statements here: a machine brought up any other way stops resembling
+        # the ones the rest of the suite uses the moment that constructor grows
+        # a fourth step, and nothing in this test's text would show it.
+        self.second = support.Computer(self.tmp, self.second.name)
 
         self.assertEqual(0, self.second.call("init", str(self.remote)))
         self.assertEqual(OVERLAY, self.second.read(".bashrc"))
@@ -128,7 +137,12 @@ class TestReplacementWins(OverlaidOnB):
         its repository. It must still be using the shared version."""
         self.assertEqual(0, self.first.call("sync"))
         self.assertEqual(SHARED, self.first.read(".bashrc"))
-        theirs = self.first.repo / ".tupferl" / "hosts" / "machine-b" / ".bashrc"
+        # Asked of `paths`, not spelled out. This is the only assertion in the
+        # file about the *other* machine's copy of an overlay, so it is the only
+        # guard that overlays are pushed at all -- and a literal `.tupferl/hosts`
+        # would go red pointing at the wrong thing if the layout ever moved,
+        # with retyping the literal as the obvious repair.
+        theirs = paths.host_overlay(self.first.repo, self.second.name) / ".bashrc"
         self.assertTrue(theirs.is_file(), "machine-b's overlay never reached machine-a")
 
 
