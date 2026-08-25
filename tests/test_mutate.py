@@ -32,6 +32,13 @@ from tests import support
 from tools import mutants, mutate, verdict
 from tools.mutants import Mutation, check
 
+#: Seconds a driven probe may take before a test calls it hung. Above the ~2s
+#: an honest `collect(2)` spends and well below `tools/mutate.py`'s `EACH_TEST`
+#: of 30 -- see `TestAHungTestIsBoundedAndNotCredited.collect` for what happens
+#: when it is not, and `tests/test_watch.py` for the same constant and the same
+#: two bounds it has to sit between.
+BOUND = 20
+
 #: The deliberate bug: `tupferl/config.py` stops refusing keys it does not know.
 #: The same row appears in `tools/mutate.py`'s module docstring as the example,
 #: so a change to either line is caught here rather than by a reader noticing
@@ -338,7 +345,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
     def collect(
         self,
         each: float,
-        wait: float = 60,
+        wait: float = BOUND,
         first: str = "",
         names: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
@@ -348,6 +355,21 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         memory, per-test seconds, the prefix, then the selection. Spelling it out
         here is what made a protocol change visible -- when `first` gained its
         own slot, this helper's selection slid into it and the module ran twice.
+
+        **`wait` was 60, which is twice `EACH_TEST`.** The two callers that use
+        the default arm a 2s per-test alarm, so an honest run here takes about
+        two seconds -- but a mutant that disables that alarm leaves the fifo read
+        blocking, and at 60 the harness's own 30s alarm fired first. Measured:
+        seven mutants of `verdict.py`'s alarm (`each_test`, `startTest`'s
+        `setitimer`, `build`'s `made.each`) came back `BROKE`, and `BROKE` is
+        never `caught` -- so the lines this class exists to guard were unguarded
+        by the very bound written to guard them.
+
+        That is the third instance of one mistake here, after
+        `tests/test_watch.py`'s `ran` (30, equal to the alarm) and its two inline
+        `subprocess.run` calls (60). Each was written deliberately to bound a
+        hang, and each picked a number without checking it against the
+        harness's.
         """
         with support.tempdir() as box:
             (box / "tests").mkdir()
@@ -934,7 +956,14 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
             self.assertIn("dedicated", mutate._why())
         with mock.patch.dict(os.environ, {mutate._TOTAL: "123"}, clear=True):
-            self.assertEqual("--budget", mutate._why())
+            # `mutate._TOTAL`, not the literal. This asserted `"--budget"` and
+            # passed for a release, naming a flag the parser has never had --
+            # so someone reading the printed line and typing it got
+            # "unrecognized arguments". A test that pins prose has to pin it
+            # against the thing it describes, or it guards the wrong name just
+            # as firmly as the right one.
+            self.assertEqual(mutate._TOTAL, mutate._why())
+            self.assertIn(mutate._TOTAL, mutate._why())
 
 
 class TestReadingACgroupLimit(unittest.TestCase):
