@@ -116,7 +116,10 @@ def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
     """
     staged = gitrepo.stage(repo, paths_)
     if not staged.ok:
-        raise TupferlError(f"could not stage {doing} in {repo}: {gitrepo.reason(staged)}")
+        raise TupferlError(
+            f"could not stage {doing} in {repo}: {gitrepo.reason(staged)}; nothing was "
+            f"committed, so run `tupferl doctor` and try again."
+        )
     if not gitrepo.staged(repo):
         # Asked rather than assumed, for `sync`: it stages every file it looked
         # at, including the ones it decided nothing about, so that a copy left
@@ -129,7 +132,10 @@ def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
         return False
     made = gitrepo.commit(repo, message)
     if not made.ok:
-        raise TupferlError(f"could not commit {doing} in {repo}: {gitrepo.reason(made)}")
+        raise TupferlError(
+            f"could not commit {doing} in {repo}: {gitrepo.reason(made)}; the files are "
+            f"staged, so fix that and run `tupferl sync`, which commits what it finds."
+        )
     return True
 
 
@@ -226,7 +232,10 @@ def add(wanted: list[str], to_host: bool) -> int:
     for skip in refused:
         print(f"skipped {skip.path}: {skip.why}")
     if not admitted:
-        raise TupferlError("nothing to add: every path given was skipped.")
+        raise TupferlError(
+            "nothing to add: every path given was skipped for the reason printed above "
+            "it; name a file tupferl can store."
+        )
 
     snapshots = paths.snapshot_dir(repo, host)
     touched: list[PurePosixPath] = []

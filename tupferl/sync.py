@@ -433,7 +433,10 @@ def undone(repo: Path, why: str) -> NoReturn:
     merge was undone" is what tells them they may simply sync again.
     """
     gitrepo.abort_merge(repo)
-    raise TupferlError(f"{why}; the merge was undone, so nothing is half-done.")
+    raise TupferlError(
+        f"{why}; the merge was undone, so nothing is half-done -- run `tupferl doctor`, "
+        f"then sync again."
+    )
 
 
 def held(repo: Path, number: int, name: str, modes: dict[int, int]) -> Blob | None:
@@ -524,7 +527,15 @@ def reconcile(repo: Path, settler: conflicts.Settler) -> list[str]:
         return left
     staged = gitrepo.stage(repo, [repo / name for name in gitrepo.conflicted(repo)])
     if not staged.ok:
-        raise TupferlError(f"could not stage the settled files: {gitrepo.reason(staged)}")
+        # "the merge was undone" is true because `integrate` is this function's
+        # only caller and its `finally` aborts whatever raises out of here. Said
+        # rather than done: aborting here as well would leave two `merge --abort`
+        # calls for one merge, the second of which fails for no reason anyone
+        # reading the code could see.
+        raise TupferlError(
+            f"could not stage the settled files: {gitrepo.reason(staged)}; the merge was "
+            f"undone, so run `tupferl doctor` and sync again."
+        )
     return []
 
 
