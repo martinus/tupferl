@@ -20,6 +20,14 @@ their own answers to the third.
 in `$HOME`, which is the usual case -- but the reason someone reaches for it is
 often that they deleted the file already and want the repository to stop pushing
 it to their other machine. Requiring existence would refuse exactly then.
+
+**`remove --host` is the only way back out of a host overlay**, and it is a
+different operation from `remove` rather than a narrower one. Plain `remove`
+stops managing the file *everywhere*, which for someone who only wanted to stop
+overriding it on this machine deletes the shared copy every other machine is
+using. Plan §7.4.3 asks for "add/remove with `--host`" by name; plan §4's table
+mentions the flag only on `add`, so this is the testing section read as the
+authority. See `remove` for what the two do.
 """
 
 from __future__ import annotations
@@ -251,12 +259,28 @@ def count(many: int) -> str:
     return "1 file" if many == 1 else f"{many} files"
 
 
-def remove(wanted: str) -> int:
+def remove(wanted: str, from_host: bool) -> int:
     """Stop managing a file, leaving it in `$HOME`.
 
-    Removes it from the shared tree *and* this host's overlay when both hold it.
-    Removing only one would leave the file still managed by the other, which
-    reads as the command having failed silently.
+    Without `--host`, removes it from the shared tree *and* this host's overlay
+    when both hold it. Removing only one would leave the file still managed by
+    the other, which reads as the command having failed silently.
+
+    With `--host`, removes *only* this host's overlay and leaves the shared copy
+    alone -- "stop overriding this here", which plain `remove` cannot express
+    because it would take the shared copy every other machine uses with it.
+
+    **The snapshot is deliberately not touched**, and that is what makes the
+    next sync do the right thing rather than ask. After an overlay is dropped,
+    `$HOME` still holds what the overlay put there and the snapshot still
+    records it, so `resolve` sees `$HOME` unchanged and copies the shared
+    version down -- one side changed, no merge, no prompt (and `sync` backs the
+    replaced file up on the way, so the overlay's content is still recoverable).
+    Delete the snapshot here and the same sync has no merge base, so it merges
+    the overlay against the shared file and hands the user a conflict about a
+    file they just said they had no opinion on. When the shared copy does not
+    exist either, the file simply stops being managed and `sync.stale` prunes
+    the snapshot on its own.
     """
     repo, config = open_repo()
     home = paths.home()
@@ -270,16 +294,56 @@ def remove(wanted: str) -> int:
             f"{path} is outside {home}, so it was never managed; name a file under it."
         ) from None
 
-    gone = [where / name for where in manifest.roots(repo, host) if (where / name).is_file()]
+    tree, overlay = manifest.roots(repo, host)
+    # Before the unlink loop, because without `--host` that loop deletes this
+    # very file. It is unobservable either way today -- `said` ignores the
+    # argument in exactly that branch -- but a value that is only right because
+    # nobody reads it is one that becomes wrong the day somebody does.
+    shared = (tree / name).is_file()
+
+    searched = [overlay] if from_host else [tree, overlay]
+    gone = [where / name for where in searched if (where / name).is_file()]
     if not gone:
-        raise TupferlError(f"{name} is not managed; `tupferl list` shows what is.")
+        raise TupferlError(
+            f"{name} is not in {host}'s overlay; `tupferl list` marks the files that are."
+            if from_host
+            else f"{name} is not managed; `tupferl list` shows what is."
+        )
     for where in gone:
         where.unlink()
         prune(where.parent, repo)
 
-    record(repo, gone, describe("remove", [name], host), "the removal")
-    print(f"removed {name} from the repository; the file in {home} was not touched")
+    what = "remove overlay" if from_host else "remove"
+    record(repo, gone, describe(what, [name], host), "the removal")
+    print(said(name, home, host, from_host, shared))
     return 0
+
+
+def said(name: PurePosixPath, home: Path, host: str, from_host: bool, shared: bool) -> str:
+    """What `remove` printed, which is the only place the user learns the difference.
+
+    Each of the three sentences ends with what happens to the file in `$HOME`,
+    because that is the question the word "remove" raises and the one the user
+    is about to check for themselves.
+
+    **"will replace" is an approximation, named here rather than hedged in the
+    message.** It is exact when `$HOME` still matches the snapshot, which is the
+    case someone who has just stopped overriding a file is in. With an unsynced
+    edit pending, the next sync merges the two instead -- or reports a conflict
+    if the edit overlaps what the override changed. Nothing is lost in either
+    case, and a sentence qualified for both would stop being read.
+    """
+    if not from_host:
+        return f"removed {name} from the repository; the file in {home} was not touched"
+    if shared:
+        return (
+            f"removed {name} from {host}'s overlay; the shared version will replace "
+            f"the one in {home} on the next sync"
+        )
+    return (
+        f"removed {name} from {host}'s overlay, and nothing else manages it here; "
+        f"the file in {home} was not touched"
+    )
 
 
 def prune(where: Path, repo: Path) -> None:

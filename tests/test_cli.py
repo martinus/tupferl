@@ -145,6 +145,16 @@ class TestTheFlags(unittest.TestCase):
     def test_add_without_the_host_flag_is_the_shared_version(self) -> None:
         self.assertFalse(self.parse(["add", "~/.bashrc"]).host)
 
+    def test_remove_takes_one_path_and_the_host_flag(self) -> None:
+        """The same flag name as `add`, meaning the same thing: this machine's
+        overlay rather than the shared tree."""
+        args = self.parse(["remove", "--host", "~/.gitconfig"])
+        self.assertTrue(args.host)
+        self.assertEqual("~/.gitconfig", args.path)
+
+    def test_remove_without_the_host_flag_parses_as_false(self) -> None:
+        self.assertFalse(self.parse(["remove", "~/.gitconfig"]).host)
+
     def test_sync_takes_the_scripted_resolution_flags(self) -> None:
         self.assertTrue(self.parse(["sync", "--ours"]).ours)
         self.assertTrue(self.parse(["sync", "--theirs"]).theirs)

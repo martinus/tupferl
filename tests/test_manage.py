@@ -625,7 +625,7 @@ class TestTheExitStatusEachCommandReturns(Machine):
     def test_remove(self) -> None:
         self.quietly(lambda: manage.init(str(self.remote)))
         self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False))
-        self.assertEqual(0, self.quietly(lambda: manage.remove(str(self.home / ".bashrc"))))
+        self.assertEqual(0, self.quietly(lambda: manage.remove(str(self.home / ".bashrc"), False)))
 
     def test_list_when_empty(self) -> None:
         self.quietly(lambda: manage.init(str(self.remote)))

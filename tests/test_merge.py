@@ -14,6 +14,7 @@ them is here because it decides something the sync engine does:
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from unittest import mock
 
@@ -147,7 +148,22 @@ class TestAGitThatDiedRatherThanAnswered(unittest.TestCase):
         """
         with support.tempdir() as box:
             stub = box / "git"
-            stub.write_text("#!/bin/sh\nkill -HUP $$\n", encoding="utf-8")
+            # Python rather than `#!/bin/sh\nkill -HUP $$`, and the reason is a
+            # real one: a signal ignored on entry to a non-interactive shell
+            # cannot be reset by it (POSIX), and `nohup` ignores SIGHUP and
+            # passes that disposition to every descendant. Launch a mutation
+            # sweep under `nohup` and the stub's kill is a no-op, `sh` exits 0,
+            # and this test fails -- which voids a whole sweep and blames a file
+            # nothing touched. A process may always change its *own* handler, so
+            # restoring SIG_DFL first makes the fixture independent of how the
+            # suite was started.
+            stub.write_text(
+                f"#!{sys.executable}\n"
+                "import os, signal\n"
+                "signal.signal(signal.SIGHUP, signal.SIG_DFL)\n"
+                "os.kill(os.getpid(), signal.SIGHUP)\n",
+                encoding="utf-8",
+            )
             stub.chmod(0o755)
             with mock.patch.dict(os.environ, {"PATH": f"{box}:{os.environ['PATH']}"}):
                 self.assertEqual(-1, gitrepo.git(["merge-file"]).code)
