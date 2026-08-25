@@ -333,14 +333,12 @@ class TestReadingAConflictedIndex(support.SandboxCase):
         )
 
 
-class TestReadingTheStagesOfAConflict(support.SandboxCase):
-    """`gitrepo.conflicted`, asked directly.
+class ConflictedIndex(support.SandboxCase):
+    """A repository left mid-merge, for the two classes that read its index.
 
-    It had no test of its own: everything reached it through `sync`, which is why
-    the `-z` parsing, the missing-stage case and the non-UTF-8 path all went
-    unnoticed until a review. The modes it returns decide whether a settled file
-    keeps its executable bit and whether it is written at all, so they are worth
-    asking about here rather than three layers up.
+    Not a `Test...` class and holding no tests of its own: subclassing one that
+    *does* makes every test in it run again under the subclass's name, which is
+    six duplicate runs and six names for `--exclude` to have to know about.
     """
 
     def setUp(self) -> None:
@@ -363,10 +361,20 @@ class TestReadingTheStagesOfAConflict(support.SandboxCase):
         support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
         self.commit(name, theirs, mode)
         support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
-        support.git_aborted(self.repo, self.env)  # no-op; keeps the tree clean if a prior ran
         subprocess.run(
             ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
         )
+
+
+class TestReadingTheStagesOfAConflict(ConflictedIndex):
+    """`gitrepo.conflicted`, asked directly.
+
+    It had no test of its own: everything reached it through `sync`, which is why
+    the `-z` parsing, the missing-stage case and the non-UTF-8 path all went
+    unnoticed until a review. The modes it returns decide whether a settled file
+    keeps its executable bit and whether it is written at all, so they are worth
+    asking about here rather than three layers up.
+    """
 
     def test_a_clean_repository_has_nothing_conflicted(self) -> None:
         """The empty answer, which every caller reads as "nothing to settle"."""
@@ -434,11 +442,27 @@ class TestReadingTheStagesOfAConflict(support.SandboxCase):
         )
         self.assertEqual(0o120000, gitrepo.conflicted(self.repo)["link"][gitrepo.OURS])
 
+
+class TestAPathThatIsNotUtf8(ConflictedIndex):
+    """A conflicted path whose name is not valid UTF-8.
+
+    **Linux only, and the CI job says so rather than this file skipping.** APFS
+    and HFS+ reject a filename that is not valid UTF-8, so the fixture cannot be
+    built on macOS at all -- `write_bytes` fails with `Illegal byte sequence`
+    before any assertion is reached. That is why the `macos` leg passes
+    `--exclude tests.test_gitrepo.TestAPathThatIsNotUtf8`: a skip would be a lie under
+    `--no-skips`, which exists precisely to catch a test that quietly does
+    nothing.
+
+    CLAUDE.md §2 asks that a one-platform test be labelled as one, because a
+    green run on the others otherwise reads as proof it guards something. What it
+    guards is real and Linux can see it: `git()` runs with `text=True`, so
+    reading `ls-files` through it raised `UnicodeDecodeError` out of
+    `subprocess.run` -- past the two exceptions `git()` catches, and out of a
+    half-finished merge. A latin-1 dotfile name needs no hostile input.
+    """
+
     def test_a_path_that_is_not_utf8_does_not_raise(self) -> None:
-        """`git()` runs with `text=True`, so reading this through it raised
-        `UnicodeDecodeError` out of `subprocess.run` -- past the two exceptions
-        it catches, and out of a half-finished merge. A dotfile name in latin-1
-        needs no hostile input."""
         self.diverge("caf\udce9rc", b"ours\n", b"theirs\n")
         found = gitrepo.conflicted(self.repo)
         self.assertEqual(1, len(found))

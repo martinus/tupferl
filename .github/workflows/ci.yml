@@ -90,7 +90,12 @@ jobs:
           # The system python3 on the runner image is older than the floor.
           python-version: "3.12"
       - run: pip install -e .[test]
-      - run: python -m tools.run_tests --no-skips
+      # `--exclude`, not a skip: `--no-skips` exists to catch a test that quietly
+      # does nothing, so a suite that *cannot* run here has to be named here
+      # rather than opt itself out. APFS and HFS+ reject a filename that is not
+      # valid UTF-8, so that fixture cannot be built on this runner at all --
+      # see the class's own docstring.
+      - run: python -m tools.run_tests --no-skips --exclude tests.test_gitrepo.TestAPathThatIsNotUtf8
 
   install:
     # Plan §6: the install a user actually performs. Not `pip install -e .`,
