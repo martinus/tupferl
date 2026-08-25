@@ -23,11 +23,11 @@ pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
-## Status: milestone 5 of 7
+## Status: milestone 6 of 7
 
-**`init`, `add`, `remove`, `list`, `sync` and `doctor` work.** Two computers can
-share dotfiles today: `tupferl sync` pulls, merges in both directions, commits
-and pushes, resolves everything it can without asking — and asks about the rest.
+**All eight commands work.** Two computers can share dotfiles today:
+`tupferl sync` pulls, merges in both directions, commits and pushes, resolves
+everything it can without asking — and asks about the rest.
 
 **When both computers changed the same lines, it asks.** One question per file,
 one keypress per answer:
@@ -69,16 +69,64 @@ behaviour above, asked for explicitly. A stdin that is not a terminal is
 `--no-input` whether or not you said so — a sync on a timer must not block on a
 question nobody will see.
 
-**One conflict it cannot settle yet** is two *commits* that git could not merge,
-which happens when a computer has committed without pushing and the other pushes
-to the same lines meanwhile. It says so, and `git -C <repo> pull` is the way out.
+**A conflict between two *commits* reaches the same prompt.** That happens when a
+computer has committed without pushing — `tupferl add` does exactly that — and
+the other pushes to the same lines meanwhile. Three shapes are still handed back
+to you rather than settled, because none of them is a disagreement about lines:
+a file one side deleted and the other edited, a path that is not a regular file
+on both sides, and whatever you skipped. Those say so, and `git -C <repo> pull`
+is the way out.
 
-The two remaining unbuilt commands say so themselves:
+**`tupferl status` says what the next sync will do, and changes nothing:**
 
 ```
 $ tupferl status
-tupferl: `tupferl status` is not built yet; it is milestone 6 of docs/plan.md.
+.aliases  changed on both, and they do not merge: 1 conflict to settle
+.bashrc   changed here; the next sync stores it
+.vimrc    changed in the repository; the next sync updates it
+
+origin/main is exactly what this computer has.
+3 files managed, 2 to change, 1 in conflict
 ```
+
+It fetches — "what changed remotely" cannot be answered without asking the
+remote — and it does not merge, because merging is the modification it promises
+not to make. So when the remote is ahead it says the file lines are the picture
+*before* anything is pulled in, and counts what is waiting:
+
+```
+origin/main: 2 commits to pull, 1 to push.
+The lines above compare $HOME with this computer's copy of the repository, so
+they do not yet include what is waiting to be pulled.
+```
+
+A remote it cannot reach is a worse status, not an error: a laptop on a train
+still has a local half worth reading, and `status` is the command you run when
+something is already wrong.
+
+**`tupferl diff` shows the two copies**, all of them or one by name:
+
+```
+$ tupferl diff .bashrc
+--- .bashrc (this computer)
++++ .bashrc (the repository)
+@@ -1,3 +1,3 @@
+ export EDITOR=nvim
+-export PAGER=bat
++export PAGER=less
+```
+
+`$HOME` is the `-` side, which is the other way round from `git diff` — both
+labels say which is which, and this is the same rendering the conflict prompt's
+`[d]` shows, so a file looks the same in both. A file that differs only by its
+executable bit says that instead of showing an empty diff, and one with a NUL
+byte in it reports both sizes rather than printing bytes at a terminal.
+
+**Before anything in `$HOME` is overwritten, a copy goes to
+`~/.local/state/tupferl/backup/<timestamp>/`**, and the last five syncs' worth
+are kept. The directory is created only by a run that actually backs something
+up: five empty ones would push the last real backup out of the window that
+exists to keep it.
 
 The design, the scope boundary and the build order are in
 [`docs/plan.md`](docs/plan.md). The working agreements for changing any of it
@@ -91,7 +139,7 @@ are in [`CLAUDE.md`](CLAUDE.md).
 | 3 | sync engine: snapshots, change detection, automatic merges | **done** |
 | 4 | 3-way merge and the interactive conflict prompt | **done** |
 | 5 | host overlays | **done** |
-| 6 | backups, error messages, `status` and `diff` | |
+| 6 | backups, error messages, `status` and `diff` | **done** |
 | 7 | PyPI packaging | |
 
 ## How it works

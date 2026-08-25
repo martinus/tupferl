@@ -374,12 +374,13 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |
 | `tupferl/merge.py` | the 3-way merge, over `git merge-file`. Bytes in, bytes out, and the conflict count is git's exit status |
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
+| `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
+| `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar`. Its own tests came later (#4): `test_verdict.py` was written here, `test_reached.py` and `test_watch.py` ported unchanged, `test_mutants.py` ported with four assertions re-pointed at this project's layout |
 | `docs/plan.md` | the plan this is built from |
 
-Four things are not where a newcomer would guess, all on purpose:
+Five things are not where a newcomer would guess, all on purpose:
 
 - **`tests/support.py` builds a sandbox environment from nothing, not from
   `os.environ`.** Every variable tupferl reads is listed once, in
@@ -399,6 +400,13 @@ Four things are not where a newcomer would guess, all on purpose:
   `Blob` rather than `Blob | None` wherever a conflict is settled, and
   `outcome.sides is not None` is both the test for "is this a conflict" and the
   narrowing that follows from it. There is no second place to keep in step.
+- **`status` and `diff` do not have their own walk of the managed files.**
+  `sync.examine` is the loop `settle` uses with the writing taken out, and both
+  read it. That is what makes `status` a preview of the next sync rather than a
+  second opinion about it — a row added to plan §7.4's table reaches `status` by
+  existing. It costs `diff` a `git merge-file` per file both sides changed,
+  which it then discards; that is accepted, and the alternative is the
+  duplication the extraction removed.
 - **`sync` writes the snapshot last, and that ordering is a guarantee.** A run
   killed part-way then leaves the merge base *older* than both copies, so the
   next run merges conservatively. Written first, the same interruption leaves a
@@ -421,6 +429,15 @@ Four things are not where a newcomer would guess, all on purpose:
   drives a real sync** except `tests/test_overlays.py`, which asserts the two
   differ before it asserts anything else. The general shape is §2's "two
   symmetric inputs"; this is the spelling it takes here.
+- **Every `raise TupferlError` is checked by a test, not by habit.**
+  `tests/test_errors.py` reads them all out with `ast` and asserts plan §5's
+  shape: one semicolon (what happened; what to do next), one full stop, one
+  sentence. Those three are a proxy for "is this actionable?", which is not
+  decidable — and measured against the tree they identified exactly the four
+  messages that had drifted to what-happened-only, and no others. If a new
+  message legitimately cannot take that shape, argue it in the PR and change
+  the check; do not add an exception list, which is how the rule stops meaning
+  anything.
 - **Never read a raw survivor list as a bug count.** Cross it with coverage
   (`python -m tools.reached results.json coverage.json --list`): a survivor on a
   line no test executes is a missing test; a survivor on a line the suite does
@@ -625,6 +642,18 @@ Four things are not where a newcomer would guess, all on purpose:
   so a test that inherits a terminal *prompts* and blocks, and the same test in
   CI skips silently. `support.run_cli` passes `DEVNULL` and `support.typing`
   patches `sys.stdin`; a real pty is opted into with `keys=`.
+- **A fingerprint of "nothing was written" needs the file's bytes in it.**
+  Path, size and mode is the obvious spelling and it cannot fail here: the edit
+  a sync test makes is usually one line to upper case, so the file before and
+  the file after are the same length with the same mode. `tests/test_status.py`
+  had exactly that, and its *own* second half — run a real `sync` and insist
+  the fingerprint moves — is what caught it. Leave mtime out; a read can move
+  it on some filesystems.
+- **`git merge-file` needs three lines of agreement to call two disagreements
+  two hunks**, and the five-line fixture most of this suite uses has exactly
+  three between its first and last lines. A test about a *count* of conflicts
+  therefore wants a longer file; written on `START` it reports 1 and reads as
+  a bug in the counting.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every
