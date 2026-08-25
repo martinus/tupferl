@@ -295,11 +295,10 @@ def remove(wanted: str, from_host: bool) -> int:
         ) from None
 
     tree, overlay = manifest.roots(repo, host)
-    # Read before the unlink loop below, which is where it *reads* correctly
-    # rather than where it matters: the loop touches only paths under the trees
-    # it was given, and `prune` stops at `repo`, so nothing it can delete is an
-    # ancestor of `tree / name`. Measured -- either placement gives the same
-    # answer in both branches.
+    # Before the unlink loop, because without `--host` that loop deletes this
+    # very file. It is unobservable either way today -- `said` ignores the
+    # argument in exactly that branch -- but a value that is only right because
+    # nobody reads it is one that becomes wrong the day somebody does.
     shared = (tree / name).is_file()
 
     searched = [overlay] if from_host else [tree, overlay]
