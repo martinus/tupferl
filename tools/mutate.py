@@ -1212,7 +1212,7 @@ def run(
     for mutation in table:
         check(mutation)
 
-    shards = baseline_shards(table, walk)
+    shards = baseline_shards(table)
     # Twice the usable cores, which is what `tools/run_tests.py` measured for this
     # same subprocess-wait-bound work (jobs=8 beat jobs=4 by ~9%, jobs=16
     # regressed). An earlier `cpu // 2` here gave two lanes on a four-core runner
@@ -1325,6 +1325,29 @@ def run(
                 red = True
                 break
 
+    if not red and (loose := _unbaselined(results, shards)):
+        # After the pool, in a sandbox of its own. These are tests the baseline
+        # never ran, standing behind a `caught` -- so until they are green on the
+        # untouched tree those rows claim something nothing checked. One shard
+        # for all of them; on a table whose selections are good this never runs.
+        print(f"\n{len(loose)} test(s) caught a row without being baselined; checking them...")
+        with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
+            loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
+        if loose_verdict.outcome != "survived":
+            # Only these rows, never the whole run: every other verdict rests on
+            # a shard that *was* green, and voiding those would throw away
+            # answers this found nothing wrong with. `broke` rather than a
+            # correction, because what is known is that the answer cannot be
+            # trusted -- not what the right answer is.
+            why = f"caught by a test that also fails untouched: {loose_verdict.detail}"
+            results = [
+                Result(result.mutation, Verdict("broke", why))
+                if result.verdict.killer in set(loose)
+                else result
+                for result in results
+            ]
+            print(f"  NOT GREEN ({loose_verdict.outcome}) -- rows they caught are reported broke.")
+
     if not red and summarise:
         _summarise(results)
     # `widened=walk`, never a bare `True`: the flag's whole job is to say
@@ -1376,45 +1399,74 @@ def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | 
 WHOLE_SUITE = ""
 
 
-def baseline_shards(table: Sequence[Mutation], walk: bool = True) -> list[str]:
+def baseline_shards(table: Sequence[Mutation]) -> list[str]:
     """What the untouched tree must be green on before any verdict counts.
 
-    **One whole-suite shard when the rows walk.** `_attempt` passes
-    `walk=True`, so a mutation nothing in its selection notices keeps going
-    through the rest of the suite -- and it can therefore be caught by a module
-    its selection never named. On a tree that is already red that claim is free:
-    `failfast` stops at the first red test whatever it was about. Both real
-    survivors of one sweep came back credited to a shell-hook test that had never
-    heard of the file under mutation (woswoar#268).
+    One shard per distinct selection, plus one holding every remembered `first`.
+    A cached killer can name a test outside its row's selection, so it needs
+    covering too -- one shard for all of them, never one each: a shard per
+    remembered test is the sharding explosion that cost 372s -> 730s, in a new
+    disguise.
 
-    This is the baseline the confirmation pass used to run for exactly that
-    reason, moved to the front of the sweep now that widening happens inside
-    every row rather than in a second pass. It subsumes two shard sets that were
-    built by hand before -- one per distinct selection, and one holding every
-    remembered `first`, since a cached killer can name a test outside its row's
-    selection and the whole suite contains it by construction.
+    **Not the whole suite, though every row now walks it.** That was tried and
+    measured, and it fails three ways. It costs a full-suite run per table, which
+    took the preflight from about two minutes to six. It is *recursive* here:
+    the suite contains `test_mutate`, `test_run_tests`, `test_verdict` and three
+    more, so every baseline starts a second harness inside a memory-capped
+    sandbox -- a hazard this module's own docstring records for the rare row that
+    mutates `tools/`, made universal. And it does not finish: measured, the
+    whole suite in a sandbox exceeds `TIMEOUT` and comes back
+    `BASELINE NOT GREEN (timeout)`, which voids every verdict above it.
+
+    What the walk needs instead is `_unbaselined`: a row can be caught by a test
+    no shard here covered, and only *those* tests need checking, only when one
+    turns up. See it for why that is the same guarantee for a fraction of the
+    cost.
 
     A function rather than a constant so `--baseline-only` and `run` cannot
     drift: that flag exists to ask, in one shard's time, the question a sweep
     will ask later, and it is worth nothing if it asks a different one. It
     already went stale once here.
-
-    ``walk=False`` is the pre-walk shape, and it is the *baseline's* half of that
-    switch: rows that stay inside their selections can only be caught by a test
-    in one, so those are what has to be green. Keeping the two halves in one
-    place is the point -- a run that did not walk but baselined the whole suite
-    would merely be slow, while the reverse is the false `caught` above.
     """
-    if not walk:
-        shards = sorted({mutation.tests for mutation in table})
-        # A cached killer can name a test outside its row's selection, so it
-        # needs a shard of its own. One holding all of them, never one each: a
-        # shard per remembered test is the sharding explosion that cost
-        # 372s -> 730s, in a new disguise.
-        if ahead := " ".join(sorted({name for row in table for name in row.first.split()})):
-            shards.append(ahead)
-        return shards
-    return [WHOLE_SUITE]
+    shards = sorted({mutation.tests for mutation in table})
+    if ahead := " ".join(sorted({name for row in table for name in row.first.split()})):
+        shards.append(ahead)
+    return shards
+
+
+def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
+    """Killers that no baseline shard covered, so nothing proved them green.
+
+    The hole the walk opens. A row that nothing in its selection notices keeps
+    going through the rest of the suite, so it can be caught by a test no shard
+    ran untouched -- and on a tree that is already red that claim is free, since
+    `failfast` stops at the first red test whatever it was about. Both real
+    survivors of one sweep came back credited to a shell-hook test that had never
+    heard of the file under mutation (woswoar#268). That is the false `caught`
+    this module exists to make impossible.
+
+    Checking *these tests* rather than the whole suite is what keeps the price
+    honest: it is the same guarantee, bought at the size of the exception rather
+    than the size of the suite, and on a table whose selections are good it is
+    empty and costs nothing at all.
+
+    `run_tests.selects` rather than comparing module names, for the reason
+    `Killers.ahead_of` gives: a selection naming a class never matched at all,
+    and `WHOLE_SUITE` -- the empty selection -- covers everything by meaning
+    "run the lot".
+    """
+    if any(not shard for shard in shards):
+        return []
+    reachable = [only for shard in shards for only in shard.split()]
+    return sorted(
+        {
+            result.verdict.killer
+            for result in results
+            if result.verdict.outcome == "caught"
+            and result.verdict.killer
+            and not any(run_tests.selects(result.verdict.killer, only) for only in reachable)
+        }
+    )
 
 
 #: Where the remembered killers live by default, under the directory the

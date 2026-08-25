@@ -92,17 +92,33 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
         self.assertFalse(report.widened, "a report that did not walk claimed it had")
 
-    def test_a_survivor_that_walked_has_run_everything(self) -> None:
-        """The same row with the walk on, which is the shape a real sweep runs.
+    def test_the_walk_catches_what_the_selection_missed(self) -> None:
+        """The walk, end to end through the real harness, on the fixture built to
+        need it.
 
-        Kept to one test because it is the expensive one: nothing notices, so
-        the walk goes through every module before the row can be called a
-        survivor. That is the whole-suite run the confirmation pass used to make
-        afterwards, now made once instead of twice.
+        `UNWATCHED` is `UNKNOWN_KEY_GUARD`'s edit pointed at `tests.test_paths`,
+        which never parses a config file -- so it survives its *selection* by
+        construction. With the walk on it does not survive the run: the walk goes
+        on past that selection and reaches
+        `tests.test_config.TestRejectingAnUnknownKey`, which does see the edit.
+        That is the whole change in one row, and it is why the pair above sets
+        `walk=False`: with it on there is no survivor there to assert.
+
+        It also disproves a reading of the recorded sweeps I had believed. "The
+        killer was inside its own selection in 1,516 of 1,516 caught rows" cannot
+        mean the tail never catches anything, because those runs never *ran* the
+        tail for a caught row -- a killer outside the selection had no way to be
+        recorded. What that figure actually shows is narrower: the confirmation
+        pass never corrected a survivor in them.
         """
         report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
-        self.assertFalse(report.baseline_red)
-        self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
+        self.assertFalse(report.baseline_red, "the untouched tree is not green")
+        self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
+        killer = report.results[0].verdict.killer
+        self.assertTrue(
+            killer.startswith("tests.test_config."),
+            f"caught, but not by the module the walk had to reach: {killer}",
+        )
         self.assertTrue(report.widened)
 
     def test_the_working_tree_is_untouched(self) -> None:
@@ -944,6 +960,77 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
             spec = self.spec(Path(name), *self.SURVIVES)
             with mock.patch.object(mutate, "_attempt", lambda *a, **k: survived):
                 self.assertEqual(1, mutate.main([str(spec), "--no-baseline"]))
+
+
+class TestWhichKillersNothingBaselined(unittest.TestCase):
+    """`_unbaselined`: the hole the walk opens, and the only thing that closes it.
+
+    A row nothing in its selection notices keeps going through the rest of the
+    suite, so it can be caught by a test no baseline shard ran untouched. On a
+    tree already red that claim is free -- `failfast` stops at the first red test
+    whatever it was about -- which is the false `caught` of woswoar#268.
+
+    Checking these tests rather than the whole suite is what keeps it affordable.
+    The whole-suite baseline was tried and measured: six minutes of preflight, a
+    second harness started inside every sandbox, and finally
+    `BASELINE NOT GREEN (timeout)`, which voids every verdict above it.
+    """
+
+    def caught(self, killer: str, tests: str = "tests.test_paths") -> mutate.Result:
+        return mutate.Result(row()._replace(tests=tests), mutate.Verdict("caught", "d", killer))
+
+    def test_a_killer_its_shard_covered_needs_nothing(self) -> None:
+        found = self.caught("tests.test_paths.TestA.test_b")
+        self.assertEqual([], mutate._unbaselined([found], ["tests.test_paths"]))
+
+    def test_a_killer_no_shard_covered_is_returned(self) -> None:
+        """The one the walk produces. `UNWATCHED` is exactly this shape in the
+        real harness: selected on `tests.test_paths`, caught in `test_config`."""
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        self.assertEqual(
+            ["tests.test_config.TestRejectingAnUnknownKey.test_it"],
+            mutate._unbaselined([found], ["tests.test_paths"]),
+        )
+
+    def test_the_whole_suite_shard_covers_everything(self) -> None:
+        """`WHOLE_SUITE` is the *empty* selection and means "run the lot", so a
+        shard list holding one covers every test. Read as a plain string it
+        matches nothing instead, and every killer would be re-checked."""
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        self.assertEqual([], mutate._unbaselined([found], [mutate.WHOLE_SUITE]))
+
+    def test_only_caught_rows_are_asked_about(self) -> None:
+        """A survivor has no killer to stand behind, and a `broke` row's is not
+        an answer. Without the outcome check a stale `killer` on either would
+        send the run off to baseline a test that decided nothing."""
+        survivor = mutate.Result(row(), mutate.Verdict("survived"))
+        broke = mutate.Result(row(), mutate.Verdict("broke", "d", "tests.test_config.T.t"))
+        self.assertEqual([], mutate._unbaselined([survivor, broke], ["tests.test_paths"]))
+
+    def test_a_class_shard_still_covers_its_own_tests(self) -> None:
+        """`run_tests.selects` rather than comparing module names: a shard naming
+        a class never matched at all when this was spelled by hand, and every row
+        it caught was sent for re-baselining."""
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        covered = ["tests.test_config.TestRejectingAnUnknownKey"]
+        self.assertEqual([], mutate._unbaselined([found], covered))
+
+    def test_a_sibling_module_is_not_covered_by_a_prefix_of_its_name(self) -> None:
+        """The dot `run_tests.selects` anchors on, and the reason a bare
+        `startswith` is wrong rather than merely loose.
+
+        `tests.test_sync` is a real shard and `tests.test_sync_cli` is a real
+        module beside it. Read as a prefix, the first covers the second, so a
+        killer in `test_sync_cli` would be called baselined by a shard that never
+        ran it -- the false `caught` this function exists to prevent, arriving
+        through the check meant to catch it. The class test above cannot see this:
+        both spellings agree there.
+        """
+        found = self.caught("tests.test_sync_cli.TestTheRemoteLine.test_it")
+        self.assertEqual(
+            ["tests.test_sync_cli.TestTheRemoteLine.test_it"],
+            mutate._unbaselined([found], ["tests.test_sync"]),
+        )
 
 
 class TestASweepRecordsAsItGoes(unittest.TestCase):
