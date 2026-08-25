@@ -182,7 +182,7 @@ class SyncMachine(RuleBasedStateMachine):
             for machine in self.machines:
                 assert machine.read(MANAGED) == want, f"{machine.name} did not converge"
         finally:
-            self.box.cleanup()
+            support.discard(self.box)
 
 
 SyncMachine.TestCase.settings = settings(
@@ -313,7 +313,7 @@ class ChoiceMachine(RuleBasedStateMachine):
         return [self.wrote[1]] if choice == "l" else [self.wrote[0]]
 
     def teardown(self) -> None:
-        self.box.cleanup()
+        support.discard(self.box)
 
 
 ChoiceMachine.TestCase.settings = settings(

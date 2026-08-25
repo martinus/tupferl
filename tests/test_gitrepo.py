@@ -214,7 +214,7 @@ class TestTheReasonGitGives(unittest.TestCase):
 class TestIsRepository(unittest.TestCase):
     def setUp(self) -> None:
         box = tempfile.TemporaryDirectory(prefix="tupferl-gitrepo-")
-        self.addCleanup(box.cleanup)
+        self.addCleanup(support.discard, box)
         self.box = Path(box.name)
         self.home = self.box / "home"
         self.home.mkdir()

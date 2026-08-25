@@ -160,10 +160,6 @@ class TestTheFixturesAreReal(Boxed):
             support.git(["rev-parse", "HEAD"], self.box, self.env)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestADrivenChildIsNotCollectedThroughAPipe(Boxed):
     """`run_cli` hands the child real files, never `subprocess.PIPE`.
 
@@ -217,3 +213,169 @@ class TestADrivenChildIsNotCollectedThroughAPipe(Boxed):
         with mock.patch.object(subprocess, "Popen", watch):
             support.run_cli(["--version"], self.env, keys="s")
         self.assertTrue(hasattr(seen.get("stdin"), "__index__"), "no pty was attached")
+
+
+class TestBackgroundGitIsOff(Boxed):
+    """#17: no detached git process may outlive the command that started it.
+
+    **Asked of git, not read out of the file.** `seed_home` writes
+    `$HOME/.gitconfig`, and whether git reads it depends on the sandbox clearing
+    `GIT_CONFIG_GLOBAL` and `XDG_CONFIG_HOME` -- which is the half a test that
+    grepped the file it just wrote could not see. `git config --get` under this
+    machine's environment is the whole claim: the setting is in force where git
+    will look for it.
+
+    Why it matters is in `support.NO_HOUSEKEEPING`. In short: `gc --auto` and
+    `maintenance run --auto` are detached by default, and a detached process
+    writing into `.git/objects` is what makes a tree non-empty a moment after
+    `shutil` scanned it as empty. It has turned CI red twice, both times naming
+    the sync property, which had passed.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = self.box / "repo"
+        support.git(["init", "--quiet", str(self.repo)], cwd=self.box, env=self.env)
+
+    def asked(self, key: str) -> subprocess.CompletedProcess[str]:
+        """What git answers for `key` inside the sandbox repository."""
+        return subprocess.run(
+            ["git", "config", "--get", key],
+            cwd=self.repo,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_git_reads_back_every_setting_that_stops_housekeeping(self) -> None:
+        for key, want in (
+            ("gc.auto", "0"),
+            ("gc.autoDetach", "false"),
+            ("maintenance.auto", "false"),
+        ):
+            with self.subTest(key=key):
+                got = self.asked(key)
+                self.assertEqual(0, got.returncode, got.stderr)
+                self.assertEqual(want, got.stdout.strip())
+
+    def test_the_probe_can_come_back_empty(self) -> None:
+        """The precondition. Three `assertEqual`s against a `git config` that
+        answered *anything* would pass if `--get` always printed the value asked
+        for; this shows it does not, so the three above are reading real
+        settings rather than an echo."""
+        got = self.asked("gc.nosuchsetting")
+        self.assertEqual(1, got.returncode)
+        self.assertEqual("", got.stdout.strip())
+
+    def test_the_identity_still_works_beside_them(self) -> None:
+        """`seed_home` writes one file, and #17 appended to it. A malformed
+        section would take git's identity down with it, and every commit in the
+        suite with it -- so this asserts the half that was already there."""
+        got = self.asked("user.email")
+        self.assertEqual(0, got.returncode, got.stderr)
+        self.assertEqual(f"{support.HOST}@example.invalid", got.stdout.strip())
+
+
+class TestATreeThatWillNotGo(unittest.TestCase):
+    """#17's other half: when cleanup fails, say what survived.
+
+    The failure this exists for is a race nobody has reproduced on demand -- see
+    #17, which could not do it on git 2.43 and could not get at the runner's
+    2.55. So the *trigger* here is simulated: the box's own `cleanup` is made to
+    raise the errno CI actually printed. Everything else is real -- a real tree,
+    real files, and the listing read off the real filesystem after the failure.
+
+    That is the honest shape for this claim. What is under test is "if cleanup
+    raises, the error names what is left", not "git races teardown"; a fixture
+    that waited for a real race would be a test that usually does nothing.
+
+    **The bound method, not `tempfile`'s internals.** `TemporaryDirectory`
+    reaches `shutil.rmtree` by a different private route on 3.10, 3.12 and 3.14,
+    and this suite runs on all three -- a patch of one of them passes on one leg
+    and fails on the others, which is the version trap CLAUDE.md's gotchas
+    already collect two instances of. `box.cleanup()` is what `discard` calls,
+    and making *that* raise is the precondition stated exactly.
+    """
+
+    #: The failure as CI printed it, down to the errno.
+    REFUSED = OSError(39, "Directory not empty", "objects")
+
+    def stuck(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        """A real tree holding a real pack temporary, whose cleanup refuses.
+
+        The original `cleanup` is kept and registered, so the tree still goes
+        away when the test ends: a test about a leaked tree that leaked one
+        would be its own bug.
+        """
+        box = tempfile.TemporaryDirectory(prefix="tupferl-stuck-")
+        root = Path(box.name)
+        (root / "repo" / ".git" / "objects").mkdir(parents=True)
+        (root / "repo" / ".git" / "objects" / "tmp_pack_abcdef").write_text("x")
+        really = box.cleanup
+        self.addCleanup(really)
+
+        def refuse() -> None:
+            raise self.REFUSED
+
+        box.cleanup = refuse  # type: ignore[method-assign]
+        return box, root
+
+    def raised(self, box: tempfile.TemporaryDirectory[str]) -> OSError:
+        with self.assertRaises(OSError) as caught:
+            support.discard(box)
+        return caught.exception
+
+    def test_the_message_names_the_file_that_survived(self) -> None:
+        """`tmp_pack_abcdef` is a writer's signature: git wrote it, and no test
+        did. That name in the error is the whole point of #17's second half."""
+        box, _ = self.stuck()
+        self.assertIn("tmp_pack_abcdef", str(self.raised(box)))
+
+    def test_it_keeps_the_original_error_rather_than_replacing_it(self) -> None:
+        """The errno and the wording git's own failure produced are what a
+        reader searches for. A wrapper that dropped them would send them looking
+        for a different bug."""
+        boom = self.raised(self.stuck()[0])
+        self.assertIn("Directory not empty", str(boom))
+        self.assertIs(self.REFUSED, boom.__cause__)
+
+    def test_it_says_the_writer_outlived_its_command(self) -> None:
+        """The sentence that stops the next reader diagnosing the sync engine,
+        which is what #17 says cost the most both times it happened."""
+        boom = self.raised(self.stuck()[0])
+        self.assertIn("outliving the command that started it", str(boom))
+
+    def test_a_long_listing_is_cut_and_says_how_much_it_cut(self) -> None:
+        """A whole surviving tree is hundreds of paths, and a message nobody
+        reads to the end names nothing.
+
+        The count is written out rather than computed here: the same subtraction
+        spelled twice is a test holding a copy of its subject, which cannot fail
+        (CLAUDE.md §2). Arriving at it: `stuck` leaves four paths of its own --
+        `repo`, `.git`, `objects` and the pack temporary -- so 13 files make 17,
+        of which `NAMED_WHEN_STUCK` are named and 5 are not.
+        """
+        box, root = self.stuck()
+        for number in range(13):
+            (root / f"file{number:03d}").write_text("x")
+        boom = str(self.raised(box))
+        self.assertIn("and 5 more", boom)
+        # The cut is real: `file012` sorts last and must not have been named.
+        self.assertNotIn("file012", boom)
+        self.assertIn("file000", boom)
+
+    def test_a_tree_that_goes_quietly_raises_nothing(self) -> None:
+        """The ordinary path, which is every other call in the suite. Without
+        it, `discard` could raise always and the four tests above would still
+        pass -- CLAUDE.md §2's negative assertion with no precondition."""
+        box = tempfile.TemporaryDirectory(prefix="tupferl-quiet-")
+        root = Path(box.name)
+        (root / "a").mkdir()
+        (root / "a" / "b").write_text("x")
+        support.discard(box)
+        self.assertFalse(root.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
