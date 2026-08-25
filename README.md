@@ -57,10 +57,16 @@ file at the end, which is also what a `sync` with nobody at the keyboard does:
 
 ```
 $ tupferl sync < /dev/null
+origin/main: already up to date
 conflict in .bashrc (1 to settle); both copies left as they are
 
 1 file managed, 0 changed, 1 in conflict
 ```
+
+**Every sync says what it did to the remote**, above the per-file list,
+because "is it on the other computer now?" is the question the command
+exists to answer: `origin/main: pushed`, `origin/main: took in 2 commits,
+and pushed`, or `origin/main: already up to date` on a quiet run.
 
 That exit status is 1, so a script notices. For scripts that want an answer
 rather than a report, `--ours` keeps this computer's version and `--theirs` the
