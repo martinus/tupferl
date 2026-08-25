@@ -254,9 +254,23 @@ def add(wanted: list[str], to_host: bool) -> int:
     return 0
 
 
-def count(many: int) -> str:
-    """`1 file` or `7 files` -- the plural nobody notices until it is wrong."""
-    return "1 file" if many == 1 else f"{many} files"
+#: What `list`, `status` and `diff` all say on a repository nothing has been
+#: added to yet. One sentence rather than three, because it names the command
+#: that fixes it and three copies of that name is three places to change when a
+#: verb's spelling does.
+NOTHING_MANAGED = "nothing is managed yet; `tupferl add <path>...` starts."
+
+
+def count(many: int, thing: str = "file") -> str:
+    """`1 file` or `7 files` -- the plural nobody notices until it is wrong.
+
+    `thing` because there were three of these by milestone 6: files here,
+    conflicts at the prompt, and commits in `status`'s remote line. Naive
+    pluralisation, which is correct for every noun this program counts and is
+    checked by the one test that names them; a word needing anything else would
+    have to be added to this program before it could be got wrong here.
+    """
+    return f"1 {thing}" if many == 1 else f"{many} {thing}s"
 
 
 def remove(wanted: str, from_host: bool) -> int:
@@ -286,13 +300,7 @@ def remove(wanted: str, from_host: bool) -> int:
     home = paths.home()
     host = paths.hostname(config.hostname)
 
-    path = manifest.named(wanted)
-    try:
-        name = PurePosixPath(path.relative_to(home).as_posix())
-    except ValueError:
-        raise TupferlError(
-            f"{path} is outside {home}, so it was never managed; name a file under it."
-        ) from None
+    name = manifest.relative(wanted, home)
 
     tree, overlay = manifest.roots(repo, host)
     # Before the unlink loop, because without `--host` that loop deletes this
@@ -373,7 +381,7 @@ def listing() -> int:
     repo, config = open_repo()
     found = manifest.managed(repo, paths.hostname(config.hostname))
     if not found:
-        print("nothing is managed yet; `tupferl add <path>...` starts.")
+        print(NOTHING_MANAGED)
         return 0
     for item in found:
         print(f"{'host' if item.host else '    '}  {item.name}")

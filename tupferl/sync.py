@@ -548,6 +548,10 @@ class Reading(NamedTuple):
     snapshot: Path
     #: `$HOME`'s bytes, or `None` when there is no regular file there.
     found: Blob | None
+    #: The repository's bytes, or `None` when what is there is not a regular
+    #: file -- which is the `REFUSED` outcome below, and the one case where
+    #: neither side can be shown.
+    stored: Blob | None
     #: What the three versions come to. Never settled -- a `CONFLICT` here still
     #: carries its `sides`, because whether to ask a person is the caller's
     #: business and `status` must not.
@@ -578,12 +582,12 @@ def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
         stored = read(where)
         if stored is None:
             why = f"{where} is not a regular file"
-            yield Reading(item.name, where, target, snapshot, None, refused(item.name, why))
+            yield Reading(item.name, where, target, snapshot, None, None, refused(item.name, why))
             continue
         found = read(target)
         if found is None and os.path.lexists(target):
             why = f"{target} is not a regular file"
-            yield Reading(item.name, where, target, snapshot, None, refused(item.name, why))
+            yield Reading(item.name, where, target, snapshot, None, stored, refused(item.name, why))
             continue
         yield Reading(
             item.name,
@@ -591,6 +595,7 @@ def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
             target,
             snapshot,
             found,
+            stored,
             resolve(item.name, read(snapshot), found, stored),
         )
 

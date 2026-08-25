@@ -119,6 +119,26 @@ def named(path: str | Path) -> Path:
     return Path(os.path.normpath(expanded))
 
 
+def relative(wanted: str | Path, home: Path) -> PurePosixPath:
+    """Turn what the user typed into the name a managed file has, or say why not.
+
+    The name *is* the mapping (plan §3.2), so this is the one translation from a
+    command line to a key in the repository. `remove` and `diff` both do it, and
+    a second spelling would be a second answer to "is `~/../etc/passwd` under
+    `$HOME`?" -- which is exactly the question that must not have two.
+
+    Says nothing about whether the file is managed, or exists, or is a file. It
+    answers where it *would* live, which is what the caller then looks for.
+    """
+    path = named(wanted)
+    try:
+        return PurePosixPath(path.relative_to(home).as_posix())
+    except ValueError:
+        raise TupferlError(
+            f"{path} is outside {home}, so it was never managed; name a file under it."
+        ) from None
+
+
 def links_between(where: Path, home: Path) -> Path | None:
     """The first symlink on the way down from `home` to `where`, if any.
 

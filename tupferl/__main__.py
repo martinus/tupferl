@@ -1,17 +1,24 @@
-"""The CLI: eight verbs, six of which work so far.
+"""The CLI: plan §4's eight verbs, all of them built.
 
 `argparse` rather than `click`, which plan §9 leaves to this decision. The
 command set is eight verbs with a handful of flags, `argparse` is in the standard
 library, and plan §5 says to prefer fewer dependencies -- a dependency that buys
 decorators for a parser this shape is not worth the install.
 
-**Every command in the plan is registered, including the three that are not
-built.** The alternative -- registering only what works -- makes `tupferl sync`
-say "invalid choice: 'sync'", which reads as "this tool has no sync" rather than
-"not in this version". A verb that names its milestone tells the user which
-release to wait for, and it fixed the CLI's shape while it was cheap to argue
-about -- `add --host` and `sync --ours/--theirs` were parsed and tested a
-milestone before anything read them.
+**Every command in the plan was registered from milestone 1, including the ones
+not yet built.** The alternative -- registering only what works -- makes
+`tupferl sync` say "invalid choice: 'sync'", which reads as "this tool has no
+sync" rather than "not in this version". A verb that named its milestone told
+the user which release to wait for, and it fixed the CLI's shape while it was
+cheap to argue about: `add --host` and `sync --ours/--theirs` were parsed and
+tested a milestone before anything read them.
+
+Milestone 6 built the last two, so that table is gone and what stands in its
+place is a guard: a verb that parses and reaches no branch below raises instead
+of falling off the end of `main` and returning `None` where an exit status was
+promised. It is unreachable while `tests/test_cli.py` holds -- which drives all
+eight and drives a ninth that does not exist, so the guard is checked in both
+directions rather than assumed.
 
 **`--host` means the same thing on `add` and on `remove`**: this machine's
 overlay rather than the shared tree. Two flags with one name and one meaning,
@@ -25,16 +32,14 @@ from __future__ import annotations
 import argparse
 import sys
 
-from tupferl import __version__, doctor, manage, sync
+from tupferl import __version__, doctor, inspection, manage, sync
 from tupferl.errors import TupferlError
 
-#: Which milestone of `docs/plan.md` builds each unimplemented verb. The message
-#: is generated from this rather than written out per command, so a verb cannot
-#: be added here and left without one.
-PLANNED: dict[str, int] = {
-    "status": 6,
-    "diff": 6,
-}
+#: The middle of the sentence a verb gets when it parses and reaches no branch
+#: in `main`. A constant because `tests/test_cli.py` asserts it *absent* for all
+#: eight real verbs, and a phrase written out there could stop matching the one
+#: written here -- at which point the test passes by looking for the wrong string.
+NOT_WIRED = "parses but is not wired to anything"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,10 +124,13 @@ def main(argv: list[str] | None = None) -> int:
             return manage.listing()
         if args.command == "sync":
             return sync.main(no_input=args.no_input, ours=args.ours, theirs=args.theirs)
-        milestone = PLANNED[args.command]
+        if args.command == "status":
+            return inspection.status()
+        if args.command == "diff":
+            return inspection.difference(args.path)
         raise TupferlError(
-            f"`tupferl {args.command}` is not built yet; it is milestone {milestone} of "
-            f"docs/plan.md."
+            f"`tupferl {args.command}` {NOT_WIRED}, which is a bug in tupferl rather "
+            f"than anything you did; please report it."
         )
     except TupferlError as wrong:
         # To stderr, and 2 rather than 1: 1 is `doctor`'s "a check failed", which
