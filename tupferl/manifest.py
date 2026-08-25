@@ -8,7 +8,7 @@ cannot remove.
 
 **The admission rules are where this module earns its place.** `tupferl add`
 copies a file into a git repository that will be pushed to a remote, so a rule
-that lets the wrong file through is not an inconvenience. Four of the six exist
+that lets the wrong file through is not an inconvenience. Five of the seven exist
 for that reason rather than for tidiness:
 
 - **Symlinks are refused** (plan §5). A copy cannot represent a link, so the
@@ -28,6 +28,12 @@ for that reason rather than for tidiness:
 - **The repository is not addable to itself.** It lives under `$HOME` by
   default (`~/.local/share/tupferl/repo`), so `tupferl add ~/.local` would
   otherwise walk into it and manage tupferl's own copies of everything.
+
+- **A name that says it holds a credential is refused** (#35), unless
+  `add --anyway`. Plan §2 puts encryption out of scope, so what this program
+  stores it stores in plaintext and pushes -- and the danger was never that
+  decision, it was that nothing said so at the moment it mattered. See `SECRETS`,
+  including for why it is a short list of famous filenames and not a scanner.
 
 The other two -- the size limit and the ignore list -- are ordinary settings
 (plan §5), and they are checked last so that a file refused for a *safety*
@@ -239,6 +245,71 @@ def links_between(where: Path, home: Path) -> Path | None:
     return None
 
 
+#: Names refused unless `add --anyway` says otherwise (#35).
+#:
+#: **This is a list of famous filenames, not a secret scanner**, and the
+#: distinction is the whole of why it is short. Plan §2 puts encryption out of
+#: scope -- what tupferl stores, it stores in plaintext and pushes to a remote --
+#: and the danger is not that decision but that nothing said so at the moment it
+#: mattered: `tupferl add ~/.ssh/id_ed25519` succeeded, silently, and the key was
+#: then in a git history nothing here can rewrite.
+#:
+#: Every entry earns its place by being a file whose *only* purpose is to hold a
+#: credential. Anything vaguer belongs to the user's `ignore` setting, and
+#: anything cleverer -- entropy, `AKIA[0-9A-Z]{16}` -- would put this program in
+#: the business of reading the bytes of the files it is meant to be copying, and
+#: would be wrong in both directions at once.
+#:
+#: The two deliberate *absences* matter as much as the entries. `.ssh/config`
+#: and `.ssh/known_hosts` are ordinary dotfiles people want synced; they live in
+#: the directory this rule is most about, and refusing the whole of `~/.ssh`
+#: would be wrong far more often than right. `*.pub` likewise: a public key is
+#: public.
+#:
+#: **Half of these are anchored at `$HOME` and half are not**, which is a
+#: consequence of `fnmatch`'s `*` matching `/` as well, and is worth knowing
+#: rather than discovering. `.ssh/id_*`, `.aws/credentials` and `.gnupg/*` only
+#: match at the top of the tree, so a key under `~/projects/thing/.ssh/` is
+#: **not** refused; `*.pem` and `*.key` match at any depth. Left that way on
+#: purpose: matching `id_*` anywhere would refuse `~/pictures/id_photo.png`, and
+#: a rule that fires on holiday snaps is one people learn to pass `--anyway` to
+#: without reading.
+SECRETS = (
+    ".ssh/id_*",
+    ".aws/credentials",
+    ".netrc",
+    ".pgpass",
+    ".gnupg/*",
+    "*.pem",
+    "*.key",
+)
+
+#: What `SECRETS` lets through despite matching. One entry, and it is the half of
+#: an ssh key pair that is meant to be shared.
+NOT_SECRET = ("*.pub",)
+
+
+def secret(name: PurePosixPath) -> str | None:
+    """The `SECRETS` pattern `name` matches, or `None`.
+
+    The pattern rather than a `bool`, so the refusal can name it -- a user told
+    only "this looks like a secret" cannot tell a rule they disagree with from a
+    rule they misunderstand.
+
+    `fnmatchcase` and the parent walk are `ignored`'s, and for its reasons: case
+    folding on macOS would make two machines disagree about the same repository,
+    and `.gnupg/*` has to mean the subtree rather than one directory entry.
+    """
+    if any(fnmatchcase(name.name, allowed) for allowed in NOT_SECRET):
+        return None
+    candidates = [name, *name.parents]
+    for pattern in SECRETS:
+        for candidate in candidates:
+            if str(candidate) != "." and fnmatchcase(str(candidate), pattern):
+                return pattern
+    return None
+
+
 def ignored(name: PurePosixPath, patterns: Sequence[str]) -> bool:
     """Whether `name` or any directory above it matches an ignore pattern.
 
@@ -262,7 +333,9 @@ def ignored(name: PurePosixPath, patterns: Sequence[str]) -> bool:
     )
 
 
-def check(path: Path, home: Path, repo: Path, config: Config) -> PurePosixPath:
+def check(
+    path: Path, home: Path, repo: Path, config: Config, anyway: bool = False
+) -> PurePosixPath:
     """The repository-relative name for `path`, or a `TupferlError` saying no.
 
     Order matters and is asserted by tests: the safety rules come before the
@@ -314,6 +387,16 @@ def check(path: Path, home: Path, repo: Path, config: Config) -> PurePosixPath:
             f"file contents; leave it where it is."
         )
     if stat.S_ISREG(found.st_mode):
+        # Before the two settings below and after the four safety rules above,
+        # which is where it belongs: this is a safety rule, and the module
+        # docstring's reason for putting settings last is that a file refused
+        # for safety should say so rather than blaming its size.
+        if not anyway and (pattern := secret(relative)) is not None:
+            raise TupferlError(
+                f"{path} matches {pattern}, and tupferl stores what it manages in "
+                f"plaintext and pushes it to your remote; add it with `--anyway` if "
+                f"that is what you want, or leave it unmanaged."
+            )
         if ignored(relative, config.ignore):
             raise TupferlError(
                 f"{path} matches an `ignore` pattern in this repository's settings; "
@@ -328,7 +411,7 @@ def check(path: Path, home: Path, repo: Path, config: Config) -> PurePosixPath:
 
 
 def collect(
-    where: Path, home: Path, repo: Path, config: Config
+    where: Path, home: Path, repo: Path, config: Config, anyway: bool = False
 ) -> tuple[list[PurePosixPath], list[Refused]]:
     """Every file at or under `where` that may be managed, and every refusal.
 
@@ -344,7 +427,7 @@ def collect(
     refused: list[Refused] = []
     for found in walk(where):
         try:
-            admitted.append(check(found, home, repo, config))
+            admitted.append(check(found, home, repo, config, anyway))
         except TupferlError as no:
             refused.append(Refused(found, str(no)))
     return admitted, refused

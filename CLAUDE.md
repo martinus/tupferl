@@ -368,7 +368,7 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | | |
 |---|---|
 | `tupferl/` | the package. `__main__.py` is the CLI and the only entry point |
-| `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — four of the six are there to stop the wrong file being pushed |
+| `tupferl/manifest.py` | what may be managed and what is. Read its docstring before touching the admission rules — five of the seven are there to stop the wrong file being pushed, and the newest of them (`SECRETS`, #35) is a short list of famous filenames rather than a scanner, on purpose |
 | `tupferl/gitrepo.py` | every call to git. The only other subprocess in the package is the user's `$EDITOR`, in `conflicts.edit` |
 | `tupferl/copies.py` | what a stored copy is: bytes, the one mode bit that travels, and the single rule for "the target is already this file". Below `manage` and `sync`, because both write the same snapshots |
 | `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |

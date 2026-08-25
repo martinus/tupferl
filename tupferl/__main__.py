@@ -66,6 +66,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="store in this host's overlay rather than as the shared version",
     )
+    add.add_argument(
+        "--anyway",
+        action="store_true",
+        # Plan §4 caps the *verbs* at eight and says nothing about flags;
+        # `--host` set the precedent. This one exists because the alternative to
+        # a refusal a user can overrule is a refusal they work around by moving
+        # the file, which is worse for them and teaches them to distrust the
+        # rule.
+        # Names the patterns rather than pointing at `manifest.SECRETS`, which a
+        # user reading `tupferl add --help` cannot see. A help text that cites a
+        # module is a help text written for the wrong reader.
+        help=(
+            "store a file whose name says it holds a credential "
+            "(.ssh/id_*, .aws/credentials, .netrc, .pgpass, .gnupg/*, *.pem, *.key)"
+        ),
+    )
 
     drop = verbs.add_parser("remove", help="stop managing a file, keeping it in $HOME")
     drop.add_argument("path", help="a managed file")
@@ -117,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             # function is for.
             return manage.init(args.url) or sync.main()
         if args.command == "add":
-            return manage.add(args.paths, to_host=args.host)
+            return manage.add(args.paths, to_host=args.host, anyway=args.anyway)
         if args.command == "remove":
             return manage.remove(args.path, from_host=args.host)
         if args.command == "list":

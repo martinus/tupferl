@@ -341,6 +341,89 @@ class TestLinksBetween(unittest.TestCase):
             self.assertEqual(home / ".aws", manifest.links_between(home / ".aws" / "creds", home))
 
 
+class TestWhatLooksLikeASecret(unittest.TestCase):
+    """`manifest.secret`, the seventh admission rule (#35).
+
+    Plan §2 puts encryption out of scope, so what tupferl stores it stores in
+    plaintext and pushes to a remote. That decision is fine; what was not is that
+    `tupferl add ~/.ssh/id_ed25519` succeeded **silently**, and the key was then
+    in a git history nothing here can rewrite.
+
+    **The absences are tested as hard as the entries.** A rule that refused the
+    whole of `~/.ssh` would be wrong far more often than right, and a rule nobody
+    can predict is one people route around by moving files -- which is worse than
+    no rule.
+    """
+
+    def matched(self, name: str) -> str | None:
+        return manifest.secret(PurePosixPath(name))
+
+    def test_every_pattern_matches_something(self) -> None:
+        """One name per entry, so an entry that stopped matching anything --
+        a typo, a pattern the parent walk cannot reach -- is a failure rather
+        than a quietly dead line."""
+        named = {
+            ".ssh/id_ed25519": ".ssh/id_*",
+            ".aws/credentials": ".aws/credentials",
+            ".netrc": ".netrc",
+            ".pgpass": ".pgpass",
+            ".gnupg/secring.gpg": ".gnupg/*",
+            ".config/app/server.pem": "*.pem",
+            ".config/app/private.key": "*.key",
+        }
+        self.assertEqual(set(manifest.SECRETS), set(named.values()), "an entry has no example")
+        for name, pattern in named.items():
+            with self.subTest(name=name):
+                self.assertEqual(pattern, self.matched(name))
+
+    def test_the_rest_of_ssh_is_not_refused(self) -> None:
+        """`config` and `known_hosts` are ordinary dotfiles people want synced,
+        and they live in the directory this rule is most about. Refusing them
+        would make the rule wrong more often than right."""
+        for name in (".ssh/config", ".ssh/known_hosts", ".ssh/authorized_keys"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.matched(name))
+
+    def test_a_public_key_is_public(self) -> None:
+        """`.ssh/id_*` matches `id_ed25519.pub` too, so `NOT_SECRET` has to take
+        it back. Without that entry the half of the pair that is *meant* to be
+        shared is the half tupferl refuses."""
+        self.assertIsNone(self.matched(".ssh/id_ed25519.pub"))
+        self.assertEqual(".ssh/id_*", self.matched(".ssh/id_ed25519"))
+
+    def test_a_nested_name_under_gnupg_is_refused(self) -> None:
+        """`.gnupg/*` has to mean the subtree, not one directory entry -- the
+        parent walk `ignored` already does, for the reason written there."""
+        self.assertIsNotNone(self.matched(".gnupg/private-keys-v1.d/ABCD.key"))
+
+    def test_an_ordinary_dotfile_is_not_refused(self) -> None:
+        """The precondition. Without it every assertion above is satisfied by a
+        `secret` that answers a pattern for everything."""
+        for name in (".bashrc", ".config/nvim/init.lua", ".gitconfig", ".ssh"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.matched(name))
+
+    def test_the_anchored_half_and_the_unanchored_half(self) -> None:
+        """`fnmatch`'s `*` matches `/`, so `*.pem` and `*.key` fire at any depth
+        while `.ssh/id_*` fires only at the top of the tree.
+
+        Both directions are pinned because the asymmetry is a *choice*: matching
+        `id_*` anywhere would refuse `~/pictures/id_photo.png`, and a rule that
+        fires on holiday snaps is one people learn to pass `--anyway` to without
+        reading. Someone tightening this later should see what it costs.
+        """
+        self.assertIsNotNone(self.matched("projects/thing/server.pem"))
+        self.assertIsNotNone(self.matched("projects/thing/private.key"))
+        self.assertIsNone(self.matched("projects/thing/.ssh/id_rsa"))
+        self.assertIsNone(self.matched("pictures/id_photo.png"))
+
+    def test_it_does_not_fold_case(self) -> None:
+        """`fnmatchcase`, for `ignored`'s reason: folding on macOS would make two
+        machines disagree about the same repository, and the repository is the
+        thing they share."""
+        self.assertIsNone(self.matched(".SSH/ID_ED25519"))
+
+
 class TestTurningWhatWasTypedIntoAName(unittest.TestCase):
     """`manifest.relative`, and the two readings of a relative argument (#27).
 
