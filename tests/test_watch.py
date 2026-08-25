@@ -5,6 +5,10 @@ is unchanged: the two copies differ by one docstring paragraph and nothing else.
 This module imports only the standard library and the tool, so nothing here was
 adapted -- see `tests/test_reached.py` for why that was worth recording.
 
+Issue numbers spelled `woswoar#123` index that repository's issues, not this
+one's. A bare number here would read as a tupferl issue and eventually point at
+an unrelated one, which is the stale-claim hazard CLAUDE.md opens with.
+
 The tool exists because a mutation sweep was reported alive twice after it had
 died, so these tests are mostly about the *negative* cases -- a job that is gone
 must be called gone, and a job that finished must not be called gone.
@@ -303,7 +307,7 @@ class TestWhatCountsAsProgress(Fixture):
         already holds exactly that many rows -- and attaching a watcher to a job
         already under way is the ordinary case, not a corner.
 
-        Found by #274's `sign` operator: `-1` becoming `1` survived every test
+        Found by woswoar#274's `sign` operator: `-1` becoming `1` survived every test
         in this file, because none of them started the watcher against a log
         with anything in it.
         """
@@ -340,8 +344,8 @@ class TestWhatCountsAsProgress(Fixture):
         `main` as a traceback. The watcher would die of the thing it was hired
         to report on, at exactly the moment it was about to report it.
 
-        From #272: mutmut mutates string literals and found this unguarded. We
-        do not generate that mutant and #274 argues we should not, so this test
+        From woswoar#272: mutmut mutates string literals and found this unguarded. We
+        do not generate that mutant and woswoar#274 argues we should not, so this test
         guards a property no sweep of ours will check -- which is the reason to
         say all of that here rather than leave it to the next reader.
         """

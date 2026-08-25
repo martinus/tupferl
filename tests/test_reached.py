@@ -7,6 +7,10 @@ library and the tool. Issue #4 predicted a rewrite; for this file and
 `test_watch.py` it was a copy, and the reason is worth keeping in mind for the
 next port -- a tool nobody has had to change carries its tests across intact.
 
+Issue numbers spelled `woswoar#123` index that repository's issues, not this
+one's. A bare number here would read as a tupferl issue and eventually point at
+an unrelated one, which is the stale-claim hazard CLAUDE.md opens with.
+
 Pure -- JSON in, buckets out -- so this runs in milliseconds with no sandbox
 and no suite, the same line `tools/mutants.py` is split along.
 
@@ -152,7 +156,7 @@ class TestReadingTheInputs(unittest.TestCase):
 
 
 class TestAReportThatCannotBeBelieved(unittest.TestCase):
-    """#270: this module explains survivors, and some reports have none to explain.
+    """woswoar#270: this module explains survivors, and some reports have none to explain.
 
     Both fields are about attribution, and they fail differently: a red baseline
     makes every row meaningless, an unwidened one makes the survivors
