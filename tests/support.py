@@ -159,6 +159,56 @@ BRANCH = "main"
 HOST = "test-host"
 
 
+#: How many surviving paths `discard` names before it stops. Enough to identify
+#: a writer -- one `tmp_pack_*` or `incoming-*` entry is the whole answer -- and
+#: short enough that the message is readable when a whole tree survived.
+NAMED_WHEN_STUCK = 12
+
+
+def discard(box: tempfile.TemporaryDirectory[str]) -> None:
+    """Remove a throwaway tree; if it will not go, say what is still in it.
+
+    #17's second half. The first is `NO_HOUSEKEEPING`, which tries to stop the
+    race; this is what makes the *next* occurrence diagnosable, because that
+    issue could not be worked from what CI printed:
+
+        OSError: [Errno 39] Directory not empty: 'objects'
+
+    -- reported by `tools/run_tests.py` as an error in
+    `TestSyncIsIdempotentAndConverges`, which reads as "the sync property
+    failed". It had not; every property passed and the fixture failed to tear
+    down. Naming the surviving paths turns that into the writer's own signature:
+    a `tmp_pack_*`, an `objects/incoming-*` quarantine, a fresh `.pack`.
+
+    **It re-raises.** Not `ignore_cleanup_errors=True`, and not a `try` that
+    shrugs: either would convert a loud failure into a silent leak of a whole
+    tree per Hypothesis example, filling the runner's disk and failing somewhere
+    else entirely -- and would throw away the only signal that a git process is
+    outliving the command that started it, which is a hole in `gitrepo` being
+    the only place that talks to git.
+
+    **And it does not retry.** A second attempt after a pause would usually
+    succeed, which is the same silence by a slower route.
+    """
+    try:
+        box.cleanup()
+    except OSError as stuck:
+        root = Path(box.name)
+        # Best-effort, and after the failure: a listing that raised here would
+        # replace the real error with one about this function.
+        try:
+            left = sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+        except OSError:  # pragma: no cover - the tree is going away either way
+            left = []
+        named = ", ".join(left[:NAMED_WHEN_STUCK]) or "nothing this could list"
+        more = f", and {len(left) - NAMED_WHEN_STUCK} more" if len(left) > NAMED_WHEN_STUCK else ""
+        raise OSError(
+            f"{stuck}; {root} still holds {named}{more} -- something wrote into the tree "
+            f"while it was being removed, which is a process outliving the command that "
+            f"started it rather than a failure of the test that owned it (see #17)"
+        ) from stuck
+
+
 @contextmanager
 def tempdir(prefix: str = "tupferl-test-") -> Iterator[Path]:
     """A throwaway directory that is removed even when the body raises.
@@ -168,8 +218,13 @@ def tempdir(prefix: str = "tupferl-test-") -> Iterator[Path]:
     which does not run when `setUp` itself fails and is a delete written by hand
     where one is not needed.
     """
-    with tempfile.TemporaryDirectory(prefix=prefix) as box:
-        yield Path(box)
+    box = tempfile.TemporaryDirectory(prefix=prefix)
+    try:
+        yield Path(box.name)
+    finally:
+        # `discard`, not the `with` form: these trees hold git repositories, and
+        # a cleanup that fails should name what survived rather than an errno.
+        discard(box)
 
 
 def sandbox_env(home: Path, host: str = HOST) -> dict[str, str]:
@@ -207,6 +262,31 @@ def gitconfig(host: str) -> str:
     return f"[user]\n\tname = {host}\n\temail = {host}@example.invalid\n"
 
 
+#: git's background housekeeping, turned off for every sandbox (#17).
+#:
+#: git runs `gc --auto` after a commit and `maintenance run --auto` after a
+#: fetch, and **detaches** them by default. A detached process writing a pack, a
+#: `tmp_pack_*`, or an `objects/incoming-*` quarantine is what makes an
+#: `objects/` directory non-empty a moment after `shutil` scanned it as empty --
+#: and `TemporaryDirectory.cleanup()` then dies with `Directory not empty`,
+#: naming whichever test happened to own the tree. It has done so twice in this
+#: repository's CI, both times reported as a failure of the sync property, which
+#: had passed.
+#:
+#: The mechanism is **not** established: it does not reproduce on this
+#: container's git 2.43, and the runs that failed were on the runner's 2.55. See
+#: #17 for what was measured and what was not. What *is* established is that
+#: these three keys are read back by git through the sandbox
+#: (`test_support.TestBackgroundGitIsOff` asks git rather than reading the file),
+#: and that no test wants a detached process mutating a repository the suite is
+#: about to delete.
+#:
+#: `autoDetach` as well as `auto`: with `auto` at 0 nothing should start, and if
+#: a future git starts one anyway it then runs in the foreground, where the
+#: command that triggered it waits for it.
+NO_HOUSEKEEPING = "[gc]\n\tauto = 0\n\tautoDetach = false\n[maintenance]\n\tauto = false\n"
+
+
 def seed_home(home: Path, host: str = HOST) -> None:
     """Make `home` look like a real one: the directories, and git's identity.
 
@@ -214,11 +294,17 @@ def seed_home(home: Path, host: str = HOST) -> None:
     and friends, because `.gitconfig` is also *a dotfile a test may manage* --
     the fixture and the subject are the same kind of thing here, and a fixture
     that used a mechanism no user has would be testing a path nobody walks.
+
+    `NO_HOUSEKEEPING` goes in the same file, and for the same reason it is one
+    place: every sandbox in the suite is built from here, so a repository that
+    escaped it would be the one that raced.
     """
     for part in (".local/share", ".local/state", ".config"):
         (home / part).mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
-        gitconfig(host) + f"[init]\n\tdefaultBranch = {BRANCH}\n[commit]\n\tgpgsign = false\n",
+        gitconfig(host)
+        + f"[init]\n\tdefaultBranch = {BRANCH}\n[commit]\n\tgpgsign = false\n"
+        + NO_HOUSEKEEPING,
         encoding="utf-8",
     )
 
@@ -576,7 +662,7 @@ class SandboxCase(unittest.TestCase):
 
     def setUp(self) -> None:
         box = tempfile.TemporaryDirectory(prefix="tupferl-test-")
-        self.addCleanup(box.cleanup)
+        self.addCleanup(discard, box)
         self.tmp = Path(box.name)
         self.home = self.tmp / "home"
         self.home.mkdir()
