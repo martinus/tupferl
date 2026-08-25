@@ -403,6 +403,23 @@ class TestWhatLooksLikeASecret(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(self.matched(name))
 
+    def test_any_exemption_is_enough(self) -> None:
+        """`NOT_SECRET` is scanned as a disjunction, and with one entry in it
+        nothing can see that.
+
+        `any` and `all` agree on a one-element collection, so the sweep reported
+        `any` becoming `all` as a survivor -- and it would stay invisible right
+        up to the day somebody adds a second exemption, at which point `all`
+        silently requires a name to match *every* one of them and the first
+        exemption stops working. Patching in a second entry is the only fixture
+        that can tell the two apart, and the claim it checks -- "one match is
+        enough" -- is the real contract of the tuple.
+        """
+        with mock.patch.object(manifest, "NOT_SECRET", ("*.pub", "*.example")):
+            self.assertIsNone(self.matched(".ssh/id_ed25519.pub"))
+            self.assertIsNone(self.matched(".ssh/id_ed25519.example"))
+            self.assertIsNotNone(self.matched(".ssh/id_ed25519"))
+
     def test_the_anchored_half_and_the_unanchored_half(self) -> None:
         """`fnmatch`'s `*` matches `/`, so `*.pem` and `*.key` fire at any depth
         while `.ssh/id_*` fires only at the top of the tree.

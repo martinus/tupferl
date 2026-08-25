@@ -230,8 +230,14 @@ def add(wanted: list[str], to_host: bool, anyway: bool = False) -> int:
         path = manifest.named(raw)
         # Checked here so a path the *user named* raises rather than being
         # skipped. A directory is then walked; a file is already its own answer,
-        # and running the whole six-rule check over it a second time inside
+        # and running the whole seven-rule check over it a second time inside
         # `collect` was work with no second opinion in it.
+        #
+        # Which makes `is_dir()` always taken an **equivalent mutant**, and it is
+        # named rather than tested: `walk` yields a lone file as itself, so a
+        # named file routed through `collect` is re-checked and admitted under
+        # the same name. The branch buys one fewer `stat` storm, not a different
+        # answer, and a test asserting otherwise would be asserting the cost.
         name = manifest.check(path, home, repo, config, anyway)
         if path.is_dir():
             names, skipped = manifest.collect(path, home, repo, config, anyway)
