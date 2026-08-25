@@ -18,6 +18,7 @@ import os
 import stat
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 from tests import support
 from tupferl import copies, gitrepo, manage, paths
@@ -839,6 +840,30 @@ class TestCounting(unittest.TestCase):
         passes none. A default that had changed would rewrite `sync`'s report
         and `list`'s tail line without either of them being touched."""
         self.assertEqual(manage.count(3), manage.count(3, "file"))
+
+
+class TestRemoveTakesTheNameListPrints(support.TwoMachines):
+    """#27's other caller. `remove` goes through `manifest.relative` too.
+
+    The unit cases are in `test_manifest.TestTurningWhatWasTypedIntoAName`;
+    this is the end-to-end half, and it exists because the two commands used to
+    share a bug and could as easily share a fix that reached only one of them.
+    """
+
+    def test_a_name_from_list_is_removed(self) -> None:
+        """The working directory is set away from `$HOME` deliberately: from
+        `$HOME` the old cwd-relative reading happened to be right, which is why
+        a suite that drives everything from a sandbox never saw this."""
+        listed = self.first.say("list")[1]
+        self.assertIn(".bashrc", listed)
+
+        with mock.patch.object(Path, "cwd", return_value=self.tmp):
+            status, said = self.first.say("remove", ".bashrc")
+        self.assertEqual(0, status, said)
+        self.assertIn("removed .bashrc", said)
+        self.assertFalse((self.first.repo / ".bashrc").exists())
+        # Plan §4: `remove` keeps the file in `$HOME`.
+        self.assertTrue((self.first.home / ".bashrc").is_file())
 
 
 if __name__ == "__main__":
