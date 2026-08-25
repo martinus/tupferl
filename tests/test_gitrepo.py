@@ -586,17 +586,26 @@ class TestNoSpawnFailureEscapes(unittest.TestCase):
     and the claim there is about the `except` arm, not about the kernel.
     """
 
+    #: 60 000 arguments of 49 characters, plus `status`. Each costs its length
+    #: and one NUL, so the total is `len("status") + 1 + 60000 * 50`. Sized to a
+    #: round number on purpose: the assertion below is that literal, so a
+    #: mutation of the arithmetic that computes it -- `+ 1` become `- 1`, `+ 2`
+    #: or `+ 0` -- lands on a different number instead of one that still has
+    #: seven digits. The sweep reported all three as survivors against a
+    #: `\d{7}` match.
+    HUGE = 3_000_007
+
     def test_a_real_argument_list_that_is_too_long(self) -> None:
         """No mock. `ARG_MAX` is 2 MiB on this container's Linux and 1 MiB on
-        macOS, so 60 000 arguments of 50-odd bytes exceeds both."""
-        huge = ["status", *(f"--pathspec-{number:06d}-{'x' * 40}" for number in range(60000))]
+        macOS, and 3 MB of argv exceeds both."""
+        huge = ["status", *(["x" * 49] * 60000)]
         with tempfile.TemporaryDirectory() as box:
             answered = gitrepo.git(huge, cwd=Path(box))
         self.assertFalse(answered.ok)
         self.assertIn("could not run `git status`", answered.err)
-        # The size, because `ARG_MAX` bounds bytes: a count would leave the
-        # reader to multiply.
-        self.assertRegex(answered.err, r"totalling \d{7} bytes")
+        # The exact total, because `ARG_MAX` bounds bytes and a count would
+        # leave the reader to multiply.
+        self.assertIn(f"totalling {self.HUGE} bytes", answered.err)
         self.assertIn("60001 arguments", answered.err)
 
     def test_it_is_a_result_rather_than_a_traceback(self) -> None:
@@ -754,10 +763,22 @@ class TestReadingGitsVersion(unittest.TestCase):
         self.assertIn("2.25", found.detail)
         self.assertIn("upgrade git", found.detail)
 
-    def test_a_git_at_the_floor_passes(self) -> None:
-        """The boundary, from the other side. Without it, `<` written as `<=`
-        goes unnoticed -- and it would refuse the exact version that works."""
-        self.assertTrue(self.said("git version 2.25.0").ok)
+    def test_a_git_at_exactly_the_floor_passes(self) -> None:
+        """The boundary, and it has to be spelled `2.25` rather than `2.25.0`.
+
+        Tuple comparison makes the longer sequence the greater one when the
+        shared prefix is equal, so `(2, 25, 0) <= (2, 25)` is **False** -- a
+        `2.25.0` fixture passes whether the code says `<` or `<=`, and the
+        mutation sweep reported exactly that survivor. `(2, 25) <= (2, 25)` is
+        True, so this one fails against `<=` and would refuse the oldest git
+        that actually works.
+        """
+        self.assertTrue(self.said("git version 2.25").ok)
+
+    def test_a_git_one_patch_above_the_floor_passes(self) -> None:
+        """The ordinary reading of "2.25 or newer", kept beside the boundary
+        because the boundary above is deliberately the unusual spelling."""
+        self.assertTrue(self.said("git version 2.25.1").ok)
 
     def test_a_version_it_cannot_read_passes_and_says_so(self) -> None:
         found = self.said("git version huh")
