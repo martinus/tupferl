@@ -302,10 +302,6 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
     return done.stdout.strip()
 
 
-#: What the refusing hook writes. Two lines: the first is the reason, the second
-#: is the trailer `gitrepo.reason` must drop -- which is the shape git's own
-#: failures have, and the shape that told `doctor` and `init` apart from each
-#: other's bugs.
 #: External tools a suite needs, as a skip rather than an error. Defined here
 #: beside the other fixtures rather than as a `shutil.which` at the one call
 #: site: a check that has to grow later -- a git version floor, say, which
@@ -314,6 +310,10 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
 #: treats git as the hard requirement plan §5 makes it.
 requires_git = unittest.skipUnless(shutil.which("git"), "git required")
 
+#: What the refusing hook writes. Two lines: the first is the reason, the second
+#: is the trailer `gitrepo.reason` must drop -- which is the shape git's own
+#: failures have, and the shape that told `doctor` and `init` apart from each
+#: other's bugs.
 HOOK_REFUSED = "refusing: policy check failed"
 HOOK_TRAILER = "see docs/policy.md"
 

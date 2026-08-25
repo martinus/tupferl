@@ -33,6 +33,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import mutants
 from tools.mutants import Mutation
@@ -113,6 +114,25 @@ class TestWhatMayBeMutated(unittest.TestCase):
         self.assertFalse(mutants.mutable("tupferl/shell/tupferl.bash"))
         self.assertFalse(mutants.mutable("docs/architecture.md"))
         self.assertFalse(mutants.mutable("setup.py"))
+
+    def test_an_unmutable_prefix_wins_over_a_mutable_one(self) -> None:
+        """`UNMUTABLE` is empty today, and `str.startswith(())` is always
+        `False`, so the clause reading it cannot change any answer the other
+        three tests here ask for -- deleting it leaves every one of them green.
+        That is the shape `mutable`'s own comment argues against two lines
+        above it, where the `tests/` clause was removed for being unreachable.
+
+        The difference is that this one is *meant* to be empty: it is the lock
+        `UNMUTABLE`'s docstring describes, waiting for the first tool under
+        `tools/` that writes outside a directory it made itself. So it is given
+        a value here rather than deleted, which is what makes the clause
+        provable without waiting for that day.
+        """
+        self.assertTrue(mutants.mutable("tools/mutate.py"))
+        with mock.patch.object(mutants, "UNMUTABLE", ("tools/mutate.py",)):
+            self.assertFalse(mutants.mutable("tools/mutate.py"))
+            # And nothing else is caught by it.
+            self.assertTrue(mutants.mutable("tools/mutants.py"))
 
 
 class TestTheOperators(unittest.TestCase):
@@ -399,11 +419,16 @@ class TestLineEndingsThatAreNotNewline(unittest.TestCase):
 class TestDroppingAKeywordArgument(unittest.TestCase):
     """The operator written for `mkdir(..., mode=0o700)`.
 
-    Deliberately narrow. A blanket "drop any keyword" was measured first: of 281
-    keyword arguments in `tupferl/`, the commonest are *required* parameters
-    passed by name, and dropping one raises `TypeError` -- `BROKE` rather than
-    an answer, at the price of a whole suite run. `_DROPPABLE` inverts the rule
-    so that a keyword nobody argued for is never dropped.
+    Deliberately narrow. A blanket "drop any keyword" was measured first in
+    woswoar, over the 490 keyword arguments its package had then: the commonest
+    are *required* parameters passed by name, and dropping one raises
+    `TypeError` -- `BROKE` rather than an answer, at the price of a whole suite
+    run. `_DROPPABLE` inverts the rule so that a keyword nobody argued for is
+    never dropped.
+
+    The number is woswoar's and is labelled as such. It read "281 in `tupferl/`"
+    after the port, which was woswoar's figure with the package renamed; counted
+    by AST, this package has 150.
     """
 
     def dropped(self, body: str) -> list[str]:
@@ -454,8 +479,10 @@ class TestDroppingAKeywordArgument(unittest.TestCase):
                 self.assertEqual(len(self.dropped(f"f(a, {name}={value})\n")), 1)
 
     def test_encoding_is_not_droppable(self) -> None:
-        """It was, and the first whole-package sweep with this operator said so:
-        41 unkillable rows against 3 caught in the entire package.
+        """It was, and woswoar's first whole-package sweep with this operator
+        said so: 41 unkillable rows against 3 caught. No sweep of this package
+        has measured it, so the number is kept and attributed rather than
+        restated as if it were local.
 
         Dropping `encoding="utf-8"` is a real defect -- under `LC_ALL=C` the same
         read raises `UnicodeDecodeError` -- but this suite runs in a UTF-8 locale
@@ -609,10 +636,14 @@ class TestTheSpanIsExact(unittest.TestCase):
     def test_a_line_with_non_ascii_before_it(self) -> None:
         """`col_offset` is a UTF-8 *byte* offset; `str` slicing is by character.
 
-        `tupferl/report.py` and `tupferl/archive.py` really do contain `·`, `✔`
-        and `²`, so this is the live case and not a hypothetical. Every fixture
-        written in plain English passes under either arithmetic, which is what
-        makes the bug invisible without this test.
+        In woswoar two modules carried `·`, `✔` and `²` on code lines, which is
+        where the operator was written. Here the only non-ASCII on a code line
+        is `tupferl/doctor.py`'s `MARKS = {True: "\u2714", ...}`, and no mutable
+        node sits after it on that line -- so this is a guard against a shape
+        this package could easily grow rather than one it has today, and saying
+        otherwise (as the ported line did) claims a live case that is not there.
+        Every fixture written in plain English passes under either arithmetic,
+        which is what makes the bug invisible without this test.
         """
         # On the *same line*, before the column. A fixture with the non-ASCII on
         # an earlier line passes under either arithmetic -- the line starts are
@@ -780,9 +811,17 @@ class TestChoosingTheTests(unittest.TestCase):
         )
 
     def test_a_module_with_no_test_of_its_own_is_found_by_import(self) -> None:
-        """`tupferl/gitrepo.py` has no `test_gitrepo.py`; `tests/test_sync.py`
-        imports it. A name heuristic alone would report it as untested."""
-        self.assertIn("tests.test_sync", self.targets("tupferl/gitrepo.py"))
+        """`tupferl/copies.py` has no `test_copies.py`; `tests/test_sync.py`
+        imports it. A name heuristic alone would report it as untested.
+
+        A fifth assertion naming a real module, past the four the header lists.
+        woswoar's line said `gitrepo.py`, and the rename made that false here --
+        `tests/test_gitrepo.py` exists, so the assertion still passed while the
+        case it is named for went unexercised. `copies.py` is this project's
+        module with the shape: no name match at all, resolved only through the
+        import index.
+        """
+        self.assertIn("tests.test_sync", self.targets("tupferl/copies.py"))
 
     def test_the_name_match_does_not_short_circuit_the_index(self) -> None:
         """Measured on woswoar#216: taking `test_install` alone because the name

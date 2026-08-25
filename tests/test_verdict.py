@@ -40,9 +40,30 @@ SOURCE = (Path(__file__).resolve().parent.parent / "tools" / "verdict.py").read_
     encoding="utf-8"
 )
 
-#: Long enough that the alarm under test fires first by a wide margin, short
-#: enough that a broken alarm fails the suite in seconds rather than hanging it.
-FOREVER = 30
+#: How long a sandbox test sleeps when it is standing in for one that hangs.
+#:
+#: This was 30, which reproduced in this file the exact defect the same branch
+#: fixed in `tests/test_watch.py`. `tools/mutate.py`'s `EACH_TEST` is 30.0, so a
+#: mutant that disables the alarm -- dropping the `not` in `each_test`, or the
+#: `setitimer` call -- left these three tests running 30.11s each and tripping
+#: the harness first. Measured on a copy: 90.5s for the class, and three `BROKE`
+#: rows where `caught` was the whole point, since `BROKE` is never `caught`.
+#: The docstring here used to claim "fails the suite in seconds", which was
+#: wrong by two orders of magnitude.
+#:
+#: 8 is comfortably longer than the 0.5s alarm these tests arm and comfortably
+#: shorter than `BOUND`, which is itself well under `EACH_TEST`.
+FOREVER = 8
+
+#: What the one timed test sleeps for, so its duration is an interval rather
+#: than "not negative". Long enough to clear the clock's noise, short enough
+#: that it is not felt.
+SLEPT = 0.2
+
+#: Seconds one `python -c <verdict source>` run may take before the test calls
+#: it hung -- the same reasoning as `tests/test_watch.py`'s constant of the same
+#: name, and the same two bounds it has to sit between.
+BOUND = 20
 
 
 class Probe(unittest.TestCase):
@@ -104,7 +125,7 @@ class Probe(unittest.TestCase):
             cwd=self.sandbox,
             capture_output=True,
             text=True,
-            timeout=FOREVER * 2,
+            timeout=BOUND,
         )
         self.assertTrue(
             self.report.is_file(),
@@ -500,16 +521,22 @@ class TestWhatTheBaselineNeeds(Probe):
         and the baseline runs are where they mostly come from."""
         self.module(
             "test_a",
-            """
-            import unittest
+            f"""
+            import time, unittest
             class T(unittest.TestCase):
                 def test_it(self):
-                    pass
+                    time.sleep({SLEPT})
             """,
         )
         found = self.verdict("test_a")
         self.assertEqual(["test_a.T.test_it"], list(found["times"]))
-        self.assertGreaterEqual(found["times"]["test_a.T.test_it"], 0.0)
+        # An interval, not `>= 0`: a duration is never negative, so that
+        # assertion held against `stopTest`'s subtraction becoming an addition
+        # -- a real generated mutant, verified to leave this whole file green.
+        # `Killers` orders the cheap prefix from these numbers, so a wrong one
+        # silently mis-orders it.
+        self.assertGreater(found["times"]["test_a.T.test_it"], SLEPT / 2)
+        self.assertLess(found["times"]["test_a.T.test_it"], SLEPT * 20)
 
 
 class TestWhichTestsGetRun(Probe):

@@ -705,7 +705,13 @@ class TestTheCommandLine(Fixture):
             cwd=self.repo,
             capture_output=True,
             text=True,
-            timeout=60,
+            # `BOUND`, not 60, for the reason `ran` gives: these two build
+            # their own `subprocess.run` because they need `env=` and
+            # `rusage`, and they kept 60 when `ran` was brought down. That
+            # is twice the harness's per-test alarm, so a mutant stopping
+            # `_await_pid`'s deadline firing hangs to 60s and is filed
+            # `BROKE` -- measured at 60.15s and 60.12s on a copy.
+            timeout=BOUND,
             env={**os.environ, "PYTHONPATH": str(self.repo)},
         )
         self.assertEqual(ran.returncode, 1)
@@ -720,7 +726,13 @@ class TestTheCommandLine(Fixture):
             cwd=self.repo,
             capture_output=True,
             text=True,
-            timeout=60,
+            # `BOUND`, not 60, for the reason `ran` gives: these two build
+            # their own `subprocess.run` because they need `env=` and
+            # `rusage`, and they kept 60 when `ran` was brought down. That
+            # is twice the harness's per-test alarm, so a mutant stopping
+            # `_await_pid`'s deadline firing hangs to 60s and is filed
+            # `BROKE` -- measured at 60.15s and 60.12s on a copy.
+            timeout=BOUND,
             env={**os.environ, "PYTHONPATH": str(self.repo)},
         )
         self.assertEqual(ran.returncode, 1)
