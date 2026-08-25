@@ -29,6 +29,9 @@ repository's layout were re-derived from it.
 from __future__ import annotations
 
 import ast
+import collections
+import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -951,6 +954,175 @@ class TestReadingARealDiff(unittest.TestCase):
         self.write("tests/test_thing.py", "x = 1\n")
         self.write("docs/notes.md", "words\n")
         self.assertEqual(mutants.changed_lines("main", self.root), {})
+
+
+class TestTheseFunctionsTerminate(unittest.TestCase):
+    """Two pure functions that a one-line mutation turns into infinite loops.
+
+    Everything else in this module is pure and sub-millisecond, and that is its
+    virtue. These two spawn a child, which is the price of asking a question no
+    in-process assertion can: *does this return at all?*
+
+    A `support.deadline` would be cheaper and is the wrong instrument here. It
+    arms `SIGALRM`, which is exactly what `tools/verdict.py` uses for its
+    per-test bound, so a test that installed its own handler would displace the
+    harness's for the rest of the run -- trading six unguarded lines for a
+    silently disarmed alarm across the whole suite.
+
+    Measured on this branch: ten mutants of `line_starts` and `cap` came back
+    `BROKE` for want of these, and `BROKE` is never `caught`.
+
+    **`cap`'s four convert; `line_starts`' six do not, and the reason is worth
+    recording.** `TestChoosingTheTests.setUpClass` builds the real import index,
+    which parses every file in the repository -- so a `line_starts` that never
+    advances hangs *this module's own fixture* before any test in it runs. The
+    per-test alarm cannot help: `setUpClass` is not a test, so the row comes
+    back `TIMEOUT` at 300s rather than `BROKE` at 30. Verified by running that
+    mutant against this selection. The test below is still correct and still the
+    right shape -- it simply cannot be reached in the one run where it would
+    matter, which is the harness-inside-the-harness limit issue #4 named.
+    """
+
+    #: Above the fraction of a second an honest call takes, and far below
+    #: `tools/mutate.py`'s 30s per-test alarm -- see `tests/test_watch.py`'s
+    #: constant of the same name for why both bounds matter.
+    BOUND = 20
+
+    def returns(self, body: str) -> None:
+        """Run `body` against the real module in a child, and insist it ends."""
+        script = textwrap.dedent(
+            """
+            import sys
+            sys.path.insert(0, {root!r})
+            from tools import mutants
+            from tools.mutants import Mutation
+            {body}
+            print("done")
+            """
+        ).format(root=str(REPO_ROOT), body=textwrap.indent(textwrap.dedent(body), "").strip())
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=self.BOUND,
+        )
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        self.assertEqual("done", done.stdout.strip())
+
+    def test_line_starts_advances(self) -> None:
+        """`at -= ...` never advances: a negative index wraps in Python rather
+        than raising, so the `while` condition stays true -- and it loops while
+        *appending*, which is the mutant `verdict.cap`'s docstring names as the
+        reason that guard exists at all."""
+        self.returns("mutants.line_starts('a' + chr(10) + 'bb' + chr(10) + 'ccc' + chr(10))")
+
+    def test_cap_drains_its_queues(self) -> None:
+        """The round-robin `while len(kept) < limit and any(queues.values())`.
+        Four separate mutations stop it terminating."""
+        self.returns(
+            "rows = [Mutation('x', 'tupferl/m%d.py' % (i % 3), 'a', 'b', 't') "
+            "for i in range(30)]\n"
+            "kept, dropped = mutants.cap(rows, 7)\n"
+            "assert len(kept) == 7, kept\n"
+            "assert len(dropped) == 23, dropped"
+        )
+
+
+class TestCappingTheTable(unittest.TestCase):
+    """`cap` is what `--limit` runs on, and the sweep found it almost unguarded:
+    16 survivors and 4 BROKE across its fourteen lines, the largest cluster in
+    either module.
+
+    Its docstring names the reason it is not `[:limit]` -- that would "cover the
+    alphabetically first file exhaustively and the largest one not at all, and
+    the printed summary would not show it, because the count would be right
+    either way". A property the count cannot reveal is exactly the kind that
+    needs a test rather than a glance, and it had none.
+    """
+
+    def rows(self, path: str, many: int) -> list[Mutation]:
+        return [Mutation(f"{path}#{i}", path, "a", "b", "t", span=(i, i + 1)) for i in range(many)]
+
+    def test_no_limit_keeps_everything(self) -> None:
+        rows = self.rows("tupferl/a.py", 5)
+        for limit in (0, -1):
+            with self.subTest(limit=limit):
+                kept, dropped = mutants.cap(rows, limit)
+                self.assertEqual(rows, kept)
+                self.assertEqual([], dropped)
+
+    def test_a_table_under_the_limit_is_untouched(self) -> None:
+        """`len(mutations) <= limit`, where `<=` becoming `<` sends an
+        exactly-sized table through the round-robin instead of returning it.
+
+        The files are given out of order deliberately. With a single file the
+        round-robin's output is identical to its input, so `<` survives -- which
+        is what the first draft of this test measured. The reorder is only
+        observable when more than one file is in play.
+        """
+        rows = [row for name in "ba" for row in self.rows(f"tupferl/{name}.py", 2)]
+        for limit in (4, 5):
+            with self.subTest(limit=limit):
+                kept, dropped = mutants.cap(rows, limit)
+                self.assertEqual(rows, kept, "an under-limit table was reordered")
+                self.assertEqual([], dropped)
+
+    def test_it_takes_from_every_file_rather_than_draining_the_first(self) -> None:
+        """The whole argument for the function. Three files of ten, capped at
+        six: two from each. `[:limit]` gives six from `a.py` and none from the
+        others, and the *count* is six either way -- which is why this asserts
+        the split and not the total.
+        """
+        rows = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 10)]
+        kept, dropped = mutants.cap(rows, 6)
+
+        self.assertEqual(6, len(kept))
+        self.assertEqual(24, len(dropped))
+        taken = collections.Counter(row.path for row in kept)
+        self.assertEqual({"tupferl/a.py": 2, "tupferl/b.py": 2, "tupferl/c.py": 2}, dict(taken))
+
+    def test_an_uneven_cap_still_spreads_before_it_doubles_up(self) -> None:
+        """Five across three files is 2/2/1, never 3/1/1: the round-robin takes
+        one from each in turn. This is what `and` becoming `or` at the inner
+        guard, and `<` becoming `<=`, each break in a different direction."""
+        rows = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 10)]
+        kept, _ = mutants.cap(rows, 5)
+        taken = sorted(collections.Counter(row.path for row in kept).values())
+        self.assertEqual([1, 2, 2], taken)
+
+    def test_the_visiting_order_does_not_depend_on_the_input_order(self) -> None:
+        """`sorted(queues)`. A dict preserves insertion order, so without the
+        sort the file that happened to appear first would be favoured -- and two
+        machines building the same table from a different walk would cap it
+        differently."""
+        forward = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 4)]
+        backward = [row for name in "cba" for row in self.rows(f"tupferl/{name}.py", 4)]
+        self.assertEqual(mutants.cap(forward, 4)[0], mutants.cap(backward, 4)[0])
+
+    def test_what_is_kept_comes_back_in_file_and_span_order(self) -> None:
+        """`kept.sort(key=(path, span or (0, 0)))`. The round-robin builds the
+        list interleaved -- a.py, b.py, a.py, b.py -- and running a sweep in that
+        order would jump between files for no reason a reader could see."""
+        rows = [row for name in "ba" for row in self.rows(f"tupferl/{name}.py", 3)]
+        kept, _ = mutants.cap(rows, 4)
+        self.assertEqual(sorted(kept, key=lambda row: (row.path, row.span)), kept)
+
+    def test_a_row_with_no_span_sorts_first_rather_than_raising(self) -> None:
+        """`span or (0, 0)` -- a hand-written row has no span, and `None` is not
+        comparable with a tuple. The fallback is what stops a mixed table
+        raising `TypeError` in the middle of a sweep."""
+        rows = [
+            Mutation("hand-written", "tupferl/a.py", "a", "b", "t"),
+            *self.rows("tupferl/a.py", 3),
+        ]
+        kept, _ = mutants.cap(rows, 2)
+        self.assertEqual("hand-written", kept[0].label)
+
+    def test_nothing_is_lost_between_the_two_halves(self) -> None:
+        """Every row comes back exactly once, in one list or the other."""
+        rows = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 7)]
+        kept, dropped = mutants.cap(rows, 8)
+        self.assertEqual(sorted(rows), sorted(kept + dropped))
 
 
 if __name__ == "__main__":

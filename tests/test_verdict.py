@@ -25,6 +25,7 @@ running it.
 from __future__ import annotations
 
 import json
+import resource
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,9 @@ import textwrap
 import unittest
 from pathlib import Path
 from typing import Any
+
+#: The repository root, so a child can import `tools` after chdir-free launch.
+ROOT = Path(__file__).resolve().parent.parent
 
 #: The tool's own source, read the way `mutate._probe` reads it -- from this
 #: tree, never from the sandbox. A copy under test could otherwise decide its
@@ -666,6 +670,91 @@ class TestWhenTheToolItselfCannotRun(Probe):
             """,
         )
         self.assertTrue(self.verdict("test_a")["loaded"])
+
+
+class TestTheMemoryCapsArithmetic(Probe):
+    """`cap`'s four cases, asserted on the rlimit it sets rather than on a
+    runaway allocation dying.
+
+    The existing coverage of `cap` is by *consequence* -- `test_mutate.py`'s
+    `TestAMutantThatEatsMemory` allocates until something stops it. That can
+    only be slow or fatal, and it is why two mutants here came back `BROKE`
+    rather than `caught`: `==` becoming `!=` at the `hard` comparison, and `and`
+    becoming `or` at the `soft` one, both leave *no cap in force*, so the
+    memory-eating test is unbounded and the harness's alarm speaks first.
+    `BROKE` is never `caught`, so the arithmetic was unguarded.
+
+    Reading `getrlimit` back is immediate and exact, and it distinguishes every
+    branch. A child process each time, because `setrlimit` is not undoable
+    upward once lowered.
+    """
+
+    #: Comfortably larger than anything the child allocates, and small enough
+    #: to be distinguishable from the unlimited value.
+    ASKED = 2 << 30
+
+    def limits(self, limit: int, soft: int | None = None, hard: int | None = None) -> int:
+        """`RLIMIT_AS`'s soft limit after `cap(limit)`, from a child that
+        optionally starts with one already in force."""
+        setup = ""
+        if soft is not None:
+            setup = f"resource.setrlimit(resource.RLIMIT_AS, ({soft}, {hard}))\n"
+        code = (
+            "import resource, sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            f"{setup}"
+            "from tools import verdict\n"
+            f"verdict.cap({limit})\n"
+            "print(resource.getrlimit(resource.RLIMIT_AS)[0])\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=BOUND
+        )
+        self.assertEqual(0, done.returncode, done.stderr)
+        return int(done.stdout.strip())
+
+    def test_it_lowers_an_unlimited_process_to_what_was_asked(self) -> None:
+        self.assertEqual(self.ASKED, self.limits(self.ASKED))
+
+    def test_zero_is_no_cap(self) -> None:
+        """`--memory 0` promises it, and `setrlimit(..., 0)` would make the
+        sandbox fail every row for a reason no output would explain."""
+        self.assertEqual(resource.RLIM_INFINITY, self.limits(0))
+
+    def test_it_never_raises_a_ceiling_somebody_else_set(self) -> None:
+        """ "A caller who already sandboxed us meant it." The existing soft limit
+        is *below* what is asked, so it must survive untouched."""
+        already = self.ASKED // 2
+        self.assertEqual(
+            already, self.limits(self.ASKED, soft=already, hard=resource.RLIM_INFINITY)
+        )
+
+    def test_it_lowers_a_finite_ceiling_rather_than_leaving_it(self) -> None:
+        """`min(limit, hard)`. A process already bounded *above* what is asked
+        must still come down to what is asked.
+
+        This is the reachable half of that line. The other half -- `hard ==
+        RLIM_INFINITY` read as `!=` -- is an **equivalent mutant**, and the
+        first draft of this test tried to kill it with a fixture POSIX does not
+        permit (`soft` above `hard`, which `setrlimit` refuses outright). Worked
+        through: `soft <= hard` always, so when `hard` is infinite both spellings
+        give `limit`; when `hard` is finite and `limit <= hard` both give
+        `limit`; and when `limit > hard` the original clamps to `hard` and then
+        skips because `soft <= ceiling`, while the mutant asks for `limit`, is
+        refused with `ValueError`, and is swallowed by the `except`. Every
+        reachable state ends with the same rlimit, so no honest fixture can tell
+        them apart and none is invented here.
+        """
+        hard = self.ASKED * 2
+        self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=hard, hard=hard))
+
+    def test_a_higher_finite_soft_limit_is_brought_down(self) -> None:
+        """The `soft != RLIM_INFINITY and soft <= ceiling` branch. Read with
+        `or`, a finite soft limit *above* the ceiling short-circuits the whole
+        function and the process keeps the larger allowance."""
+        self.assertEqual(
+            self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2, hard=resource.RLIM_INFINITY)
+        )
 
 
 if __name__ == "__main__":
