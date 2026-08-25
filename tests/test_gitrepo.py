@@ -586,27 +586,38 @@ class TestNoSpawnFailureEscapes(unittest.TestCase):
     and the claim there is about the `except` arm, not about the kernel.
     """
 
-    #: 60 000 arguments of 49 characters, plus `status`. Each costs its length
-    #: and one NUL, so the total is `len("status") + 1 + 60000 * 50`. Sized to a
-    #: round number on purpose: the assertion below is that literal, so a
-    #: mutation of the arithmetic that computes it -- `+ 1` become `- 1`, `+ 2`
-    #: or `+ 0` -- lands on a different number instead of one that still has
-    #: seven digits. The sweep reported all three as survivors against a
-    #: `\d{7}` match.
-    HUGE = 3_000_007
+    #: One argument of 2 MiB, which is refused on every platform this runs on --
+    #: and, crucially, for a reason that does **not** vary by machine.
+    #:
+    #: `ARG_MAX` does vary: on Linux the whole argv is bounded by
+    #: `RLIMIT_STACK / 4`, so it is 2 MiB on this container's 8 MiB stack and
+    #: larger on a GitHub runner. A fixture sized against it therefore passes on
+    #: one machine and fails on another -- measured, and it is why this test is
+    #: shaped this way: an earlier version built 3 MB out of 60 000 short
+    #: arguments, which the runner **accepted**, and the three Linux legs went
+    #: red while macOS passed.
+    #:
+    #: A *single* argument has its own cap: `MAX_ARG_STRLEN`, a fixed 32 pages
+    #: (128 KiB) on Linux whatever the stack is, and `ARG_MAX` on macOS. 2 MiB
+    #: clears both with room and costs one spawn.
+    ONE_HUGE = 2 << 20
+
+    #: What `git()` should report for that call: `len("status") + 1` for the
+    #: subcommand and `ONE_HUGE + 1` for the argument. A literal rather than the
+    #: same sum spelled twice -- the sweep found all three mutations of that
+    #: arithmetic surviving a `\d{7}` match.
+    HUGE_BYTES = 2_097_160
 
     def test_a_real_argument_list_that_is_too_long(self) -> None:
-        """No mock. `ARG_MAX` is 2 MiB on this container's Linux and 1 MiB on
-        macOS, and 3 MB of argv exceeds both."""
-        huge = ["status", *(["x" * 49] * 60000)]
+        """No mock, and no dependence on a limit that differs per machine."""
         with tempfile.TemporaryDirectory() as box:
-            answered = gitrepo.git(huge, cwd=Path(box))
+            answered = gitrepo.git(["status", "x" * self.ONE_HUGE], cwd=Path(box))
         self.assertFalse(answered.ok)
         self.assertIn("could not run `git status`", answered.err)
         # The exact total, because `ARG_MAX` bounds bytes and a count would
         # leave the reader to multiply.
-        self.assertIn(f"totalling {self.HUGE} bytes", answered.err)
-        self.assertIn("60001 arguments", answered.err)
+        self.assertIn(f"totalling {self.HUGE_BYTES} bytes", answered.err)
+        self.assertIn("2 arguments", answered.err)
 
     def test_it_is_a_result_rather_than_a_traceback(self) -> None:
         """The whole point, stated on its own: the caller gets an answer.
@@ -616,7 +627,7 @@ class TestNoSpawnFailureEscapes(unittest.TestCase):
         which does not catch `OSError`.
         """
         with tempfile.TemporaryDirectory() as box:
-            answered = gitrepo.git(["status", "x" * (2 << 20)], cwd=Path(box))
+            answered = gitrepo.git(["status", "x" * self.ONE_HUGE], cwd=Path(box))
         self.assertIsInstance(answered, gitrepo.Result)
         self.assertIsNone(answered.code)
 
@@ -645,30 +656,47 @@ class TestStagingPastTheArgumentLimit(support.SandboxCase):
         super().setUp()
         self.repo = support.make_repo(self.tmp / "repo", self.env)
 
-    #: The pathspec bytes the fixture below must exceed. `ARG_MAX` is 2 MiB on
-    #: Linux and 1 MiB on macOS, and it counts the environment and the pointer
-    #: array as well -- so clearing the larger of the two clears both with room.
-    OVER_ARG_MAX = 2 << 20
+    def test_the_pathspecs_never_reach_the_command_line(self) -> None:
+        """The claim, stated so that no kernel limit is involved in checking it.
 
-    def test_more_paths_than_a_command_line_would_hold(self) -> None:
-        """The regression test for #3, and the fixture is built around two
-        limits pulling opposite ways.
+        This replaced a fixture that built 4 600 real paths and asserted the
+        staging succeeded. That test was **green on the GitHub runner with the
+        fix reverted**, and it took a red CI leg to notice why: on Linux the
+        whole argv is bounded by `RLIMIT_STACK / 4`, so `ARG_MAX` is 2 MiB on
+        this container and larger on a runner with a bigger stack. 2.2 MB of
+        pathspec cleared the limit here and did not clear it there -- CLAUDE.md
+        §2's fixture too weak to tell the two answers apart, and invisible from
+        the test's own text.
 
-        **Long paths, not many files.** `ARG_MAX` bounds *bytes*, so 4 600 paths
-        of ~485 each clears it where 40 000 short ones also would -- and the
-        short version took over 30 seconds here, tripping `gitrepo.TIMEOUT` and
-        failing for a reason that has nothing to do with the fix.
+        What actually changed is *where the paths go*, and that is machine-
+        independent: argv holds four fixed flags, and the paths ride on stdin
+        NUL-separated. Asserted by watching the one call `stage` makes.
+        """
+        many = [self.repo / f"file-{number}.conf" for number in range(3)]
+        for where in many:
+            where.write_text("x", encoding="utf-8")
 
-        **But not too long: macOS's `PATH_MAX` is 1024**, a quarter of Linux's
-        4096, and it counts the whole absolute path. A component chain sized for
-        Linux fails to *create* on the macos leg, so the test would error rather
-        than test on exactly one of the four.
+        with mock.patch.object(gitrepo, "git", wraps=gitrepo.git) as watched:
+            answered = gitrepo.stage(self.repo, many)
+        self.assertTrue(answered.ok, answered.err)
 
-        Real files, because `git add` refuses a pathspec matching nothing. And
-        the fixture asserts its own precondition first: without that, a
-        miscounted path length makes this a test of staging 4 600 ordinary files,
-        which passes with or without the fix. It caught exactly that while being
-        written: 3 600 paths came to 1 746 000 bytes, under the limit.
+        # One call, not several. `manage.record` commits under a message naming
+        # every path, so a `stage` that batched could leave a partial set staged
+        # and commit it as the whole -- which is why batching is refused.
+        watched.assert_called_once()
+        argv = watched.call_args.args[0]
+        self.assertEqual(["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"], argv)
+        for where in many:
+            self.assertNotIn(where.name, " ".join(argv))
+        self.assertEqual("file-0.conf\0file-1.conf\0file-2.conf\0", watched.call_args.kwargs["fed"])
+
+    def test_many_files_really_do_stage_in_one_call(self) -> None:
+        """The end-to-end half, and it claims only what it can show.
+
+        4 600 files through the real git, so the stdin path is exercised at a
+        size no argv-based `add` would have enjoyed -- but the assertion is that
+        they are all staged, not that a limit was exceeded, because whether it
+        was depends on the machine's stack rlimit.
         """
         deep = self.repo / ("d" * 90) / ("e" * 90) / ("f" * 90)
         deep.mkdir(parents=True)
@@ -677,13 +705,10 @@ class TestStagingPastTheArgumentLimit(support.SandboxCase):
             where = deep / f"{number:05d}-{'g' * 200}.conf"
             where.write_text("x", encoding="utf-8")
             many.append(where)
-
-        pathspecs = sum(len(str(path.relative_to(self.repo))) + 1 for path in many)
-        self.assertGreater(pathspecs, self.OVER_ARG_MAX, "the fixture is not big enough to fail")
-
         answered = gitrepo.stage(self.repo, many)
         self.assertTrue(answered.ok, answered.err)
-        self.assertTrue(gitrepo.staged(self.repo))
+        listed = support.git(["diff", "--cached", "--name-only"], cwd=self.repo, env=self.env)
+        self.assertEqual(4600, len(listed.splitlines()))
 
     def test_a_name_beginning_with_a_dash_is_a_path_not_an_option(self) -> None:
         """What the `--` separator used to guarantee. A pathspec read from a

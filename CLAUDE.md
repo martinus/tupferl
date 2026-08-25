@@ -664,14 +664,23 @@ Five things are not where a newcomer would guess, all on purpose:
   `errors="surrogateescape"`, which answers the decoding half too. A dotfile
   name need not be valid UTF-8 on Linux, and `TestAPathThatIsNotUtf8` has both
   directions.
-- **A test about an argument-list limit wants long paths, not many files.**
-  `ARG_MAX` bounds bytes, so 4 600 paths of ~485 clear it where 40 000 short
-  ones also would — and the 40 000 version took over 30 seconds, tripping
-  `gitrepo.TIMEOUT` and failing for a reason unrelated to the fix. But not too
-  long either: **macOS's `PATH_MAX` is 1024**, a quarter of Linux's 4096, so a
-  component chain sized for Linux cannot be *created* on the macos leg and the
-  test errors rather than tests there. Assert the fixture's own byte total
-  before staging; that assertion caught a 20% miscount while it was written.
+- **`ARG_MAX` is not a constant, so no fixture may be sized against it.** On
+  Linux the whole argv is bounded by `RLIMIT_STACK / 4` — 2 MiB against this
+  container's 8 MiB stack, and **larger on a GitHub runner**. Measured the hard
+  way: a fixture that built 3 MB of argv was refused here and *accepted* there,
+  turning the three Linux legs red while macOS passed. The worse half of the
+  same mistake was silent — a 2.2 MB `stage` fixture that was **green on the
+  runner with the fix reverted**, a test that could not fail on the machine that
+  matters, invisible from its own text.
+  - For "a spawn was refused", use **one argument** over `MAX_ARG_STRLEN` — a
+    fixed 32 pages (128 KiB) on Linux whatever the stack is, and `ARG_MAX` on
+    macOS. 2 MiB clears both, everywhere, in one spawn.
+  - For "the paths no longer go on the command line", assert *that* — watch the
+    call and read its argv. It is the thing that changed, and no kernel limit is
+    involved in checking it.
+  - And if a test does build many real paths: **macOS's `PATH_MAX` is 1024**, a
+    quarter of Linux's 4096, so a component chain sized for Linux cannot be
+    *created* on the macos leg and the test errors rather than tests there.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every
