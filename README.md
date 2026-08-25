@@ -112,9 +112,11 @@ tupferl add --host ~/.gitconfig      # this machine gets its own version
 tupferl remove --host ~/.gitconfig   # …and stops having one
 ```
 
-The shared file stays managed either way, and other computers never see the
-override — they keep using the shared version, and `tupferl list` marks the
-files this machine overrides with `host`. After `remove --host`, the next sync
+The shared file stays managed either way. Other computers *have* the override —
+it is committed and pushed like everything else, so a reinstall of this machine
+gets it back — but only the machine it is named for reads it; the rest keep
+using the shared version. `tupferl list` marks the files this machine
+overrides with `host`. After `remove --host`, the next sync
 copies the shared version back into `$HOME` (backing up what the override put
 there first). Plain `tupferl remove` is a different request: it stops managing
 the file *everywhere*, taking the shared copy every other computer is using.

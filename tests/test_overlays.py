@@ -36,6 +36,8 @@ on disk during a `sync`, and what `remove --host` does.
 
 from __future__ import annotations
 
+import shutil
+
 from tests import support
 
 #: The three versions of `.bashrc` this module works with. Distinct on every
@@ -102,6 +104,24 @@ class TestReplacementWins(OverlaidOnB):
 
         self.assertEqual(OVERLAY, self.second.read(".bashrc"))
         self.assertEqual(RESHARED, self.second.stored(".bashrc").read_text(encoding="utf-8"))
+
+    def test_a_reinstalled_machine_gets_its_overlay_back(self) -> None:
+        """The overlay is committed and pushed like everything else, which is
+        what makes it survive the machine it belongs to. Asserted because the
+        README now promises it, and because it is the one direction where an
+        overlay behaving like a purely local setting would look fine until the
+        day it mattered.
+
+        `$HOME` is deleted whole, and the repository lives under it
+        (`XDG_DATA_HOME` is `$HOME/.local/share`), so this really is a machine
+        with nothing but its hostname and the remote URL.
+        """
+        shutil.rmtree(self.second.home)
+        self.second.home.mkdir()
+        support.seed_home(self.second.home, self.second.name)
+
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.assertEqual(OVERLAY, self.second.read(".bashrc"))
 
     def test_the_other_machine_is_unaffected_by_the_overlay(self) -> None:
         """The overlay is committed and pushed, so `machine-a` has the bytes in
