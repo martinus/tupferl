@@ -116,7 +116,10 @@ def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
     """
     staged = gitrepo.stage(repo, paths_)
     if not staged.ok:
-        raise TupferlError(f"could not stage {doing} in {repo}: {gitrepo.reason(staged)}")
+        raise TupferlError(
+            f"could not stage {doing} in {repo}: {gitrepo.reason(staged)}; nothing was "
+            f"committed, so run `tupferl doctor` and try again."
+        )
     if not gitrepo.staged(repo):
         # Asked rather than assumed, for `sync`: it stages every file it looked
         # at, including the ones it decided nothing about, so that a copy left
@@ -129,7 +132,10 @@ def record(repo: Path, paths_: list[Path], message: str, doing: str) -> bool:
         return False
     made = gitrepo.commit(repo, message)
     if not made.ok:
-        raise TupferlError(f"could not commit {doing} in {repo}: {gitrepo.reason(made)}")
+        raise TupferlError(
+            f"could not commit {doing} in {repo}: {gitrepo.reason(made)}; the files are "
+            f"staged, so fix that and run `tupferl sync`, which commits what it finds."
+        )
     return True
 
 
@@ -226,7 +232,10 @@ def add(wanted: list[str], to_host: bool) -> int:
     for skip in refused:
         print(f"skipped {skip.path}: {skip.why}")
     if not admitted:
-        raise TupferlError("nothing to add: every path given was skipped.")
+        raise TupferlError(
+            "nothing to add: every path given was skipped for the reason printed above "
+            "it; name a file tupferl can store."
+        )
 
     snapshots = paths.snapshot_dir(repo, host)
     touched: list[PurePosixPath] = []
@@ -254,9 +263,27 @@ def add(wanted: list[str], to_host: bool) -> int:
     return 0
 
 
-def count(many: int) -> str:
-    """`1 file` or `7 files` -- the plural nobody notices until it is wrong."""
-    return "1 file" if many == 1 else f"{many} files"
+#: What `list`, `status` and `diff` all say on a repository nothing has been
+#: added to yet. One sentence rather than three, because it names the command
+#: that fixes it and three copies of that name is three places to change when a
+#: verb's spelling does.
+NOTHING_MANAGED = "nothing is managed yet; `tupferl add <path>...` starts."
+
+
+def count(many: int, thing: str = "file") -> str:
+    """`1 file` or `7 files` -- the plural nobody notices until it is wrong.
+
+    `thing` because milestone 6 wanted a second noun: `status` counts *commits*
+    to pull and to push. Naive pluralisation -- append an `s` -- which is right
+    for both nouns this program counts, and `test_manage.TestCounting` names
+    the cases including zero.
+
+    `conflicts.describe` spells its own plural, and deliberately: it would have
+    to import a command module for a three-character difference, and that edge
+    -- `conflicts` depending on `manage` -- is one the module docstring there is
+    at pains not to have.
+    """
+    return f"1 {thing}" if many == 1 else f"{many} {thing}s"
 
 
 def remove(wanted: str, from_host: bool) -> int:
@@ -286,13 +313,7 @@ def remove(wanted: str, from_host: bool) -> int:
     home = paths.home()
     host = paths.hostname(config.hostname)
 
-    path = manifest.named(wanted)
-    try:
-        name = PurePosixPath(path.relative_to(home).as_posix())
-    except ValueError:
-        raise TupferlError(
-            f"{path} is outside {home}, so it was never managed; name a file under it."
-        ) from None
+    name = manifest.relative(wanted, home)
 
     tree, overlay = manifest.roots(repo, host)
     # Before the unlink loop, because without `--host` that loop deletes this
@@ -373,7 +394,7 @@ def listing() -> int:
     repo, config = open_repo()
     found = manifest.managed(repo, paths.hostname(config.hostname))
     if not found:
-        print("nothing is managed yet; `tupferl add <path>...` starts.")
+        print(NOTHING_MANAGED)
         return 0
     for item in found:
         print(f"{'host' if item.host else '    '}  {item.name}")

@@ -645,10 +645,21 @@ class Computer:
 
     def call(self, *args: str, keys: str | None = None) -> int:
         """One command, in this process. Returns the exit status; output is eaten."""
+        return self.say(*args, keys=keys)[0]
+
+    def say(self, *args: str, keys: str | None = None) -> tuple[int, str]:
+        """`call`, and hand back what it printed as well as the exit status.
+
+        For the commands whose output *is* the product -- `status`, `diff`,
+        `list` -- where `run` would also do but costs a subprocess apiece. What
+        it cannot show is which stream a line went to, so a test about stderr
+        still wants `run`; `quiet` merges the two.
+        """
         from tupferl import __main__ as cli
 
-        with mock.patch.dict(os.environ, self.env, clear=True), quiet(), typing(keys):
-            return cli.main(list(args))
+        with mock.patch.dict(os.environ, self.env, clear=True), quiet() as said, typing(keys):
+            status = cli.main(list(args))
+        return status, said.getvalue()
 
     def git(self, *args: str) -> str:
         """A git command in this machine's repository, for a test to look with."""

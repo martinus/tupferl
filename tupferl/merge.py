@@ -38,6 +38,7 @@ true answer: nothing in the data says which side is newer.
 
 from __future__ import annotations
 
+import difflib
 import tempfile
 from pathlib import Path
 from typing import NamedTuple
@@ -93,6 +94,45 @@ def labels_for(name: str) -> tuple[str, str, str]:
     sides differently.
     """
     return (f"{name} (this computer)", f"{name} (last sync)", f"{name} (the repository)")
+
+
+def unified(name: str, mine: bytes, theirs: bytes) -> str:
+    """A unified diff of the two sides, labelled the way the markers are.
+
+    Here rather than in `conflicts`, for `markers_for`'s reason: the prompt's
+    `[d]`, the conflict markers and `tupferl diff` all name the same two sides,
+    and three spellings of "this computer" against "the repository" is two
+    chances for them to disagree about which is which. `labels_for` is one line
+    above; this is its third reader.
+
+    `difflib.diff_bytes` rather than decoding first, so a file that is not UTF-8
+    still produces a diff of the right lines. Only the finished text is decoded,
+    with `errors="replace"`, because this is display and a `UnicodeDecodeError`
+    here would refuse to show the user the one file they asked about.
+
+    `split(b"\n")` and not `splitlines()`. On **bytes** the extra separator is
+    `\r` -- not the long list `str.splitlines()` adds, which CLAUDE.md records
+    for the `str` case and which was written into this docstring first and was
+    wrong: `b"a\x0bb".splitlines()` is one line. `\r` is enough on its own here.
+    A CRLF dotfile is every line ending in one, so `splitlines()` would show a
+    diff of half-lines with the carriage returns silently eaten, and every hunk
+    header after the first would be a line number the file does not have. git
+    splits on `\n` alone, and this diff sits beside git's.
+
+    Empty when the two are identical, which is the caller's test for "there is
+    nothing to show" -- rather than a second byte comparison that could differ
+    from what was actually diffed.
+    """
+    mine_at, _, theirs_at = labels_for(name)
+    rows = difflib.diff_bytes(
+        difflib.unified_diff,
+        mine.split(b"\n"),
+        theirs.split(b"\n"),
+        mine_at.encode(),
+        theirs_at.encode(),
+        lineterm=b"",
+    )
+    return "\n".join(row.decode("utf-8", "replace") for row in rows)
 
 
 def markers_for(name: str) -> tuple[bytes, bytes]:

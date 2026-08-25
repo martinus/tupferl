@@ -469,5 +469,86 @@ class TestAPathThatIsNotUtf8(ConflictedIndex):
         self.assertEqual(3, len(next(iter(found.values()))))
 
 
+class TestHowFarApartTwoRefsAre(support.SandboxCase):
+    """`distance`, which is the only thing `status` knows about the remote.
+
+    Driven against a real clone and a real push rather than a canned string,
+    for plan §7.1's reason and for a sharper one: the numbers come out of
+    `rev-list --left-right`, whose order is the fact under test. A fixture with
+    the same count on both sides could not tell `(ahead, behind)` from
+    `(behind, ahead)`, so no fixture here has one.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.remote = support.make_remote(self.tmp / "remote.git", self.env)
+        self.repo = self.tmp / "clone"
+        support.git(["clone", str(self.remote), str(self.repo)], cwd=self.tmp, env=self.env)
+        self.commit("first")
+        support.git(["push", "origin", "HEAD"], cwd=self.repo, env=self.env)
+        support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
+        self.there = f"origin/{gitrepo.branch(self.repo)}"
+
+    def commit(self, text: str, where: Path | None = None) -> None:
+        root = self.repo if where is None else where
+        (root / "file").write_text(text, encoding="utf-8")
+        support.git(["add", "file"], cwd=root, env=self.env)
+        support.git(["commit", "-m", text], cwd=root, env=self.env)
+
+    def test_two_refs_that_agree_are_zero_apart(self) -> None:
+        self.assertEqual((0, 0), gitrepo.distance(self.repo, "HEAD", self.there))
+
+    def test_commits_only_here_are_the_first_number(self) -> None:
+        """Two of them, against nothing on the other side -- so a function that
+        returned the pair the wrong way round answers `(0, 2)` and fails."""
+        self.commit("second")
+        self.commit("third")
+        self.assertEqual((2, 0), gitrepo.distance(self.repo, "HEAD", self.there))
+
+    def test_commits_only_there_are_the_second_number(self) -> None:
+        other = self.tmp / "elsewhere"
+        support.git(["clone", str(self.remote), str(other)], cwd=self.tmp, env=self.env)
+        self.commit("from elsewhere", where=other)
+        support.git(["push", "origin", "HEAD"], cwd=other, env=self.env)
+        support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
+        self.assertEqual((0, 1), gitrepo.distance(self.repo, "HEAD", self.there))
+
+    def test_both_directions_at_once_are_two_different_numbers(self) -> None:
+        """The fixture that makes the two tests above more than a coincidence:
+        with 2 here and 1 there, every wrong answer -- swapped, doubled, one
+        side counted twice -- is a different pair from the right one."""
+        other = self.tmp / "elsewhere"
+        support.git(["clone", str(self.remote), str(other)], cwd=self.tmp, env=self.env)
+        self.commit("from elsewhere", where=other)
+        support.git(["push", "origin", "HEAD"], cwd=other, env=self.env)
+        self.commit("second")
+        self.commit("third")
+        support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
+        self.assertEqual((2, 1), gitrepo.distance(self.repo, "HEAD", self.there))
+
+    def test_output_that_is_not_two_numbers_is_unknown(self) -> None:
+        """The format guard, which real git cannot reach: `rev-list --count`
+        either fails -- caught one line earlier -- or prints two integers.
+
+        Forced by patching `gitrepo.git`, tupferl's own wrapper, rather than by
+        arranging a git that misbehaves. The branch exists so that a future git,
+        or a `rev-list` reached through some alias, produces `None` instead of an
+        `IndexError` traceback out of `tupferl status`; plan §5 rules that out
+        for anything a user meets. Each spelling below breaks a different half
+        of the condition.
+        """
+        for out in ("", "1", "1 2 3", "one two", "1 -2"):
+            with self.subTest(out=out):
+                fake = gitrepo.Result(out=out, err="", code=0)
+                with mock.patch("tupferl.gitrepo.git", return_value=fake):
+                    self.assertIsNone(gitrepo.distance(self.repo, "HEAD", self.there))
+
+    def test_a_ref_that_does_not_resolve_is_unknown_rather_than_equal(self) -> None:
+        """`None`, not `(0, 0)`. The difference is the whole reason the return
+        type is optional: `(0, 0)` would have `status` print "is exactly what
+        this computer has" about a remote it could not read."""
+        self.assertIsNone(gitrepo.distance(self.repo, "HEAD", "origin/nonesuch"))
+
+
 if __name__ == "__main__":
     unittest.main()

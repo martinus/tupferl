@@ -326,6 +326,41 @@ def is_ancestor(repo: Path, older: str, newer: str) -> bool:
     return git(["merge-base", "--is-ancestor", older, newer], cwd=repo).ok
 
 
+def distance(repo: Path, here: str, there: str) -> tuple[int, int] | None:
+    """How many commits each of `here` and `there` holds that the other does not.
+
+    `(ahead, behind)`, which is the pair `status` prints as "n to push, m to
+    pull". `None` when git could not answer -- an unborn branch, or a ref that
+    does not resolve -- because `(0, 0)` would say "the two agree", and a status
+    line claiming a machine is up to date with a remote it could not read is the
+    one wrong answer this function must not give.
+
+    `--left-right --count` in one call rather than two `rev-list | wc -l`: the
+    two numbers are then computed from one walk of one symmetric difference, so
+    they cannot come from refs that moved between them.
+    """
+    counted = git(["rev-list", "--left-right", "--count", f"{here}...{there}"], cwd=repo)
+    if not counted.ok:
+        # An **equivalent mutant** lives here, and it is named rather than
+        # tested: removing this `if` changes nothing observable, because a
+        # failed `rev-list` prints nothing, so `"".split()` is `[]`, so the
+        # format guard below returns `None` two lines later. Both roads reach
+        # the same answer and no test can tell them apart.
+        #
+        # Kept because the two questions are different -- "git failed" and "git
+        # answered something that is not two numbers" -- and a reader who found
+        # only the second would reasonably conclude that a failed call falls
+        # through to `int(fields[0])`.
+        return None
+    fields = counted.out.split()
+    if len(fields) != 2 or not all(field.isdigit() for field in fields):
+        # git's own format, so this is unreachable today. Guarded rather than
+        # asserted because the alternative to a guard is a `ValueError` traceback
+        # out of `status`, and plan §5 rules that out for anything a user meets.
+        return None
+    return (int(fields[0]), int(fields[1]))
+
+
 def fetch(repo: Path, remote: str) -> Result:
     """Bring the remote's refs up to date without touching the working tree."""
     return git(["fetch", "--quiet", remote], cwd=repo)

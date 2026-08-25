@@ -460,6 +460,56 @@ class TestWhenSettlingIsInterrupted(TwoCommits):
         self.assertEqual(FROM_A, self.second.read(MANAGED))
 
 
+class TestWhenTheSettledFilesCannotBeStaged(TwoCommits):
+    """`reconcile` settles every side and then `git add` fails.
+
+    Forced by patching `gitrepo.stage`, tupferl's own wrapper, rather than by
+    arranging a git that refuses: git has no hook on `add`, and the fixtures
+    that break a *commit* leave `add` working. The alternative -- an unwritable
+    `.git/index` -- is skipped wherever the suite runs as root, which is most
+    containers, so it would be a test that quietly does nothing on the leg most
+    likely to run it.
+
+    Only the merge's own staging is broken. `record`'s later `stage` must still
+    work, or the test would be about that instead: `sync` never gets there,
+    because `integrate` raises first.
+    """
+
+    def breaking(self) -> None:
+        real = gitrepo.stage
+
+        def refuse(repo: object, paths: list[object]) -> gitrepo.Result:
+            if gitrepo.unfinished(self.second.repo) is not None:
+                return gitrepo.Result(out="", err="fatal: could not add", code=128)
+            return real(repo, paths)  # type: ignore[arg-type]
+
+        patched = mock.patch.object(gitrepo, "stage", refuse)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def test_it_says_so_and_names_a_next_step(self) -> None:
+        self.breaking()
+        status, said = self.second.say("sync", "--theirs")
+        self.assertEqual(2, status, said)
+        self.assertIn("could not stage the settled files", said)
+        self.assertIn("tupferl doctor", said)
+
+    def test_the_message_is_true_about_the_merge_being_undone(self) -> None:
+        """The substantive half. That sentence is a claim about what happened to
+        the repository, and it holds only because `integrate`'s `finally` aborts
+        whatever raises out of `reconcile` -- so it is worth checking rather
+        than trusting the comment that says so.
+        """
+        was = self.second.git("rev-parse", "HEAD")
+        self.breaking()
+        status, said = self.second.say("sync", "--theirs")
+        self.assertEqual(2, status, said)
+        self.assertIn("the merge was undone", said)
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        self.assertEqual("", self.second.git("status", "--porcelain"))
+        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+
 class TestSettlingWithTheEditor(TwoCommits):
     """`[e]` over a commit conflict, which no other test here covers."""
 

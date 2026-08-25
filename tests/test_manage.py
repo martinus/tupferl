@@ -826,6 +826,20 @@ class TestCounting(unittest.TestCase):
         self.assertEqual("2 files", manage.count(2))
         self.assertEqual("0 files", manage.count(0))
 
+    def test_a_second_noun_gets_the_same_rule(self) -> None:
+        """`status` counts commits. Zero as well as one and many, because zero
+        is where "1 file" logic written as `many > 1` goes wrong and it is the
+        count a machine that agrees with its remote would have."""
+        self.assertEqual("1 commit", manage.count(1, "commit"))
+        self.assertEqual("2 commits", manage.count(2, "commit"))
+        self.assertEqual("0 commits", manage.count(0, "commit"))
+
+    def test_the_default_noun_is_still_files(self) -> None:
+        """The argument was added in milestone 6, and every existing caller
+        passes none. A default that had changed would rewrite `sync`'s report
+        and `list`'s tail line without either of them being touched."""
+        self.assertEqual(manage.count(3), manage.count(3, "file"))
+
 
 if __name__ == "__main__":
     unittest.main()

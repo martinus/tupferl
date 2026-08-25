@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, NoReturn
@@ -433,7 +433,10 @@ def undone(repo: Path, why: str) -> NoReturn:
     merge was undone" is what tells them they may simply sync again.
     """
     gitrepo.abort_merge(repo)
-    raise TupferlError(f"{why}; the merge was undone, so nothing is half-done.")
+    raise TupferlError(
+        f"{why}; the merge was undone, so nothing is half-done -- run `tupferl doctor`, "
+        f"then sync again."
+    )
 
 
 def held(repo: Path, number: int, name: str, modes: dict[int, int]) -> Blob | None:
@@ -524,8 +527,99 @@ def reconcile(repo: Path, settler: conflicts.Settler) -> list[str]:
         return left
     staged = gitrepo.stage(repo, [repo / name for name in gitrepo.conflicted(repo)])
     if not staged.ok:
-        raise TupferlError(f"could not stage the settled files: {gitrepo.reason(staged)}")
+        # "the merge was undone" is true because `integrate` is this function's
+        # only caller and its `finally` aborts whatever raises out of here. Said
+        # rather than done: aborting here as well would leave two `merge --abort`
+        # calls for one merge, the second of which fails for no reason anyone
+        # reading the code could see.
+        raise TupferlError(
+            f"could not stage the settled files: {gitrepo.reason(staged)}; the merge was "
+            f"undone, so run `tupferl doctor` and sync again."
+        )
     return []
+
+
+class Reading(NamedTuple):
+    """One managed file: where its three copies live, and what they decide.
+
+    Everything `settle` needs to *write* the decision, and everything `status`
+    needs to *describe* it. One walk rather than two, and that is the point:
+    `status` promises the user a preview of the next `sync`, and a preview
+    computed by a second copy of this loop is one that agrees until somebody
+    edits one of them -- at which point the command whose whole job is to be
+    trusted before a write is the one that is quietly wrong.
+    """
+
+    name: PurePosixPath
+    #: The repository's copy: this host's overlay, or the shared tree.
+    where: Path
+    #: The file in `$HOME`.
+    target: Path
+    #: This host's merge base.
+    snapshot: Path
+    #: `$HOME`'s bytes, or `None` when there is no regular file there.
+    found: Blob | None
+    #: The repository's bytes, or `None` when what is there is not a regular
+    #: file -- which is the `REFUSED` outcome below, and the one case where
+    #: neither side can be shown.
+    stored: Blob | None
+    #: What the three versions come to. Never settled -- a `CONFLICT` here still
+    #: carries its `sides`, because whether to ask a person is the caller's
+    #: business and `status` must not.
+    outcome: Outcome
+
+
+def refused(name: PurePosixPath, why: str) -> Outcome:
+    """A file tupferl will not touch, and the sentence saying why.
+
+    A function rather than the constructor spelled out three times: `REFUSED` is
+    the one action whose `blob` must be `None` -- `apply` writes whatever a blob
+    holds -- and three spellings of that pairing is three chances to write one
+    with bytes on it.
+    """
+    return Outcome(name, REFUSED, None, why=why)
+
+
+def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
+    """Every managed file, resolved against its snapshot. Writes nothing.
+
+    In `manifest.managed`'s order, which is sorted -- so the report, the commit
+    message and `status` list files the same way on every machine.
+
+    **Nothing here touches disk except to read it**, which is what lets `status`
+    borrow the whole loop. `resolve` does run `git merge-file` for a file both
+    sides changed, in a temporary directory of its own: that is how `status`
+    can say "and they merge cleanly" rather than leaving the user to find out
+    during the sync, and it is the same merge `sync` would perform.
+
+    A generator because `settle` wants to act on each file as it arrives and
+    `status` wants to measure the widest name before printing any of them; a
+    list built here would decide that for both.
+    """
+    snapshots = paths.snapshot_dir(repo, host)
+    for item in manifest.managed(repo, host):
+        where = manifest.location(repo, host, item.host) / item.name
+        target = home / item.name
+        snapshot = snapshots / item.name
+        stored = read(where)
+        if stored is None:
+            why = f"{where} is not a regular file"
+            yield Reading(item.name, where, target, snapshot, None, None, refused(item.name, why))
+            continue
+        found = read(target)
+        if found is None and os.path.lexists(target):
+            why = f"{target} is not a regular file"
+            yield Reading(item.name, where, target, snapshot, None, stored, refused(item.name, why))
+            continue
+        yield Reading(
+            item.name,
+            where,
+            target,
+            snapshot,
+            found,
+            stored,
+            resolve(item.name, read(snapshot), found, stored),
+        )
 
 
 def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> list[Outcome]:
@@ -543,45 +637,38 @@ def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> lis
     snapshots = paths.snapshot_dir(repo, host)
     backups = Backups(paths.backup_dir())
 
-    items = manifest.managed(repo, host)
     outcomes: list[Outcome] = []
     touched: list[PurePosixPath] = []
+    # Consumed as it arrives, rather than through a list built first. Not
+    # thrift: `settled` can run the user's `$EDITOR`, so a run that read every
+    # file up front would answer a later file from bytes taken before that
+    # editor opened. Which of the two is *better* is arguable -- the point is
+    # that it was not this change's to decide, and lazily is what `settle` did
+    # before `examine` was lifted out of it.
+    managing: set[PurePosixPath] = set()
 
-    for item in items:
-        where = manifest.location(repo, host, item.host) / item.name
-        target = home / item.name
-        snapshot = snapshots / item.name
-        stored = read(where)
-        if stored is None:
-            outcomes.append(Outcome(item.name, REFUSED, None, why=f"{where} is not a regular file"))
-            continue
-        found = read(target)
-        if found is None and os.path.lexists(target):
-            outcomes.append(
-                Outcome(item.name, REFUSED, None, why=f"{target} is not a regular file")
-            )
-            continue
-
-        outcome = resolve(item.name, read(snapshot), found, stored)
+    for reading in examine(repo, home, host):
+        managing.add(reading.name)
+        outcome = reading.outcome
         if outcome.sides is not None:
             outcome = settled(outcome.sides, settler(outcome.sides))
         try:
-            wrote = apply(outcome, target, where, snapshot, found, backups)
+            wrote = apply(
+                outcome, reading.target, reading.where, reading.snapshot, reading.found, backups
+            )
         except OSError as unwritable:
             # One unwritable path does not stop the sync, for `manifest.collect`'s
             # reason: forty files of which one now sits under a directory that has
             # become a file should leave thirty-nine synced and say what it
             # skipped. It also keeps an `OSError` from reaching the user as a
             # traceback, which plan §5 rules out for anything they can act on.
-            outcome = Outcome(
-                item.name, REFUSED, None, why=f"could not write it ({unwritable.strerror})"
-            )
+            outcome = refused(reading.name, f"could not write it ({unwritable.strerror})")
             wrote = False
         outcomes.append(outcome)
         if wrote:
-            touched.append(item.name)
+            touched.append(reading.name)
 
-    for name in stale(snapshots, {item.name for item in items}):
+    for name in stale(snapshots, managing):
         touched.append(name)
         gone = snapshots / name
         gone.unlink()

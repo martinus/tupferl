@@ -176,6 +176,62 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestTheUnifiedDiff(unittest.TestCase):
+    """`unified`, which `tupferl diff` and the conflict prompt's `[d]` share.
+
+    It lives in `merge.py` beside `labels_for`, whose labels are also what the
+    conflict markers say -- so the two ways a user is shown "this computer"
+    against "the repository" come from one place. These tests are about the
+    half that has no `git` in it at all.
+    """
+
+    def test_the_labels_name_the_file_and_the_two_sides(self) -> None:
+        said = merge.unified(".bashrc", b"a\n", b"b\n")
+        self.assertIn("--- .bashrc (this computer)", said)
+        self.assertIn("+++ .bashrc (the repository)", said)
+
+    def test_the_first_argument_is_the_minus_side(self) -> None:
+        """Asymmetric inputs, because symmetric ones cannot tell a diff from a
+        diff computed backwards -- CLAUDE.md §2."""
+        said = merge.unified("x", b"mine\n", b"theirs\n")
+        self.assertIn("-mine", said)
+        self.assertIn("+theirs", said)
+
+    def test_identical_bytes_produce_nothing(self) -> None:
+        """Empty, which is what `inspection.shows` reads as "nothing to show"
+        -- so an empty-string answer here is load-bearing rather than tidy."""
+        self.assertEqual("", merge.unified("x", b"same\n", b"same\n"))
+
+    def test_bytes_that_are_not_utf8_still_diff(self) -> None:
+        """`diff_bytes` rather than decoding first. A latin-1 dotfile is not
+        hostile input, and refusing to show it is refusing the one file the
+        user asked about."""
+        said = merge.unified("x", b"caf\xe9\n", b"cafe\n")
+        self.assertIn("+cafe", said)
+        self.assertIn("\ufffd", said)
+
+    def test_a_carriage_return_stays_inside_its_line(self) -> None:
+        """`split(b"\n")` and not `splitlines()`, which on bytes also breaks on
+        `\r`. A CRLF dotfile is every line ending in one, so `splitlines()`
+        shows a diff of half-lines with the carriage returns eaten and every
+        hunk header after the first naming a line the file does not have.
+
+        Two fixtures were written for this before it could fail, and both are
+        worth recording:
+
+        - a hunk-header comparison, which came back `@@ -1,3 +1,3 @@` either
+          way -- `split` keeps the empty string after a trailing newline and
+          `splitlines` drops it, exactly cancelling the extra line;
+        - a `\x0b`, from `str.splitlines()`'s separator list. **`bytes.
+          splitlines()` does not split on it**: `b"a\x0bb".splitlines()` is one
+          line, so the two implementations agreed and the test passed against
+          both. On bytes the difference is `\r` and nothing else.
+        """
+        said = merge.unified("x", b"one\rtwo\n", b"one\rTWO\n")
+        self.assertIn("-one\rtwo", said)
+        self.assertIn("+one\rTWO", said)
+
+
 class TestKeepingBothVersions(unittest.TestCase):
     """`merge.keep_both`, the conflict prompt's `[b]`."""
 

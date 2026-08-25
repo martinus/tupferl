@@ -14,19 +14,20 @@ from __future__ import annotations
 
 import argparse
 import unittest
+from unittest import mock
 
 from tests import support
 from tupferl import __version__, paths
-from tupferl.__main__ import PLANNED, build_parser, main
+from tupferl.__main__ import NOT_WIRED, build_parser, main
 
 #: Plan §4's table, which is the contract this file guards. Written out rather
 #: than taken from `PLANNED` plus `doctor`: a list derived from the code under
 #: test cannot notice the code losing a command.
 COMMANDS = ("init", "add", "remove", "sync", "status", "diff", "list", "doctor")
 
-#: The arguments each unbuilt verb needs before argparse will let it through, so
-#: the tests below reaches the command rather than a usage error. Only the verbs
-#: with required positionals appear.
+#: The arguments each verb needs before argparse will let it through, so the
+#: tests below reach the command rather than a usage error. Only the verbs with
+#: required positionals appear.
 ARGUMENTS = {"init": ["git@example.invalid:dotfiles"], "add": ["~/.bashrc"], "remove": [".bashrc"]}
 
 
@@ -75,54 +76,56 @@ class TestTheCommandSet(unittest.TestCase):
         self.assertIn("invalid choice", said.getvalue())
 
 
-#: The verbs that do something, written out from what has actually been built.
-#: Milestone 2 moved four of them out of `MILESTONES` and into here, milestone 3
-#: moved `sync`; the two sets together must be the whole command set, which is
-#: what `test_every_command_is_either_built_or_planned` asserts.
-BUILT = {"doctor", "init", "add", "remove", "list", "sync"}
+class TestEveryVerbIsWired(support.SandboxCase):
+    """Plan §4's eight verbs all reach code, and a ninth would say so.
 
-#: Which milestone of `docs/plan.md` builds each verb that is *not*. Written out
-#: from the plan rather than read from `PLANNED`: the first version of the test
-#: below took the number from the code it was checking, so every mutation of
-#: those numbers survived -- a test containing a copy of its subject cannot fail
-#: (CLAUDE.md §2). The mutation sweep is what found it.
-MILESTONES = {
-    "status": 6,
-    "diff": 6,
-}
+    This replaced `TestTheUnbuiltCommands` when milestone 6 built the last two.
+    That class asserted which milestone each unbuilt verb named; with none left,
+    what is worth guarding is the other direction -- that a verb registered in
+    the parser and forgotten in `main` is *loud*. `main` returns the exit status
+    rather than calling `sys.exit`, so without the guard such a verb returns
+    `None`, and `sys.exit(None)` is a **successful** exit: the shape of a command
+    that worked.
 
+    Both directions are here on purpose. The negative test alone would pass if
+    `NOT_WIRED` never appeared for any input at all, which is CLAUDE.md §2's
+    "negative assertion whose precondition was never established"; the positive
+    one establishes it by registering a verb `main` has no branch for.
+    """
 
-class TestTheUnbuiltCommands(unittest.TestCase):
-    def test_each_says_which_milestone_builds_it(self) -> None:
-        for command, milestone in MILESTONES.items():
+    def test_no_planned_verb_falls_through(self) -> None:
+        """Every one of the eight, driven for real in an empty sandbox.
+
+        Most of them fail -- there is no repository -- and that is fine: the
+        assertion is about *which* failure. `sync` and `diff` reaching "no
+        repository at ..." is them being wired; either reaching `NOT_WIRED`
+        would not be.
+        """
+        for command in COMMANDS:
             with self.subTest(command=command), support.quiet() as said:
-                status = main([command, *ARGUMENTS.get(command, [])])
-            self.assertEqual(2, status)
-            self.assertIn(f"milestone {milestone}", said.getvalue())
+                main([command, *ARGUMENTS.get(command, [])])
+            self.assertNotIn(NOT_WIRED, said.getvalue())
 
-    def test_the_code_agrees_with_the_plan(self) -> None:
-        """Stated separately from the test above, and against the same written-out
-        table: this is the assertion that the *numbers* are right, where that one
-        asserts they reach the user."""
-        self.assertEqual(MILESTONES, PLANNED)
+    def test_a_verb_with_no_branch_says_so(self) -> None:
+        """The precondition for the test above: the guard can fire.
 
-    def test_the_message_names_the_command_and_the_plan(self) -> None:
-        """Checked through the real process, because the message goes to stderr
-        and an in-process call cannot show that it did."""
-        env = support.sandbox_env(paths.home())
-        done = support.run_cli(["status"], env)
-        self.assertEqual(2, done.returncode)
-        self.assertIn("tupferl status", done.stderr)
-        self.assertIn("milestone 6", done.stderr)
-        self.assertEqual("", done.stdout)
+        Through a parser with a ninth verb on it, because that is the only way
+        to reach the branch -- and it is exactly the mistake the branch is for:
+        somebody adds a subparser and forgets `main`.
+        """
 
-    def test_every_command_is_either_built_or_planned(self) -> None:
-        """A verb registered but in neither set raises `KeyError` at runtime
-        rather than saying anything useful. The two halves must partition the
-        command set exactly -- no gaps, and no verb claiming to be both."""
-        self.assertEqual(set(COMMANDS), BUILT | set(PLANNED))
-        self.assertEqual(set(), BUILT & set(PLANNED))
-        self.assertEqual(set(PLANNED), set(MILESTONES))
+        def ninth() -> argparse.ArgumentParser:
+            parser = build_parser()
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    action.add_parser("nonesuch")
+            return parser
+
+        with mock.patch("tupferl.__main__.build_parser", ninth), support.quiet() as said:
+            status = main(["nonesuch"])
+        self.assertEqual(2, status)
+        self.assertIn(NOT_WIRED, said.getvalue())
+        self.assertIn("tupferl nonesuch", said.getvalue())
 
 
 class TestTheFlags(unittest.TestCase):
