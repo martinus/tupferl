@@ -526,6 +526,23 @@ class TestHowFarApartTwoRefsAre(support.SandboxCase):
         support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
         self.assertEqual((2, 1), gitrepo.distance(self.repo, "HEAD", self.there))
 
+    def test_output_that_is_not_two_numbers_is_unknown(self) -> None:
+        """The format guard, which real git cannot reach: `rev-list --count`
+        either fails -- caught one line earlier -- or prints two integers.
+
+        Forced by patching `gitrepo.git`, tupferl's own wrapper, rather than by
+        arranging a git that misbehaves. The branch exists so that a future git,
+        or a `rev-list` reached through some alias, produces `None` instead of an
+        `IndexError` traceback out of `tupferl status`; plan §5 rules that out
+        for anything a user meets. Each spelling below breaks a different half
+        of the condition.
+        """
+        for out in ("", "1", "1 2 3", "one two", "1 -2"):
+            with self.subTest(out=out):
+                fake = gitrepo.Result(out=out, err="", code=0)
+                with mock.patch("tupferl.gitrepo.git", return_value=fake):
+                    self.assertIsNone(gitrepo.distance(self.repo, "HEAD", self.there))
+
     def test_a_ref_that_does_not_resolve_is_unknown_rather_than_equal(self) -> None:
         """`None`, not `(0, 0)`. The difference is the whole reason the return
         type is optional: `(0, 0)` would have `status` print "is exactly what

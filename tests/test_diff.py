@@ -80,6 +80,13 @@ class TestWhatDiffShows(Machine):
         self.assertIn("-edited on this computer", said)
         self.assertIn("+from the repo", said)
         self.assertIn("@@", said)
+        # Both bits are the same, so nothing about the executable bit belongs
+        # here. Without this, `rendered`'s equality test can be false always and
+        # every other assertion in this class still holds.
+        self.assertNotIn("executable", said)
+        # And the whole-repository fallback sentence is for when nothing was
+        # shown -- printing it beside a diff is the same branch inverted.
+        self.assertNotIn("nothing differs", said)
 
     def test_an_identical_file_is_not_mentioned_at_all(self) -> None:
         """`.vimrc` is managed and unchanged, so it must be silent -- otherwise

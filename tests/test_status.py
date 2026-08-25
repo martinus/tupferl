@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest import mock
 
 from tests import support
 from tupferl import inspection, paths, sync
@@ -304,6 +305,53 @@ class TestStatusWritesNothing(Machine):
         self.assertEqual(before, self.second.git("rev-parse", "HEAD"))
 
 
+class TestTheShapeOfTheReport(Machine):
+    """The layout, which the rest of this file's assertions look straight past.
+
+    Every test above asks "does this phrase appear beside this name?", and a
+    `status` that printed a warning it should not, opened with a blank line, or
+    lined the second column up wrongly answers all of them correctly. The
+    mutation sweep said so: five survivors on `status` and `sides`, all of them
+    about shape rather than content.
+    """
+
+    def test_a_healthy_machine_says_nothing_about_an_unfinished_merge(self) -> None:
+        """The negative half of `TestStatusReportsWhatSyncRefuses`. Without it,
+        `if marker is not None` can be true always and every other test passes.
+        """
+        self.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        self.assertNotIn("unfinished git operation", self.status())
+
+    def test_nothing_to_report_does_not_open_with_a_blank_line(self) -> None:
+        """The separator is only earned by something above it. Printed
+        unconditionally, a quiet machine's status starts with an empty line,
+        which reads as output having gone missing."""
+        said = self.status()
+        self.assertTrue(said.splitlines()[0].strip(), repr(said))
+
+    def test_a_blank_line_separates_the_files_from_the_remote(self) -> None:
+        """And the other direction: with files listed, the separator is there.
+        The pair is what pins the branch -- either alone is satisfied by a
+        `status` that never separates, or by one that always does."""
+        self.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        rows = self.status().splitlines()
+        blank = [index for index, row in enumerate(rows) if not row.strip()]
+        self.assertEqual(1, len(blank), rows)
+        self.assertTrue(rows[blank[0] - 1].startswith(".bashrc"), rows)
+        self.assertIn("origin/", rows[blank[0] + 1], rows)
+
+    def test_the_second_column_lines_up_under_names_of_different_lengths(self) -> None:
+        """`.bashrc` and `.vimrc` differ by one character, so a width taken from
+        the *shortest* name -- `max` written as `min` -- leaves the longer line
+        unpadded and the two phrases one column apart."""
+        self.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        (self.second.repo / ".vimrc").write_text("set number\nset ruler\n")
+        rows = [row for row in self.status().splitlines() if row.startswith(".")]
+        self.assertEqual(2, len(rows), rows)
+        starts = {row.index("changed") for row in rows}
+        self.assertEqual(1, len(starts), rows)
+
+
 class TestTheRemoteHalf(Machine):
     """Plan §4's "and remotely", which is a fact about commits rather than files.
 
@@ -326,12 +374,19 @@ class TestTheRemoteHalf(Machine):
         self.assertNotIn("to push", said)
 
     def test_commits_here_and_not_there_are_counted_the_other_way(self) -> None:
-        """`add` commits without pushing, which is how a machine gets ahead."""
+        """`add` commits without pushing, which is how a machine gets ahead.
+
+        The caveat about unpulled commits must *not* appear: nothing is waiting
+        to be pulled, and a sentence that is always printed is one a reader
+        stops seeing. That is the only fixture in this file with `ahead` above
+        zero and `behind` at zero, so it is the only one that can say so.
+        """
         self.second.write(".zshrc", "setopt nomatch\n")
         self.assertEqual(0, self.second.call("add", str(self.second.home / ".zshrc")))
         said = self.status()
         self.assertIn("1 commit to push", said)
         self.assertNotIn("to pull", said)
+        self.assertNotIn("waiting to be pulled", said)
 
     def test_the_two_counts_are_separate_numbers(self) -> None:
         """Both directions at once, and the numbers differ -- so a status that
@@ -375,6 +430,28 @@ class TestTheRemoteHalf(Machine):
         said = self.status()
         self.assertIn("no remote is configured", said)
         self.assertIn("remote add origin", said)
+
+    def test_a_branch_that_was_never_pushed_says_so(self) -> None:
+        """`origin/<branch>` does not exist until something is pushed to it, and
+        a fetch cannot invent it. A new local branch is the ordinary way to be
+        in that state, and it is also the state a machine is in between `init`
+        against an empty remote and its first successful push."""
+        self.second.git("checkout", "-b", "somewhere-else")
+        said = self.status()
+        self.assertIn("does not exist yet", said)
+        self.assertIn("tupferl sync", said)
+
+    def test_a_comparison_git_will_not_make_is_unknown_rather_than_equal(self) -> None:
+        """`distance` answering `None` -- which real git will not do here, since
+        both refs resolve. Forced by patching tupferl's own wrapper rather than
+        by breaking git: the branch exists precisely because "up to date" is the
+        one wrong answer when the comparison could not be made, and a status
+        that silently printed it would be indistinguishable from a healthy one.
+        """
+        with mock.patch("tupferl.gitrepo.distance", return_value=None):
+            said = self.status()
+        self.assertIn("git would not compare HEAD with", said)
+        self.assertNotIn("is exactly what this computer has", said)
 
     def test_a_detached_head_is_reported_rather_than_compared(self) -> None:
         """`gitrepo.branch` answers `None`, and there is then no `<remote>/

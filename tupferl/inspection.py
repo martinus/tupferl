@@ -239,12 +239,12 @@ def difference(wanted: str | None) -> int:
         if not readings:
             raise TupferlError(f"{named} is not managed; `tupferl list` shows what is.")
 
-    shown = 0
-    for reading in readings:
-        said = shows(reading)
-        if said is None:
-            continue
-        shown += 1
+    # A list rather than a counter. `shown` was an `int` that nothing read the
+    # value of -- only its truthiness -- so `+= 1` could become `-= 1` or `+= 2`
+    # with no observable difference, which is exactly what the mutation sweep
+    # reported: three survivors on one line carrying more state than it needed.
+    shown = [said for reading in readings if (said := shows(reading)) is not None]
+    for said in shown:
         print(said)
     if not shown:
         # Two sentences, because one with the name substituted into it says the
@@ -265,15 +265,14 @@ def shows(reading: sync.Reading) -> str | None:
     case: `diff` with no argument on a synced machine should print one sentence,
     not one heading per managed file.
     """
-    if reading.outcome.action == sync.REFUSED:
-        return f"{reading.name}: skipped, {reading.outcome.why}"
+    # One arm, not two. `examine` yields `stored is None` **only** with a
+    # `REFUSED` outcome -- so a separate `if stored is None` below it was code
+    # no input could reach, and the sweep reported both of its mutants as
+    # survivors. Here the same test does the narrowing and is reachable: any
+    # `REFUSED` reading takes it, which the fifo fixtures drive.
     stored = reading.stored
-    if stored is None:
-        # Unreachable: `examine` yields `stored is None` only with a `REFUSED`
-        # outcome, which the line above returned on. Named rather than asserted,
-        # because the two facts live in one function and this is what keeps
-        # `stored` a `Blob` for the rest of this one.
-        return f"{reading.name}: skipped, the repository's copy is not a regular file"
+    if stored is None or reading.outcome.action == sync.REFUSED:
+        return f"{reading.name}: skipped, {reading.outcome.why}"
     if reading.found is None:
         return (
             f"{reading.name}: only in the repository, so there is nothing here to "
