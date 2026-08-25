@@ -376,7 +376,7 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
-| `tools/` | the test infrastructure, ported from `martinus/woswoar` |
+| `tools/` | the test infrastructure, ported from `martinus/woswoar`. Its own tests came later (#4): `test_verdict.py` was written here, `test_reached.py` and `test_watch.py` ported unchanged, `test_mutants.py` ported with four assertions re-pointed at this project's layout |
 | `docs/plan.md` | the plan this is built from |
 
 Four things are not where a newcomer would guess, all on purpose:
@@ -460,6 +460,29 @@ Four things are not where a newcomer would guess, all on purpose:
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.
+- **A test's own timeout must *beat* the harness's, not merely exist.**
+  `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
+  that trips it as `BROKE` — which is never `caught`, so the line it was
+  guarding ends up unguarded. `tests/test_watch.py` bounded each subprocess at
+  30s too, so the two raced and the alarm won: seven mutants of `watch.main`
+  and `watch.alive` came back `BROKE`. Pick a bound above the longest honest
+  wait in the file and comfortably below the alarm, and say both numbers where
+  you write it.
+- **`discover` and `loadTestsFromNames` classify a broken module differently**,
+  and a fixture written for one proves nothing about the other. `discover`
+  wraps everything into `loader.errors`; `loadTestsFromNames` wraps only what
+  derives from `Exception`, so a syntax error or a module-scope `SystemExit`
+  escapes to `verdict.main`'s handler and comes back `loaded: False` instead.
+  Both correctly refuse to credit a test, which is the only thing that matters
+  — but two tests in `tests/test_verdict.py` were written with the fixtures
+  exactly backwards and failed. `TestABrokenModuleTakesTwoDifferentPaths` holds
+  the measured table.
+- **Coverage understates `tools/` badly, and the reason is the tool's own
+  thesis.** `tests/test_verdict.py`, `test_reached.py` and `test_watch.py` all
+  drive their subject as a *subprocess*, which in-process coverage cannot see —
+  so `verdict.py` reads 30% while its classification is exercised end to end.
+  Read the mutation numbers instead; that gap is precisely what
+  `tools/reached.py` was written to repair.
 - **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
   and a process started that way passes the *ignored* disposition to every
   descendant — so `tests/test_merge.py`'s stub, which killed itself with SIGHUP
