@@ -110,10 +110,14 @@ def unified(name: str, mine: bytes, theirs: bytes) -> str:
     with `errors="replace"`, because this is display and a `UnicodeDecodeError`
     here would refuse to show the user the one file they asked about.
 
-    `split(b"\n")` and not `splitlines()`: the latter splits on `\x0b`, `\x0c`,
-    `\x1c`-`\x1e` and `\x85` as well, so one such byte in a dotfile shifts every
-    line number after it -- and these numbers are what the user reads to find
-    the change. git splits on `\n` alone, and this diff sits beside git's.
+    `split(b"\n")` and not `splitlines()`. On **bytes** the extra separator is
+    `\r` -- not the long list `str.splitlines()` adds, which CLAUDE.md records
+    for the `str` case and which was written into this docstring first and was
+    wrong: `b"a\x0bb".splitlines()` is one line. `\r` is enough on its own here.
+    A CRLF dotfile is every line ending in one, so `splitlines()` would show a
+    diff of half-lines with the carriage returns silently eaten, and every hunk
+    header after the first would be a line number the file does not have. git
+    splits on `\n` alone, and this diff sits beside git's.
 
     Empty when the two are identical, which is the caller's test for "there is
     nothing to show" -- rather than a second byte comparison that could differ

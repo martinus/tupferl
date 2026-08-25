@@ -273,11 +273,15 @@ NOTHING_MANAGED = "nothing is managed yet; `tupferl add <path>...` starts."
 def count(many: int, thing: str = "file") -> str:
     """`1 file` or `7 files` -- the plural nobody notices until it is wrong.
 
-    `thing` because there were three of these by milestone 6: files here,
-    conflicts at the prompt, and commits in `status`'s remote line. Naive
-    pluralisation, which is correct for every noun this program counts and is
-    checked by the one test that names them; a word needing anything else would
-    have to be added to this program before it could be got wrong here.
+    `thing` because milestone 6 wanted a second noun: `status` counts *commits*
+    to pull and to push. Naive pluralisation -- append an `s` -- which is right
+    for both nouns this program counts, and `test_manage.TestCounting` names
+    the cases including zero.
+
+    `conflicts.describe` spells its own plural, and deliberately: it would have
+    to import a command module for a three-character difference, and that edge
+    -- `conflicts` depending on `manage` -- is one the module docstring there is
+    at pains not to have.
     """
     return f"1 {thing}" if many == 1 else f"{many} {thing}s"
 

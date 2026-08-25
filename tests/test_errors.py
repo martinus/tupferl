@@ -40,10 +40,12 @@ import unittest
 from pathlib import Path
 from typing import NamedTuple
 
-#: The package, found from this file rather than from the working directory:
-#: `tools/mutate.py` runs the suite with a copy of the tree as its cwd, and a
-#: path built from `Path.cwd()` would read the *original* -- so every mutant of
-#: a message would come back caught by a test that never saw it.
+#: The package, found from this file rather than from the working directory.
+#: Both would work under `tools/run_tests.py` and under `tools/mutate.py`, which
+#: run with a tree root as their cwd -- but a test that reads a *tree* rather
+#: than the tree it was loaded from is one that passes when pointed at the wrong
+#: one, and CLAUDE.md §8 collects what that costs. `python -m unittest
+#: tests.test_errors` from anywhere is the case that shows the difference.
 PACKAGE = Path(__file__).resolve().parent.parent / "tupferl"
 
 #: The fewest messages the scan may find and still be believed. A walk that

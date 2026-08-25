@@ -569,6 +569,17 @@ class Reading(NamedTuple):
     outcome: Outcome
 
 
+def refused(name: PurePosixPath, why: str) -> Outcome:
+    """A file tupferl will not touch, and the sentence saying why.
+
+    A function rather than the constructor spelled out three times: `REFUSED` is
+    the one action whose `blob` must be `None` -- `apply` writes whatever a blob
+    holds -- and three spellings of that pairing is three chances to write one
+    with bytes on it.
+    """
+    return Outcome(name, REFUSED, None, why=why)
+
+
 def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
     """Every managed file, resolved against its snapshot. Writes nothing.
 
@@ -611,17 +622,6 @@ def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
         )
 
 
-def refused(name: PurePosixPath, why: str) -> Outcome:
-    """A file tupferl will not touch, and the sentence saying why.
-
-    A function rather than the constructor spelled out three times: `REFUSED` is
-    the one action whose `blob` must be `None` -- `apply` writes whatever a blob
-    holds -- and three spellings of that pairing is three chances to write one
-    with bytes on it.
-    """
-    return Outcome(name, REFUSED, None, why=why)
-
-
 def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> list[Outcome]:
     """Resolve every managed file, write what was decided, and commit it.
 
@@ -637,11 +637,18 @@ def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> lis
     snapshots = paths.snapshot_dir(repo, host)
     backups = Backups(paths.backup_dir())
 
-    seen = list(examine(repo, home, host))
     outcomes: list[Outcome] = []
     touched: list[PurePosixPath] = []
+    # Consumed as it arrives, rather than through a list built first. Not
+    # thrift: `settled` can run the user's `$EDITOR`, so a run that read every
+    # file up front would answer a later file from bytes taken before that
+    # editor opened. Which of the two is *better* is arguable -- the point is
+    # that it was not this change's to decide, and lazily is what `settle` did
+    # before `examine` was lifted out of it.
+    managing: set[PurePosixPath] = set()
 
-    for reading in seen:
+    for reading in examine(repo, home, host):
+        managing.add(reading.name)
         outcome = reading.outcome
         if outcome.sides is not None:
             outcome = settled(outcome.sides, settler(outcome.sides))
@@ -661,7 +668,7 @@ def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> lis
         if wrote:
             touched.append(reading.name)
 
-    for name in stale(snapshots, {reading.name for reading in seen}):
+    for name in stale(snapshots, managing):
         touched.append(name)
         gone = snapshots / name
         gone.unlink()

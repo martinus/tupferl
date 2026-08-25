@@ -84,7 +84,12 @@ def status() -> int:
 
     readings = list(sync.examine(repo, home, host))
     if not readings:
-        print(manage.NOTHING_MANAGED)
+        # Still after the marker line above, not instead of it: a machine with
+        # an unfinished merge and nothing managed yet is a real state -- the
+        # sync that would have added the first file is what left the marker --
+        # and it is the one thing worth saying about it.
+        lines.append(manage.NOTHING_MANAGED)
+        print("\n".join(lines))
         return 0
     per_file = sides(readings)
     lines.extend(per_file)
@@ -285,10 +290,10 @@ def shows(reading: sync.Reading) -> str | None:
             f"({len(reading.found.data)} bytes here, {len(stored.data)} in the "
             f"repository), so there are no lines to show."
         )
-    return bits(reading.name, reading.found, stored)
+    return rendered(reading.name, reading.found, stored)
 
 
-def bits(name: PurePosixPath, found: Blob, stored: Blob) -> str:
+def rendered(name: PurePosixPath, found: Blob, stored: Blob) -> str:
     """The unified diff, plus the executable bit when only that differs.
 
     The bit travels (plan §5) and `copies.Blob` compares it, so `chmod +x` with
