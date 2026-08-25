@@ -450,6 +450,10 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                     "0",
                     str(each),
                     first,
+                    # A baseline's shape: these tests are about what one named
+                    # selection reports, and a walk would run the sandbox's
+                    # other modules under each of them.
+                    "0",
                     *(("tests.test_hang",) if names is None else names),
                 ],
                 cwd=box,
@@ -663,26 +667,45 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         self.assertEqual("", self.ahead("tests.test_paths").first)
 
 
-class TestConfirmationReallyRunsTheWholeSuite(unittest.TestCase):
-    """CLAUDE.md promises every survivor is re-run against the whole suite
+class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
+    """CLAUDE.md promises every survivor has been run against the whole suite
     before it is reported, and `Report.widened` is the flag that claims it.
 
-    Two things could quietly make that false, and both are one character wide.
-    `WHOLE_SUITE` is the *empty* selection -- `verdict.collect` falls through to
-    `discover` only when the list is empty -- so anything in front of it turns
-    "everything" into "only this". The rows `confirm` builds are exactly the
-    shape that triggers it: a survivor's selection widened while its remembered
-    test is still attached.
+    It used to be earned by a second pass over the survivors. It is structural
+    now: every row walks outward past its selection until something notices, so
+    a row *called* a survivor has run everything by construction. What is left
+    to guard is that `run` says so, and that the one shape which could quietly
+    make "everything" mean "only this" still does not -- `WHOLE_SUITE` is the
+    *empty* selection, and `verdict.collect` falls through to `discover` only
+    when the list is empty, so anything pushed in front of it truncates the run.
     """
 
-    def test_a_widened_row_carries_no_remembered_test(self) -> None:
-        survivor = mutate.Result(
-            row()._replace(first="tests.test_sync.TestTheReport.test_it"),
-            mutate.Verdict("survived"),
+    def test_a_report_claims_the_guarantee_it_now_keeps(self) -> None:
+        """`run` sets it, rather than a later pass earning it. Without this the
+        flag reverts to its old default and `tools/reached.py` prints its caveat
+        about survivors nobody widened -- on a report where they were.
+
+        `run` itself is real; only `_attempt` is stubbed. What is asserted is
+        `run`'s own report construction, and driving it for real would mean
+        finding a mutation caught inside a small module -- which is a fact about
+        the suite, not about this line, and the first attempt at it walked the
+        whole suite for two minutes to assert one boolean.
+        """
+        caught = Mutation(
+            "x:1 in f()",
+            "tests/profiles.py",
+            '{"mutation": (3, 4)}',
+            '{"mutation": (0, 0)}',
+            "tests.test_profiles",
+            operator="branch",
         )
-        widened = survivor.mutation._replace(tests=mutate.WHOLE_SUITE, first="")
-        self.assertEqual("", widened.first)
-        self.assertEqual("", widened.tests)
+        caught_by = mutate.Verdict("caught", "t")
+        with (
+            mock.patch.object(mutate, "_attempt", lambda *a, **k: caught_by),
+            support.quiet(),
+        ):
+            report = mutate.run([caught], baseline=False, workers=1)
+        self.assertTrue(report.widened, "a walked report did not claim the guarantee")
 
     def test_an_empty_selection_behind_a_prefix_still_discovers(self) -> None:
         """The protocol half: an empty selection plus a prefix must run the
@@ -744,7 +767,7 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
 
     It did not. The dispatch was `run(mutations)` -- no arguments -- so
     `argparse` accepted `--workers`, `--memory`, `--timeout`, `--each-test`,
-    `--no-baseline`, `--no-confirm` and `--json`, and every one of them was
+    `--no-baseline` and `--json`, and every one of them was
     dropped on the floor. Asking for one lane got two. Asking for a report got no
     file, which reads as the run having failed to write one rather than as the
     flag never having been consulted, and cost an hour of this author's time
@@ -799,7 +822,7 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
             box = Path(name)
             with mock.patch.object(mutate, "run", watch):
-                mutate.main([str(self.spec(box)), "--no-confirm", *flags])
+                mutate.main([str(self.spec(box)), *flags])
         return seen
 
     def test_workers_reaches_the_run(self) -> None:
@@ -829,9 +852,7 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
             box = Path(name)
             report = box / "out.json"
-            mutate.main(
-                [str(self.spec(box)), "--no-baseline", "--no-confirm", "--json", str(report)]
-            )
+            mutate.main([str(self.spec(box)), "--no-baseline", "--json", str(report)])
             self.assertTrue(report.is_file(), "--json wrote nothing")
             self.assertIn("results", json.loads(report.read_text(encoding="utf-8")))
             self.assertTrue(
@@ -876,63 +897,26 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
     SURVIVES = ("PROBE = 8000", "PROBE = 1")
 
     def test_a_caught_table_exits_zero(self) -> None:
-        self.assertEqual(0, self.status(*self.CAUGHT, "--no-confirm"))
+        self.assertEqual(0, self.status(*self.CAUGHT))
 
     def test_a_surviving_table_exits_one(self) -> None:
         """The other half. Without it, "always returns 0" passes the test above
         and a spec file full of decoration reports success.
 
-        `--no-confirm` is stubbed out rather than trusted: a mutant that forces
-        confirmation on would otherwise send this into a whole-suite re-run and
-        past the harness's 30s alarm, which is `BROKE` -- no verdict for the
-        line under test. What this asserts is the exit status, and confirmation
-        of a survivor cannot change it.
+        **`_attempt` is stubbed, and that is a change worth naming.** This used
+        to drive the real mutation with `--no-confirm`, which is what kept a
+        survivor from paying for a whole-suite re-run. There is no such flag
+        now: a survivor walks the rest of the suite inside its own row, by
+        design, so the unstubbed spelling runs this repository's entire suite --
+        about two minutes -- to assert one exit status. Everything from
+        `argparse` to the return value is still real; only the verdict is
+        supplied, and the verdict is not what this asserts.
         """
-        with mock.patch.object(mutate, "confirm", lambda report, *a, **k: report):
-            self.assertEqual(1, self.status(*self.SURVIVES, "--no-confirm"))
-
-    def test_survivors_are_confirmed_against_the_whole_suite_by_default(self) -> None:
-        """CLAUDE.md's promise about a survivor before it is reported. This path
-        never kept it, so `--no-confirm` turned off something that was not
-        happening."""
-        seen: list[bool] = []
-        real = mutate.confirm
-
-        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.append(True)
-            return real(report, *args, **kwargs)
-
-        with mock.patch.object(mutate, "confirm", watch):
-            self.status(*self.CAUGHT)
-        self.assertEqual([True], seen, "survivors were reported without being confirmed")
-
-    def test_confirmation_is_told_what_the_run_was_told(self) -> None:
-        """Its `baseline` comes from `--no-baseline` like the run's does. Nothing
-        looked at what `confirm` was handed, so a wiring that passed the flag
-        through un-negated -- checking a baseline the caller asked to skip --
-        went unnoticed."""
-        seen: dict[str, Any] = {}
-
-        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.update(kwargs)
-            return report
-
-        with mock.patch.object(mutate, "confirm", watch):
-            self.status(*self.CAUGHT)
-        self.assertFalse(seen["baseline"], "confirmation re-checked a skipped baseline")
-
-    def test_no_confirm_really_turns_it_off(self) -> None:
-        """The precondition for the test above: if `confirm` ran either way, the
-        assertion there would hold against a wiring that ignored the flag."""
-        seen: list[bool] = []
-
-        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.append(True)
-            return report
-
-        with mock.patch.object(mutate, "confirm", watch):
-            self.status(*self.CAUGHT, "--no-confirm")
-        self.assertEqual([], seen, "--no-confirm confirmed anyway")
+        survived = mutate.Verdict("survived")
+        with tempfile.TemporaryDirectory(prefix="tupferl-exit-") as name, support.quiet():
+            spec = self.spec(Path(name), *self.SURVIVES)
+            with mock.patch.object(mutate, "_attempt", lambda *a, **k: survived):
+                self.assertEqual(1, mutate.main([str(spec), "--no-baseline"]))
 
 
 class TestASpecFileWithNothingInIt(unittest.TestCase):

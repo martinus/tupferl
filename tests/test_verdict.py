@@ -25,6 +25,7 @@ running it.
 from __future__ import annotations
 
 import json
+import os
 import resource
 import subprocess
 import sys
@@ -151,14 +152,19 @@ class Probe(unittest.TestCase):
         memory: int = 0,
         each: float = 0.0,
         first: str = "",
+        walk: bool = False,
     ) -> dict[str, Any]:
         """Run the tool and return the report it wrote.
 
         The argv layout is `verdict.main`'s, positionally: report, failfast,
-        memory cap, per-test seconds, the space-joined `first` selection, then
-        the test names. Spelled out here rather than in each test, because a
-        wrong position is the kind of mistake that still produces a plausible
-        report.
+        memory cap, per-test seconds, the space-joined `first` selection,
+        whether to walk past the selection, then the test names. Spelled out
+        here rather than in each test, because a wrong position is the kind of
+        mistake that still produces a plausible report.
+
+        ``walk`` defaults off, which is a *baseline*'s shape. Most tests here are
+        about what one named selection reports, and a walk would run this
+        repository's whole suite inside each of them.
         """
         done = subprocess.run(
             [
@@ -171,6 +177,7 @@ class Probe(unittest.TestCase):
                 str(memory),
                 str(each),
                 first,
+                "1" if walk else "0",
                 *names,
             ],
             cwd=self.sandbox,
@@ -872,6 +879,176 @@ class TestTheMemoryCapsArithmetic(Probe):
         self.assertEqual(
             self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2, hard=resource.RLIM_INFINITY)
         )
+
+
+class TestTheWalkPastTheSelection(Probe):
+    """A mutation's selection is an *ordering*, not a gate: when nothing in it
+    notices, the run keeps going through the rest of the suite.
+
+    That is what removed the second pass. Before it, a survivor was re-run
+    against the whole suite afterwards -- so it ran its selection and then a
+    superset of it, and the narrow run was work thrown away.
+
+    The three claims here are the whole of the change, and each fails without it:
+    the walk *reaches* a module the selection never named; it *stops* once
+    something notices; and a baseline does not walk at all.
+    """
+
+    #: Imported for its side effect, which is the point: a module that has not
+    #: been imported cannot have written this. Laziness is not observable from
+    #: `ran`, because a module the walk loads but never reaches contributes no
+    #: tests to the count either way.
+    MARKER = "reached.txt"
+
+    def sandboxed(self, *, selected_notices: bool) -> None:
+        """Two modules: one selected, one not, and only the second ever fails.
+
+        `test_beside` records that it was imported at all, so "the walk stopped"
+        and "the walk ran it and it passed" are distinguishable -- they are the
+        same `noticed: []` otherwise.
+        """
+        self.module(
+            "test_chosen",
+            f"""
+            import unittest
+
+            class Chosen(unittest.TestCase):
+                def test_it(self):
+                    self.assertTrue({not selected_notices})
+            """,
+        )
+        self.module(
+            "test_beside",
+            f"""
+            import pathlib
+            import unittest
+
+            pathlib.Path({self.MARKER!r}).write_text("imported", encoding="utf-8")
+
+            class Beside(unittest.TestCase):
+                def test_it(self):
+                    self.fail("the module the selection never named")
+            """,
+        )
+
+    def reached(self) -> bool:
+        return (self.sandbox / self.MARKER).is_file()
+
+    def test_it_reaches_a_module_the_selection_never_named(self) -> None:
+        """The central claim. Without the walk this is `survived` -- which is
+        exactly the false survivor the confirmation pass existed to correct."""
+        self.sandboxed(selected_notices=False)
+        found = self.verdict("test_chosen", failfast=True, walk=True)
+        self.assertEqual(
+            ["test_it (test_beside.Beside.test_it)"],
+            found["noticed"],
+            "the walk did not reach past the selection",
+        )
+        self.assertEqual(["test_beside.Beside.test_it"], found["killers"])
+
+    def test_it_stops_once_the_selection_itself_notices(self) -> None:
+        """The cost half, and the one that makes the walk affordable: a caught
+        mutation must pay for its selection and nothing more.
+
+        Asserted on the marker rather than on `ran`. Loading all 29 modules of
+        this repository measures 621ms against 0-1ms for one, so a walk that
+        loaded them eagerly would hand back ~2 min over a 194-row sweep -- more
+        than deleting the second pass saves. `ran` cannot see that: an imported
+        module whose tests never run adds nothing to the count.
+        """
+        self.sandboxed(selected_notices=True)
+        found = self.verdict("test_chosen", failfast=True, walk=True)
+        self.assertEqual(["test_it (test_chosen.Chosen.test_it)"], found["noticed"])
+        self.assertFalse(self.reached(), "a module past the answer was imported anyway")
+
+    def test_it_stops_on_a_notice_even_with_failfast_off(self) -> None:
+        """The same claim on the path a hand-written table takes.
+
+        `mutate._run_spec` leaves `failfast` off, so `shouldStop` is never set
+        and the outer walk has to notice for itself that the answer is already
+        in. Without that, every caught row on the spec path becomes a
+        whole-suite run -- the cost this design exists to avoid, reintroduced
+        on the one path nothing else here covers.
+        """
+        self.sandboxed(selected_notices=True)
+        found = self.verdict("test_chosen", failfast=False, walk=True)
+        self.assertEqual(["test_it (test_chosen.Chosen.test_it)"], found["noticed"])
+        self.assertFalse(self.reached(), "the walk carried on past its own answer")
+
+    def test_a_baseline_does_not_walk(self) -> None:
+        """`walk` is a separate argv slot precisely so this row exists. A
+        baseline asks whether *one selection* is green; inferring the walk from
+        the selection instead would make every baseline a whole-suite run, and
+        the baseline is the check meant to cost nothing.
+        """
+        self.sandboxed(selected_notices=False)
+        found = self.verdict("test_chosen", walk=False)
+        self.assertEqual([], found["noticed"], "a baseline widened past its selection")
+        self.assertFalse(self.reached(), "a baseline imported a module it was not given")
+        self.assertEqual(1, found["ran"])
+
+    def test_a_red_baseline_is_reported_whole(self) -> None:
+        """The other half of the condition that bounds the walk, and the half
+        that is not about walking at all.
+
+        `_borrow`'s docstring commits to it: *"Never `failfast`: a red baseline
+        is a thing you want the whole of."* The walk stops as soon as anything
+        notices, so that stop has to be gated on `walk` -- ungated, a baseline
+        over several modules reports the first red one and silently skips the
+        rest, which is one shard of a broken tree presented as the whole story.
+
+        Reachable only from here today, because `baseline_shards` returns a
+        single `WHOLE_SUITE` shard and an empty selection never enters that loop.
+        Written anyway: the gate is a claim about what a baseline means, and the
+        alternative is a line no fixture can tell from its own deletion.
+        """
+        self.sandboxed(selected_notices=False)
+        found = self.verdict("test_beside", "test_chosen", walk=False)
+        self.assertEqual(["test_it (test_beside.Beside.test_it)"], found["noticed"])
+        self.assertEqual(2, found["ran"], "a red baseline stopped at its first red module")
+
+
+class TestWhereTheWalkLooks(unittest.TestCase):
+    """`every_module` follows the selection's own package rather than a constant.
+
+    A hardcoded `tests` would be right for this repository and unreachable from
+    the flat sandboxes above, so the guard would be one no fixture could drive.
+
+    **Imported here, unlike everything else in this file, and the module
+    docstring's reason is why that is allowed rather than an exception to it.**
+    What must not run in this process is `collect`: `cap` sets an address-space
+    rlimit and the alarm installs a `SIGALRM` handler, so driving it here would
+    configure the suite that is running it. `every_module` is a `glob` and a
+    string join, and touches neither. The import stays inside the methods so
+    that remains true of importing this file as well.
+    """
+
+    @staticmethod
+    def every(names: list[str]) -> list[str]:
+        from tools import verdict
+
+        return verdict.every_module(names)
+
+    def test_it_follows_the_package_the_selection_lives_in(self) -> None:
+        found = self.every(["tests.test_sync"])
+        self.assertIn("tests.test_verdict", found)
+        self.assertNotIn("test_verdict", found, "the package prefix was dropped")
+
+    def test_a_flat_selection_looks_beside_itself(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tupferl-walk-") as name:
+            box = Path(name)
+            (box / "test_one.py").write_text("", encoding="utf-8")
+            (box / "test_two.py").write_text("", encoding="utf-8")
+            (box / "helper.py").write_text("", encoding="utf-8")
+            here = Path.cwd()
+            os.chdir(box)
+            try:
+                # `helper.py` is the half that can fail quietly: a glob of `*.py`
+                # rather than `test_*.py` walks into support modules, and a
+                # loader handed one reports it as broke.
+                self.assertEqual(["test_one", "test_two"], self.every(["test_one"]))
+            finally:
+                os.chdir(here)
 
 
 if __name__ == "__main__":

@@ -82,7 +82,12 @@ def voided(report: dict[str, Any]) -> bool:
 
 
 def confirmed(report: dict[str, Any]) -> bool:
-    """Whether every survivor in ``report`` was re-run against the whole suite.
+    """Whether every survivor in ``report`` was run against the whole suite.
+
+    Structural since the walk replaced the two-pass sweep -- `mutate.run` sets it
+    on every report it writes, because no row is called a survivor until the
+    whole suite has failed to notice it. Still read rather than assumed: a report
+    on disk may predate that, and this tool explains sweeps it did not run.
 
     Absent means **no**, and the default is the whole point. A report written
     before `Report.widened` existed records nothing either way, and "nothing
