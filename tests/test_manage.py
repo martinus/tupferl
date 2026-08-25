@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from tests import support
+from tupferl import __main__ as cli
 from tupferl import copies, gitrepo, manage, paths
 from tupferl.config import Config, load
 from tupferl.errors import TupferlError
@@ -840,6 +841,128 @@ class TestCounting(unittest.TestCase):
         passes none. A default that had changed would rewrite `sync`'s report
         and `list`'s tail line without either of them being touched."""
         self.assertEqual(manage.count(3), manage.count(3, "file"))
+
+
+class TestWhatAddSays(unittest.TestCase):
+    """`manage.stored`, which is a decision about text and needs no repository.
+
+    The end-to-end half is in `TestAddingADirectoryOfMany` below. This is where
+    the two shapes and the split between the words are pinned, because five
+    fixtures for five cases would be five real `add` runs.
+    """
+
+    def names(self, many: int, prefix: str = "f") -> list[PurePosixPath]:
+        return [PurePosixPath(f".config/{prefix}{n:03d}.conf") for n in range(many)]
+
+    def test_a_short_list_names_every_file(self) -> None:
+        """Unchanged behaviour, and most runs. `NAMED_ONE_BY_ONE` files is the
+        boundary and it is included, not excluded."""
+        lines = manage.stored({"added": self.names(manage.NAMED_ONE_BY_ONE)}, to_host=False)
+        self.assertEqual(manage.NAMED_ONE_BY_ONE, len(lines))
+        self.assertTrue(all(line.startswith("added .config/") for line in lines), lines)
+
+    def test_one_more_than_that_is_summarised(self) -> None:
+        """The other side of the boundary, so `<=` written as `<` fails here."""
+        lines = manage.stored({"added": self.names(manage.NAMED_ONE_BY_ONE + 1)}, to_host=False)
+        self.assertEqual(1, len(lines), lines)
+        self.assertIn(f"added {manage.NAMED_ONE_BY_ONE + 1} files", lines[0])
+
+    def test_the_summary_names_a_few_and_counts_the_rest(self) -> None:
+        """Through `a_few`, the same rule the commit message uses -- two
+        thresholds would be two answers to "is this too long to read?"."""
+        lines = manage.stored({"added": self.names(100)}, to_host=False)
+        self.assertIn(".config/f000.conf", lines[0])
+        self.assertIn(f"and {100 - manage.NAMED_IN_MESSAGE} more", lines[0])
+        self.assertNotIn(".config/f099.conf", lines[0])
+
+    def test_added_and_updated_are_never_counted_together(self) -> None:
+        """The constraint that makes this more than a `len()`.
+
+        `copies.store` answers "added", "updated" or `None`, and a run that
+        stored one new file and rewrote ninety-nine must not report a hundred of
+        either. `manage.added` carries the same split for the commit message,
+        and its docstring says why.
+        """
+        lines = manage.stored(
+            {"added": self.names(1, "new"), "updated": self.names(99, "old")}, to_host=False
+        )
+        self.assertEqual(2, len(lines), lines)
+        self.assertIn("added 1 file", lines[0])
+        self.assertIn("updated 99 files", lines[1])
+
+    def test_nothing_stored_says_nothing(self) -> None:
+        """Every file was already byte-for-byte identical, so `store` answered
+        `None` for all of them and none reaches here. `add` then prints its own
+        "no change" sentence, which this must not pre-empt."""
+        self.assertEqual([], manage.stored({}, to_host=False))
+
+    def test_the_host_marker_survives_both_shapes(self) -> None:
+        """`add --host` marks its lines, and a summary that dropped the mark
+        would say a shared file was stored when an overlay was."""
+        short = manage.stored({"added": self.names(2)}, to_host=True)
+        long = manage.stored({"added": self.names(50)}, to_host=True)
+        self.assertTrue(all("(host)" in line for line in short), short)
+        self.assertIn("(host)", long[0])
+
+
+class TestAddingADirectoryOfMany(support.SandboxCase):
+    """#28 end to end: the README's own example is a directory of hundreds."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        remote = support.make_remote(self.tmp / "remote.git", self.env)
+        with support.quiet():
+            self.assertEqual(0, cli.main(["init", str(remote)]))
+
+    def added(self, *paths: str) -> str:
+        with support.quiet() as said:
+            self.assertEqual(0, cli.main(["add", *paths]))
+        return said.getvalue()
+
+    def test_a_hundred_files_are_one_line(self) -> None:
+        where = self.home / ".local" / "share" / "app"
+        where.mkdir(parents=True)
+        for number in range(100):
+            (where / f"f{number:03d}.conf").write_text("x\n", encoding="utf-8")
+
+        said = [line for line in self.added(str(where)).splitlines() if line.strip()]
+        self.assertEqual(1, len(said), said)
+        self.assertIn("added 100 files", said[0])
+
+    def test_a_re_add_reports_only_what_changed(self) -> None:
+        """The case the summary must not get wrong: 100 files, two edited.
+
+        The other 98 are byte-for-byte identical, so `store` answers `None` and
+        they are silent -- which puts the run back under `NAMED_ONE_BY_ONE` and
+        names the two. A summary counting all hundred would tell the user it had
+        stored ninety-eight files it did not touch.
+        """
+        where = self.home / ".local" / "share" / "app"
+        where.mkdir(parents=True)
+        for number in range(100):
+            (where / f"f{number:03d}.conf").write_text("x\n", encoding="utf-8")
+        self.added(str(where))
+
+        for number in (0, 1):
+            (where / f"f{number:03d}.conf").write_text("changed\n", encoding="utf-8")
+        said = [line for line in self.added(str(where)).splitlines() if line.strip()]
+        self.assertEqual(2, len(said), said)
+        self.assertTrue(all(line.startswith("updated ") for line in said), said)
+
+    def test_refusals_are_still_one_line_each(self) -> None:
+        """The part a long listing used to push off the screen, and the reason
+        this issue is about noise rather than tidiness."""
+        where = self.home / ".local" / "share" / "app"
+        where.mkdir(parents=True)
+        for number in range(20):
+            (where / f"f{number:03d}.conf").write_text("x\n", encoding="utf-8")
+        (where / "link").symlink_to(self.home / ".bashrc")
+        (where / "big.bin").write_bytes(b"x" * (2 << 20))
+
+        said = self.added(str(where))
+        skipped = [line for line in said.splitlines() if line.startswith("skipped ")]
+        self.assertEqual(2, len(skipped), said)
+        self.assertIn("added 20 files", said)
 
 
 class TestRemoveTakesTheNameListPrints(support.TwoMachines):

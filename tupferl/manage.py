@@ -76,12 +76,23 @@ def open_repo() -> tuple[Path, Config]:
     return repo, load(paths.config_file(repo))
 
 
-def describe(what: str, names: list[PurePosixPath], host: str) -> str:
-    """A commit message in the plan's shape: `<what> from <host>: a, b, c`."""
+def a_few(names: list[PurePosixPath]) -> str:
+    """`a, b, c, and 97 more` -- `NAMED_IN_MESSAGE` of them, then a count.
+
+    Extracted from `describe` when `add`'s printed output wanted the same shape
+    (#28). One rule, so a commit message and the line the user reads name the
+    same number of files -- two thresholds would be two answers to "is this list
+    too long to read?".
+    """
     shown = ", ".join(str(name) for name in names[:NAMED_IN_MESSAGE])
     if len(names) > NAMED_IN_MESSAGE:
         shown += f", and {len(names) - NAMED_IN_MESSAGE} more"
-    return f"{what} from {host}: {shown}"
+    return shown
+
+
+def describe(what: str, names: list[PurePosixPath], host: str) -> str:
+    """A commit message in the plan's shape: `<what> from <host>: a, b, c`."""
+    return f"{what} from {host}: {a_few(names)}"
 
 
 def added(touched: list[PurePosixPath], admitted: int, host: str) -> str:
@@ -240,6 +251,9 @@ def add(wanted: list[str], to_host: bool) -> int:
     snapshots = paths.snapshot_dir(repo, host)
     touched: list[PurePosixPath] = []
     written: list[Path] = []
+    #: What happened to each file, by the word `copies.store` used for it. Kept
+    #: apart rather than counted together: see `stored`.
+    done: dict[str, list[PurePosixPath]] = {}
     for name in sorted(admitted):
         did = copies.store(home / name, root / name)
         # The merge base starts here. `add` has just made the two copies
@@ -252,7 +266,10 @@ def add(wanted: list[str], to_host: bool) -> int:
         written.extend([root / name, snapshots / name])
         if did is not None:
             touched.append(name)
-            print(f"{did} {name}{' (host)' if to_host else ''}")
+            done.setdefault(did, []).append(name)
+
+    for line in stored(done, to_host):
+        print(line)
 
     if not record(repo, written, added(touched, len(admitted), host), "the copies"):
         # Every file was already stored, byte for byte and bit for bit, and its
@@ -365,6 +382,40 @@ def said(name: PurePosixPath, home: Path, host: str, from_host: bool, shared: bo
         f"removed {name} from {host}'s overlay, and nothing else manages it here; "
         f"the file in {home} was not touched"
     )
+
+
+#: How many files `add` names one per line before it counts them instead.
+#:
+#: Ten because that is about where a listing stops being read and starts being
+#: scrolled -- and the `skipped <path>: <why>` lines above it, which are the part
+#: someone actually needs, are what a long listing pushes off the screen. The
+#: README's own example is `tupferl add ~/.config/nvim`, and a real one is
+#: hundreds of files; measured, a directory of 100 printed 100 lines.
+NAMED_ONE_BY_ONE = 10
+
+
+def stored(done: dict[str, list[PurePosixPath]], to_host: bool) -> list[str]:
+    """What `add` says it did, one line per file or one line per verb (#28).
+
+    **The two words stay apart**, and that is the constraint that makes this
+    more than a `len()`. `copies.store` answers `"added"`, `"updated"` or
+    `None`, and the third is silent: a file already byte-for-byte identical was
+    not added, and a summary that counted it in would tell the user they had
+    added something they had not. `added` below carries the same split for the
+    commit message and its docstring explains why -- this is that argument
+    applied to what reaches the terminal.
+
+    Sorted by the word so two runs that did the same things print them in the
+    same order. `dict` preserves insertion order, and insertion order here is
+    whichever file happened to sort first.
+    """
+    total = sum(len(names) for names in done.values())
+    marked = " (host)" if to_host else ""
+    if total <= NAMED_ONE_BY_ONE:
+        return [f"{did} {name}{marked}" for did in sorted(done) for name in done[did]]
+    return [
+        f"{did} {count(len(names))}{marked}: {a_few(names)}" for did, names in sorted(done.items())
+    ]
 
 
 def prune(where: Path, repo: Path) -> None:
