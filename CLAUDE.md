@@ -558,6 +558,20 @@ Four things are not where a newcomer would guess, all on purpose:
   flags the user would actually miss — `ICANON` and `ECHO` — and assert
   separately that they really were cleared in between, or "unchanged before and
   after" is trivially true of a function that changes nothing.
+- **git's merge stages are 1 base, 2 ours, 3 theirs — and "ours" is the branch
+  being merged *into*.** During a `tupferl sync` that is this computer's commits
+  and stage 3 is the repository's, which lines up with `--ours`/`--theirs` by
+  luck rather than by construction: read the wrong way round, every conflict
+  still settles cleanly and silently keeps the side the user asked to discard.
+  `tests/test_sync_commits.py` names the content it expects on both sides —
+  swapping the two constants turns 6 of its 14 tests red.
+- **Read a stage with `cat-file`, not `show`.** `git show :2:path` is porcelain
+  and applies the repository's filters, so a `.gitattributes` with `text=auto`
+  hands back bytes that are not what was committed. And not through
+  `gitrepo.git` at all, which is `text=True` and returns `stdout.strip()` — that
+  decodes a dotfile on the user's behalf and eats its trailing newline and any
+  leading blank line, which is the same loss `merge_file`'s docstring records as
+  its reason for rewriting a file in place rather than using `-p`.
 - **The suite must never inherit the developer's stdin.** `sync` asks
   `sys.stdin.isatty()` to decide whether anyone is there to answer a conflict,
   so a test that inherits a terminal *prompts* and blocks, and the same test in

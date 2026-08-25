@@ -14,6 +14,13 @@ computers said" is a fact of the type rather than a narrowing every caller has
 to perform: `home` is a `Blob` here and not `Blob | None`, because the branch
 that produces a conflict is below the one that handles a missing file.
 
+The two sides are **what this computer has** and **what the repository has**, and
+that is deliberately not "the file in `$HOME`". `sync.settle` builds a `Sides`
+from three files and `sync.reconcile` builds one from three *commits*, where
+neither side is a working-tree file at all. The wording holds for both, which is
+why one type serves both -- and why the fields below are not named `home` and
+`stored` after the places `settle` happens to read them from.
+
 **The prompt returns an answer, not a decision about disk.** `ask` says which of
 `[l] [r] [b] [e] [s]` the user chose and, for the two that produce new bytes,
 what those bytes are. `sync` alone decides what that means for the repository,
@@ -96,13 +103,16 @@ class Sides(NamedTuple):
     """The three versions of one file, and what git made of them."""
 
     name: PurePosixPath
-    #: The last state both computers agreed on, or `None` when there is none --
-    #: the file was managed on two machines independently, or the snapshot was
-    #: lost. See `merge.three_way`.
+    #: The last state both sides agreed on, or `None` when there is none -- the
+    #: file was managed on two machines independently, or the snapshot was lost.
+    #: For `sync.settle` that is this machine's snapshot; for `sync.reconcile` it
+    #: is git's merge base. See `merge.three_way`.
     base: Blob | None
-    #: What this computer has. Not optional: see the module docstring.
+    #: What this computer has -- its `$HOME` file, or its committed version.
+    #: Not optional: see the module docstring.
     home: Blob
-    #: What the repository has.
+    #: What the repository has: its stored copy, or the version on the branch
+    #: being merged in.
     stored: Blob
     #: The merge with standard conflict markers in it -- what the prompt shows
     #: and what `[e]` opens. `None` for a binary file, where there are no lines
@@ -345,9 +355,13 @@ def choices(sides: Sides, colour: bool) -> str:
 def unified(sides: Sides) -> str:
     """`[d]`: the whole difference between the two computers, as a diff.
 
-    `$HOME` against the repository, and not either against the merge base: the
+    The two sides against each other, and not either against the merge base: the
     question at the prompt is which of *those two* to keep, and a diff against a
     third version is a different question.
+
+    For a `Sides` built by `sync.reconcile` neither side is the user's `$HOME`
+    file -- both are committed blobs -- so this says "this computer" and "the
+    repository", which is true of both kinds of conflict.
 
     `difflib.diff_bytes` rather than decoding first, so a file that is not UTF-8
     still produces a diff of the right lines; only the finished text is decoded,

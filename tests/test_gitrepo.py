@@ -13,6 +13,7 @@ and a `PATH` with no git on it.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -254,6 +255,218 @@ class TestIsRepository(unittest.TestCase):
         self.addCleanup(os.chdir, here)
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
             self.assertFalse(gitrepo.is_repository(Path.cwd()))
+
+
+class TestReadingAConflictedIndex(support.SandboxCase):
+    """`gitrepo.version`, and which stage is which side.
+
+    **The numbering is the point.** git's stage 2 is the branch being merged
+    *into* and stage 3 is the branch being merged *in*, which lines up with the
+    prompt's "this computer" and "the repository" -- but it lines up by luck
+    rather than by construction, and backwards it means `--ours` silently keeps
+    the side the user asked to discard. That is the class of defect milestone
+    4's review caught three of, so it is asserted rather than commented.
+
+    The two sides are given distinct content for the same reason every fixture
+    in that milestone does: symmetric inputs make "which side was written"
+    unobservable.
+    """
+
+    OURS = b"from the local branch\nshared\n"
+    THEIRS = b"from the remote branch\nshared\n"
+    BASE = b"from neither\nshared\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.home / "repo", self.env)
+        self.write(self.repo / ".gitignore", "")  # something to commit onto
+        self.conflict()
+
+    def commit(self, content: bytes, message: str) -> None:
+        (self.repo / ".bashrc").write_bytes(content)
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", message], cwd=self.repo, env=self.env)
+
+    def conflict(self) -> None:
+        """Two branches that changed the same line, merged into a dirty index."""
+        self.commit(self.BASE, "the base")
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(self.OURS, "ours")
+        support.git(["checkout", "other"], cwd=self.repo, env=self.env)
+        self.commit(self.THEIRS, "theirs")
+        support.git(["checkout", support.BRANCH], cwd=self.repo, env=self.env)
+        # Left to fail: that is what puts the three stages in the index.
+        gitrepo.merge(self.repo, "other")
+
+    def test_the_fixture_really_left_a_conflicted_index(self) -> None:
+        """Every assertion below is vacuous against a merge that succeeded."""
+        self.assertEqual([".bashrc"], gitrepo.unmerged(self.repo))
+
+    def test_stage_two_is_the_branch_being_merged_into(self) -> None:
+        self.assertEqual(self.OURS, gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"))
+
+    def test_stage_three_is_the_branch_being_merged_in(self) -> None:
+        self.assertEqual(self.THEIRS, gitrepo.version(self.repo, gitrepo.THEIRS, ".bashrc"))
+
+    def test_stage_one_is_the_merge_base(self) -> None:
+        self.assertEqual(self.BASE, gitrepo.version(self.repo, gitrepo.BASE, ".bashrc"))
+
+    def test_a_stage_that_is_not_there_is_none(self) -> None:
+        """A path nothing conflicts over has no stages at all."""
+        self.assertIsNone(gitrepo.version(self.repo, gitrepo.OURS, ".gitignore"))
+
+    def test_bytes_come_back_exactly(self) -> None:
+        """The reason this does not go through `gitrepo.git`, which returns
+        `stdout.strip()`: a dotfile's trailing newline and any leading blank line
+        are content, and stripping them corrupts the file on its way to the
+        prompt."""
+        gitrepo.abort_merge(self.repo)
+        self.commit(b"\n\nleading and trailing blank lines\n\n", "spacey")
+        support.git(["branch", "-D", "other"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-b", "other", "HEAD~1"], cwd=self.repo, env=self.env)
+        self.commit(b"\n\nthe other side\n\n", "spacey too")
+        support.git(["checkout", support.BRANCH], cwd=self.repo, env=self.env)
+        gitrepo.merge(self.repo, "other")
+        self.assertEqual(
+            b"\n\nleading and trailing blank lines\n\n",
+            gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"),
+        )
+
+
+class ConflictedIndex(support.SandboxCase):
+    """A repository left mid-merge, for the two classes that read its index.
+
+    Not a `Test...` class and holding no tests of its own: subclassing one that
+    *does* makes every test in it run again under the subclass's name, which is
+    six duplicate runs and six names for `--exclude` to have to know about.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.home / "r", self.env)
+
+    def commit(self, name: str, text: bytes, mode: int = 0o644) -> None:
+        where = self.repo / name
+        where.parent.mkdir(parents=True, exist_ok=True)
+        where.write_bytes(text)
+        where.chmod(mode)
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", name], cwd=self.repo, env=self.env)
+
+    def diverge(self, name: str, ours: bytes, theirs: bytes, mode: int = 0o644) -> None:
+        """Two branches that both changed `name`, left mid-merge."""
+        self.commit(name, b"base\n", mode)
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(name, ours, mode)
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        self.commit(name, theirs, mode)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+
+
+class TestReadingTheStagesOfAConflict(ConflictedIndex):
+    """`gitrepo.conflicted`, asked directly.
+
+    It had no test of its own: everything reached it through `sync`, which is why
+    the `-z` parsing, the missing-stage case and the non-UTF-8 path all went
+    unnoticed until a review. The modes it returns decide whether a settled file
+    keeps its executable bit and whether it is written at all, so they are worth
+    asking about here rather than three layers up.
+    """
+
+    def test_a_clean_repository_has_nothing_conflicted(self) -> None:
+        """The empty answer, which every caller reads as "nothing to settle"."""
+        self.commit(".bashrc", b"one\n")
+        self.assertEqual({}, gitrepo.conflicted(self.repo))
+
+    def test_all_three_stages_with_their_modes(self) -> None:
+        self.diverge(".bashrc", b"ours\n", b"theirs\n")
+        found = gitrepo.conflicted(self.repo)[".bashrc"]
+        self.assertEqual({1: 0o100644, 2: 0o100644, 3: 0o100644}, found)
+
+    def test_the_executable_bit_is_carried_per_stage(self) -> None:
+        """Asymmetric, so the answer cannot be right by accident: equal modes
+        pass against a function that returns the same number for every stage."""
+        self.commit(".sh", b"base\n", 0o755)
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(".sh", b"ours\n", 0o755)
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        self.commit(".sh", b"theirs\n", 0o644)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        found = gitrepo.conflicted(self.repo)[".sh"]
+        self.assertEqual(0o100755, found[gitrepo.OURS])
+        self.assertEqual(0o100644, found[gitrepo.THEIRS])
+
+    def test_a_side_that_deleted_the_file_has_no_stage(self) -> None:
+        """What `sync.held` reads to tell "that side has none" from "git would
+        not answer" -- two very different things it used to conflate."""
+        self.commit(".bashrc", b"base\n")
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(".bashrc", b"ours\n")
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        (self.repo / ".bashrc").unlink()
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "gone"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        found = gitrepo.conflicted(self.repo)[".bashrc"]
+        self.assertIn(gitrepo.OURS, found)
+        self.assertNotIn(gitrepo.THEIRS, found)
+
+    def test_a_symlink_is_reported_with_its_own_mode(self) -> None:
+        """`0o120000`, which is what `sync.reconcile` refuses on. Without the
+        mode it would look like a plain file and be written *through*."""
+        (self.repo / "link").symlink_to(self.home / "target")
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "link"], cwd=self.repo, env=self.env)
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        (self.repo / "link").unlink()
+        (self.repo / "link").symlink_to(self.home / "elsewhere")
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "relink"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        (self.repo / "link").unlink()
+        (self.repo / "link").symlink_to(self.home / "third")
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "relink again"], cwd=self.repo, env=self.env)
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        self.assertEqual(0o120000, gitrepo.conflicted(self.repo)["link"][gitrepo.OURS])
+
+
+class TestAPathThatIsNotUtf8(ConflictedIndex):
+    """A conflicted path whose name is not valid UTF-8.
+
+    **Linux only, and the CI job says so rather than this file skipping.** APFS
+    and HFS+ reject a filename that is not valid UTF-8, so the fixture cannot be
+    built on macOS at all -- `write_bytes` fails with `Illegal byte sequence`
+    before any assertion is reached. That is why the `macos` leg passes
+    `--exclude tests.test_gitrepo.TestAPathThatIsNotUtf8`: a skip would be a lie under
+    `--no-skips`, which exists precisely to catch a test that quietly does
+    nothing.
+
+    CLAUDE.md §2 asks that a one-platform test be labelled as one, because a
+    green run on the others otherwise reads as proof it guards something. What it
+    guards is real and Linux can see it: `git()` runs with `text=True`, so
+    reading `ls-files` through it raised `UnicodeDecodeError` out of
+    `subprocess.run` -- past the two exceptions `git()` catches, and out of a
+    half-finished merge. A latin-1 dotfile name needs no hostile input.
+    """
+
+    def test_a_path_that_is_not_utf8_does_not_raise(self) -> None:
+        self.diverge("caf\udce9rc", b"ours\n", b"theirs\n")
+        found = gitrepo.conflicted(self.repo)
+        self.assertEqual(1, len(found))
+        self.assertEqual(3, len(next(iter(found.values()))))
 
 
 if __name__ == "__main__":
