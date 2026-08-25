@@ -373,6 +373,7 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/copies.py` | what a stored copy is: bytes, the one mode bit that travels, and the single rule for "the target is already this file". Below `manage` and `sync`, because both write the same snapshots |
 | `tupferl/sync.py` | the three-version comparison and everything it decides. `resolve` is pure, so plan §7.4's table is a test with no repository in it |
 | `tupferl/merge.py` | the 3-way merge, over `git merge-file`. Bytes in, bytes out, and the conflict count is git's exit status |
+| `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` |
@@ -413,6 +414,13 @@ Four things are not where a newcomer would guess, all on purpose:
   and the acceptance bar there is zero *unexplained* mutation survivors: every
   survivor is either killed by a new test or named equivalent with its reason,
   in the PR.
+- **An overlay fixture needs *both* copies of the file.** A test that stores a
+  file with `add --host` and never shares it leaves one version of that name in
+  the repository, so "the overlay won" is unobservable — measured: inverting
+  `manifest.managed`'s merge so the shared file wins **survives every test that
+  drives a real sync** except `tests/test_overlays.py`, which asserts the two
+  differ before it asserts anything else. The general shape is §2's "two
+  symmetric inputs"; this is the spelling it takes here.
 - **Never read a raw survivor list as a bug count.** Cross it with coverage
   (`python -m tools.reached results.json coverage.json --list`): a survivor on a
   line no test executes is a missing test; a survivor on a line the suite does

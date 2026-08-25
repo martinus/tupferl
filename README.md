@@ -23,7 +23,7 @@ pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
-## Status: milestone 4 of 7
+## Status: milestone 5 of 7
 
 **`init`, `add`, `remove`, `list`, `sync` and `doctor` work.** Two computers can
 share dotfiles today: `tupferl sync` pulls, merges in both directions, commits
@@ -90,7 +90,7 @@ are in [`CLAUDE.md`](CLAUDE.md).
 | 2 | `init`, `add`, `remove`, `list` | **done** |
 | 3 | sync engine: snapshots, change detection, automatic merges | **done** |
 | 4 | 3-way merge and the interactive conflict prompt | **done** |
-| 5 | host overlays | |
+| 5 | host overlays | **done** |
 | 6 | backups, error messages, `status` and `diff` | |
 | 7 | PyPI packaging | |
 
@@ -104,8 +104,20 @@ their config file, and a copy is what makes a real 3-way merge possible.
 `dot_` prefix, no name mangling — the mapping is the path.
 
 **Per-machine differences without templates.** A file in
-`.tupferl/hosts/<hostname>/` replaces the shared one on that host — `tupferl add
---host ~/.gitconfig` puts it there. Whole files only; no variables, no merging.
+`.tupferl/hosts/<hostname>/` replaces the shared one on that host. Whole files
+only; no variables, no merging.
+
+```sh
+tupferl add --host ~/.gitconfig      # this machine gets its own version
+tupferl remove --host ~/.gitconfig   # …and stops having one
+```
+
+The shared file stays managed either way, and other computers never see the
+override — they keep using the shared version, and `tupferl list` marks the
+files this machine overrides with `host`. After `remove --host`, the next sync
+copies the shared version back into `$HOME` (backing up what the override put
+there first). Plain `tupferl remove` is a different request: it stops managing
+the file *everywhere*, taking the shared copy every other computer is using.
 
 **Some files are refused, on purpose.** Symlinks, anything reached *through* a
 symlink, anything outside `$HOME`, sockets and devices, files over
