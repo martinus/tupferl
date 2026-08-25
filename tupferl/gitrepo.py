@@ -341,6 +341,16 @@ def distance(repo: Path, here: str, there: str) -> tuple[int, int] | None:
     """
     counted = git(["rev-list", "--left-right", "--count", f"{here}...{there}"], cwd=repo)
     if not counted.ok:
+        # An **equivalent mutant** lives here, and it is named rather than
+        # tested: removing this `if` changes nothing observable, because a
+        # failed `rev-list` prints nothing, so `"".split()` is `[]`, so the
+        # format guard below returns `None` two lines later. Both roads reach
+        # the same answer and no test can tell them apart.
+        #
+        # Kept because the two questions are different -- "git failed" and "git
+        # answered something that is not two numbers" -- and a reader who found
+        # only the second would reasonably conclude that a failed call falls
+        # through to `int(fields[0])`.
         return None
     fields = counted.out.split()
     if len(fields) != 2 or not all(field.isdigit() for field in fields):
