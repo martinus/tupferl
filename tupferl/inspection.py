@@ -227,11 +227,12 @@ def difference(wanted: str | None) -> int:
     if not readings and wanted is None:
         print(manage.NOTHING_MANAGED)
         return 0
-    if wanted is not None:
-        name = manifest.relative(wanted, home)
-        readings = [reading for reading in readings if reading.name == name]
+
+    named = None if wanted is None else manifest.relative(wanted, home)
+    if named is not None:
+        readings = [reading for reading in readings if reading.name == named]
         if not readings:
-            raise TupferlError(f"{name} is not managed; `tupferl list` shows what is.")
+            raise TupferlError(f"{named} is not managed; `tupferl list` shows what is.")
 
     shown = 0
     for reading in readings:
@@ -241,8 +242,14 @@ def difference(wanted: str | None) -> int:
         shown += 1
         print(said)
     if not shown:
-        where = "nothing" if wanted is None else str(manifest.relative(wanted, home))
-        print(f"{where} differs between $HOME and the repository.")
+        # Two sentences, because one with the name substituted into it says the
+        # opposite of what it means: "`.bashrc` differs between $HOME and the
+        # repository" is exactly the report this branch exists to *deny*.
+        print(
+            "nothing differs between $HOME and the repository."
+            if named is None
+            else f"{named} is the same in $HOME as in the repository."
+        )
     return 0
 
 
