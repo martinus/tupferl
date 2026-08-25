@@ -23,6 +23,26 @@ pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
+**What tupferl stores, it stores in plaintext and pushes to your remote.**
+There is no encryption and none is planned — that is
+[the plan's](docs/plan.md) decision, not an omission. So `add` refuses a
+short list of names whose only job is to hold a credential —
+`.ssh/id_*`, `.aws/credentials`, `.netrc`, `.pgpass`, `.gnupg/*`, `*.pem`,
+`*.key` — and says so:
+
+```
+$ tupferl add ~/.ssh/id_ed25519
+tupferl: /home/me/.ssh/id_ed25519 matches .ssh/id_*, and tupferl stores what
+it manages in plaintext and pushes it to your remote; add it with `--anyway`
+if that is what you want, or leave it unmanaged.
+```
+
+`tupferl add ~/.ssh` stores `config`, `known_hosts` and `id_*.pub` and skips
+the key. **That list is seven filenames, not a secret scanner** — it will not
+notice a token in `~/.config/some-app/settings.json`, and nothing here reads
+the contents of your files. If you need secrets in the repository, put
+something like `git-crypt` or `age` under it and use `--anyway`.
+
 ## Status: milestone 6 of 7
 
 **All eight commands work.** Two computers can share dotfiles today:

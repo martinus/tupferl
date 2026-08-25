@@ -991,6 +991,83 @@ class TestAddingADirectoryOfMany(support.SandboxCase):
         self.assertIn("added 20 files", said)
 
 
+class TestAddingSomethingThatHoldsACredential(support.SandboxCase):
+    """#35 end to end: refused by name, skipped in a walk, allowed by `--anyway`.
+
+    The three shapes are different code paths -- `check` raises for a named file,
+    `collect` turns the same refusal into a `Refused` for a walked one, and the
+    flag has to reach both. A test of only the first would leave
+    `tupferl add ~/.ssh` pushing the key it is most likely to meet.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        remote = support.make_remote(self.tmp / "remote.git", self.env)
+        with support.quiet():
+            self.assertEqual(0, cli.main(["init", str(remote)]))
+        self.ssh = self.home / ".ssh"
+        self.ssh.mkdir()
+        for name, body in (
+            ("id_ed25519", "PRIVATE KEY\n"),
+            ("id_ed25519.pub", "ssh-ed25519 AAAA\n"),
+            ("config", "Host *\n"),
+            ("known_hosts", "example.com ssh-rsa AAAA\n"),
+        ):
+            (self.ssh / name).write_text(body, encoding="utf-8")
+
+    def add(self, *args: str) -> tuple[int, str]:
+        with support.quiet() as said:
+            return cli.main(["add", *args]), said.getvalue()
+
+    def stored(self) -> set[str]:
+        repo = paths.repo_dir()
+        return {
+            str(path.relative_to(repo)) for path in (repo / ".ssh").rglob("*") if path.is_file()
+        }
+
+    def test_naming_the_key_is_refused(self) -> None:
+        status, said = self.add(str(self.ssh / "id_ed25519"))
+        self.assertEqual(2, status, said)
+        self.assertIn(".ssh/id_*", said)
+        self.assertIn("--anyway", said)
+        self.assertFalse((paths.repo_dir() / ".ssh").exists(), "it was stored anyway")
+
+    def test_the_message_says_what_the_danger_is(self) -> None:
+        """Not "this looks like a secret", which tells a user nothing they can
+        act on. The reason tupferl refuses is that it stores plaintext and
+        pushes it, and that is the sentence."""
+        said = self.add(str(self.ssh / "id_ed25519"))[1]
+        self.assertIn("plaintext", said)
+        self.assertIn("remote", said)
+
+    def test_walking_the_directory_skips_it_and_keeps_the_rest(self) -> None:
+        """`collect`'s half. Refusing the whole walk would be the wrong answer:
+        `.ssh/config` and `known_hosts` are exactly what someone adding `~/.ssh`
+        wants, and the public key is public."""
+        status, said = self.add(str(self.ssh))
+        self.assertEqual(0, status, said)
+        self.assertIn("skipped", said)
+        self.assertIn("id_ed25519", said)
+        self.assertEqual({".ssh/config", ".ssh/known_hosts", ".ssh/id_ed25519.pub"}, self.stored())
+
+    def test_anyway_stores_it(self) -> None:
+        """The refusal has to be overrulable, or it is worked around by moving
+        the file -- which is worse for the user and teaches them to distrust the
+        rule."""
+        status, said = self.add("--anyway", str(self.ssh / "id_ed25519"))
+        self.assertEqual(0, status, said)
+        self.assertIn(".ssh/id_ed25519", self.stored())
+
+    def test_anyway_reaches_a_directory_walk_too(self) -> None:
+        """The flag threads through `collect`, not only `check`. Wired to one of
+        them, `tupferl add --anyway ~/.ssh` silently keeps skipping the file the
+        user just said to store."""
+        status, said = self.add("--anyway", str(self.ssh))
+        self.assertEqual(0, status, said)
+        self.assertNotIn("skipped", said)
+        self.assertIn(".ssh/id_ed25519", self.stored())
+
+
 class TestRemoveTakesTheNameListPrints(support.TwoMachines):
     """#27's other caller. `remove` goes through `manifest.relative` too.
 
