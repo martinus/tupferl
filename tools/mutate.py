@@ -992,7 +992,7 @@ def _why() -> str:
     memory rather than cores.
     """
     if os.environ.get(_TOTAL, "").isdigit():
-        return "--budget"
+        return _TOTAL
     return f"dedicated: {dedicated()}" if dedicated() else "shared machine, so half of it"
 
 
@@ -1011,9 +1011,22 @@ def _budget() -> int:
     lanes fit, and on a machine with no one else on it the honest answer is
     nearly all of them.
 
-    So a dedicated machine keeps everything but `_SPARE`, and `--budget` beats
-    both -- because the one thing better than a good guess about who owns the
-    machine is being told.
+    So a dedicated machine keeps everything but `_SPARE`, and `TUPFERL_MUTATE_TOTAL`
+    beats both -- because the one thing better than a good guess about who owns
+    the machine is being told.
+
+    **It is an environment variable and not a flag**, which this docstring and
+    the line `_why` prints both called `--budget` until someone typed that and
+    got "unrecognized arguments".
+
+    A first attempt at explaining *why* it is a variable said `_run` passes it
+    down so a nested harness inherits the same ceiling. That is wrong twice
+    over: `_run` passes `_BUDGET`, not this, and `_TOTAL` short-circuits
+    `_visible_memory` outright -- so a nested harness that inherited it would
+    size itself for the **outer** total and ignore exactly the per-lane share
+    `_BUDGET` exists to impose. The honest reason is smaller: it is a knob for
+    the operator of the machine rather than for one invocation, and it is read
+    in one place.
     """
     said = os.environ.get(_TOTAL, "")
     if said.isdigit() and int(said) > 0:

@@ -42,6 +42,11 @@ htmlcov/
 .nox/
 .coverage
 .coverage.*
+# `COVERAGE_FILE=.cov coverage run ...` is how the tools/ measurements in #4
+# were taken, and three of those databases were committed before this line
+# existed. They are binary, they are large, and they are derived.
+.cov
+.cov[0-9]*
 .cache
 nosetests.xml
 coverage.xml
