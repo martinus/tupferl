@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 from tests import support
 from tupferl import inspection, merge, sync
@@ -303,11 +304,37 @@ class TestNamingOneFile(Machine):
         self.assertIn(".vimrc is the same in $HOME as in the repository.", said)
         self.assertNotIn("nothing differs", said)
 
-    def test_a_managed_file_named_by_a_relative_path_is_found(self) -> None:
-        """`manifest.relative` expands and makes absolute, so a user standing in
-        `$HOME` need not type it out."""
+    def test_a_tilde_path_is_expanded(self) -> None:
+        """`manifest.relative` expands and makes absolute, so a user need not
+        type `$HOME` out.
+
+        This used to be called *"a managed file named by a relative path is
+        found"*, and `~/.bashrc` is not one -- `expanduser` makes it absolute
+        before anything else looks at it. The test was right and its name was
+        not, which is how it read as covering #27 while covering the one case
+        that already worked. The real one is below.
+        """
         self.apart()
         status, said = self.second.say("diff", "~/.bashrc")
+        self.assertEqual(0, status, said)
+        self.assertIn("-edited on this computer", said)
+
+    def test_the_name_that_list_prints_is_accepted(self) -> None:
+        """#27: `tupferl list` prints `.bashrc`, and `diff` has to take it back.
+
+        The working directory is the point, so it is set to somewhere that is
+        **not** `$HOME` and has no `.bashrc` of its own -- from `$HOME` the old
+        cwd-relative reading gave the right answer by accident, which is why the
+        bug survived a suite that drives everything from a sandbox.
+        """
+        self.apart()
+        listed = [
+            row.split()[-1] for row in self.second.say("list")[1].splitlines() if ".bashrc" in row
+        ]
+        self.assertEqual([".bashrc"], listed, "the fixture no longer prints the name under test")
+
+        with mock.patch.object(Path, "cwd", return_value=self.tmp):
+            status, said = self.second.say("diff", ".bashrc")
         self.assertEqual(0, status, said)
         self.assertIn("-edited on this computer", said)
 

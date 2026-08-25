@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Iterator, Sequence
+from contextlib import suppress
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -176,16 +177,50 @@ def relative(wanted: str | Path, home: Path) -> PurePosixPath:
     a second spelling would be a second answer to "is `~/../etc/passwd` under
     `$HOME`?" -- which is exactly the question that must not have two.
 
+    **Two readings of a relative argument, in this order** (#27). `tupferl list`
+    prints `.bashrc`, and `tupferl diff .bashrc` used to answer "`/somewhere
+    -else/.bashrc` is outside your home directory" -- the tool printing an
+    identifier it would not take back, and blaming the user for naming a file
+    they had not named.
+
+    - **The working directory first.** Someone standing in `~/.config` typing
+      `tupferl diff nvim/init.lua` means the file under their feet, and that is
+      how paths are typed at a shell.
+    - **Then `$HOME`**, but only when the first reading landed *outside* it, and
+      only for an argument that was relative to begin with. `/etc/hostname` keeps
+      its own error rather than becoming `$HOME/etc/hostname`, and so does
+      `~/../etc/passwd`, which `named` has already made absolute.
+
+    One case stays ambiguous and takes the first reading: standing in
+    `~/.config`, `tupferl diff .bashrc` means `~/.config/.bashrc`, which is
+    probably not what was meant. Resolving it would mean asking the manifest what
+    is managed, and this function deliberately does not know -- see below. The
+    answer is at least *a* file under `$HOME`, so the caller's "not managed"
+    names something real.
+
     Says nothing about whether the file is managed, or exists, or is a file. It
-    answers where it *would* live, which is what the caller then looks for.
+    answers where it *would* live, which is what the caller then looks for --
+    `remove` and `diff` each check afterwards, and differently, and a fallback
+    that consulted the manifest would collapse the two answers into one.
     """
     path = named(wanted)
     try:
         return PurePosixPath(path.relative_to(home).as_posix())
     except ValueError:
-        raise TupferlError(
-            f"{path} is outside {home}, so it was never managed; name a file under it."
-        ) from None
+        pass
+
+    typed = str(wanted)
+    if not Path(os.path.expanduser(typed)).is_absolute():
+        # A name rather than a path: what `list` prints. `named` again, so `..`
+        # inside it is collapsed the same way and cannot climb back out.
+        inside = named(home / typed)
+        with suppress(ValueError):
+            return PurePosixPath(inside.relative_to(home).as_posix())
+
+    raise TupferlError(
+        f"{path} is outside {home}, so it was never managed; name a file under it, "
+        f"or a name `tupferl list` prints."
+    )
 
 
 def links_between(where: Path, home: Path) -> Path | None:

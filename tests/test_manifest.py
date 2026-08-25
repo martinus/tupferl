@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 from tests import support
 from tupferl import manifest, paths
@@ -338,6 +339,85 @@ class TestLinksBetween(unittest.TestCase):
             (box / "target").mkdir()
             (home / ".aws").symlink_to(box / "target")
             self.assertEqual(home / ".aws", manifest.links_between(home / ".aws" / "creds", home))
+
+
+class TestTurningWhatWasTypedIntoAName(unittest.TestCase):
+    """`manifest.relative`, and the two readings of a relative argument (#27).
+
+    `tupferl list` prints `.bashrc`; `tupferl diff .bashrc` used to answer
+    "`/somewhere-else/.bashrc` is outside your home directory". The tool printed
+    an identifier it would not take back, and blamed the user for naming a file
+    they had not named.
+
+    No repository and no filesystem: this is a translation from a string to a
+    key, and it says nothing about whether the file exists. Each test names the
+    directory it pretends to stand in, because "which reading wins" is the whole
+    subject and a fixture that never moved could not show one.
+    """
+
+    HOME = Path("/home/ada")
+
+    def standing(self, where: str, typed: str) -> PurePosixPath:
+        with mock.patch.object(Path, "cwd", return_value=Path(where)):
+            return manifest.relative(typed, self.HOME)
+
+    def test_a_name_from_list_works_from_anywhere(self) -> None:
+        """The bug. Every directory but `$HOME` used to fail."""
+        for where in ("/tmp", "/", "/var/log"):
+            with self.subTest(cwd=where):
+                self.assertEqual(PurePosixPath(".bashrc"), self.standing(where, ".bashrc"))
+
+    def test_the_working_directory_still_wins_where_it_can(self) -> None:
+        """Standing in `~/.config`, `nvim/init.lua` is the file under your feet.
+        That is how paths are typed at a shell, and the fallback must not take
+        it."""
+        self.assertEqual(
+            PurePosixPath(".config/nvim/init.lua"),
+            self.standing("/home/ada/.config", "nvim/init.lua"),
+        )
+
+    def test_a_relative_path_under_home_is_not_re_read(self) -> None:
+        """The half that makes the test above about *precedence* rather than
+        about one path happening to work: from `~/.config`, `.bashrc` means
+        `.config/.bashrc` and not `.bashrc`.
+
+        Ambiguous, and documented as taking the first reading -- resolving it
+        would mean asking the manifest what is managed, which this function
+        deliberately does not know.
+        """
+        self.assertEqual(
+            PurePosixPath(".config/.bashrc"), self.standing("/home/ada/.config", ".bashrc")
+        )
+
+    def test_an_absolute_path_outside_home_is_still_refused(self) -> None:
+        """`/etc/hostname` must not become `$HOME/etc/hostname`. The fallback is
+        for arguments that were relative to begin with."""
+        with self.assertRaises(TupferlError) as caught:
+            self.standing("/tmp", "/etc/hostname")
+        self.assertIn("/etc/hostname is outside", str(caught.exception))
+
+    def test_a_tilde_path_that_climbs_out_is_still_refused(self) -> None:
+        """`named` expands and collapses it first, so it arrives absolute -- and
+        an absolute argument gets no second reading. This is the case the
+        docstring calls out by name."""
+        with self.assertRaises(TupferlError):
+            self.standing("/tmp", "~/../etc/passwd")
+
+    def test_a_relative_path_that_climbs_out_of_home_is_refused(self) -> None:
+        """The fallback re-reads it under `$HOME` and it still escapes, so both
+        readings fail and the error stands. Without the second `relative_to`
+        this would return a name pointing outside the repository."""
+        with self.assertRaises(TupferlError):
+            self.standing("/tmp", "../../etc/passwd")
+
+    def test_the_error_names_both_ways_in(self) -> None:
+        """A message that only said "name a file under it" left the reader
+        without the thing that actually works: the name `list` prints."""
+        with self.assertRaises(TupferlError) as caught:
+            self.standing("/tmp", "/etc/hostname")
+        said = str(caught.exception)
+        self.assertIn("name a file under it", said)
+        self.assertIn("tupferl list", said)
 
 
 class TestWhatMayBeMerged(unittest.TestCase):
