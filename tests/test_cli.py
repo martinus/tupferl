@@ -152,7 +152,7 @@ class TestTheFlags(unittest.TestCase):
         self.assertTrue(args.host)
         self.assertEqual("~/.gitconfig", args.path)
 
-    def test_remove_without_the_host_flag_stops_managing_the_file(self) -> None:
+    def test_remove_without_the_host_flag_parses_as_false(self) -> None:
         self.assertFalse(self.parse(["remove", "~/.gitconfig"]).host)
 
     def test_sync_takes_the_scripted_resolution_flags(self) -> None:

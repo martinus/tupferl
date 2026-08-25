@@ -4,8 +4,11 @@ Plan §7.4 item 3 asks for two things by name, "replacement wins" and "add/remov
 with `--host`", and both need two machines to mean anything: an overlay that
 silently applied everywhere passes every single-machine test there is.
 
-**Every fixture here holds a shared copy *and* an overlay for the same name, and
-asserts they differ before it asserts anything else.** That is not ceremony.
+**`OverlaidOnB`, which two thirds of this module inherits, holds a shared copy
+*and* an overlay for the same name and asserts they differ before it asserts
+anything else.** (`TestAnOverlayWithNoSharedCopy` is deliberately the other arm,
+and says so in its name; `TestTwoHostsOverrideTheSameFile` holds both and checks
+the shared one inside a test rather than in `setUp`.) That is not ceremony.
 Until this module, *no test that drove a real sync had both* -- the end-to-end
 overlay test (`test_sync_cli.TestTwoMachines.
 test_a_host_overlay_is_what_syncs_on_that_host`) adds `--host` to a file that
@@ -82,18 +85,24 @@ class TestReplacementWins(OverlaidOnB):
     """Plan §3.3: "a file in `hosts/<hostname>/` replaces the shared file on that
     host". Three directions, because the rule has to hold in each."""
 
-    def test_the_overlay_is_what_reaches_this_hosts_home(self) -> None:
+    def test_the_shared_copy_does_not_replace_the_overlay_in_this_hosts_home(self) -> None:
+        """Named for what it can see. `$HOME` already holds `OVERLAY` -- the
+        fixture wrote it there before `add --host` -- so a `sync` that never
+        wrote `$HOME` at all would leave this green; measured, gating off
+        `sync.apply`'s write is caught by the reinstall test and by
+        `test_the_next_sync_restores_the_shared_version_without_asking`, not
+        here. What it does catch is the shared copy arriving instead, which is
+        the direction this class is about."""
         self.assertEqual(OVERLAY, self.second.read(".bashrc"))
 
     def test_an_edit_on_this_host_goes_into_the_overlay_and_not_the_shared_copy(self) -> None:
         """The direction that would be invisible with only one copy in the
         repository: `sync` must write up into the overlay, leaving the shared
         file exactly as the other machine pushed it."""
-        self.second.write(".bashrc", OVERLAY.replace("only", "only, edited"))
+        mine = OVERLAY.replace("only", "only, edited")
+        self.second.write(".bashrc", mine)
         self.assertEqual(0, self.second.call("sync"))
-        self.assertIn(
-            "edited", self.second.stored(".bashrc", host=True).read_text(encoding="utf-8")
-        )
+        self.assertEqual(mine, self.second.stored(".bashrc", host=True).read_text(encoding="utf-8"))
         self.assertEqual(SHARED, self.second.stored(".bashrc").read_text(encoding="utf-8"))
 
     def test_a_shared_edit_from_elsewhere_does_not_reach_a_host_that_overrides_it(self) -> None:
@@ -189,6 +198,25 @@ class TestRemoveHost(OverlaidOnB):
         self.assertEqual(0, self.second.call("remove", "--host", str(self.second.home / ".bashrc")))
         self.assertEqual(OVERLAY, self.second.snapshot(".bashrc").read_text(encoding="utf-8"))
 
+    def test_an_unsynced_edit_is_merged_rather_than_replaced(self) -> None:
+        """The case `said`'s docstring names as the approximation in "will
+        replace": with an edit pending, the next sync merges instead.
+
+        The edit is on the last line and the override was on the second, so the
+        two do not overlap and git resolves it. Both survive: the shared body
+        comes back *and* the edit is still there, which is the point -- "will
+        replace" would have been a promise to discard it.
+        """
+        self.assertEqual(0, self.second.call("remove", "--host", str(self.second.home / ".bashrc")))
+        self.second.write(".bashrc", OVERLAY.replace("five", "FIVE edited after the removal"))
+
+        done = self.second.run("sync")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("0 in conflict", done.stdout)
+        self.assertEqual(
+            SHARED.replace("five", "FIVE edited after the removal"), self.second.read(".bashrc")
+        )
+
     def test_it_says_the_shared_version_is_coming(self) -> None:
         """The user has just been told a file was removed, and the file in `$HOME`
         is about to change under them. This sentence is the only warning."""
@@ -247,6 +275,11 @@ class TestAnOverlayWithNoSharedCopy(support.TwoMachines):
         """`sync.stale` does the pruning, and it only sees the file because
         nothing manages it any more. A snapshot left behind is committed, and
         becomes the merge base if the name ever comes back."""
+        # The precondition for the last line. "No snapshot afterwards" is
+        # equally satisfied by "there was never a snapshot", and `add --host`
+        # writing one is a fact about a different function.
+        self.assertTrue(self.first.snapshot(".vimrc").is_file())
+
         self.assertEqual(0, self.first.call("remove", "--host", str(self.first.home / ".vimrc")))
         self.assertEqual(0, self.first.call("sync"))
         self.assertEqual("set number\n", self.first.read(".vimrc"))
@@ -266,10 +299,12 @@ class TestTwoHostsOverrideTheSameFile(support.TwoMachines):
             self.assertEqual(0, machine.call("sync"))
 
     def test_each_keeps_its_own_and_the_shared_copy_survives_both(self) -> None:
-        # Twice each, so the last writer does not simply win: after this every
-        # machine has seen the other's overlay and has had a chance to be wrong
-        # about it.
-        for machine in (self.first, self.second, self.first, self.second):
+        # One each, which is what it takes: `setUp` already left both overlays
+        # on the remote, and this is `machine-a` taking `machine-b`'s in.
+        # Measured with `rev-parse HEAD` around each call -- of four syncs only
+        # the first moved anything, so the extra pair claimed a "chance to be
+        # wrong" the fixture never gave them.
+        for machine in (self.first, self.second):
             self.assertEqual(0, machine.call("sync"))
         self.assertEqual("A only\n", self.first.read(".bashrc"))
         self.assertEqual("B only\n", self.second.read(".bashrc"))
