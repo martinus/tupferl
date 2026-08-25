@@ -340,13 +340,18 @@ def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[PurePosixPath]:
     return [name for name in manifest.under(snapshots, snapshots) if name not in keep]
 
 
-def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflicts.Settler) -> bool:
-    """Fetch, and merge the remote branch if it holds anything new. Did it?
+def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflicts.Settler) -> int:
+    """Fetch, and merge the remote branch if it holds anything new. How much?
 
-    The answer is what tells `sync` whether a rejected push is worth re-trying:
-    if nothing came in, the remote did not move and pushing again would fail the
-    same way. It is a fact about commits rather than a reading of git's English
-    -- see `gitrepo.is_ancestor`.
+    Zero is the old `False` and means exactly what it did, which is why this
+    returns a count rather than a `bool`: `deliver` still reads it as "is a
+    rejected push worth re-trying?", and `main` now also has a number to report
+    (#26). It is a fact about commits rather than a reading of git's English --
+    see `gitrepo.is_ancestor`.
+
+    The count costs nothing over the wire. `gitrepo.distance` is a local
+    `rev-list`, asked *after* the fetch above and *before* the merge below --
+    the one window in which the answer is the number of commits about to arrive.
     """
     fetched = gitrepo.fetch(repo, remote)
     if not fetched.ok:
@@ -358,11 +363,17 @@ def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflict
     if not gitrepo.has_ref(repo, there) or gitrepo.is_ancestor(repo, there, "HEAD"):
         # No such branch yet (an empty remote, until the first push), or nothing
         # on it this machine does not already have.
-        return False
+        return 0
+
+    apart = gitrepo.distance(repo, "HEAD", there)
+    # `1` when git would not compare, never `0`: zero is this function's word for
+    # "nothing came in", and something is about to be merged. A count that is low
+    # by one beats a report that denies the merge happened at all.
+    coming = apart[1] if apart is not None else 1
 
     done = gitrepo.merge(repo, there)
     if done.ok:
-        return True
+        return coming
 
     # **Conflicted files first.** A merge can fail with nothing unmerged at all
     # -- a hook that refuses the commit, a tree that cannot be written -- and
@@ -401,7 +412,7 @@ def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflict
                     f"it: {gitrepo.reason(finished)}",
                 )
             concluded = True
-            return True
+            return coming
     finally:
         if not concluded:
             gitrepo.abort_merge(repo)
@@ -551,6 +562,32 @@ def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
             f"undone, so run `tupferl doctor` and sync again."
         )
     return []
+
+
+class Traffic(NamedTuple):
+    """What crossed the wire, for the one line `sync` says about the remote (#26).
+
+    `sync` reported only what it wrote in `$HOME` and said nothing about the
+    push -- the thing the command exists for. Worse, the *no remote* case had a
+    sentence of its own, so the tool spoke up in the harmless case and was
+    silent in the one that matters: a first `tupferl sync` answered "is it on
+    the remote now?" with a blank line.
+
+    **A count for what came in, and a plain yes for what went out.** The
+    incoming count is certain and free -- `gitrepo.distance` is a local
+    `rev-list`, asked after `integrate`'s own fetch and before its merge, so no
+    second round trip pays for it. There is no equally certain number for the
+    outgoing side: a push's count would have to be measured before the push and
+    believed afterwards, and "pushed to origin/main" answers the user's question
+    without inventing one.
+    """
+
+    #: Commits taken in from `<remote>/<branch>`.
+    pulled: int
+    #: Whether anything was sent. `False` covers both "already up to date" and
+    #: "there was nothing to send", which read the same to a user and are the
+    #: same fact about the remote.
+    pushed: bool
 
 
 class Reading(NamedTuple):
@@ -760,6 +797,28 @@ def apply(
     return wrote
 
 
+def crossed(there: str, traffic: Traffic) -> str:
+    """The one line `sync` says about the remote (#26).
+
+    Printed *before* `report`, because it is the answer to a different question
+    -- "did my dotfiles get there?" -- and burying it under a per-file list is
+    what made the old silence easy to miss.
+
+    **One line, and short when nothing happened.** `report` is deliberately
+    silent about unchanged files so a machine that syncs on a timer prints almost
+    nothing; a paragraph here would undo that. "already up to date" is the whole
+    sentence on a quiet run, and it earns its place by being the run where the
+    user most wants to know the remote was actually reached.
+    """
+    if traffic.pulled and traffic.pushed:
+        return f"{there}: took in {manage.count(traffic.pulled, 'commit')}, and pushed"
+    if traffic.pulled:
+        return f"{there}: took in {manage.count(traffic.pulled, 'commit')}"
+    if traffic.pushed:
+        return f"{there}: pushed"
+    return f"{there}: already up to date"
+
+
 def report(outcomes: list[Outcome]) -> str:
     """What the run did, one line per file that had something happen to it.
 
@@ -830,8 +889,9 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
                 f"{repo} has no branch checked out, so there is nothing to push; "
                 f"run `git -C {repo} checkout main`."
             )
-        integrate(repo, remote, branch, host, settler)
-        outcomes = deliver(repo, home, host, remote, branch, settler)
+        came = integrate(repo, remote, branch, host, settler)
+        outcomes, moved = deliver(repo, home, host, remote, branch, settler)
+        print(crossed(f"{remote}/{branch}", Traffic(came + moved.pulled, moved.pushed)))
 
     print(report(outcomes))
     return 1 if any(RULES[outcome.action].needs_user for outcome in outcomes) else 0
@@ -844,8 +904,14 @@ def deliver(
     remote: str,
     branch: str,
     settler: conflicts.Settler,
-) -> list[Outcome]:
+) -> tuple[list[Outcome], Traffic]:
     """Push, and plan §3.4 step 5: if the remote moved, pull, redo, push again.
+
+    Returns what it did to the remote as well as to the files, because nothing
+    else can: `main` cannot measure the push from outside, since `settle` commits
+    in the middle of this function and a count taken before it would be of the
+    wrong tree (#26). A retry pulls again, so the incoming count accumulates
+    here rather than being the first `integrate`'s alone.
 
     Redoing the whole of `settle` rather than just the push, because what came in
     may need merging into `$HOME` -- and doing it again is cheap: every file that
@@ -863,6 +929,7 @@ def deliver(
     """
     outcomes = settle(repo, home, host, settler)
     there = f"{remote}/{branch}"
+    pulled = 0
     for _ in range(ATTEMPTS):
         if gitrepo.is_ancestor(repo, "HEAD", there):
             # Everything here is already on the remote, so there is nothing to
@@ -873,11 +940,13 @@ def deliver(
             # it does not exist at all (an empty remote, before the first push)
             # `merge-base` fails, which is `False`, which pushes. That is the
             # answer wanted, from the same call.
-            return outcomes
+            return outcomes, Traffic(pulled, pushed=False)
         pushed = gitrepo.push(repo, remote, branch)
         if pushed.ok:
-            return outcomes
-        if not integrate(repo, remote, branch, host, settler):
+            return outcomes, Traffic(pulled, pushed=True)
+        came = integrate(repo, remote, branch, host, settler)
+        pulled += came
+        if not came:
             raise TupferlError(
                 f"could not push to {remote}: {gitrepo.reason(pushed)}; "
                 f"run `tupferl doctor` to check the remote."

@@ -16,10 +16,11 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import unittest
 from pathlib import PurePosixPath
 
 from tests import support
-from tupferl import copies, gitrepo, paths
+from tupferl import copies, gitrepo, paths, sync
 
 NAME = PurePosixPath(".bashrc")
 
@@ -513,3 +514,129 @@ class TestTheSnapshotIsWrittenLast(support.TwoMachines):
         self.assertEqual(1, done.returncode)
         self.assertIn("skipped .config/nvim/init.lua", done.stdout)
         self.assertEqual(was, self.second.snapshot(".config/nvim/init.lua").read_text())
+
+
+class TestWhatSyncSaysAboutTheRemote(support.TwoMachines):
+    """#26: the command that reaches the remote has to say that it did.
+
+    `sync` used to report only what it wrote in `$HOME`. The asymmetry is what
+    made it a defect rather than a taste question: the *no remote* case already
+    had a sentence of its own, so the tool spoke up in the harmless case and was
+    silent in the one that matters -- and `status`, which only looks, reported
+    the remote while `sync`, which changes it, did not.
+
+    Every test here reads the line out of a real run rather than calling
+    `crossed`, because "it is printed, above the file list" is half the claim.
+    `TestTheRemoteLine` below is the other half: the four wordings, without a
+    repository.
+    """
+
+    def said(self, machine: support.Computer, *args: str) -> str:
+        status, out = machine.say("sync", *args)
+        self.assertEqual(0, status, out)
+        return out
+
+    def test_a_push_is_reported(self) -> None:
+        """The first sync of a new file, which is a user's first sync."""
+        self.first.write(".vimrc", "set number\n")
+        self.assertEqual(0, self.first.call("add", str(self.first.home / ".vimrc")))
+        said = self.said(self.first)
+        self.assertIn("pushed", said)
+        self.assertIn(f"origin/{support.BRANCH}", said)
+
+    def test_a_quiet_run_says_it_reached_the_remote_anyway(self) -> None:
+        """The run that used to print almost nothing, and the one where "did it
+        work?" is hardest to answer from the output."""
+        said = self.said(self.first)
+        self.assertIn("already up to date", said)
+        self.assertNotIn("pushed", said)
+
+    def test_what_came_in_is_counted(self) -> None:
+        """More than one, so a report saying "1" or "some" fails.
+
+        The expected number is **asked of git rather than counted from the
+        fixture's steps**. Written out as "2" it was wrong -- the other machine's
+        own sync commits too, so three arrive -- and a number tied to how many
+        commands this test happens to run is one that breaks whenever the fixture
+        gains a step, for a reason that has nothing to do with the report.
+
+        Not a copy of the code under test either: `sync` gets its number from
+        `distance(HEAD, origin/main)` on *this* machine, and the test gets it
+        from `rev-list --count` on the *other* one, whose HEAD is what arrives.
+        Two commands, two repositories, one fact.
+        """
+        was = self.first.git("rev-parse", "HEAD")
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        for name in (".vimrc", ".zshrc"):
+            self.second.write(name, f"# {name}\n")
+            self.assertEqual(0, self.second.call("add", str(self.second.home / name)))
+        self.assertEqual(0, self.second.call("sync"))
+
+        coming = int(self.second.git("rev-list", "--count", f"{was}..HEAD"))
+        self.assertGreater(coming, 1, "the fixture brings in one commit, so it cannot show a count")
+        self.assertIn(f"took in {coming} commits", self.said(self.first))
+
+    def test_the_line_comes_before_the_files(self) -> None:
+        """Above the per-file list, not after it. It answers a different question
+        from `report`'s, and burying it under the list is what made the old
+        silence easy to miss."""
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.second.write(".bashrc", "changed on the other machine\n")
+        self.assertEqual(0, self.second.call("sync"))
+        rows = [row for row in self.said(self.first).splitlines() if row.strip()]
+        self.assertTrue(rows[0].startswith(f"origin/{support.BRANCH}:"), rows)
+        self.assertIn("updated .bashrc", rows[1])
+
+    def test_a_machine_with_no_remote_still_says_so(self) -> None:
+        """The sentence that was already there, and the reason this issue was
+        visible at all. It must not have been replaced by the new one."""
+        self.first.git("remote", "remove", "origin")
+        said = self.said(self.first)
+        self.assertIn("no remote configured", said)
+        self.assertNotIn("already up to date", said)
+
+
+class TestTheRemoteLine(unittest.TestCase):
+    """`sync.crossed`'s four wordings, with no repository in it.
+
+    Pure, so each of the four is a case rather than a fixture. The two-machine
+    class above proves they are printed and where; this proves they are
+    distinguishable, which a test that only ever built one of them could not.
+    """
+
+    THERE = "origin/main"
+
+    def test_the_four_are_all_different(self) -> None:
+        """As a set, because two wordings that collided would make one of the
+        tests above pass for the wrong reason."""
+        said = {
+            sync.crossed(self.THERE, sync.Traffic(pulled=0, pushed=False)),
+            sync.crossed(self.THERE, sync.Traffic(pulled=0, pushed=True)),
+            sync.crossed(self.THERE, sync.Traffic(pulled=3, pushed=False)),
+            sync.crossed(self.THERE, sync.Traffic(pulled=3, pushed=True)),
+        }
+        self.assertEqual(4, len(said), said)
+
+    def test_nothing_either_way_is_up_to_date(self) -> None:
+        self.assertEqual(
+            "origin/main: already up to date",
+            sync.crossed(self.THERE, sync.Traffic(pulled=0, pushed=False)),
+        )
+
+    def test_the_plural_is_counted(self) -> None:
+        """One and many, because `1 commits` is the mistake this shape invites."""
+        self.assertIn("1 commit", sync.crossed(self.THERE, sync.Traffic(1, False)))
+        self.assertNotIn("1 commits", sync.crossed(self.THERE, sync.Traffic(1, False)))
+        self.assertIn("2 commits", sync.crossed(self.THERE, sync.Traffic(2, False)))
+
+    def test_every_line_names_the_ref(self) -> None:
+        """A sentence that said "pushed" without saying where would be true of a
+        machine pushing to the wrong remote."""
+        for traffic in (
+            sync.Traffic(0, False),
+            sync.Traffic(0, True),
+            sync.Traffic(2, False),
+            sync.Traffic(2, True),
+        ):
+            with self.subTest(traffic=traffic):
+                self.assertTrue(sync.crossed(self.THERE, traffic).startswith(self.THERE))
