@@ -50,7 +50,6 @@ and leaving both copies alone, which is what `[s]` does anyway.
 
 from __future__ import annotations
 
-import difflib
 import os
 import shlex
 import subprocess
@@ -363,20 +362,11 @@ def unified(sides: Sides) -> str:
     file -- both are committed blobs -- so this says "this computer" and "the
     repository", which is true of both kinds of conflict.
 
-    `difflib.diff_bytes` rather than decoding first, so a file that is not UTF-8
-    still produces a diff of the right lines; only the finished text is decoded,
-    with `errors="replace"`, for the same reason as `excerpt`.
+    `merge.unified` does the diffing, because milestone 6's `tupferl diff` shows
+    the same two sides of the same two files and a second renderer here would be
+    a second answer to "which one is `---` and which is `+++`".
     """
-    mine_at, _, theirs_at = merge.labels_for(str(sides.name))
-    rows = difflib.diff_bytes(
-        difflib.unified_diff,
-        sides.home.data.split(b"\n"),
-        sides.stored.data.split(b"\n"),
-        mine_at.encode(),
-        theirs_at.encode(),
-        lineterm=b"",
-    )
-    return "\n".join(row.decode("utf-8", "replace") for row in rows)
+    return merge.unified(str(sides.name), sides.home.data, sides.stored.data)
 
 
 def editor(config: Config) -> str:
