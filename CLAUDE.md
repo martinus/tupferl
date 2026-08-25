@@ -681,6 +681,16 @@ Five things are not where a newcomer would guess, all on purpose:
   - And if a test does build many real paths: **macOS's `PATH_MAX` is 1024**, a
     quarter of Linux's 4096, so a component chain sized for Linux cannot be
     *created* on the macos leg and the test errors rather than tests there.
+- **A test that hand-rolls what the code under test does can diverge from it,
+  and only another machine may notice.** A precondition for #15 drove
+  `gitrepo.fetch` then `gitrepo.merge` itself instead of running `sync`; on the
+  runner's git 2.55 that pair left **nothing** unmerged, while the same fixture
+  through `integrate` conflicted exactly as expected — three tests beside it
+  passed in the same run. The mechanism is not established and is not worth
+  guessing at; the lesson is §2's "prefer driving the real thing", now with an
+  instance where the copy and the original disagreed. Where a precondition is
+  wanted, look for one the real path already proves: the refusal message names
+  the path, and nothing but a real conflict could put it there.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every

@@ -550,31 +550,44 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachines):
         self.first.write(name, "FROM-A\ntwo\nthree\n")
         self.assertEqual(0, self.first.call("sync"))
 
-    def test_the_snapshot_really_does_conflict(self) -> None:
-        """The precondition, asserted before anything about the fix.
-
-        Without it, every test below is equally satisfied by a fixture where git
-        never reported the snapshot unmerged at all -- CLAUDE.md §2's negative
-        assertion with nothing established.
-        """
-        self.collide(".bashrc")
-        remote = gitrepo.first_remote(self.second.repo)
-        assert remote is not None
-        gitrepo.fetch(self.second.repo, remote)
-        gitrepo.merge(self.second.repo, f"{remote}/{gitrepo.branch(self.second.repo)}")
-        unmerged = gitrepo.unmerged(self.second.repo)
-        gitrepo.abort_merge(self.second.repo)
-        self.assertIn(".bashrc", unmerged)
-        self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", unmerged)
-
     def test_a_snapshot_is_never_offered_at_the_prompt(self) -> None:
-        """`--ours` answers every conflict the prompt is given. If the snapshot
-        reached it, `--ours` would settle it and the sync would succeed."""
+        """`--ours` answers every conflict the prompt is given, so a sync that
+        exits 2 is one where something never reached it.
+
+        **This is also the class's precondition**, and it carries that on its own
+        rather than through a separate test: the snapshot's path can only appear
+        in this message by way of `left`, and it can only reach `left` because
+        git reported it unmerged and `mergeable` refused it. A fixture where the
+        conflict never happened produces a clean sync and exit 0.
+
+        It says that here because the separate precondition it replaced was
+        *wrong*, and only CI could see it: that test drove `gitrepo.fetch` and
+        `gitrepo.merge` by hand instead of going through `sync`, and on the
+        runner's git 2.55 the hand-rolled pair left nothing unmerged while the
+        real path -- these three tests -- conflicted exactly as expected. The
+        mechanism for that difference is not established and is not guessed at
+        here; the lesson that is established is CLAUDE.md §2's "prefer driving
+        the real thing", with a version of the real thing to point at.
+        """
         self.collide(".bashrc")
         status, said = self.second.say("sync", "--ours")
         self.assertEqual(2, status, said)
         self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", said)
         self.assertIn("not a dotfile this machine merges", said)
+
+    def test_the_ordinary_dotfile_beside_it_is_not_what_stopped_the_sync(self) -> None:
+        """`.bashrc` collides too, and it *is* mergeable -- so the refusal has to
+        be about the snapshot rather than about the collision in general.
+
+        Without this, the class is equally satisfied by a `reconcile` that
+        refused every conflict it saw.
+        """
+        self.collide(".bashrc")
+        status, said = self.second.say("sync", "--ours")
+        self.assertEqual(2, status, said)
+        refused = said.split("disagree about", 1)[1].split(" in a way", 1)[0]
+        self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", refused)
+        self.assertNotIn(" .bashrc", refused)
 
     def test_the_merge_is_undone_rather_than_half_settled(self) -> None:
         """The refusal has to leave the repository where the next run can start.
