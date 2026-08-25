@@ -906,6 +906,7 @@ def _attempt(
     timeout: float,
     memory: int,
     each: float,
+    walk: bool = True,
 ) -> Verdict:
     """Apply one mutation in a borrowed sandbox and report what the suite said."""
     root = available.get()
@@ -926,7 +927,7 @@ def _attempt(
                 memory=memory,
                 each=each,
                 first=mutation.first,
-                walk=True,
+                walk=walk,
             )
         finally:
             # Into the sandbox, not the working tree. Only so the next mutation
@@ -1169,6 +1170,7 @@ def run(
     workers: int | None = None,
     *,
     strict: bool = True,
+    walk: bool = True,
     failfast: bool = False,
     timeout: float = TIMEOUT,
     memory: int = MEMORY,
@@ -1210,7 +1212,7 @@ def run(
     for mutation in table:
         check(mutation)
 
-    shards = baseline_shards()
+    shards = baseline_shards(table, walk)
     # Twice the usable cores, which is what `tools/run_tests.py` measured for this
     # same subprocess-wait-bound work (jobs=8 beat jobs=4 by ~9%, jobs=16
     # regressed). An earlier `cpu // 2` here gave two lanes on a four-core runner
@@ -1242,7 +1244,7 @@ def run(
             else []
         )
         futures = [
-            pool.submit(_attempt, mutation, available, failfast, timeout, memory, each)
+            pool.submit(_attempt, mutation, available, failfast, timeout, memory, each, walk)
             for mutation in table
         ]
         if landed is not None:
@@ -1325,10 +1327,11 @@ def run(
 
     if not red and summarise:
         _summarise(results)
-    # `widened=True` because every row in this table walked: `_attempt` passes
-    # `walk=True`, so nothing is called a survivor until the whole suite has
-    # failed to notice it. See `Report.widened`.
-    report = Report(results, red, widened=True, times=timings or None)
+    # `widened=walk`, never a bare `True`: the flag's whole job is to say
+    # whether a survivor here has been run against everything, and with `walk`
+    # off it has not. Hard-coding it would make the one report that must not
+    # claim the guarantee the one that claims it loudest.
+    report = Report(results, red, widened=walk, times=timings or None)
     _RUNS.append(report)
     return report
 
@@ -1373,10 +1376,10 @@ def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | 
 WHOLE_SUITE = ""
 
 
-def baseline_shards() -> list[str]:
+def baseline_shards(table: Sequence[Mutation], walk: bool = True) -> list[str]:
     """What the untouched tree must be green on before any verdict counts.
 
-    **One whole-suite shard, because every row walks.** `_attempt` passes
+    **One whole-suite shard when the rows walk.** `_attempt` passes
     `walk=True`, so a mutation nothing in its selection notices keeps going
     through the rest of the suite -- and it can therefore be caught by a module
     its selection never named. On a tree that is already red that claim is free:
@@ -1395,7 +1398,22 @@ def baseline_shards() -> list[str]:
     drift: that flag exists to ask, in one shard's time, the question a sweep
     will ask later, and it is worth nothing if it asks a different one. It
     already went stale once here.
+
+    ``walk=False`` is the pre-walk shape, and it is the *baseline's* half of that
+    switch: rows that stay inside their selections can only be caught by a test
+    in one, so those are what has to be green. Keeping the two halves in one
+    place is the point -- a run that did not walk but baselined the whole suite
+    would merely be slow, while the reverse is the false `caught` above.
     """
+    if not walk:
+        shards = sorted({mutation.tests for mutation in table})
+        # A cached killer can name a test outside its row's selection, so it
+        # needs a shard of its own. One holding all of them, never one each: a
+        # shard per remembered test is the sharding explosion that cost
+        # 372s -> 730s, in a new disguise.
+        if ahead := " ".join(sorted({name for row in table for name in row.first.split()})):
+            shards.append(ahead)
+        return shards
     return [WHOLE_SUITE]
 
 
@@ -1927,10 +1945,14 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         print(f"{path}: already recorded, skipping")
     if not by_file:
         # `widened=True` on every report this function builds, recorded rows
-        # included. They were run by this tool, so they walked -- and a rebuilt
-        # `Report` that takes the field's default would write `widened: false`
-        # onto rows that did, which is the flag lying in exactly the direction
-        # it exists to prevent. `sweep` rebuilds the report four times.
+        # included. `sweep` is only ever reached from `main`, which always walks;
+        # a rebuilt `Report` that took the field's default would write
+        # `widened: false` onto rows that did walk, which is the flag lying in
+        # exactly the direction it exists to prevent. It is rebuilt four times
+        # here, so this is four chances to forget.
+        #
+        # Asserted rather than derived only in this arm, where there is no run to
+        # ask: every row was read back from a recorded report, and nothing ran.
         return Report(collected, widened=True)
 
     # Smallest file first, and its rows contiguous. The pool ignores this -- it
@@ -1951,18 +1973,22 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
             return
         print(f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded")
         if args.json:
+            # `True`, not `report.widened`: this runs *during* `_run_generated`
+            # below, so that name is not bound yet and reading it here is a
+            # `NameError` on every `--batch` sweep that persists mid-run. `main`
+            # is the only caller and always walks.
             _persist(Report([*collected, *fresh], widened=True), args.json)
 
     report = _run_generated(rows, args, landed=finished)
     collected.extend(report.results)
     if args.json:
-        _persist(Report(collected, report.baseline_red, widened=True), args.json)
+        _persist(Report(collected, report.baseline_red, widened=report.widened), args.json)
     if report.baseline_red:
         print(f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.")
     # `times` carried through, not dropped. Re-wrapping the report without them
     # is what made the cheap prefix silently learn nothing: the run measured
     # every test and the number reached `Killers` as an empty dict.
-    return Report(collected, report.baseline_red, widened=True, times=report.times)
+    return Report(collected, report.baseline_red, widened=report.widened, times=report.times)
 
 
 def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
@@ -1975,7 +2001,7 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
     the table and a future shard set may want it again -- and because dropping
     it would make this function's *name* the only thing tying it to the run.
     """
-    shards = baseline_shards()
+    shards = baseline_shards(table)
     # The same sizing `run` does, so the question is asked under the conditions
     # the sweep will ask it under -- which is the whole point of asking early.
     wanted = args.workers if args.workers is not None else _affordable()

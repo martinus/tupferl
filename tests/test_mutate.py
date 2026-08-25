@@ -18,6 +18,7 @@ else in this project's testing story is downstream of the harness being honest.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -65,8 +66,20 @@ UNWATCHED = UNKNOWN_KEY_GUARD._replace(
 class TestTheHarnessAnswersBothWays(unittest.TestCase):
     """The whole loop: copy the tree, apply the edit, run a suite, classify."""
 
+    #: `walk=False` throughout this class, and it is not a shortcut. What these
+    #: assert is the *classification* -- caught, survived, and the tree left
+    #: alone -- which `tests/test_verdict.py` covers the walk of separately. With
+    #: it on, `UNWATCHED` is a survivor by construction, so it runs the whole
+    #: suite before it can be called one: three of these tests went from seconds
+    #: to about two minutes each, and the baseline from one small shard to
+    #: another whole-suite run. That is the design working as intended on a
+    #: sweep and pure cost inside the harness's own tests.
+    WALK = False
+
     def test_a_deliberate_bug_is_caught(self) -> None:
-        report = mutate.run([UNKNOWN_KEY_GUARD], baseline=True, workers=1, summarise=False)
+        report = mutate.run(
+            [UNKNOWN_KEY_GUARD], baseline=True, workers=1, summarise=False, walk=self.WALK
+        )
         self.assertFalse(report.baseline_red, "the untouched tree is not green")
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
 
@@ -74,9 +87,23 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """The other answer. Without this, `test_a_deliberate_bug_is_caught`
         passes just as well against a harness hard-wired to say `caught` -- the
         assertion that passes against its own mutation, from CLAUDE.md §2."""
+        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK)
+        self.assertFalse(report.baseline_red)
+        self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
+        self.assertFalse(report.widened, "a report that did not walk claimed it had")
+
+    def test_a_survivor_that_walked_has_run_everything(self) -> None:
+        """The same row with the walk on, which is the shape a real sweep runs.
+
+        Kept to one test because it is the expensive one: nothing notices, so
+        the walk goes through every module before the row can be called a
+        survivor. That is the whole-suite run the confirmation pass used to make
+        afterwards, now made once instead of twice.
+        """
         report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
         self.assertFalse(report.baseline_red)
         self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
+        self.assertTrue(report.widened)
 
     def test_the_working_tree_is_untouched(self) -> None:
         """CLAUDE.md §6: the harness must never edit the tree it is run from.
@@ -87,7 +114,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """
         where = Path(UNKNOWN_KEY_GUARD.path)
         before = where.read_bytes()
-        mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False)
+        mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, walk=self.WALK)
         self.assertEqual(before, where.read_bytes())
 
 
@@ -604,7 +631,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
     """
 
     def test_a_run_measures_the_tests_it_ran(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
         times = found.times or {}
         self.assertTrue(times, "the run recorded no test timings at all")
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
@@ -615,7 +642,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         self.assertTrue(all(seconds >= 0 for seconds in times.values()))
 
     def test_they_reach_the_cache(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
         cache = mutate.Killers(None)
         cache.learn(found)
         self.assertEqual(found.times or {}, cache.cost)
@@ -917,6 +944,87 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
             spec = self.spec(Path(name), *self.SURVIVES)
             with mock.patch.object(mutate, "_attempt", lambda *a, **k: survived):
                 self.assertEqual(1, mutate.main([str(spec), "--no-baseline"]))
+
+
+class TestASweepRecordsAsItGoes(unittest.TestCase):
+    """`sweep` persists after every file, and that write happens *inside* the
+    run it is reporting on.
+
+    Which makes it the one place where reading the run's own report is a
+    `NameError` rather than a wrong value: `finished` is called by
+    `_run_generated` while `report = _run_generated(...)` is still evaluating,
+    so the name it would bind is not bound yet. Written after exactly that was
+    introduced here and caught by inspection rather than by this suite -- no
+    test drove `--batch` at all, so the mid-run write had no guard.
+
+    `_run_generated` is stubbed so the callback fires without a real sweep;
+    what is under test is the bookkeeping around it, not the mutating.
+    """
+
+    def sweep(self, box: Path) -> mutate.Report:
+        one = row(path="tests/profiles.py", old='{"mutation": (3, 4)}', new='{"mutation": (0, 0)}')
+        answered = mutate.Result(one, mutate.Verdict("caught", "t"))
+        midway: list[dict[str, Any]] = []
+
+        # `landed=` by its real name, not `**kwargs`. Written as `landed_cb`
+        # first: `sweep` calls `_run_generated(rows, args, landed=finished)`, so
+        # the callback fell into `**kw` and never fired, and both tests below
+        # passed against the very `NameError` they exist to catch. The assert
+        # after the call is what makes that impossible to repeat.
+        fired: list[bool] = []
+
+        def straight_through(rows: Any, args: Any, landed: Any = None) -> Any:
+            assert landed is not None, "sweep stopped passing a callback"
+            fired.append(True)
+            landed(answered)
+            # Read *here*, before returning. The write `landed` triggers is
+            # overwritten by the one after the run, so a test that reads the file
+            # afterwards is asserting on different bytes -- which is why the
+            # mid-run flag survived its own deletion when this read at the end.
+            # These are the bytes a sweep killed mid-run leaves behind, and the
+            # ones `tools/reached.py` would explain.
+            midway.append(json.loads(args.json.read_text(encoding="utf-8")))
+            return mutate.Report([answered], widened=True)
+
+        args = argparse.Namespace(
+            json=box / "out.json",
+            workers=1,
+            timeout=60.0,
+            memory=0,
+            each_test=1.0,
+            no_baseline=True,
+            batch=1,
+            all=False,
+            limit=None,
+        )
+        with mock.patch.object(mutate, "_run_generated", straight_through), support.quiet():
+            done = mutate.sweep([one], args)
+        self.assertEqual([True], fired, "the mid-run callback never ran")
+        self.midway = midway[0]
+        return done
+
+    def test_the_mid_run_write_does_not_reach_for_the_run_s_own_report(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tupferl-sweep-") as name:
+            box = Path(name)
+            report = self.sweep(box)
+            self.assertTrue((box / "out.json").is_file(), "the sweep recorded nothing")
+            self.assertTrue(report.widened, "a swept report dropped the guarantee")
+
+    def test_what_it_wrote_claims_the_guarantee(self) -> None:
+        """The durable half, asserted on both writes.
+
+        `tools/reached.py` reads this file back and prints a caveat about
+        survivors nobody widened, so a `false` here is a claim about the rows
+        that outlives the run -- and the mid-run file is the one a sweep killed
+        by the machine leaves behind, which is the case the per-file recording
+        exists for.
+        """
+        with tempfile.TemporaryDirectory(prefix="tupferl-sweep-") as name:
+            box = Path(name)
+            self.sweep(box)
+            self.assertTrue(self.midway["widened"], f"the mid-run write: {self.midway}")
+            written = json.loads((box / "out.json").read_text(encoding="utf-8"))
+            self.assertTrue(written["widened"], written)
 
 
 class TestASpecFileWithNothingInIt(unittest.TestCase):
