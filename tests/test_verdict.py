@@ -258,26 +258,46 @@ class TestABrokenModuleTakesTwoDifferentPaths(Probe):
     because it is the only thing a caller needs to be true.
     """
 
-    #: The three ways a module can fail to give up its tests, and the marker
-    #: each leaves behind. Written as a table because the point is that all
-    #: three behave the same way in the one respect that counts.
+    #: The three ways a module can fail to give up its tests, and whether a
+    #: *named* load still reaches `loader.errors` for it. Discovery reaches it
+    #: for all three, so that column is not stored.
+    #:
+    #: This is the docstring's table as data. Storing the expected value rather
+    #: than branching on the observed one is the difference between a test that
+    #: pins six cells and a test that agrees with whatever happened -- the first
+    #: draft did the latter, and would have passed against a `verdict.py` where
+    #: *every* case escaped to `main`.
     BROKEN = (
-        ("a missing import", "import a_module_that_does_not_exist_xyz\n"),
-        ("a syntax error", "this is not python at all !!!\n"),
-        ("a module that exits", "raise SystemExit('gone')\n"),
+        ("a missing import", "import a_module_that_does_not_exist_xyz\n", True),
+        ("a syntax error", "this is not python at all !!!\n", False),
+        ("a module that exits", "raise SystemExit('gone')\n", False),
     )
 
     def test_no_broken_module_is_ever_credited_as_a_test_noticing(self) -> None:
-        for what, body in self.BROKEN:
+        """The invariant first, unconditionally, then the cell.
+
+        `.get(..., [])` rather than `[...]`: a report that did not load carries
+        no `noticed` key at all, and the point of asserting it anyway is that
+        this line holds for all six cells rather than for the four that happen
+        to have the key.
+        """
+        for what, body, loads_when_named in self.BROKEN:
             for named in (True, False):
                 with self.subTest(what=what, named=named):
                     self.fresh()
                     self.module("test_a", body)
                     found = self.verdict("test_a") if named else self.verdict()
+
+                    self.assertEqual([], found.get("noticed", []), "a broken module was credited")
+                    self.assertEqual([], found.get("killers", []))
+                    self.assertEqual(0, found.get("ran", 0))
+
+                    self.assertEqual(
+                        loads_when_named if named else True,
+                        found["loaded"],
+                        f"{what} took the other path",
+                    )
                     if found["loaded"]:
-                        self.assertEqual(0, found["ran"])
-                        self.assertEqual([], found["noticed"])
-                        self.assertEqual([], found["killers"])
                         self.assertTrue(found["broke"])
                     else:
                         # The tool said so rather than leaving an absent file,
