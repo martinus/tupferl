@@ -70,6 +70,33 @@ SLEPT = 0.2
 BOUND = 20
 
 
+def enforced() -> bool:
+    """Whether this kernel actually *applies* `RLIMIT_AS`, asked by trying it.
+
+    macOS largely does not -- `tools/verdict.py`'s own docstring records that CI
+    discovered this rather than the documentation -- and CI has a macOS leg. A
+    test that allocates until the cap stops it would there allocate until the
+    subprocess timeout instead and go red for the platform rather than for the
+    code.
+
+    Asked by trying rather than by reading `sys.platform`, so the guarantee is
+    tested wherever it really holds and skipped where it does not. Only the one
+    test that relies on the *consequence* needs this; the arithmetic tests read
+    `getrlimit` back, which works everywhere.
+    """
+    probe = (
+        "import resource\n"
+        "resource.setrlimit(resource.RLIMIT_AS, (64 << 20, resource.RLIM_INFINITY))\n"
+        "bytearray(256 << 20)\n"
+    )
+    return (
+        subprocess.run(
+            [sys.executable, "-B", "-c", probe], capture_output=True, timeout=30
+        ).returncode
+        != 0
+    )
+
+
 class Probe(unittest.TestCase):
     """A sandbox of throwaway test modules, and one run of the tool over them."""
 
@@ -445,9 +472,25 @@ class TestACarrierThatDidNotAssert(Probe):
         self.assertEqual([], found["noticed"], "a hung subTest was credited with an answer")
         self.assertEqual(1, len(found["broke"]))
 
+    @unittest.skipUnless(enforced(), "this kernel does not apply RLIMIT_AS")
     def test_a_test_that_exhausts_the_cap_is_broken_not_caught(self) -> None:
         """`cap` bounds address space, and a `MemoryError` raised inside a test
-        arrives at `addError` looking exactly like an assertion."""
+        arrives at `addError` looking exactly like an assertion.
+
+        The one test here that needs the limit *enforced* rather than merely
+        set, so it is the one that is gated -- see `enforced`. Skipped rather
+        than dropped: it is the whole argument for `cap` existing, and it holds
+        on Linux, which is where the crash that prompted `cap` happened.
+        """
+        # A *bounded* allocation, and the bound is what makes this row
+        # catchable rather than fatal. `while True` reads better and, with the
+        # cap mutated away, walks the lane past its whole memory share in about
+        # twenty seconds -- measured: the session was killed, and a killed
+        # session says nothing about any mutation. 100 chunks of 8 MiB is 800
+        # MiB: it trips a 512 MiB cap after roughly sixty-four of them, and
+        # when there is no cap it simply ends, leaving `broke` empty and this
+        # test red. So the mutant that disables `cap` fails here instead of
+        # taking the run with it.
         self.module(
             "test_a",
             """
@@ -455,7 +498,7 @@ class TestACarrierThatDidNotAssert(Probe):
             class T(unittest.TestCase):
                 def test_it(self):
                     held = []
-                    while True:
+                    for _ in range(100):
                         held.append(bytearray(8 * 1024 * 1024))
             """,
         )
@@ -599,7 +642,7 @@ class TestWhichTestsGetRun(Probe):
             import unittest
             class T(unittest.TestCase):
                 def test_it(self):
-                    self.fail("the remembered killer")
+                    self.fail("the rest of the suite")
             """,
         )
         self.module(
@@ -608,12 +651,17 @@ class TestWhichTestsGetRun(Probe):
             import unittest
             class T(unittest.TestCase):
                 def test_it(self):
-                    self.fail("the rest of the suite")
+                    self.fail("the remembered killer")
             """,
         )
-        found = self.verdict(failfast=True, first="test_a.T.test_it")
+        # `test_b`, not `test_a`. The prefix has to name something discovery
+        # would reach *second*, or prepending and appending give the same
+        # failfast answer and the ordering is unobservable -- measured:
+        # building the suite as [chosen, first] instead of [first, chosen]
+        # leaves the whole selection green when the prefix is `test_a`.
+        found = self.verdict(failfast=True, first="test_b.T.test_it")
         self.assertEqual(1, found["ran"])
-        self.assertEqual(["test_a.T.test_it"], found["killers"])
+        self.assertEqual(["test_b.T.test_it"], found["killers"])
 
     def test_failfast_stops_at_the_first_test_that_noticed(self) -> None:
         self.module(
@@ -676,9 +724,12 @@ class TestTheMemoryCapsArithmetic(Probe):
     """`cap`'s four cases, asserted on the rlimit it sets rather than on a
     runaway allocation dying.
 
-    The existing coverage of `cap` is by *consequence* -- `test_mutate.py`'s
-    `TestAMutantThatEatsMemory` allocates until something stops it. That can
-    only be slow or fatal, and it is why two mutants here came back `BROKE`
+    The existing coverage of `cap` is by *consequence*: something allocates
+    until the cap stops it. (woswoar has a `TestAMutantThatEatsMemory` for this;
+    an earlier draft of this docstring said *this* project did too, and it does
+    not -- nothing in `tests/` mentions `RLIMIT` at all outside this class.)
+    Consequence can only be slow or fatal, and it is why two mutants here
+    came back `BROKE`
     rather than `caught`: `==` becoming `!=` at the `hard` comparison, and `and`
     becoming `or` at the `soft` one, both leave *no cap in force*, so the
     memory-eating test is unbounded and the harness's alarm speaks first.
@@ -694,11 +745,29 @@ class TestTheMemoryCapsArithmetic(Probe):
     ASKED = 2 << 30
 
     def limits(self, limit: int, soft: int | None = None, hard: int | None = None) -> int:
-        """`RLIMIT_AS`'s soft limit after `cap(limit)`, from a child that
-        optionally starts with one already in force."""
-        setup = ""
+        """`RLIMIT_AS`'s soft limit after `cap(limit)`, from a child that starts
+        from a known state.
+
+        **The child clears any inherited cap first, and that is load-bearing.**
+        `verdict.main` calls `cap` before the suite loads, so *during a sweep*
+        the process running these tests already holds a finite `RLIMIT_AS` --
+        `mutate.MEMORY` is 4 GiB. Without the reset, `limits(0)` reads that back
+        instead of `RLIM_INFINITY` and `test_zero_is_no_cap` fails on an
+        unmutated tree: every row of a `tools/verdict.py` sweep then prints
+        `caught` for a reason that has nothing to do with the mutation, and the
+        baseline run voids the lot. Green under a plain `python -m unittest` and
+        red under the harness is the worst shape a test in this file can have.
+
+        The raise is permitted because `cap` never lowers `hard` -- it passes
+        the existing one straight back to `setrlimit` -- so the ceiling this is
+        restoring to is still there.
+        """
+        setup = (
+            "hard = resource.getrlimit(resource.RLIMIT_AS)[1]\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (resource.RLIM_INFINITY, hard))\n"
+        )
         if soft is not None:
-            setup = f"resource.setrlimit(resource.RLIMIT_AS, ({soft}, {hard}))\n"
+            setup += f"resource.setrlimit(resource.RLIMIT_AS, ({soft}, {hard}))\n"
         code = (
             "import resource, sys\n"
             f"sys.path.insert(0, {str(ROOT)!r})\n"
@@ -733,17 +802,19 @@ class TestTheMemoryCapsArithmetic(Probe):
         """`min(limit, hard)`. A process already bounded *above* what is asked
         must still come down to what is asked.
 
-        This is the reachable half of that line. The other half -- `hard ==
-        RLIM_INFINITY` read as `!=` -- is an **equivalent mutant**, and the
-        first draft of this test tried to kill it with a fixture POSIX does not
-        permit (`soft` above `hard`, which `setrlimit` refuses outright). Worked
-        through: `soft <= hard` always, so when `hard` is infinite both spellings
-        give `limit`; when `hard` is finite and `limit <= hard` both give
-        `limit`; and when `limit > hard` the original clamps to `hard` and then
-        skips because `soft <= ceiling`, while the mutant asks for `limit`, is
-        refused with `ValueError`, and is swallowed by the `except`. Every
-        reachable state ends with the same rlimit, so no honest fixture can tell
-        them apart and none is invented here.
+        An earlier draft of this docstring argued at length that `hard ==
+        RLIM_INFINITY` read as `!=` is an equivalent mutant. **That was wrong,
+        and the sweep had already said so** -- it reports that row `caught`.
+        `resource.RLIM_INFINITY` is `-1`, not a large number, so with the
+        comparison inverted an infinite `hard` gives `min(limit, -1) == -1` and
+        the process is left *uncapped*. The argument assumed infinity sorted
+        above every finite limit; the constant is a sentinel, and reading it as
+        an ordinary value is how the whole paragraph went wrong.
+
+        The genuinely equivalent one on this pair is `soft <= ceiling` read as
+        `soft < ceiling` at the line below, which the sweep does report
+        SURVIVED: it changes the answer only when `soft` is exactly `ceiling`,
+        and setting a limit to the value it already holds is a no-op either way.
         """
         hard = self.ASKED * 2
         self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=hard, hard=hard))

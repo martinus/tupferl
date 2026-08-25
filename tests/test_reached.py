@@ -1,11 +1,16 @@
 """Tests for the survivor partition.
 
-Ported from `martinus/woswoar` (Apache-2.0) essentially unchanged, because
-`tools/reached.py` was: the two copies differ by three docstring paragraphs and
-one `--source=` in an epilog, and this module imports nothing but the standard
-library and the tool. Issue #4 predicted a rewrite; for this file and
-`test_watch.py` it was a copy, and the reason is worth keeping in mind for the
-next port -- a tool nobody has had to change carries its tests across intact.
+Ported from `martinus/woswoar` (Apache-2.0), and it *ran* unchanged, because
+`tools/reached.py` had barely changed: the two copies differ only in docstrings
+and one `--source=` in an epilog, and this module imports nothing but the
+standard library and the tool. Issue #4 predicted a rewrite; for this file and
+`test_watch.py` the port itself was a copy, which is worth keeping in mind for
+the next one -- a tool nobody has had to change carries its tests across intact.
+
+It has since been *added to* here: two tests below, and a `BOUND` the woswoar
+copy had no need of. "Ran unchanged" and "is unchanged" are different claims
+and this file has made both true at different times, which is precisely the
+rot §0 is about.
 
 Issue numbers spelled `woswoar#123` index that repository's issues, not this
 one's. A bare number here would read as a tupferl issue and eventually point at
@@ -35,6 +40,16 @@ from pathlib import Path
 from typing import Any
 
 from tools import reached
+
+#: Seconds one driven `tools/reached.py` run may take before a test calls it
+#: hung. Below `tools/mutate.py`'s 30s per-test alarm, for the reason
+#: `tests/test_watch.py`'s constant of the same name gives: a bound at or above
+#: the harness's loses the race and the row is filed `BROKE`, which is never
+#: `caught`. These were 60 -- the same mistake this branch fixed three times
+#: elsewhere, left standing in the one new file that had no constant for it.
+#: The practical risk here is low (`reached.py` has no loops at all), which is
+#: exactly why it was missed.
+BOUND = 20
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -204,7 +219,7 @@ class TestTheCommandLine(unittest.TestCase):
                 cwd=REPO_ROOT,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=BOUND,
             )
 
     def counts(self, out: str) -> dict[str, int]:
@@ -390,7 +405,7 @@ class TestTheCommandLine(unittest.TestCase):
                 cwd=REPO_ROOT,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=BOUND,
             )
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("cannot read the inputs", done.stderr + done.stdout)

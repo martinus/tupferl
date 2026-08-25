@@ -1017,10 +1017,16 @@ def _budget() -> int:
 
     **It is an environment variable and not a flag**, which this docstring and
     the line `_why` prints both called `--budget` until someone typed that and
-    got "unrecognized arguments". An environment variable rather than a flag on
-    purpose: `_run` passes it down to every lane (see `_BUDGET`), so a nested
-    harness inherits the same ceiling, and a flag would have to be re-threaded
-    through each level to do the same job.
+    got "unrecognized arguments".
+
+    A first attempt at explaining *why* it is a variable said `_run` passes it
+    down so a nested harness inherits the same ceiling. That is wrong twice
+    over: `_run` passes `_BUDGET`, not this, and `_TOTAL` short-circuits
+    `_visible_memory` outright -- so a nested harness that inherited it would
+    size itself for the **outer** total and ignore exactly the per-lane share
+    `_BUDGET` exists to impose. The honest reason is smaller: it is a knob for
+    the operator of the machine rather than for one invocation, and it is read
+    in one place.
     """
     said = os.environ.get(_TOTAL, "")
     if said.isdigit() and int(said) > 0:

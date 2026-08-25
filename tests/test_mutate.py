@@ -963,7 +963,6 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
             # against the thing it describes, or it guards the wrong name just
             # as firmly as the right one.
             self.assertEqual(mutate._TOTAL, mutate._why())
-            self.assertIn(mutate._TOTAL, mutate._why())
 
 
 class TestReadingACgroupLimit(unittest.TestCase):

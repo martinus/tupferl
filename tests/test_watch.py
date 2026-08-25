@@ -1,9 +1,14 @@
 """`tools/watch.py`: the three answers, and the two ways they were got wrong.
 
-Ported from `martinus/woswoar` (Apache-2.0) unchanged, because `tools/watch.py`
-is unchanged: the two copies differ by one docstring paragraph and nothing else.
-This module imports only the standard library and the tool, so nothing here was
-adapted -- see `tests/test_reached.py` for why that was worth recording.
+Ported from `martinus/woswoar` (Apache-2.0) and it *ran* unchanged, because
+`tools/watch.py` is unchanged: the two copies differ in their docstrings and
+nothing else. This module imports only the standard library and the tool, so
+nothing had to be adapted -- see `tests/test_reached.py` for why that was worth
+recording.
+
+Three timeouts have since been changed here and a `BOUND` added; see
+`TheCommandLine.ran`. So this is no longer a verbatim copy, and saying it was
+would be the stale claim §0 warns about.
 
 Issue numbers spelled `woswoar#123` index that repository's issues, not this
 one's. A bare number here would read as a tupferl issue and eventually point at

@@ -16,7 +16,7 @@ Ported from `martinus/woswoar` (Apache-2.0). Unlike `test_reached.py` and
 `test_watch.py`, this one really did need adapting, which is the half of issue
 #4's warning that held up: `tools/mutants.py` differs by 150 lines, the module
 paths in every fixture had to be renamed, `support.git` takes its environment
-explicitly here, and **four assertions name real modules** -- the sibling match,
+explicitly here, and **five assertions name real modules** -- the sibling match,
 the index-not-short-circuited pair, the helper closure, and the synthetic
 package `__init__`. Those four were re-pointed at this project's layout rather
 than renamed, and each is noted where it sits. Everything else was mechanical.
@@ -431,7 +431,8 @@ class TestDroppingAKeywordArgument(unittest.TestCase):
 
     The number is woswoar's and is labelled as such. It read "281 in `tupferl/`"
     after the port, which was woswoar's figure with the package renamed; counted
-    by AST, this package has 150.
+    by AST, this package has 149 that `_DROPPABLE` could reach (150 nodes,
+    one of which is a `**kwargs` and so not droppable).
     """
 
     def dropped(self, body: str) -> list[str]:
@@ -806,7 +807,7 @@ class TestChoosingTheTests(unittest.TestCase):
 
     def test_siblings_of_the_name_match(self) -> None:
         """`sync.py` here, where woswoar's copy used `importer.py`: one of the
-        four assertions in this file that name real modules, so they had to be
+        five assertions in this file that name real modules, so they had to be
         re-pointed rather than renamed."""
         self.assertLessEqual(
             {"tests.test_sync_cli", "tests.test_sync_commits"},
@@ -817,7 +818,7 @@ class TestChoosingTheTests(unittest.TestCase):
         """`tupferl/copies.py` has no `test_copies.py`; `tests/test_sync.py`
         imports it. A name heuristic alone would report it as untested.
 
-        A fifth assertion naming a real module, past the four the header lists.
+        The fifth of the five the header counts, and the one added last.
         woswoar's line said `gitrepo.py`, and the rename made that false here --
         `tests/test_gitrepo.py` exists, so the assertion still passed while the
         case it is named for went unexercised. `copies.py` is this project's
@@ -956,7 +957,7 @@ class TestReadingARealDiff(unittest.TestCase):
         self.assertEqual(mutants.changed_lines("main", self.root), {})
 
 
-class TestTheseFunctionsTerminate(unittest.TestCase):
+class TestABoundedCallStillReturns(unittest.TestCase):
     """Two pure functions that a one-line mutation turns into infinite loops.
 
     Everything else in this module is pure and sub-millisecond, and that is its
@@ -981,6 +982,14 @@ class TestTheseFunctionsTerminate(unittest.TestCase):
     mutant against this selection. The test below is still correct and still the
     right shape -- it simply cannot be reached in the one run where it would
     matter, which is the harness-inside-the-harness limit issue #4 named.
+
+    **The name buys the ordering.** `unittest` takes classes in `dir(module)`
+    order, which is alphabetical, so this sorts before `TestCappingTheTable` --
+    which calls `cap` in-process with no bound and, under the mutants that stop
+    its loop terminating, hangs. With `failfast` (which every mutant run uses)
+    the bounded call here fails first and the run ends before the unbounded one
+    is reached. Measured: six of `TestCappingTheTable`'s eight tests never
+    return under `len(kept) <= limit`.
     """
 
     #: Above the fraction of a second an honest call takes, and far below
@@ -1090,6 +1099,25 @@ class TestCappingTheTable(unittest.TestCase):
         taken = sorted(collections.Counter(row.path for row in kept).values())
         self.assertEqual([1, 2, 2], taken)
 
+    def test_a_file_running_dry_does_not_end_the_round(self) -> None:
+        """`any(queues.values())`, which every other fixture here leaves
+        unguarded because they all hold the *same* number of rows per file --
+        CLAUDE.md §2's "two symmetric inputs", in its local spelling. With
+        `all`, the loop stops the moment the smallest file drains:
+
+        | | kept | dropped |
+        |---|---|---|
+        | `any` | 5 | 6 |
+        | `all` | 2 | 9 |
+
+        so `--limit 5` would quietly sweep two rows and report the right count
+        for the wrong table.
+        """
+        rows = self.rows("tupferl/a.py", 1) + self.rows("tupferl/b.py", 10)
+        kept, dropped = mutants.cap(rows, 5)
+        self.assertEqual(5, len(kept), "the round ended when the first file ran dry")
+        self.assertEqual(6, len(dropped))
+
     def test_the_visiting_order_does_not_depend_on_the_input_order(self) -> None:
         """`sorted(queues)`. A dict preserves insertion order, so without the
         sort the file that happened to appear first would be favoured -- and two
@@ -1098,6 +1126,15 @@ class TestCappingTheTable(unittest.TestCase):
         forward = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 4)]
         backward = [row for name in "cba" for row in self.rows(f"tupferl/{name}.py", 4)]
         self.assertEqual(mutants.cap(forward, 4)[0], mutants.cap(backward, 4)[0])
+
+        # And *which* order, not merely that the two agree. `sorted(queues,
+        # reverse=True)` is a mutant the `order` operator really generates, and
+        # it is just as input-independent as the right answer -- so the
+        # assertion above holds against it. With a limit of 2 the round-robin
+        # takes one row each from the first two files it visits, and which two
+        # those are is the whole question.
+        kept, _ = mutants.cap(forward, 2)
+        self.assertEqual(["tupferl/a.py", "tupferl/b.py"], [row.path for row in kept])
 
     def test_what_is_kept_comes_back_in_file_and_span_order(self) -> None:
         """`kept.sort(key=(path, span or (0, 0)))`. The round-robin builds the
