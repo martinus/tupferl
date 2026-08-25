@@ -229,8 +229,12 @@ class TestAnOverlayWithNoSharedCopy(support.TwoMachines):
     def setUp(self) -> None:
         super().setUp()
         self.first.write(".vimrc", "set number\n")
+        # No sync here: `add` writes *and commits* the overlay and the snapshot,
+        # so neither test below reads anything a sync would leave behind, and
+        # neither asserts about the remote. Measured, interleaved, two runs
+        # each: 0.272s per setUp with it, 0.217s without -- ~55ms x 2 tests,
+        # paid again for every mutant in a sweep.
         self.assertEqual(0, self.first.call("add", "--host", str(self.first.home / ".vimrc")))
-        self.assertEqual(0, self.first.call("sync"))
         self.assertFalse(self.first.stored(".vimrc").exists(), "the fixture stored it as shared")
 
     def test_it_says_nothing_else_manages_the_file(self) -> None:

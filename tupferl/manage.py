@@ -259,7 +259,7 @@ def count(many: int) -> str:
     return "1 file" if many == 1 else f"{many} files"
 
 
-def remove(wanted: str, from_host: bool = False) -> int:
+def remove(wanted: str, from_host: bool) -> int:
     """Stop managing a file, leaving it in `$HOME`.
 
     Without `--host`, removes it from the shared tree *and* this host's overlay
@@ -295,11 +295,15 @@ def remove(wanted: str, from_host: bool = False) -> int:
         ) from None
 
     tree, overlay = manifest.roots(repo, host)
-    gone = [
-        where / name
-        for where in ([overlay] if from_host else [tree, overlay])
-        if (where / name).is_file()
-    ]
+    # Read before the unlink loop below, which is where it *reads* correctly
+    # rather than where it matters: the loop touches only paths under the trees
+    # it was given, and `prune` stops at `repo`, so nothing it can delete is an
+    # ancestor of `tree / name`. Measured -- either placement gives the same
+    # answer in both branches.
+    shared = (tree / name).is_file()
+
+    searched = [overlay] if from_host else [tree, overlay]
+    gone = [where / name for where in searched if (where / name).is_file()]
     if not gone:
         raise TupferlError(
             f"{name} is not in {host}'s overlay; `tupferl list` marks the files that are."
@@ -312,10 +316,7 @@ def remove(wanted: str, from_host: bool = False) -> int:
 
     what = "remove overlay" if from_host else "remove"
     record(repo, gone, describe(what, [name], host), "the removal")
-    # Asked after the unlink, which matters only in the branch that does not
-    # reach it: without `--host` the shared copy has just been deleted, so this
-    # would be false for a file that had one.
-    print(said(name, home, host, from_host, shared=(tree / name).is_file()))
+    print(said(name, home, host, from_host, shared))
     return 0
 
 
