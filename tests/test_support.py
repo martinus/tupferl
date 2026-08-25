@@ -377,5 +377,105 @@ class TestATreeThatWillNotGo(unittest.TestCase):
         self.assertFalse(root.exists())
 
 
+class TestTheTwoMachineTemplate(unittest.TestCase):
+    """#19's fixture: copies of one tree that must not be able to see each other.
+
+    The saving is real -- 4.3 ms against 120.4 ms per test, and a measured
+    median of 19.5 s off the six affected modules run serially -- but it trades
+    a fresh build for a shared origin, and the failure that trade can produce is
+    the worst kind: two tests quietly sharing a remote, so one sees another's
+    commits and the pair pass or fail depending on the order they ran in.
+    That is what this class is for.
+    """
+
+    def copy(self) -> tuple[support.Computer, support.Computer, Path]:
+        box = tempfile.TemporaryDirectory(prefix="tupferl-copies-")
+        self.addCleanup(support.discard, box)
+        return support.two_machines(Path(box.name))
+
+    def test_two_copies_do_not_share_a_remote(self) -> None:
+        """The contamination test, and it is driven rather than asserted from
+        the config: one copy syncs a change, and the other must not see it.
+
+        A URL comparison alone would pass against two paths that differ in text
+        and resolve to the same directory.
+        """
+        first, _, here = self.copy()
+        other_first, other_second, there = self.copy()
+        self.assertNotEqual(here, there)
+
+        first.write(".bashrc", "CHANGED ON THE FIRST COPY\n")
+        self.assertEqual(0, first.call("sync"))
+
+        self.assertEqual(0, other_second.call("init", str(there)))
+        self.assertNotIn("CHANGED ON THE FIRST COPY", other_second.read(".bashrc"))
+        self.assertEqual(support.STARTS_AS, other_first.read(".bashrc"))
+
+    def test_the_copy_points_at_its_own_remote(self) -> None:
+        """The mechanism behind the test above. Left unrewritten, every copy's
+        `origin` is the template's remote."""
+        first, _, remote = self.copy()
+        url = support.git(["remote", "get-url", "origin"], cwd=first.repo, env=first.env)
+        self.assertEqual(str(remote), url)
+        self.assertFalse(Path(url).is_relative_to(support.template()))
+
+    def test_no_stale_fetch_head_survives_the_copy(self) -> None:
+        """It records the URL of the last fetch, which in a copy is the
+        template's. Nothing reads it -- `sync` merges `<remote>/<branch>` -- so
+        this is a lie removed rather than a bug fixed, and the test says which."""
+        first, _, _ = self.copy()
+        self.assertFalse((first.repo / ".git" / "FETCH_HEAD").exists())
+
+    def test_nothing_in_a_copy_still_names_the_template(self) -> None:
+        """The general form of the two tests above, so a *third* file that
+        learns to hold an absolute path is caught rather than waited for.
+
+        This is how the two were found in the first place: grep the built tree
+        for its own root.
+        """
+        _, _, remote = self.copy()
+        root = str(support.template())
+        named = []
+        for path in remote.parent.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(errors="ignore")
+            except OSError:  # pragma: no cover - a fifo or a socket, neither present
+                continue
+            if root in text:
+                named.append(str(path.relative_to(remote.parent)))
+        self.assertEqual([], named)
+
+    def test_the_template_is_built_once(self) -> None:
+        """Per *process*, not per class -- 40 classes inherit the fixture, so
+        per class would be 40 builds. Asked of the cache rather than timed,
+        because a timing assertion here would be a flake."""
+        support.template()
+        before = support.template.cache_info()
+        support.template()
+        support.template()
+        after = support.template.cache_info()
+        self.assertEqual(before.misses, after.misses)
+        self.assertEqual(before.hits + 2, after.hits)
+
+    def test_a_copy_starts_where_a_built_one_did(self) -> None:
+        """The equivalence the whole change rests on: what `setUp` used to build
+        by running `init`, `add` and `sync` is what a copy now holds.
+
+        Asserted through the tool rather than by comparing trees -- commit
+        hashes and timestamps differ between a build and a copy and always will,
+        and none of that is what a test using this fixture depends on.
+        """
+        first, second, remote = self.copy()
+        self.assertEqual(support.STARTS_AS, first.read(".bashrc"))
+        status, said = first.say("status")
+        self.assertEqual(0, status, said)
+        self.assertIn("1 file managed, 0 to change, 0 in conflict", said)
+        # And the remote really holds it: the second machine can be brought up.
+        self.assertEqual(0, second.call("init", str(remote)))
+        self.assertEqual(support.STARTS_AS, second.read(".bashrc"))
+
+
 if __name__ == "__main__":
     unittest.main()

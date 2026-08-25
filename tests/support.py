@@ -23,6 +23,7 @@ working agreements; here the branch is written down instead.
 
 from __future__ import annotations
 
+import atexit
 import io
 import os
 import pty
@@ -35,6 +36,7 @@ import termios
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -709,7 +711,11 @@ class Computer:
     def __init__(self, root: Path, name: str) -> None:
         self.name = name
         self.home = root / name
-        self.home.mkdir(parents=True)
+        # `exist_ok`, so this also *adopts* a home that `two_machines` copied
+        # from the template. `seed_home` then rewrites `.gitconfig` with the
+        # bytes it already holds, which is a no-op worth paying to keep one
+        # constructor rather than two.
+        self.home.mkdir(parents=True, exist_ok=True)
         seed_home(self.home, name)
         self.env = sandbox_env(self.home, name)
         # Asked of `tupferl.paths` under this machine's environment rather than
@@ -770,6 +776,75 @@ class Computer:
         return paths.snapshot_dir(self.repo, self.name) / name
 
 
+#: What `.bashrc` starts as on both machines. Here rather than inside the
+#: fixture because the template is built once and `TwoMachines` no longer writes
+#: it -- a test that wants to know what it began as reads this.
+STARTS_AS = "one\ntwo\nthree\nfour\nfive\n"
+
+
+@lru_cache(maxsize=1)
+def template() -> Path:
+    """The two-machine tree, built once per process and never handed out.
+
+    #19. `TwoMachines.setUp` built this from scratch for every test: a real
+    `init`, `add` and `sync`, which is **146 of the suite's tests** across 40
+    classes. Measured on an idle machine, seven builds each:
+
+    | | median |
+    |---|---|
+    | build from scratch | 120.4 ms |
+    | `copytree` of a built one | 4.3 ms |
+
+    -- so about 17 seconds of a serial run went on constructing the same two
+    repositories over and over, and every mutant in a sweep paid it again.
+
+    **Once per process, not once per class.** Per class would be 40 builds; the
+    tree is only ever read from here, so one is enough. `two_machines` copies it
+    and nothing else ever touches it -- a test that mutated the template would
+    poison every later test in the process, which is why this returns a path
+    that only that function knows how to use.
+
+    The `Computer` objects built here are deliberately discarded: their
+    environments point *inside the template*, and one escaping would be a test
+    writing where the copies come from.
+    """
+    box = tempfile.TemporaryDirectory(prefix="tupferl-template-")
+    atexit.register(discard, box)
+    root = Path(box.name)
+    first = Computer(root, "machine-a")
+    Computer(root, "machine-b")
+    remote = make_remote(root / "remote.git", first.env)
+    first.write(".bashrc", STARTS_AS)
+    assert first.call("init", str(remote)) == 0, "the template's init failed"
+    assert first.call("add", str(first.home / ".bashrc")) == 0, "the template's add failed"
+    assert first.call("sync") == 0, "the template's sync failed"
+    return root
+
+
+def two_machines(into: Path) -> tuple[Computer, Computer, Path]:
+    """A copy of `template()` at `into`: two machines and their bare remote.
+
+    Two things in the copy still name the tree it came from, and both are fixed
+    here rather than left to surprise somebody. Found by grepping the built tree
+    for its own root, which turned up exactly these:
+
+    - **`.git/config`'s `remote.origin.url`**, which would otherwise point every
+      test at the template's remote -- so they would push to each other, and a
+      test would see another test's commits.
+    - **`.git/FETCH_HEAD`**, which records the URL of the last fetch. Nothing
+      here reads it (`sync` merges `<remote>/<branch>`, never `FETCH_HEAD`), so
+      it is inert -- but it is a stale absolute path sitting in a fixture, and
+      removing it costs one `unlink`.
+    """
+    shutil.copytree(template(), into, symlinks=True, dirs_exist_ok=True)
+    first = Computer(into, "machine-a")
+    second = Computer(into, "machine-b")
+    remote = into / "remote.git"
+    git(["remote", "set-url", "origin", str(remote)], cwd=first.repo, env=first.env)
+    (first.repo / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
+    return first, second, remote
+
+
 class TwoMachines(unittest.TestCase):
     """Two `$HOME`s and one bare remote, with `.bashrc` already managed and
     synced from the first -- plan §3.5's daily flow, at the point where a second
@@ -779,13 +854,18 @@ class TwoMachines(unittest.TestCase):
     `Computer` carries its own environment, and `run`/`call` apply it per
     command, which is how two hostnames coexist without two processes.
 
-    **The setup runs in-process.** It was three subprocesses until the property
-    tests demonstrated the same fixture built with `call`; measured, interleaved,
-    five builds each: 0.45s per `setUp` through subprocesses against 0.24s
-    in-process, and 37 tests inherit it -- about 7.8s per suite run, paid again
-    for every mutant in a sweep. Nothing here inspects stdout or the exit status
-    beyond "it worked", which is the only thing a subprocess would add; the tests
-    that *do* still use `run`.
+    **The tree is copied, not built** (#19). `setUp` used to run a real `init`,
+    `add` and `sync` for each of the 146 tests that inherit this; it now copies
+    `template()`, which is 4.3 ms against 120.4 ms. See there for the numbers and
+    for why the template is per *process* rather than per class.
+
+    The build itself runs in-process, which is the older half of the same
+    argument: it was three subprocesses until the property tests demonstrated the
+    same fixture built with `call`. That measurement said 0.45s against 0.24s per
+    `setUp`; a build costs 120 ms on this machine today, so the *ratio* is what
+    survived and the absolute figures did not. Nothing here inspects stdout or
+    the exit status beyond "it worked", which is the only thing a subprocess
+    would add; the tests that *do* still use `run`.
 
     Here rather than in a test module because three of them build it, and a
     fixture that drifts between them is one where a failure in one file cannot be
@@ -796,14 +876,7 @@ class TwoMachines(unittest.TestCase):
         box = tempdir()
         self.tmp = box.__enter__()
         self.addCleanup(box.__exit__, None, None, None)
-        self.first = Computer(self.tmp, "machine-a")
-        self.second = Computer(self.tmp, "machine-b")
-        self.remote = make_remote(self.tmp / "remote.git", self.first.env)
-
-        self.first.write(".bashrc", "one\ntwo\nthree\nfour\nfive\n")
-        self.assertEqual(0, self.first.call("init", str(self.remote)))
-        self.assertEqual(0, self.first.call("add", str(self.first.home / ".bashrc")))
-        self.assertEqual(0, self.first.call("sync"))
+        self.first, self.second, self.remote = two_machines(self.tmp)
 
     def diverge(self, name: str, mine: bytes, theirs: bytes) -> None:
         """Make the two machines disagree about `name`, with `machine-a` pushing.

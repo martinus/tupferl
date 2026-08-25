@@ -707,6 +707,32 @@ read this file:
 | snapshot format | plain copies under `.tupferl/state/<hostname>/` | the plan sanctions it for v1; content-addressing buys deduplication nobody has measured a need for |
 | merge implementation | `git merge-file` | git is a hard requirement already, and its 3-way merge is battle-tested where a hand-written one would be the most defect-dense file in the project |
 
+### Measured, and kept
+
+- **The two-machine fixture is copied, not built** (#19). `support.template()`
+  builds the tree once per *process* and `two_machines` copies it; 146 of the
+  suite's tests across 40 classes inherit it.
+
+  | | median |
+  |---|---|
+  | build from scratch | 120.4 ms |
+  | `copytree` of a built one | 4.3 ms |
+
+  Interleaved A/B, three pairs, the six affected modules run serially: **19.5 s
+  saved of 82.4 s**, about 24%. On the *parallel* suite the same change is only
+  4.6 s, because wall-clock there is bounded by the slowest shard —
+  `test_sync_properties`, which is 2 tests and 19% of the serial total. Both
+  numbers are the median of paired differences; three pairs is not many, and the
+  parallel one is inside the run-to-run spread.
+
+  Two things in a copy still name the tree it came from, and both are fixed at
+  the copy: `.git/config`'s `remote.origin.url` (without which every test pushes
+  to the template's remote and sees other tests' commits) and `.git/FETCH_HEAD`
+  (inert — nothing reads it — but a stale absolute path in a fixture).
+  `test_support.TestTheTwoMachineTemplate` drives the contamination case rather
+  than comparing URLs, and greps a copy for the template's path so that a *third*
+  such file is caught rather than waited for.
+
 ### Measured dead ends — do not re-attempt without new evidence
 
 Empty, honestly: nothing has been tried and reverted yet. The first experiment
