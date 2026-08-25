@@ -890,6 +890,32 @@ class TestWhatAddSays(unittest.TestCase):
         self.assertIn("added 1 file", lines[0])
         self.assertIn("updated 99 files", lines[1])
 
+    def test_the_words_come_out_in_the_same_order_whatever_went_in(self) -> None:
+        """`stored` sorts by the word, so two machines that did the same things
+        print the same lines. Insertion order is whichever file happened to sort
+        first, which is not a property of the run.
+
+        The fixture inserts **updated before added**, because a dict built the
+        other way round is already in sorted order and cannot tell a sort from
+        no sort at all -- CLAUDE.md §2's two symmetric inputs. The mutation
+        sweep found exactly that: `sorted` becoming `list`, twice, and a
+        reversed ordering, all three surviving.
+        """
+        backwards = {"updated": self.names(1, "u"), "added": self.names(1, "a")}
+        for shape, lines in (
+            ("short", manage.stored(backwards, to_host=False)),
+            (
+                "long",
+                manage.stored(
+                    {"updated": self.names(20, "u"), "added": self.names(20, "a")}, to_host=False
+                ),
+            ),
+        ):
+            with self.subTest(shape=shape):
+                self.assertEqual(2, len(lines), lines)
+                self.assertTrue(lines[0].startswith("added"), lines)
+                self.assertTrue(lines[1].startswith("updated"), lines)
+
     def test_nothing_stored_says_nothing(self) -> None:
         """Every file was already byte-for-byte identical, so `store` answered
         `None` for all of them and none reaches here. `add` then prints its own
