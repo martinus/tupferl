@@ -275,6 +275,29 @@ class TestTwoHostsOverrideTheSameFile(support.TwoMachines):
         self.assertEqual("B only\n", self.second.read(".bashrc"))
         self.assertEqual(SHARED, self.first.stored(".bashrc").read_text(encoding="utf-8"))
 
+    def test_a_plain_remove_here_leaves_the_other_machines_override_alone(self) -> None:
+        """`remove` touches the shared tree and the overlay of the host it runs
+        on, and nothing else. The README says so, which is why this is asserted:
+        a `remove` that reached into `hosts/*/` would silently unmanage a file on
+        a machine whose owner never asked for it, and the only place that would
+        show up is the next sync on that machine.
+        """
+        self.assertEqual(0, self.second.call("remove", str(self.second.home / ".bashrc")))
+        self.assertFalse(self.second.stored(".bashrc").exists(), "the shared copy survived")
+        self.assertFalse(self.second.stored(".bashrc", host=True).exists())
+        theirs = paths.host_overlay(self.second.repo, self.first.name) / ".bashrc"
+        self.assertTrue(theirs.is_file(), "machine-a's override was taken too")
+
+        # And `machine-a` still *manages* it after taking the removal in.
+        # Reading `$HOME` here would prove nothing: if its overlay had been
+        # deleted too the file would simply be unmanaged, and `$HOME` is left
+        # untouched either way -- the same bytes for opposite reasons.
+        self.assertEqual(0, self.second.call("sync"))
+        self.assertEqual(0, self.first.call("sync"))
+        done = self.first.run("list")
+        self.assertIn("host  .bashrc", done.stdout)
+        self.assertIn("1 managed, 1 from this host's overlay", done.stdout)
+
     def test_neither_overlay_is_offered_to_the_other_machine_as_managed(self) -> None:
         """`machine-a`'s repository holds `machine-b`'s overlay after the sync.
         `manifest.managed` must not return it, or `machine-a` would write

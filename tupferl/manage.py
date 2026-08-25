@@ -325,6 +325,13 @@ def said(name: PurePosixPath, home: Path, host: str, from_host: bool, shared: bo
     Each of the three sentences ends with what happens to the file in `$HOME`,
     because that is the question the word "remove" raises and the one the user
     is about to check for themselves.
+
+    **"will replace" is an approximation, named here rather than hedged in the
+    message.** It is exact when `$HOME` still matches the snapshot, which is the
+    case someone who has just stopped overriding a file is in. With an unsynced
+    edit pending, the next sync merges the two instead -- or reports a conflict
+    if the edit overlaps what the override changed. Nothing is lost in either
+    case, and a sentence qualified for both would stop being read.
     """
     if not from_host:
         return f"removed {name} from the repository; the file in {home} was not touched"

@@ -118,8 +118,11 @@ gets it back — but only the machine it is named for reads it; the rest keep
 using the shared version. `tupferl list` marks the files this machine
 overrides with `host`. After `remove --host`, the next sync
 copies the shared version back into `$HOME` (backing up what the override put
-there first). Plain `tupferl remove` is a different request: it stops managing
-the file *everywhere*, taking the shared copy every other computer is using.
+there first). Plain `tupferl remove` is a different request: it takes the shared copy every
+other computer is using, along with this machine's override. (Another machine's
+override of the same name survives it, and that machine goes on syncing it —
+`remove` only ever touches the shared tree and the overlay of the host it runs
+on.)
 
 **Some files are refused, on purpose.** Symlinks, anything reached *through* a
 symlink, anything outside `$HOME`, sockets and devices, files over
