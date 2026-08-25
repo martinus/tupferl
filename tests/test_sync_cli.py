@@ -18,6 +18,7 @@ import shutil
 import stat
 import unittest
 from pathlib import PurePosixPath
+from unittest import mock
 
 from tests import support
 from tupferl import copies, gitrepo, paths, sync
@@ -586,6 +587,48 @@ class TestWhatSyncSaysAboutTheRemote(support.TwoMachines):
         rows = [row for row in self.said(self.first).splitlines() if row.strip()]
         self.assertTrue(rows[0].startswith(f"origin/{support.BRANCH}:"), rows)
         self.assertIn("updated .bashrc", rows[1])
+
+    def test_a_retry_counts_what_it_pulled_on_the_way(self) -> None:
+        """The remote moving mid-sync, which is the one run where both halves of
+        `Traffic` are non-zero -- and the only thing that can tell `came +
+        moved.pulled` from `came - moved.pulled`.
+
+        The first `integrate` brings in nothing (the remote has not moved yet),
+        so the count the line reports is entirely `deliver`'s retry. Both
+        additions in the chain -- `pulled += came` inside `deliver` and the sum
+        in `main` -- are unobservable without it, and the mutation sweep reported
+        exactly that: `+` to `-` and `+=` to `-=`, both survivors.
+
+        `support.move_on_first_push` makes the remote genuinely move inside the
+        window between this sync's fetch and its push. Nothing is mocked.
+        """
+        support.move_on_first_push(self.remote, self.first.env, self.tmp)
+        self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        said = self.said(self.first)
+        self.assertIn("took in 1 commit", said)
+        self.assertIn("pushed", said)
+
+    def test_a_count_git_will_not_give_is_reported_as_arriving_anyway(self) -> None:
+        """`gitrepo.distance` answering `None` while a merge is about to happen.
+
+        Real git will not do this here -- both refs resolve -- so it is forced by
+        patching tupferl's own wrapper. The branch exists because the fallback
+        must not be **zero**: zero is `integrate`'s word for "nothing came in",
+        and `deliver` reads it as "the remote did not move, so the failed push is
+        not worth re-trying". A merge reported as no merge turns a recoverable
+        push into an error.
+
+        One is low by one at worst. The sweep found this line twice, as `1`
+        becoming `2` and `1` becoming `0`; only the second matters, and this is
+        what refuses it.
+        """
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.second.write(".bashrc", "changed on the other machine\n")
+        self.assertEqual(0, self.second.call("sync"))
+        with mock.patch.object(gitrepo, "distance", return_value=None):
+            said = self.said(self.first)
+        self.assertIn("took in 1 commit", said)
+        self.assertIn("updated .bashrc", said)
 
     def test_a_machine_with_no_remote_still_says_so(self) -> None:
         """The sentence that was already there, and the reason this issue was
