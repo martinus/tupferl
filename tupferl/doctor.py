@@ -41,11 +41,58 @@ class Check(NamedTuple):
     detail: str
 
 
+#: The oldest git that can run this program, and why (#3).
+#:
+#: 2.25 (January 2020) is where `git add --pathspec-from-file` arrives, which
+#: `gitrepo.stage` uses so that a `tupferl add` of tens of thousands of files
+#: cannot exceed `ARG_MAX`. It is a floor with a *reason* rather than a version
+#: somebody felt comfortable with: raise it only when a feature needs it, and
+#: name the feature here when you do.
+OLDEST_GIT = (2, 25)
+
+
+def version_of(said: str) -> tuple[int, ...] | None:
+    """The version out of `git --version`, or `None` if it does not say one.
+
+    `git version 2.43.0` on Linux, `git version 2.39.5 (Apple Git-154)` on a
+    macOS runner, and vendors append more. So: take the first field that starts
+    with a digit and read the leading numeric parts of it, and stop at the first
+    part that is not a number -- `2.39.5` and `2.39.5.windows.1` both come back
+    as numbers this can compare, and a string with no version in it comes back
+    `None` rather than as `(0,)`, which would read as "very old git".
+    """
+    for field in said.split():
+        if field[:1].isdigit():
+            parts = []
+            for piece in field.split("."):
+                if not piece.isdigit():
+                    break
+                parts.append(int(piece))
+            return tuple(parts) if parts else None
+    return None
+
+
 def git_present() -> Check:
-    """Is there a git to call at all? Everything else depends on it."""
+    """Is there a git to call at all, and is it new enough? Everything depends on it."""
     found = gitrepo.git(["--version"])
     if not found.ok:
         return Check(False, "git", "git is not on PATH; install git and run this again")
+    version = version_of(found.out)
+    wanted = ".".join(str(part) for part in OLDEST_GIT)
+    if version is None:
+        # Reported rather than assumed either way. Passing would hide a git too
+        # old to stage; failing would refuse to run on a vendor build whose
+        # `--version` this cannot read, which is a guess about a string.
+        return Check(
+            True, "git", f"{found.out} (could not read a version; tupferl needs {wanted} or newer)"
+        )
+    if version < OLDEST_GIT:
+        return Check(
+            False,
+            "git",
+            f"{found.out} is older than the {wanted} tupferl needs for `git add "
+            f"--pathspec-from-file`; upgrade git",
+        )
     return Check(True, "git", found.out)
 
 

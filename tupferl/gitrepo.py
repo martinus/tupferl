@@ -79,7 +79,12 @@ def env() -> dict[str, str]:
     return prepared
 
 
-def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) -> Result:
+def git(
+    args: list[str],
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    fed: str | None = None,
+) -> Result:
     """Run git with `args`, and answer rather than raise.
 
     `cwd=None` means the current directory, which is right for `git --version`
@@ -93,6 +98,19 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
     afterwards -- and `doctor.remote` reads `gitrepo.TIMEOUT` when it composes
     its message, so the two would disagree: a test that shortened the constant
     waited the full thirty seconds and was told it had waited half of one.
+
+    `fed` is git's standard input, for `stage`'s `--pathspec-from-file=-`. Named
+    that rather than `input`, which is a builtin and reads as the *result* of
+    something here. `None` and not `""`: the empty string is a real thing to send
+    -- an empty pathspec list -- and a signature that could not tell it from "no
+    stdin at all" would make `stage`'s most dangerous case unexpressible.
+
+    **No spawn failure escapes as an exception** (#3). The three `except` arms
+    are one rule with three sentences, and the last is a catch-all on purpose:
+    the first two were written for two failures that had already reached a user
+    as a traceback, and a third was waiting -- `OSError: [Errno 7] Argument list
+    too long` for a `git add` of tens of thousands of paths. Answering the whole
+    class rather than the instance is what stops a fourth.
     """
     waiting = TIMEOUT if timeout is None else timeout
     if cwd is not None and not cwd.is_dir():
@@ -108,8 +126,26 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
         done = subprocess.run(
             ["git", *args],
             cwd=cwd,
+            input=fed,
             capture_output=True,
             text=True,
+            # `surrogateescape`, not the default strict handler, and it is
+            # load-bearing in both directions. A dotfile's name need not be valid
+            # UTF-8 -- that is legal on Linux and `TestAPathThatIsNotUtf8` has a
+            # fixture for it -- so `os.fsdecode` hands such a name back with
+            # surrogates in it. Encoding *that* for `fed` raises
+            # `UnicodeEncodeError` out of `subprocess.run`, which is a
+            # `ValueError` and so sails past the three `except` arms above:
+            # exactly the class of escape this function exists to prevent, and
+            # introduced by the `--pathspec-from-file` change itself. The review
+            # for #3 caught it before the PR opened.
+            #
+            # Decoding is the same hazard mirrored: git echoes those names back
+            # in its output, and a strict handler raises `UnicodeDecodeError`
+            # there instead -- which is what CLAUDE.md's gotcha about reading
+            # `ls-files` through this function records, out of a half-finished
+            # merge. One handler answers both.
+            errors="surrogateescape",
             timeout=waiting,
             env=env(),
             check=False,
@@ -121,9 +157,28 @@ def git(args: list[str], cwd: Path | None = None, timeout: float | None = None) 
         shown = " ".join(args)
         return Result("", f"`git {shown}` did not answer within {waiting:g}s", True)
     except FileNotFoundError:
-        # Now unambiguous: `cwd` was checked above, so the only file `subprocess`
-        # can fail to find here is `git` itself.
+        # Before the `OSError` arm, which it is a subclass of. Now unambiguous:
+        # `cwd` was checked above, so the only file `subprocess` can fail to find
+        # here is `git` itself.
         return Result("", "git is not installed, or not on PATH")
+    except OSError as refused:
+        # Everything else the kernel can refuse a spawn with. `strerror` rather
+        # than `str(refused)`, which repeats the errno and then appends `: 'git'`
+        # -- a filename that is not the thing at fault, and which reads as "git
+        # is missing" when the argument list was the problem.
+        #
+        # The size is what makes `[Errno 7] Argument list too long` actionable:
+        # `ARG_MAX` bounds the *bytes* of argv (plus the environment and the
+        # pointer array), so a count of arguments would leave the reader to
+        # multiply. Not the arguments themselves: this is a list that was too
+        # long to hand to a kernel, and printing it at a terminal is the same
+        # mistake one layer up.
+        size = sum(len(arg) + 1 for arg in args)
+        return Result(
+            "",
+            f"could not run `git {args[0] if args else ''}` ({refused.strerror}), "
+            f"with {len(args)} arguments totalling {size} bytes",
+        )
     return Result(done.stdout.strip(), done.stderr.strip(), code=done.returncode)
 
 
@@ -247,26 +302,54 @@ def clone(url: str, into: Path) -> Result:
 def stage(repo: Path, paths: list[Path]) -> Result:
     """Stage exactly these paths, including deletions.
 
-    `--` again, and for a sharper reason than the URL case: a managed file is
-    named by the user and can legitimately begin with a dash. `git add -- -x`
-    stages a file called `-x`; without the separator git reports "unknown
-    switch" for a dotfile somebody really has.
+    **The pathspecs go on stdin, not on the command line** (#3).
+    `--pathspec-from-file=-` with `--pathspec-file-nul`, which removes the
+    `ARG_MAX` limit entirely: a single `tupferl add` of tens of thousands of
+    files otherwise reached the user as `OSError: [Errno 7] Argument list too
+    long`, a traceback rather than a sentence. Measured for a realistic path
+    shape, roughly 64 000 files to exceed Linux's 2 MiB and 30 000 for macOS's
+    1 MiB -- `tupferl add ~/.local/share/` is the shape that gets there.
+
+    **Not batching, which is the obvious fix and is worse than the limit.**
+    Several `git add` calls are not one operation: a failure in the third leaves
+    the first two staged, and `manage.record` then commits a *partial* set under
+    a message naming all of them. That is a wrong commit rather than a failed
+    command. One call is the property worth keeping, and this is how it is kept.
+
+    `--pathspec-file-nul`, so the separator is NUL. Newline separation would
+    break on a managed filename containing one, which is legal and which `add`
+    accepts today.
+
+    The `--` is gone with the argv pathspecs, and nothing is lost: it was there
+    because a managed file can legitimately begin with a dash, and a pathspec
+    read from a file is never parsed as an option in the first place. That is
+    the same guarantee by construction rather than by a separator.
 
     Paths are given absolute and passed relative, which is what git records.
     `relative_to` raising is the point rather than a nuisance: every caller
     builds these from `repo`, so one that does not is a bug, and failing here
     names the path instead of handing git something it will interpret against
     its own working directory.
+
+    Requires git 2.25 (January 2020), which `doctor` checks and the README
+    states.
     """
     if not paths:
-        # Measured, and it is why this guard exists: `git add --all --` with an
-        # empty pathspec stages the *whole repository*, untracked files included.
-        # So the most dangerous possible reading is what git does by default with
-        # a list a caller built and got wrong. A caller that means "everything"
-        # says so by passing `repo` itself, which `sync` does.
+        # Measured, and it is why this guard exists: an empty pathspec makes
+        # `git add --all` stage the *whole repository*, untracked files included
+        # -- and measured again for this spelling, because "the list is empty" is
+        # exactly the case a change of mechanism could have altered: empty stdin
+        # does the same thing as an empty argv pathspec. So the most dangerous
+        # possible reading is still what git does by default with a list a caller
+        # built and got wrong. A caller that means "everything" says so by
+        # passing `repo` itself, which `sync` does.
         return Result("", f"nothing to stage in {repo}", code=1)
     relative = [str(path.relative_to(repo)) for path in paths]
-    return git(["add", "--all", "--", *relative], cwd=repo)
+    return git(
+        ["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        cwd=repo,
+        fed="\0".join(relative) + "\0",
+    )
 
 
 def commit(repo: Path, message: str) -> Result:

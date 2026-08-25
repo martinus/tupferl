@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import support
-from tupferl import gitrepo
+from tupferl import doctor, gitrepo
 
 
 class TestTheEnvironment(unittest.TestCase):
@@ -468,6 +468,26 @@ class TestAPathThatIsNotUtf8(ConflictedIndex):
         self.assertEqual(1, len(found))
         self.assertEqual(3, len(next(iter(found.values()))))
 
+    def test_such_a_name_can_be_staged(self) -> None:
+        """The same hazard mirrored, and it is a regression this class caught.
+
+        `stage` sends its pathspecs on git's *stdin* since #3, and `git()` runs
+        with `text=True` -- so the name has to be encoded on the way out where it
+        only had to be decoded on the way in. With the default strict handler
+        that raises `UnicodeEncodeError`, a `ValueError`, which sails past all
+        three `except` arms in `git()`: the exact class of escape #3 exists to
+        close, reintroduced by #3's own fix. `errors="surrogateescape"` answers
+        both directions.
+
+        Not through `diverge`: this wants an ordinary file staged, not a
+        conflict, so it builds the smallest thing that shows it.
+        """
+        odd = self.repo / "caf\udce9-plain"
+        odd.write_bytes(b"x\n")
+        answered = gitrepo.stage(self.repo, [odd])
+        self.assertTrue(answered.ok, answered.err)
+        self.assertTrue(gitrepo.staged(self.repo))
+
 
 class TestHowFarApartTwoRefsAre(support.SandboxCase):
     """`distance`, which is the only thing `status` knows about the remote.
@@ -548,6 +568,248 @@ class TestHowFarApartTwoRefsAre(support.SandboxCase):
         type is optional: `(0, 0)` would have `status` print "is exactly what
         this computer has" about a remote it could not read."""
         self.assertIsNone(gitrepo.distance(self.repo, "HEAD", "origin/nonesuch"))
+
+
+class TestNoSpawnFailureEscapes(unittest.TestCase):
+    """#3: `git()` answers rather than raising, for every way a spawn can fail.
+
+    Two of the three arms already existed because two failures had reached a
+    user as a traceback. The third is the catch-all, and the instance that
+    prompted it is `OSError: [Errno 7] Argument list too long` -- reachable by a
+    single `tupferl add` of tens of thousands of files.
+
+    **The real thing where it is cheap, a raised `OSError` where it is not.**
+    `test_a_real_argument_list_that_is_too_long` builds an argv the kernel
+    genuinely refuses, which is the honest fixture and costs milliseconds. The
+    others patch `subprocess.run`, because `ENOMEM` and `EACCES` on a spawn
+    cannot be arranged from a test without breaking the machine it runs on --
+    and the claim there is about the `except` arm, not about the kernel.
+    """
+
+    #: One argument of 2 MiB, which is refused on every platform this runs on --
+    #: and, crucially, for a reason that does **not** vary by machine.
+    #:
+    #: `ARG_MAX` does vary: on Linux the whole argv is bounded by
+    #: `RLIMIT_STACK / 4`, so it is 2 MiB on this container's 8 MiB stack and
+    #: larger on a GitHub runner. A fixture sized against it therefore passes on
+    #: one machine and fails on another -- measured, and it is why this test is
+    #: shaped this way: an earlier version built 3 MB out of 60 000 short
+    #: arguments, which the runner **accepted**, and the three Linux legs went
+    #: red while macOS passed.
+    #:
+    #: A *single* argument has its own cap: `MAX_ARG_STRLEN`, a fixed 32 pages
+    #: (128 KiB) on Linux whatever the stack is, and `ARG_MAX` on macOS. 2 MiB
+    #: clears both with room and costs one spawn.
+    ONE_HUGE = 2 << 20
+
+    #: What `git()` should report for that call: `len("status") + 1` for the
+    #: subcommand and `ONE_HUGE + 1` for the argument. A literal rather than the
+    #: same sum spelled twice -- the sweep found all three mutations of that
+    #: arithmetic surviving a `\d{7}` match.
+    HUGE_BYTES = 2_097_160
+
+    def test_a_real_argument_list_that_is_too_long(self) -> None:
+        """No mock, and no dependence on a limit that differs per machine."""
+        with tempfile.TemporaryDirectory() as box:
+            answered = gitrepo.git(["status", "x" * self.ONE_HUGE], cwd=Path(box))
+        self.assertFalse(answered.ok)
+        self.assertIn("could not run `git status`", answered.err)
+        # The exact total, because `ARG_MAX` bounds bytes and a count would
+        # leave the reader to multiply.
+        self.assertIn(f"totalling {self.HUGE_BYTES} bytes", answered.err)
+        self.assertIn("2 arguments", answered.err)
+
+    def test_it_is_a_result_rather_than_a_traceback(self) -> None:
+        """The whole point, stated on its own: the caller gets an answer.
+
+        Without the `except OSError` arm this raises out of `git()`, through
+        `manage.record`, and out of `main` -- past the `TupferlError` handler,
+        which does not catch `OSError`.
+        """
+        with tempfile.TemporaryDirectory() as box:
+            answered = gitrepo.git(["status", "x" * self.ONE_HUGE], cwd=Path(box))
+        self.assertIsInstance(answered, gitrepo.Result)
+        self.assertIsNone(answered.code)
+
+    def test_other_spawn_failures_are_answered_too(self) -> None:
+        """The arm is a catch-all on purpose, so the next errno needs no code."""
+        for number, name in ((12, "Cannot allocate memory"), (13, "Permission denied")):
+            with self.subTest(errno=number):
+                with mock.patch("subprocess.run", side_effect=OSError(number, name)):
+                    answered = gitrepo.git(["status"])
+                self.assertFalse(answered.ok)
+                self.assertIn(name, answered.err)
+
+    def test_a_missing_git_still_gets_its_own_sentence(self) -> None:
+        """`FileNotFoundError` is an `OSError`, so its arm has to come first.
+        Ordered the other way, "git is not installed" becomes "could not run
+        `git status` (No such file or directory)" -- true, and useless."""
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file")):
+            answered = gitrepo.git(["status"])
+        self.assertEqual("git is not installed, or not on PATH", answered.err)
+
+
+class TestStagingPastTheArgumentLimit(support.SandboxCase):
+    """#3: the pathspecs go on stdin, so `ARG_MAX` does not apply to `add`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.tmp / "repo", self.env)
+
+    def test_the_pathspecs_never_reach_the_command_line(self) -> None:
+        """The claim, stated so that no kernel limit is involved in checking it.
+
+        This replaced a fixture that built 4 600 real paths and asserted the
+        staging succeeded. That test was **green on the GitHub runner with the
+        fix reverted**, and it took a red CI leg to notice why: on Linux the
+        whole argv is bounded by `RLIMIT_STACK / 4`, so `ARG_MAX` is 2 MiB on
+        this container and larger on a runner with a bigger stack. 2.2 MB of
+        pathspec cleared the limit here and did not clear it there -- CLAUDE.md
+        §2's fixture too weak to tell the two answers apart, and invisible from
+        the test's own text.
+
+        What actually changed is *where the paths go*, and that is machine-
+        independent: argv holds four fixed flags, and the paths ride on stdin
+        NUL-separated. Asserted by watching the one call `stage` makes.
+        """
+        many = [self.repo / f"file-{number}.conf" for number in range(3)]
+        for where in many:
+            where.write_text("x", encoding="utf-8")
+
+        with mock.patch.object(gitrepo, "git", wraps=gitrepo.git) as watched:
+            answered = gitrepo.stage(self.repo, many)
+        self.assertTrue(answered.ok, answered.err)
+
+        # One call, not several. `manage.record` commits under a message naming
+        # every path, so a `stage` that batched could leave a partial set staged
+        # and commit it as the whole -- which is why batching is refused.
+        watched.assert_called_once()
+        argv = watched.call_args.args[0]
+        self.assertEqual(["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"], argv)
+        for where in many:
+            self.assertNotIn(where.name, " ".join(argv))
+        self.assertEqual("file-0.conf\0file-1.conf\0file-2.conf\0", watched.call_args.kwargs["fed"])
+
+    def test_many_files_really_do_stage_in_one_call(self) -> None:
+        """The end-to-end half, and it claims only what it can show.
+
+        4 600 files through the real git, so the stdin path is exercised at a
+        size no argv-based `add` would have enjoyed -- but the assertion is that
+        they are all staged, not that a limit was exceeded, because whether it
+        was depends on the machine's stack rlimit.
+        """
+        deep = self.repo / ("d" * 90) / ("e" * 90) / ("f" * 90)
+        deep.mkdir(parents=True)
+        many = []
+        for number in range(4600):
+            where = deep / f"{number:05d}-{'g' * 200}.conf"
+            where.write_text("x", encoding="utf-8")
+            many.append(where)
+        answered = gitrepo.stage(self.repo, many)
+        self.assertTrue(answered.ok, answered.err)
+        listed = support.git(["diff", "--cached", "--name-only"], cwd=self.repo, env=self.env)
+        self.assertEqual(4600, len(listed.splitlines()))
+
+    def test_a_name_beginning_with_a_dash_is_a_path_not_an_option(self) -> None:
+        """What the `--` separator used to guarantee. A pathspec read from a
+        file is never parsed as an option, so the guarantee survives its
+        removal -- and this is what says so."""
+        odd = self.repo / "-oddly-named"
+        odd.write_text("x", encoding="utf-8")
+        answered = gitrepo.stage(self.repo, [odd])
+        self.assertTrue(answered.ok, answered.err)
+        self.assertIn(
+            "-oddly-named",
+            support.git(["diff", "--cached", "--name-only"], cwd=self.repo, env=self.env),
+        )
+
+    def test_a_name_with_a_newline_in_it_survives_nul_separation(self) -> None:
+        """Why `--pathspec-file-nul` rather than newline separation. A managed
+        filename may contain a newline, and split on newlines this becomes two
+        pathspecs, neither of which exists."""
+        odd = self.repo / "two\nlines"
+        odd.write_text("x", encoding="utf-8")
+        answered = gitrepo.stage(self.repo, [odd])
+        self.assertTrue(answered.ok, answered.err)
+        self.assertTrue(gitrepo.staged(self.repo))
+
+    def test_an_empty_list_still_refuses_rather_than_staging_everything(self) -> None:
+        """Measured for the *new* mechanism, because a change of mechanism is
+        exactly what could have altered it: empty stdin makes `git add --all`
+        stage the whole repository, the same as an empty argv pathspec. So the
+        guard is still the only thing between a caller's empty list and the most
+        dangerous reading git has."""
+        (self.repo / "untracked.txt").write_text("x", encoding="utf-8")
+        answered = gitrepo.stage(self.repo, [])
+        self.assertFalse(answered.ok)
+        self.assertIn("nothing to stage", answered.err)
+        self.assertFalse(gitrepo.staged(self.repo))
+
+
+class TestReadingGitsVersion(unittest.TestCase):
+    """`doctor.version_of`, over the shapes real gits actually print."""
+
+    def test_the_shapes_vendors_print(self) -> None:
+        for said, want in (
+            ("git version 2.43.0", (2, 43, 0)),
+            ("git version 2.39.5 (Apple Git-154)", (2, 39, 5)),
+            ("git version 2.45.2.windows.1", (2, 45, 2)),
+            ("git version 2.25", (2, 25)),
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(want, doctor.version_of(said))
+
+    def test_a_string_with_no_version_is_unknown_rather_than_ancient(self) -> None:
+        """`None`, not `(0,)`. A tuple of zeros compares below the floor, so a
+        vendor string this cannot read would be reported as a git too old to
+        run -- refusing to work on a guess about a string."""
+        self.assertIsNone(doctor.version_of("git version unknown"))
+        self.assertIsNone(doctor.version_of(""))
+
+    def test_the_floor_is_where_pathspec_from_file_arrives(self) -> None:
+        """Written out rather than imported: `assertEqual(OLDEST_GIT,
+        doctor.OLDEST_GIT)` is a copy of the code and cannot fail. 2.25 is
+        January 2020, and `git add --pathspec-from-file` is what needs it."""
+        self.assertEqual((2, 25), doctor.OLDEST_GIT)
+
+    def said(self, version: str) -> doctor.Check:
+        """`doctor.git_present` against a git that reports `version`.
+
+        `gitrepo.git` is patched rather than a real old git installed: the
+        claim is about the comparison, and no CI leg can offer 2.24.
+        """
+        answered = gitrepo.Result(version, "", code=0)
+        with mock.patch.object(gitrepo, "git", return_value=answered):
+            return doctor.git_present()
+
+    def test_a_git_below_the_floor_fails_the_check(self) -> None:
+        found = self.said("git version 2.24.0")
+        self.assertFalse(found.ok)
+        self.assertIn("2.25", found.detail)
+        self.assertIn("upgrade git", found.detail)
+
+    def test_a_git_at_exactly_the_floor_passes(self) -> None:
+        """The boundary, and it has to be spelled `2.25` rather than `2.25.0`.
+
+        Tuple comparison makes the longer sequence the greater one when the
+        shared prefix is equal, so `(2, 25, 0) <= (2, 25)` is **False** -- a
+        `2.25.0` fixture passes whether the code says `<` or `<=`, and the
+        mutation sweep reported exactly that survivor. `(2, 25) <= (2, 25)` is
+        True, so this one fails against `<=` and would refuse the oldest git
+        that actually works.
+        """
+        self.assertTrue(self.said("git version 2.25").ok)
+
+    def test_a_git_one_patch_above_the_floor_passes(self) -> None:
+        """The ordinary reading of "2.25 or newer", kept beside the boundary
+        because the boundary above is deliberately the unusual spelling."""
+        self.assertTrue(self.said("git version 2.25.1").ok)
+
+    def test_a_version_it_cannot_read_passes_and_says_so(self) -> None:
+        found = self.said("git version huh")
+        self.assertTrue(found.ok)
+        self.assertIn("could not read a version", found.detail)
+        self.assertIn("2.25", found.detail)
 
 
 if __name__ == "__main__":
