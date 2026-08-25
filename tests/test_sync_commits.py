@@ -27,7 +27,7 @@ import unittest
 from unittest import mock
 
 from tests import support
-from tupferl import conflicts, gitrepo
+from tupferl import conflicts, gitrepo, paths
 from tupferl.errors import TupferlError
 
 #: What each machine commits. Distinct, and neither a prefix of the other, so no
@@ -508,6 +508,153 @@ class TestWhenTheSettledFilesCannotBeStaged(TwoCommits):
         self.assertIsNone(gitrepo.unfinished(self.second.repo))
         self.assertEqual("", self.second.git("status", "--porcelain"))
         self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+
+class TestWhatThisMachineWillNotMerge(support.TwoMachines):
+    """#15: `reconcile` walks git's index, not `manifest.managed`.
+
+    So a path tupferl keeps for *itself* reaches the dotfile prompt. The one
+    that matters is a sync snapshot: settling it writes a **merge of two
+    snapshots**, a state neither machine was ever in, and every later
+    three-version comparison is then against a version that never existed.
+
+    **Two machines sharing a hostname is what it takes**, because snapshots live
+    under `.tupferl/state/<hostname>/`. That is not exotic -- two laptops both
+    called `laptop`, or `TUPFERL_HOSTNAME` set the same in two places -- and
+    `paths.check_hostname` neither does nor can prevent it.
+    """
+
+    #: What both machines call themselves. The collision is the fixture.
+    TWIN = "laptop"
+
+    def setUp(self) -> None:
+        super().setUp()
+        for machine in (self.first, self.second):
+            machine.env["TUPFERL_HOSTNAME"] = self.TWIN
+        # A sync under the shared hostname *before* anything diverges, so a
+        # snapshot exists at `state/laptop/`. Without it the first collision is
+        # a conflict with no merge base rather than the one the issue describes,
+        # and the fixture fails in `setUp` for a reason unrelated to it.
+        self.assertEqual(0, self.first.call("sync"))
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.assertEqual(0, self.second.call("sync"))
+
+    def collide(self, name: str) -> None:
+        """Make both machines commit to `name` without either seeing the other.
+
+        `add` commits and does not push, which is the ordinary way a machine
+        gets a commit the remote has never seen -- the issue's own reproduction.
+        """
+        self.second.write(name, "FROM-B\ntwo\nthree\n")
+        self.assertEqual(0, self.second.call("add", str(self.second.home / name)))
+        self.first.write(name, "FROM-A\ntwo\nthree\n")
+        self.assertEqual(0, self.first.call("sync"))
+
+    def test_a_snapshot_is_never_offered_at_the_prompt(self) -> None:
+        """`--ours` answers every conflict the prompt is given, so a sync that
+        exits 2 is one where something never reached it.
+
+        **This is also the class's precondition**, and it carries that on its own
+        rather than through a separate test: the snapshot's path can only appear
+        in this message by way of `left`, and it can only reach `left` because
+        git reported it unmerged and `mergeable` refused it. A fixture where the
+        conflict never happened produces a clean sync and exit 0.
+
+        It says that here because the separate precondition it replaced was
+        *wrong*, and only CI could see it: that test drove `gitrepo.fetch` and
+        `gitrepo.merge` by hand instead of going through `sync`, and on the
+        runner's git 2.55 the hand-rolled pair left nothing unmerged while the
+        real path -- these three tests -- conflicted exactly as expected. The
+        mechanism for that difference is not established and is not guessed at
+        here; the lesson that is established is CLAUDE.md §2's "prefer driving
+        the real thing", with a version of the real thing to point at.
+        """
+        self.collide(".bashrc")
+        status, said = self.second.say("sync", "--ours")
+        self.assertEqual(2, status, said)
+        self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", said)
+        self.assertIn("not a dotfile this machine merges", said)
+
+    def test_the_ordinary_dotfile_beside_it_is_not_what_stopped_the_sync(self) -> None:
+        """`.bashrc` collides too, and it *is* mergeable -- so the refusal has to
+        be about the snapshot rather than about the collision in general.
+
+        Without this, the class is equally satisfied by a `reconcile` that
+        refused every conflict it saw.
+        """
+        self.collide(".bashrc")
+        status, said = self.second.say("sync", "--ours")
+        self.assertEqual(2, status, said)
+        refused = said.split("disagree about", 1)[1].split(" in a way", 1)[0]
+        self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", refused)
+        self.assertNotIn(" .bashrc", refused)
+
+    def test_the_merge_is_undone_rather_than_half_settled(self) -> None:
+        """The refusal has to leave the repository where the next run can start.
+
+        A path added to `left` makes `integrate` raise, and its `finally` aborts
+        -- so this asserts the guarantee rather than the code path: no
+        `MERGE_HEAD`, a clean tree, and `HEAD` where it was.
+        """
+        self.collide(".bashrc")
+        # After `collide`, not before: `add` commits, so a `HEAD` read earlier
+        # is a different commit for a reason that has nothing to do with the
+        # refusal. The first version of this test read it first and failed.
+        was = self.second.git("rev-parse", "HEAD")
+        self.assertEqual(2, self.second.call("sync", "--ours"))
+        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        self.assertEqual("", self.second.git("status", "--porcelain"))
+        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+    def test_the_snapshot_on_disk_is_still_one_machine_s_own(self) -> None:
+        """What the whole issue is about. The snapshot must remain a state this
+        machine was really in -- not a merge of two of them, which is what
+        settling it at the prompt produced."""
+        self.collide(".bashrc")
+        self.assertEqual(2, self.second.call("sync", "--ours"))
+        snapshot = self.second.repo / paths.META / "state" / self.TWIN / ".bashrc"
+        self.assertEqual("FROM-B\ntwo\nthree\n", snapshot.read_text())
+        self.assertNotIn("FROM-A", snapshot.read_text())
+
+
+class TestNotEverythingUnderMetaIsRefused(support.TwoMachines):
+    """The other half, and the reason the fix is not "skip all of `.tupferl/`".
+
+    `config.toml` lives there and is a legitimate subject for the prompt: two
+    machines really can disagree about it, and refusing it would send the user
+    to `git pull` for a file the tool is otherwise happy to manage.
+
+    **This is the only admission under `paths.META` a two-machine test can
+    show.** The other one -- this host's own overlay -- needs both machines to
+    write the *same* host's overlay, which needs a shared hostname, which
+    necessarily collides `state/<host>/` as well: the snapshot is then refused
+    first and the overlay never reaches the prompt. So that admission is checked
+    where the rule lives, in `test_manifest.TestWhatMayBeMerged`, and this class
+    says why it is not here.
+    """
+
+    def settings(self, machine: support.Computer, text: str) -> None:
+        where = machine.repo / paths.META / "config.toml"
+        where.write_text(text, encoding="utf-8")
+        support.git(["add", "-A"], cwd=machine.repo, env=machine.env)
+        support.git(["commit", "-m", "settings"], cwd=machine.repo, env=machine.env)
+
+    def test_a_conflicting_config_is_settled_rather_than_refused(self) -> None:
+        """Different hostnames, so nothing under `state/` collides and the only
+        conflict is the one this test is about."""
+        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        self.settings(self.second, "max_file_size = 2000000\n")
+        self.settings(self.first, "max_file_size = 3000000\n")
+        # Through `sync`, not a raw push: `init` above already pushed, so a
+        # bare `git push` here is a non-fast-forward and the fixture fails
+        # before the test starts.
+        self.assertEqual(0, self.first.call("sync"))
+
+        status, said = self.second.say("sync", "--ours")
+        self.assertEqual(0, status, said)
+        self.assertNotIn("not a dotfile this machine merges", said)
+        settled = (self.second.repo / paths.META / "config.toml").read_text()
+        self.assertIn("2000000", settled)
 
 
 class TestSettlingWithTheEditor(TwoCommits):

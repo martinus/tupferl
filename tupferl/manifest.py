@@ -119,6 +119,55 @@ def named(path: str | Path) -> Path:
     return Path(os.path.normpath(expanded))
 
 
+def mergeable(name: PurePosixPath, repo: Path, host: str) -> bool:
+    """May `sync` settle a conflict over this *repository* path, on this host?
+
+    Asked of a path that arrives from git's index rather than from a walk of the
+    working tree, which is why it exists at all: `manifest.under` skips
+    `paths.META` deliberately, and nothing reapplied that rule to a name coming
+    out of `gitrepo.conflicted`. So a conflicting `.tupferl/state/<host>/<file>`
+    was offered at the dotfile prompt, and settling it wrote a **merge of two
+    snapshots** -- a state neither machine was ever in (#15).
+
+    That is worse than an odd-looking prompt. `sync`'s interruption guarantee
+    rests on the snapshot being exactly the last state both sides agreed on: a
+    merge of two of them is neither side's history, and every later comparison
+    is against a version that never existed.
+
+    Three admissions, and the last two are the reason this is not simply "skip
+    everything under `.tupferl/`":
+
+    - **an ordinary dotfile**, anywhere outside `paths.META`;
+    - **`config.toml`**, which really is a file two machines can disagree about,
+      and refusing it would send the user to `git pull` for something the tool is
+      otherwise happy to manage;
+    - **this host's own overlay**, which is a dotfile that happens to live under
+      `paths.META`. Refusing it would be a regression: an overlay conflict is
+      exactly the disagreement about lines the prompt is for.
+
+    Everything else -- any snapshot, and another host's overlay -- is tupferl's
+    own state or somebody else's, and neither is this machine's to merge.
+
+    **Repository-relative, and that is the whole subtlety.** The obvious
+    implementation is "is it in `manifest.managed`?", and it is wrong: `managed`
+    names a file relative to *its own root*, so this host's overlay copy of
+    `.vimrc` is `.vimrc` there while git reports it as
+    `.tupferl/hosts/<host>/.vimrc`. Comparing the two directly rejects every
+    legitimate overlay conflict. Measured, before it was written that way.
+
+    Every path it compares against comes from `paths`, rather than `"hosts"`,
+    `"state"` and `"config.toml"` spelled again here. The layout has one owner,
+    and a second copy of it in the one function that decides what may be merged
+    is the copy that would be missed when it moves.
+    """
+    where = repo / name
+    if not where.is_relative_to(repo / paths.META):
+        return True
+    if where == paths.config_file(repo):
+        return True
+    return where.is_relative_to(paths.host_overlay(repo, host))
+
+
 def relative(wanted: str | Path, home: Path) -> PurePosixPath:
     """Turn what the user typed into the name a managed file has, or say why not.
 

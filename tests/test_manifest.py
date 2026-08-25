@@ -340,5 +340,75 @@ class TestLinksBetween(unittest.TestCase):
             self.assertEqual(home / ".aws", manifest.links_between(home / ".aws" / "creds", home))
 
 
+class TestWhatMayBeMerged(unittest.TestCase):
+    """`manifest.mergeable`, which decides what `sync.reconcile` may settle (#15).
+
+    Pure, and needs no repository: it answers about a *path*. That is why the
+    admission this class exists for -- **this host's own overlay** -- is checked
+    here rather than end to end. Two machines can only conflict over the same
+    host's overlay if they share a hostname, and a shared hostname collides
+    `state/<host>/` as well, so the snapshot is refused first and the overlay
+    never reaches the prompt. `test_sync_commits.TestNotEverythingUnderMetaIsRefused`
+    carries the end-to-end half that *is* reachable, `config.toml`, and says so.
+
+    `HERE` and `ELSEWHERE` are different on purpose: a table where every host is
+    the same host cannot tell "this machine's overlay" from "any overlay", which
+    is the distinction the function exists to make.
+    """
+
+    HERE = "laptop"
+    ELSEWHERE = "desktop"
+
+    #: Any absolute path does: `mergeable` compares paths, it never opens one.
+    #: A directory that does not exist says so out loud -- if a future version
+    #: starts reading from disk, this fixture fails rather than quietly working.
+    REPO = Path("/nowhere/repo")
+
+    def mergeable(self, name: str) -> bool:
+        return manifest.mergeable(PurePosixPath(name), self.REPO, self.HERE)
+
+    def test_an_ordinary_dotfile_is_merged(self) -> None:
+        for name in (".bashrc", ".config/nvim/init.lua", "tupferl-ish/notes"):
+            with self.subTest(name=name):
+                self.assertTrue(self.mergeable(name))
+
+    def test_a_snapshot_is_never_merged(self) -> None:
+        """Either host's. This machine's is the one that breaks the interruption
+        guarantee; another's is not this machine's to touch at all."""
+        for host in (self.HERE, self.ELSEWHERE):
+            with self.subTest(host=host):
+                self.assertFalse(self.mergeable(f"{paths.META}/state/{host}/.bashrc"))
+
+    def test_this_hosts_overlay_is_merged(self) -> None:
+        """An overlay file is a dotfile that happens to live under `.tupferl/`,
+        and a conflict over it is exactly what the prompt is for. Refusing it
+        would be the regression the issue's prescribed fix would have caused."""
+        self.assertTrue(self.mergeable(f"{paths.META}/hosts/{self.HERE}/.vimrc"))
+        self.assertTrue(self.mergeable(f"{paths.META}/hosts/{self.HERE}/.config/a/b.conf"))
+
+    def test_another_hosts_overlay_is_not(self) -> None:
+        """The half that makes the test above about *this* host rather than
+        about overlays in general."""
+        self.assertFalse(self.mergeable(f"{paths.META}/hosts/{self.ELSEWHERE}/.vimrc"))
+
+    def test_the_settings_file_is_merged(self) -> None:
+        """The reason the rule is not "skip everything under `.tupferl/`": two
+        machines really can disagree about it."""
+        self.assertTrue(self.mergeable(f"{paths.META}/config.toml"))
+
+    def test_anything_else_under_meta_is_not(self) -> None:
+        """A closed rule rather than a list of known-bad names, so a directory
+        added under `.tupferl/` later is refused until somebody admits it."""
+        for name in (f"{paths.META}/whatever", f"{paths.META}/state", f"{paths.META}/hosts/x"):
+            with self.subTest(name=name):
+                self.assertFalse(self.mergeable(name))
+
+    def test_a_name_that_merely_starts_with_the_same_letters_is_merged(self) -> None:
+        """`.tupferlish` is a dotfile somebody may really have, and a prefix
+        match rather than a path-component one would refuse it."""
+        self.assertTrue(self.mergeable(f"{paths.META}ish/notes"))
+        self.assertTrue(self.mergeable(f"{paths.META}x"))
+
+
 if __name__ == "__main__":
     unittest.main()

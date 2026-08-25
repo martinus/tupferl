@@ -340,7 +340,7 @@ def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[PurePosixPath]:
     return [name for name in manifest.under(snapshots, snapshots) if name not in keep]
 
 
-def integrate(repo: Path, remote: str, branch: str, settler: conflicts.Settler) -> bool:
+def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflicts.Settler) -> bool:
     """Fetch, and merge the remote branch if it holds anything new. Did it?
 
     The answer is what tells `sync` whether a rejected push is worth re-trying:
@@ -387,7 +387,7 @@ def integrate(repo: Path, remote: str, branch: str, settler: conflicts.Settler) 
     # a concluded merge is not undone by its own `finally`.
     concluded = False
     try:
-        left = reconcile(repo, settler)
+        left = reconcile(repo, host, settler)
         # `left` alone. `gitrepo.unmerged` is `sorted(conflicted(repo))` now, and
         # `reconcile` returns exactly the names it did not stage, so a second
         # opinion from the same `ls-files` cannot disagree -- it was a redundant
@@ -415,8 +415,8 @@ def integrate(repo: Path, remote: str, branch: str, settler: conflicts.Settler) 
     raise TupferlError(
         f"{there} and this machine disagree about {', '.join(left)} in a way the prompt "
         f"cannot settle -- one side changed the file and the other removed or replaced "
-        f"it, or you skipped it; the merge was undone, so resolve it with "
-        f"`git -C {repo} pull` and sync again."
+        f"it, or it is not a dotfile this machine merges, or you skipped it; the merge "
+        f"was undone, so resolve it with `git -C {repo} pull` and sync again."
     )
 
 
@@ -467,7 +467,7 @@ def held(repo: Path, number: int, name: str, modes: dict[int, int]) -> Blob | No
     return Blob(data, executable(modes[number]))
 
 
-def reconcile(repo: Path, settler: conflicts.Settler) -> list[str]:
+def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
     """Settle every file git could not merge. Returns the names still unsettled.
 
     This is plan §3.4's prompt over the *index* rather than over three files: a
@@ -481,9 +481,15 @@ def reconcile(repo: Path, settler: conflicts.Settler) -> list[str]:
     branch being merged in, so it is the repository's. Backwards, `--ours` keeps
     the side the user asked to discard.
 
-    Three shapes are refused rather than settled, and each comes back for the
+    Four shapes are refused rather than settled, and each comes back for the
     caller to report:
 
+    - **A path that is not this machine's to merge**, which `manifest.mergeable`
+      decides: a sync snapshot, or another host's overlay. This loop walks git's
+      index rather than `manifest.managed`, so nothing else reapplies the rule
+      that `manifest.under` applies to a walk of the tree -- and without it a
+      conflicting `.tupferl/state/<host>/<file>` reached the dotfile prompt, and
+      settling it wrote a merge of two snapshots (#15).
     - **A file only one side still has.** A delete against an edit is not a
       disagreement about lines, and the prompt has no key that means "keep it" or
       "let it go" -- offering `[l]` and `[r]` for it would be inventing an answer
@@ -500,6 +506,14 @@ def reconcile(repo: Path, settler: conflicts.Settler) -> list[str]:
     """
     left: list[str] = []
     for name, modes in sorted(gitrepo.conflicted(repo).items()):
+        if not manifest.mergeable(PurePosixPath(name), repo, host):
+            # To `left`, never silently skipped. `integrate` concludes the merge
+            # when `left` is empty, so a path dropped here would leave the index
+            # unmerged while this function reported success -- and `git commit`
+            # would then refuse, reaching the user as "could not commit", which
+            # says nothing about the file that caused it.
+            left.append(name)
+            continue
         if any(mode not in REGULAR for mode in modes.values()):
             left.append(name)
             continue
@@ -816,7 +830,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
                 f"{repo} has no branch checked out, so there is nothing to push; "
                 f"run `git -C {repo} checkout main`."
             )
-        integrate(repo, remote, branch, settler)
+        integrate(repo, remote, branch, host, settler)
         outcomes = deliver(repo, home, host, remote, branch, settler)
 
     print(report(outcomes))
@@ -863,7 +877,7 @@ def deliver(
         pushed = gitrepo.push(repo, remote, branch)
         if pushed.ok:
             return outcomes
-        if not integrate(repo, remote, branch, settler):
+        if not integrate(repo, remote, branch, host, settler):
             raise TupferlError(
                 f"could not push to {remote}: {gitrepo.reason(pushed)}; "
                 f"run `tupferl doctor` to check the remote."
