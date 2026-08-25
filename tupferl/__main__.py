@@ -12,6 +12,12 @@ say "invalid choice: 'sync'", which reads as "this tool has no sync" rather than
 release to wait for, and it fixed the CLI's shape while it was cheap to argue
 about -- `add --host` and `sync --ours/--theirs` were parsed and tested a
 milestone before anything read them.
+
+**`--host` means the same thing on `add` and on `remove`**: this machine's
+overlay rather than the shared tree. Two flags with one name and one meaning,
+which is why `remove --host` is a flag rather than the `unhost` verb it was
+briefly going to be -- plan §4 caps the command set at eight verbs, and a ninth
+would have been the same idea spelled twice.
 """
 
 from __future__ import annotations
@@ -58,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     drop = verbs.add_parser("remove", help="stop managing a file, keeping it in $HOME")
     drop.add_argument("path", help="a managed file")
+    drop.add_argument(
+        "--host",
+        action="store_true",
+        help="remove only this host's overlay, leaving the shared version managed",
+    )
 
     syncing = verbs.add_parser("sync", help="pull, merge both directions, resolve, commit, push")
     # Plan §3.4: the flag set that makes a conflict resolvable without a human.
@@ -103,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "add":
             return manage.add(args.paths, to_host=args.host)
         if args.command == "remove":
-            return manage.remove(args.path)
+            return manage.remove(args.path, from_host=args.host)
         if args.command == "list":
             return manage.listing()
         if args.command == "sync":
