@@ -1034,6 +1034,41 @@ class TestWhereTheWalkLooks(unittest.TestCase):
         self.assertIn("tests.test_verdict", found)
         self.assertNotIn("test_verdict", found, "the package prefix was dropped")
 
+    def test_what_it_returns_is_sorted(self) -> None:
+        """The order is the walk's order, and it has to be *stable*: a bare
+        `set` iterates by hash, so two runs of the same sweep would try the
+        modules in different orders and a row's recorded `killer` would move.
+
+        Eight modules, not two. With two, `list(set(...))` frequently comes out
+        sorted by luck and the assertion holds against its own mutation -- which
+        is what happened: the sweep could only report this line as `BROKE`,
+        because unsorted order made an unrelated test in `tests/test_mutate.py`
+        reach its module last and trip the 30s per-test alarm. A `BROKE` is
+        never `caught`, so the line read as unguarded. Asserted here instead of
+        left to a timing accident.
+        """
+        with tempfile.TemporaryDirectory(prefix="tupferl-order-") as name:
+            box = Path(name)
+            for stem in (
+                "test_zulu",
+                "test_alpha",
+                "test_mike",
+                "test_bravo",
+                "test_yankee",
+                "test_charlie",
+                "test_x_ray",
+                "test_delta",
+            ):
+                (box / f"{stem}.py").write_text("", encoding="utf-8")
+            here = Path.cwd()
+            os.chdir(box)
+            try:
+                found = self.every(["test_alpha"])
+            finally:
+                os.chdir(here)
+        self.assertEqual(sorted(found), found, "the walk order is not stable")
+        self.assertEqual(8, len(found))
+
     def test_a_flat_selection_looks_beside_itself(self) -> None:
         with tempfile.TemporaryDirectory(prefix="tupferl-walk-") as name:
             box = Path(name)
