@@ -58,6 +58,19 @@ BROKEN_IMPORT = """
 import nothing_by_this_name  # noqa: F401
 """
 
+#: One test that fails on its own assertion, which is different from every other
+#: fixture here: `SUICIDE` kills its process and `BROKEN_IMPORT` never loads, so
+#: neither reaches the line that *names a failing test*. Nothing in this file
+#: had an ordinary red test in it until this existed.
+FAILING = """
+import unittest
+
+
+class TestRed(unittest.TestCase):
+    def test_asserts_something_untrue(self):
+        self.assertEqual(1, 2)
+"""
+
 
 class Tree(unittest.TestCase):
     """A throwaway repository root with its own `tests/` and a copy of the runner.
@@ -128,6 +141,50 @@ class TestTheAccountingCheck(Tree):
         done = self.run_it("--jobs", "2")
         self.assertEqual(1, done.returncode)
         self.assertIn("could not import tests.test_broken", done.stdout)
+
+
+class TestWhatTheRunSaysAboutItself(Tree):
+    """The last line, and the line naming a failing test.
+
+    Both survived the sweep of the change that painted them, and both are the
+    shape CLAUDE.md §8 is about: **the exit status is guarded and the words are
+    not**, so a run that printed nothing at all and exited 0 passes every other
+    test in this file. "Confirm it did the work" needs something to read.
+    """
+
+    def test_a_green_run_says_it_is_ok(self) -> None:
+        """The summary line is how a person confirms a green run rather than
+        inferring it from silence -- and `$?` is not visible in a CI log
+        scrollback."""
+        self.add("test_healthy.py", HEALTHY)
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("OK (0 failures, 0 errors, 0 skipped)", done.stdout)
+
+    def test_a_red_run_says_it_failed_and_counts_it(self) -> None:
+        """The other half, without which the assertion above is satisfied by a
+        line that says `OK` unconditionally."""
+        self.add("test_red.py", FAILING)
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("FAILED (1 failures, 0 errors, 0 skipped)", done.stdout)
+
+    def test_a_failing_test_is_named(self) -> None:
+        """Which test failed, not how many. A parallel run interleaves 16
+        batches, so a count alone sends the reader through every one of them --
+        the same argument `test_the_missing_test_is_named` makes for the
+        accounting check, on the path a person actually hits."""
+        self.add("test_red.py", FAILING)
+        done = self.run_it("--jobs", "2")
+        self.assertIn("FAIL: tests.test_red.TestRed.test_asserts_something_untrue", done.stdout)
+
+    def test_a_green_run_names_nothing(self) -> None:
+        """The precondition for the two above: no `FAIL:` line when nothing
+        failed. Without it, a version that printed the whole discovered suite
+        under `FAIL:` would satisfy them both."""
+        self.add("test_healthy.py", HEALTHY)
+        done = self.run_it("--jobs", "2")
+        self.assertNotIn("FAIL:", done.stdout)
 
 
 class TestPacking(unittest.TestCase):
