@@ -1153,6 +1153,220 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         self.assertFalse(found.baseline_red, "one loose test voided the whole run")
 
 
+class TestABatchSweepEndToEnd(unittest.TestCase):
+    """`--batch` driven all the way through `main`, in a repository of its own.
+
+    Nothing drove this path at all (#40). `TestASweepRecordsAsItGoes` below
+    stubs `_run_generated`, so it reaches the mid-run write and nothing around
+    it: the nine mutants the #38 sweep left alive in `sweep` and `main` are all
+    lines no test executed.
+
+    That matters because this is the *resume* machinery, and it exists for
+    crashes. A real sweep is minutes to hours; `sweep` records per file so a
+    crash costs one file rather than the afternoon, and re-running with the same
+    `--json` skips what is already recorded. One defect has already slipped
+    through the gap: #38 introduced a `NameError` in `finished` -- it read
+    `report`, which is not bound until `_run_generated` *returns*, while
+    `finished` is called by it -- and that was caught by reading the diff, not by
+    this suite.
+
+    **A repository of its own, not this one.** `generated` diffs the working
+    tree against a ref and mutates what changed, and `_sandboxes` copies
+    `Path.cwd()`; pointed here that is a real sweep of tupferl, which is the
+    tens of minutes #40 says not to spend. Three mutants over four tests runs in
+    seconds and exercises the same code.
+    """
+
+    #: `n` has exactly three mutable points on its `if`, and the fixture kills
+    #: all three -- `test_boundary` is what kills `>` becoming `>=`, which
+    #: survives against 5 and 1 alone because the two differ only at 2. Without
+    #: it the run exits 1 and every assertion here would be about a failure.
+    MODULE = "def n(x):\n    if x > 2:\n        return 'big'\n    return 'small'\n"
+    CHANGED = "def n(x):\n    if x > 3:\n        return 'big'\n    return 'small'\n"
+    SUITE = (
+        "import unittest\n"
+        "from tupferl import tiny\n\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_big(self): self.assertEqual('big', tiny.n(9))\n"
+        "    def test_small(self): self.assertEqual('small', tiny.n(1))\n"
+        "    def test_boundary(self): self.assertEqual('small', tiny.n(3))\n"
+    )
+
+    #: A **second** file, and it is what makes the two writes distinguishable.
+    #: With one file, dropping the per-file write leaves the end-of-sweep write
+    #: to produce the same report, and dropping the end-of-sweep write leaves
+    #: the per-file one -- so each mutant survives behind the other, and both
+    #: did until this existed.
+    OTHER = "def s(x):\n    return x * 2\n"
+    CHANGED_OTHER = "def s(x):\n    return x * 3\n"
+    OTHER_SUITE = (
+        "import unittest\n"
+        "from tupferl import other\n\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_doubles(self): self.assertEqual(8, other.s(4))\n"
+        "    def test_zero(self): self.assertEqual(0, other.s(0))\n"
+    )
+
+    def repository(self) -> Path:
+        """A committed base, then one changed line for `--base HEAD` to find."""
+        box = Path(tempfile.mkdtemp(prefix="tupferl-batch-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        for package in ("tupferl", "tests"):
+            (box / package).mkdir()
+            (box / package / "__init__.py").write_text("", encoding="utf-8")
+        (box / "tupferl" / "tiny.py").write_text(self.MODULE, encoding="utf-8")
+        (box / "tests" / "test_tiny.py").write_text(self.SUITE, encoding="utf-8")
+        (box / "tupferl" / "other.py").write_text(self.OTHER, encoding="utf-8")
+        (box / "tests" / "test_other.py").write_text(self.OTHER_SUITE, encoding="utf-8")
+
+        def git(*argv: str) -> None:
+            subprocess.run(("git", *argv), cwd=box, check=True, capture_output=True)
+
+        git("init", "-q")
+        git("config", "user.email", "batch@example.invalid")
+        git("config", "user.name", "batch")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        (box / "tupferl" / "tiny.py").write_text(self.CHANGED, encoding="utf-8")
+        (box / "tupferl" / "other.py").write_text(self.CHANGED_OTHER, encoding="utf-8")
+        return box
+
+    def sweep(self, box: Path, report: Path) -> tuple[int, str]:
+        """One real `--batch` run, from `argparse` to the done marker.
+
+        `_persist` is *wrapped*, not replaced: it still writes, and `self.wrote`
+        records how many rows each call was handed. That sequence is the only
+        thing separating the mid-run write from the final one, and both mutants
+        hid behind the other until it existed.
+        """
+        self.wrote: list[int] = []
+        real = mutate._persist
+
+        def watched(found: mutate.Report, where: Path) -> None:
+            self.wrote.append(len(found.results))
+            real(found, where)
+
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with mock.patch.object(mutate, "_persist", watched), support.quiet() as spill:
+                code = mutate.main(
+                    [
+                        "--base",
+                        "HEAD",
+                        "--batch",
+                        "--json",
+                        str(report),
+                        "--no-baseline",
+                        "--workers",
+                        "1",
+                        "--no-killers",
+                    ]
+                )
+            return code, spill.getvalue()
+        finally:
+            os.chdir(here)
+
+    def test_a_batch_run_writes_its_report_and_marks_itself_done(self) -> None:
+        """The whole path: `generated`, `sweep`, the per-file write, the final
+        write, and the marker `tools/watch.py --done` waits on."""
+        box = self.repository()
+        report = box / "r.json"
+        code, said = self.sweep(box, report)
+        self.assertEqual(0, code, said)
+        written = json.loads(report.read_text(encoding="utf-8"))
+        outcomes = [row["outcome"] for row in written["results"]]
+        self.assertEqual(["caught"] * len(outcomes), outcomes, said)
+        self.assertEqual(
+            {"tupferl/tiny.py", "tupferl/other.py"},
+            {row["path"] for row in written["results"]},
+            "the batch did not cover both files",
+        )
+
+        self.assertTrue(written["widened"], "a swept report dropped the guarantee")
+        self.assertTrue(report.with_suffix(".json.done").is_file(), "no done marker")
+
+    def test_it_writes_after_each_file_and_again_at_the_end(self) -> None:
+        """The point of recording per file: a crash costs one file, not the run.
+
+        Asserted on the *sequence* of writes, not their number. The last two are
+        the same size -- the final rewrite of a finished sweep -- so a count
+        alone cannot show that the earlier, smaller write ever happened, and
+        that earlier write is exactly what a crash leaves behind.
+        """
+        box = self.repository()
+        code, said = self.sweep(box, box / "r.json")
+        self.assertEqual(0, code, said)
+        self.assertGreaterEqual(len(self.wrote), 3, f"writes: {self.wrote}\n{said}")
+        self.assertLess(self.wrote[0], self.wrote[-1], f"nothing was written mid-run: {self.wrote}")
+        self.assertEqual(self.wrote[-1], max(self.wrote), "the last write was not the complete one")
+
+    def test_the_pidfile_is_cleared_when_the_run_is_over(self) -> None:
+        """A stale pid is the false liveness `watch.py` refuses to answer with,
+        so the file naming a process that no longer exists must not outlive it."""
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        self.assertFalse(mutate._pidfile(report).is_file(), "the run left its pidfile behind")
+
+    def test_a_red_baseline_reaches_the_report(self) -> None:
+        """The one thing the end-of-sweep write carries that the per-file writes
+        cannot.
+
+        After the last file finishes, the mid-run write has already recorded
+        every row -- so on a green run `sweep`'s own final `_persist` rewrites
+        the same rows and deleting it changes nothing. What it adds is
+        `baseline_red`, which is only known once the baseline shard has answered.
+        Without this test that write is equivalent, and its mutant survived.
+
+        `tools/reached.py` reads the flag back and refuses to explain a report
+        that carries it, because a red baseline makes every row in it meaningless
+        -- so a report that lost the flag is one that invites conclusions from
+        verdicts that mean nothing.
+        """
+        box = self.repository()
+        # Red on the untouched tree, which is what a baseline is for. The rows
+        # still run; their verdicts are what `baseline_red` invalidates.
+        (box / "tests" / "test_red.py").write_text(
+            "import unittest\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_it(self): self.fail('red on the untouched tree')\n",
+            encoding="utf-8",
+        )
+        report = box / "r.json"
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with support.quiet() as spill:
+                mutate.main(["--base", "HEAD", "--batch", "--json", str(report), "--no-killers"])
+        finally:
+            os.chdir(here)
+        written = json.loads(report.read_text(encoding="utf-8"))
+        self.assertTrue(
+            written["baseline_red"],
+            f"a red baseline never reached the report\n{spill.getvalue()}",
+        )
+
+    def test_a_second_run_skips_the_file_already_recorded(self) -> None:
+        """Resume, which is the reason any of this records per file.
+
+        The second run reaches `if not by_file` with everything already done and
+        returns without touching a sandbox -- so it says it is skipping, runs no
+        mutant, and still reports the recorded rows rather than an empty sweep.
+        Both halves matter: returning early with `[]` would report a clean sweep
+        of nothing, which is the flattering direction.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        code, said = self.sweep(box, report)
+        self.assertIn("already recorded, skipping", said)
+        self.assertNotIn("in one pool", said, "the second run swept anyway")
+        self.assertEqual(0, code, said)
+        written = json.loads(report.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(written["results"]), 4, "the resume lost rows")
+
+
 class TestASweepRecordsAsItGoes(unittest.TestCase):
     """`sweep` persists after every file, and that write happens *inside* the
     run it is reporting on.
