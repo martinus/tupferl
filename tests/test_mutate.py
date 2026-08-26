@@ -1915,26 +1915,111 @@ class TestASpecFileWithNothingInIt(unittest.TestCase):
 
 
 class TestWhoOwnsTheMachine(unittest.TestCase):
-    """`_budget` halves a shared machine and does not halve a dedicated one.
+    """`_budget` asks the kernel what is free, and halves only when it will not say.
 
-    The halving was unconditional, and on a machine with nobody else on it that
-    is waste rather than thrift: 16 GiB and four cores gave a budget of 8037 MiB,
-    which `_share` turned into **three** lanes where the cores wanted eight.
-    Measured on one interleaved pair of the same 17-mutant table: 283.7s at three
-    lanes against 154.7s at seven.
+    **The halving is a guess about people, and it is wrong in both directions.**
+    It assumes someone else wants half whether or not anyone is there. On the
+    idle cloud container this was found on it left 8 GiB of 16 unused, and
+    because `_share` gives up *lanes* once each ceiling would fall under
+    `_FLOOR`, halving the budget more than halved the parallelism: 3 lanes where
+    7 fit, and a 12-row table at 11.2s against 7.6s, three interleaved pairs. On
+    a laptop already holding ten of sixteen gigabytes in an editor and a
+    browser, the same rule hands out eight that are not there.
+
+    `MemAvailable` answers the question actually being asked, and it accounts
+    for every other process by construction. The halving survives as the
+    fallback for a machine with no `/proc/meminfo` -- macOS, which is a CI leg,
+    which is what keeps that path exercised.
+
+    **Every test here pins the machine.** `_unclaimed` reads a real file, so a
+    fixture that left it pointing at the real `/proc/meminfo` would assert
+    against however much memory the developer happened to have free -- green on
+    an idle laptop, red on a busy one, and telling nobody why. `machine` writes
+    the file it is about.
     """
 
     #: Bigger than `_SPARE` and than `_FLOOR`, so "leave a gibibyte" and "never
     #: go under the floor" are both visible rather than clipping each other.
     VISIBLE = 16 << 30
 
-    def budget(self, **environment: str) -> int:
+    def meminfo(self, text: str | None) -> Any:
+        """Point `mutate.MEMINFO` at a file of this test's own, or at nothing.
+
+        `None` is a machine that will not say -- spelled as a path that does not
+        exist rather than by patching `_unclaimed`, because the fallback is
+        reached through `read_text` raising and that is the arm being claimed.
+        """
+        box = Path(tempfile.mkdtemp(prefix="tupferl-meminfo-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        where = box / "meminfo"
+        if text is not None:
+            where.write_text(text, encoding="utf-8")
+        return mock.patch.object(mutate, "MEMINFO", where)
+
+    def kernel_says(self, available_kb: int | None, free_kb: int = 200) -> str:
+        """A `/proc/meminfo` in the kernel's own format, and the `kB` it writes.
+
+        `MemFree` is always present and always small, so a reader that took it
+        instead of `MemAvailable` would size a pool from the page cache being
+        full -- which is every machine that has read a file.
+        """
+        lines = [f"MemTotal:       {self.VISIBLE // 1024} kB", f"MemFree:{free_kb:15d} kB"]
+        if available_kb is not None:
+            lines.insert(1, f"MemAvailable:{available_kb:11d} kB")
+        return "\n".join(lines) + "\n"
+
+    def budget(self, available: int | None = None, /, **environment: str) -> int:
+        """The budget on a machine with `available` bytes unclaimed, or on one
+        whose kernel will not say when `available` is None.
+
+        Positional-only, because `**environment` carries variable names --
+        `mutate._TOTAL` among them -- and a keyword parameter beside it is one
+        renamed constant away from a caller silently setting this instead of the
+        environment. `mypy` says so rather than waiting for it to happen.
+        """
+        said = None if available is None else self.kernel_says(available // 1024)
         seen = mock.patch.object(mutate, "_visible_memory", lambda: self.VISIBLE)
-        with seen, mock.patch.dict(os.environ, environment, clear=True):
+        with seen, self.meminfo(said), mock.patch.dict(os.environ, environment, clear=True):
             return mutate._budget()
 
+    def test_a_machine_with_room_gets_what_is_actually_free(self) -> None:
+        """Not half of what exists. The whole point: an idle machine is measured
+        rather than assumed to be half somebody else's."""
+        self.assertEqual((14 << 30) - (1 << 30), self.budget(14 << 30))
+
+    def test_a_busy_machine_gets_less_and_that_is_the_half_that_matters(self) -> None:
+        """The direction a change like this is never tested in. Without it,
+        every assertion above is equally satisfied by "always take nearly
+        everything", which is the version that gets a laptop OOM-killed."""
+        self.assertEqual((3 << 30) - (1 << 30), self.budget(3 << 30))
+        self.assertLess(self.budget(3 << 30), self.budget(14 << 30))
+
+    def test_a_cgroup_limit_still_binds_under_a_roomy_host(self) -> None:
+        """Inside a container `/proc/meminfo` reports the **host's** numbers, so
+        a 2 GiB cgroup on a 62 GiB host reads as 60 available. Taking that at
+        face value is the OOM kill `_visible_memory` was written to prevent,
+        arriving through a second source of truth."""
+        confined = mock.patch.object(mutate, "_visible_memory", lambda: 4 << 30)
+        roomy = self.meminfo(self.kernel_says((60 << 30) // 1024))
+        with confined, roomy, mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual((4 << 30) - (1 << 30), mutate._budget())
+
+    def test_a_kernel_that_will_not_say_falls_back_to_halving(self) -> None:
+        """macOS has no `/proc/meminfo`, and the `macos` CI leg is what proves
+        this arm stays reachable -- the same argument `tupferl/config.py`'s
+        `tomli` fallback rests on."""
+        self.assertEqual(self.VISIBLE // 2, self.budget(None))
+
+    def test_mem_free_is_not_mistaken_for_mem_available(self) -> None:
+        """An old kernel writes no `MemAvailable`. Reading `MemFree` instead
+        would size the pool from whatever the page cache has not taken, which on
+        any machine that has read a file is a small number and a wrong one."""
+        with self.meminfo(self.kernel_says(None, free_kb=200)):
+            self.assertEqual(0, mutate._unclaimed())
+
     def test_a_shared_machine_keeps_half_for_the_person_using_it(self) -> None:
-        self.assertEqual(self.VISIBLE // 2, self.budget())
+        """The fallback rule, unchanged, on a machine that cannot be measured."""
+        self.assertEqual(self.VISIBLE // 2, self.budget(None))
 
     def test_a_ci_runner_is_not_shared(self) -> None:
         """Nobody is waiting for their editor on a CI runner, and every CI
@@ -1973,10 +2058,21 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
 
     def test_the_run_says_which_rule_it_used(self) -> None:
         """A lane count nobody can account for is what sent this author reading
-        `_share` in the first place."""
-        with mock.patch.dict(os.environ, {}, clear=True):
+        `_share` in the first place.
+
+        Four rules now, and each names itself. The measured one says the number
+        it measured: "3 lanes" is a mystery, "3072 MiB unclaimed" is a machine
+        with something else running on it, and the difference is the whole
+        reason this line exists.
+        """
+        busy = self.meminfo(self.kernel_says((3 << 30) // 1024))
+        with busy, mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIn("unclaimed", mutate._why())
+            self.assertIn(str(3 << 10), mutate._why(), "it does not say how much")
+        silent = self.meminfo(None)
+        with silent, mock.patch.dict(os.environ, {}, clear=True):
             self.assertIn("shared", mutate._why())
-        with mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
+        with self.meminfo(None), mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
             self.assertIn("dedicated", mutate._why())
         with mock.patch.dict(os.environ, {mutate._TOTAL: "123"}, clear=True):
             # `mutate._TOTAL`, not the literal. This asserted `"--budget"` and

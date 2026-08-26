@@ -1126,6 +1126,58 @@ def _visible_memory() -> int:
     return min(limits) if limits else _LANES * _LANE
 
 
+#: Where the kernel publishes what it can still hand out. A module constant so a
+#: test can point it at a file of its own and drive the real parser against real
+#: kernel text, rather than patching the function that reads it -- which would
+#: leave the parsing, the one part with anything to get wrong, unexercised.
+MEMINFO = Path("/proc/meminfo")
+
+
+def _unclaimed() -> int:
+    """What the kernel says can be handed out right now, or 0 if it will not say.
+
+    **The measurement that replaces a guess.** `_budget` used to halve visible
+    memory unless `dedicated()` fired, and the halving is a guess about people:
+    it assumes someone else wants half, whether or not anyone is there. It is
+    wrong in both directions. On an idle cloud container it left 8 GiB of 16
+    unused and, because `_share` gives up *lanes* once each ceiling would fall
+    under `_FLOOR`, that cost more than half the parallelism -- measured, 3 lanes
+    where 7 fit, and a 12-row table at 11.2s against 7.6s. On a laptop with an
+    editor and a browser already holding ten of sixteen gigabytes, the same rule
+    hands out eight that are not there.
+
+    `MemAvailable` answers the question actually being asked: how much can be
+    allocated without pushing the machine into swap, *accounting for what every
+    other process is already using*. So a busy machine yields a small budget and
+    an empty one a large budget, with nothing to configure and no claim about
+    whose machine it is.
+
+    Linux only -- there is no `/proc/meminfo` on macOS, and `vm_stat` is a
+    subprocess this cannot justify spawning to size a pool. 0 means "no answer",
+    and `_budget` keeps the old rule for that case; the `macos` CI leg is what
+    proves that path stays reachable, the same argument `tupferl/config.py`'s
+    `tomli` fallback rests on.
+
+    `MemAvailable` and not `MemFree`: free memory excludes the page cache, which
+    the kernel will reclaim on demand, so it understates by gigabytes on any
+    machine that has read files. Measured here: 15,286 MiB free against 15,494
+    available, and the gap is this repository's own working set.
+    """
+    try:
+        said = MEMINFO.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    for line in said.splitlines():
+        name, _, rest = line.partition(":")
+        if name == "MemAvailable":
+            words = rest.split()
+            # `kB` in the file means KiB, which is the kernel's own spelling and
+            # not a unit conversion anyone should have to guess at.
+            if len(words) == 2 and words[0].isdigit() and words[1] == "kB":
+                return int(words[0]) * 1024
+    return 0
+
+
 def _confined() -> int:
     """The cgroup's memory limit, or 0 when the host's RAM is what bounds us.
 
@@ -1183,6 +1235,8 @@ def _why() -> str:
     """
     if os.environ.get(_TOTAL, "").isdigit():
         return _TOTAL
+    if free := _unclaimed():
+        return f"{free >> 20} MiB unclaimed, less {_SPARE >> 20} MiB spare"
     return f"dedicated: {dedicated()}" if dedicated() else "shared machine, so half of it"
 
 
@@ -1222,6 +1276,18 @@ def _budget() -> int:
     if said.isdigit() and int(said) > 0:
         return int(said)
     visible = _visible_memory()
+    if free := _unclaimed():
+        # `min` with `visible`, never `free` alone: inside a container
+        # `/proc/meminfo` reports the **host's** numbers, so a 2 GiB cgroup on a
+        # 62 GiB host would read as 60 available and be OOM-killed with every
+        # per-lane cap respected. That is the exact mistake `_visible_memory`
+        # was written for, and reading a second source of truth is how it would
+        # come back.
+        #
+        # `_SPARE` still comes off the top: `MemAvailable` is a reading taken at
+        # one instant, and the person whose machine this is may open something a
+        # second later.
+        return max(_FLOOR, min(visible, free) - _SPARE)
     if dedicated():
         # Never below the floor: a very small dedicated box would otherwise be
         # handed a budget under one lane's ceiling and get fewer lanes than the

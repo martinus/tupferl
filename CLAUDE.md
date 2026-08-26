@@ -702,37 +702,32 @@ Five things are not where a newcomer would guess, all on purpose:
   instance where the copy and the original disagreed. Where a precondition is
   wanted, look for one the real path already proves: the refusal message names
   the path, and nothing but a real conflict could put it there.
-- **A cloud dev container looks "shared" to `tools/mutate.py`, and pays about
-  a third of its sweep time for the mistake.** `_budget()` halves visible memory
-  unless `dedicated()` fires, and `dedicated()` fires on a cgroup limit or `CI` —
-  an ephemeral container has neither, so it gets the halving with nobody else on
-  it. That is not merely conservative: `_share` gives up *lanes* once each one's
-  ceiling would fall under `_FLOOR`, so halving the budget more than halves the
-  parallelism.
+- **The sweep sizes itself from what is actually free, and says so.**
+  `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the
+  smaller of that and any cgroup limit, leaves a gibibyte, and divides. So a
+  machine with an editor and a browser on it yields a small budget and an idle
+  one a large budget, with nothing to set. The line every run prints names the
+  rule it used:
 
-  Measured on the 16 GiB, four-core container this was found in, running the
-  same 12-row table, three interleaved pairs:
-
-  | told | lanes | median | vs default |
-  |---|---|---|---|
-  | nothing (default) | 3 | 11.2 s | — |
-  | `TUPFERL_MUTATE_TOTAL=12884901888` (12 GiB) | 6 | 7.6 s | **+32%** |
-  | `TUPFERL_MUTATE_TOTAL=16106127360` (15 GiB) | 7 | 6.2 s | +39% |
-
-  So on a container that is genuinely yours alone, say so:
-
-  ```sh
-  export TUPFERL_MUTATE_TOTAL=12884901888   # 12 GiB; see mutate._budget
+  ```
+  7 lane(s) at 2053 MiB each, from 14374 MiB of usable memory
+  (15398 MiB unclaimed, less 1024 MiB spare) -- see tools.mutate._share.
   ```
 
-  **12 GiB rather than the full 15**: `_share` commits `lanes x ceiling` up to
-  whatever it is told, so 15 leaves 0.7 GiB of the machine unaccounted for,
-  which is the over-commitment woswoar#232 exists to prevent. 12 keeps 3.7 GiB
-  of real headroom and buys six of the seven lanes.
+  Two things follow, and both bit before this existed:
 
-  This is a fact about the *machine*, not about the repository, so it belongs in
-  the environment rather than in a default here — `mutate._budget` already says
-  that being told beats guessing.
+  - **The old rule halved visible memory** on the guess that someone else wanted
+    the other half. On this container that cost more than half the parallelism,
+    because `_share` gives up *lanes* once each one's ceiling would fall under
+    `_FLOOR`: 3 lanes where 7 fit, and a 12-row table at 11.2s against 7.6s over
+    three interleaved pairs. It survives only as the fallback for a machine with
+    no `/proc/meminfo` -- macOS, and the `macos` CI leg is what keeps that arm
+    reachable.
+  - **`TUPFERL_MUTATE_TOTAL` is still there and should now be rare.** It was the
+    documented way to say "this machine is mine"; that question is measured
+    rather than asked. Reach for it to *reproduce* a small machine, not to
+    unlock a large one.
+
 - **Colour is decided per stream, and a captured stream is not a terminal.**
   `tools/paint.py` asks `isatty` of the stream being written to, so everything
   a test captures — `support.quiet`, a `subprocess` pipe, `> sweep.log` — comes
