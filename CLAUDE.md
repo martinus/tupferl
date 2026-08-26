@@ -755,6 +755,36 @@ read this file:
 
 ### Measured dead ends — do not re-attempt without new evidence
 
-Empty, honestly: nothing has been tried and reverted yet. The first experiment
-that does not survive goes here with its numbers, so it is not re-attempted in
-six months.
+- **Interleaving a mutation table round-robin across files** (#49). Proposed so
+  that an interrupted sweep would have partial coverage of every file rather
+  than complete coverage of some. It breaks `Learned` (#43), whose docstring
+  states the premise it rests on: rows arrive sorted by file and line, so
+  consecutive mutants sit in the same function and are usually caught by the
+  same test.
+
+  Replayed over the 906 caught rows of a recorded whole-tree report, 13 files,
+  `LEARNED = 8`:
+
+  | ordering | move-to-front hit rate | adjacent rows sharing a killer |
+  |---|---|---|
+  | contiguous by path — today | 72.7% | 44.1% |
+  | size-first, whole files | 72.8% | 44.1% |
+  | round-robin across files | 27.3% | 0.1% |
+
+  Sorting whole *files* costs nothing, because each file's rows stay together.
+  Interleaving *rows* turns about 45% of them from "the killer is already at the
+  front" into "walk the selection to find it again".
+
+  Replayed sequentially from a recorded report rather than timed: the real list
+  is shared across lanes and `Learned.ahead` also filters by reachability, so
+  the ratio is the claim and not the absolute figures.
+
+  **What would justify re-opening it**: a `Learned` keyed per file rather than
+  one list per run, which would hold a front for each and make the interleave
+  free. That is a bigger change than the ordering it would enable, and nobody
+  has needed it.
+
+  The failure mode is why this is written down at all: nothing fails. Same
+  verdicts, no counter on the hit rate, just a slower sweep — which reads as
+  "mutation testing is slow", a conclusion already reached here once for a
+  different reason.

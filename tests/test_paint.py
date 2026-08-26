@@ -212,6 +212,21 @@ class TestWhatIsInsideTheCodes(Fixture):
         before finding out it says nothing."""
         self.assertEqual("\n\n", paint.paint("\n\n", paint.GOOD, self.terminal()))
 
+    def test_the_empty_string_is_left_alone_too(self) -> None:
+        """The only input that tells `>=` from `>` in that guard, and this test
+        is the whole reason it is not `>`.
+
+        Every all-newline case satisfies both: `"\n"` has `lead + tail == 2`
+        against a length of 1, because the same newline is counted from each
+        end. Only `""` lands exactly on the boundary at `0 >= 0`, and with `>`
+        it falls through and returns a bare `code + OFF` -- an escape sequence
+        wrapped around nothing at all, on a line that had nothing to say.
+
+        Measured: `>=` becoming `>` survived the sweep of this change, because
+        the test above uses `"\n\n"` and cannot see the difference.
+        """
+        self.assertEqual("", paint.paint("", paint.GOOD, self.terminal()))
+
     def test_whitespace_that_is_not_a_newline_is_still_painted(self) -> None:
         """The hoist is newlines only. A padded field is trailing *spaces*, and
         stripping those would be the width bug above, arriving from inside."""
