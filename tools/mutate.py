@@ -274,6 +274,52 @@ _SKIP = shutil.ignore_patterns(
 Outcome = Literal["caught", "survived", "broke", "timeout", "refused"]
 
 
+class Meaning(NamedTuple):
+    """Everything the rest of the file needs to know about one outcome.
+
+    **One row per outcome, because five scattered spellings is how two bugs got
+    in.** Adding `refused` meant visiting `answered`, `clean`, `_HEADLINE` and
+    `reached.usable`, and nothing made it happen: the headline was a plain `[]`
+    lookup that raised `KeyError` 200s into a sweep and threw away every answer
+    already paid for, and the other three were `in (...)` tuples that fail
+    *silently*, with a wrong answer, which is worse. `clean` did exactly that --
+    a refused row would have failed every sweep.
+
+    A dict cannot be made total by `mypy`, so `tests/test_mutate.py` asserts
+    `MEANING` covers `typing.get_args(Outcome)` and is derived from the type
+    rather than listing it. That is the enforcement; this is the single place.
+    """
+
+    #: What a row prints. Lower case is good news or no news; the shouted ones
+    #: are what a reader must not scroll past.
+    headline: str
+    #: Was a question put to the tests at all? `caught` and `survived` are the
+    #: two real verdicts; the rest asked nothing.
+    answered: bool
+    #: May a sweep of only these rows be called done? `refused` is the one that
+    #: is not `answered` and yet clean: the type checker made the question moot
+    #: rather than the run failing to put it.
+    clean: bool
+    #: Does the row say anything about whether its line ran? `tools/reached.py`
+    #: crosses survivors with coverage and must not read a non-answer as
+    #: evidence that a line was executed.
+    usable: bool
+
+
+#: Keyed by `str`, not by `Outcome`, because `tools/reached.py` reads outcomes
+#: back out of a JSON report where they are plain strings and a newer `mutate`
+#: may have written one this build has never heard of. The test asserts the keys
+#: are *exactly* `get_args(Outcome)`, in both directions, so a typo is caught
+#: there rather than by a `KeyError` mid-sweep.
+MEANING: dict[str, Meaning] = {
+    "caught": Meaning("caught", answered=True, clean=True, usable=True),
+    "survived": Meaning("SURVIVED", answered=True, clean=False, usable=True),
+    "broke": Meaning("BROKE", answered=False, clean=False, usable=False),
+    "timeout": Meaning("TIMEOUT", answered=False, clean=False, usable=False),
+    "refused": Meaning("refused", answered=False, clean=True, usable=False),
+}
+
+
 class Verdict(NamedTuple):
     outcome: Outcome
     #: The first test that noticed, or the reason nothing could. Printed for
@@ -302,9 +348,10 @@ class Verdict(NamedTuple):
 
         One definition, because three sites need it and the run, the summary and
         the exit status each spelled it differently -- and one of the three said
-        something subtly other than the other two.
+        something subtly other than the other two. `MEANING` is now where that
+        one definition lives, along with everything else an outcome implies.
         """
-        return self.outcome in ("caught", "survived")
+        return MEANING[self.outcome].answered
 
 
 class Result(NamedTuple):
@@ -356,7 +403,7 @@ class Report(NamedTuple):
         sweep over it would fail every sweep, since ~15% of mutants are refused.
         """
         return not self.baseline_red and all(
-            result.verdict.outcome in ("caught", "refused") for result in self.results
+            MEANING[result.verdict.outcome].clean for result in self.results
         )
 
 
@@ -372,17 +419,6 @@ _RUNS: list[Report] = []
 #: Nine wide, as before. `caught` stays lowercase and everything else shouts,
 #: because the eye scanning a pasted table is looking for the rows that are not
 #: the good news.
-_HEADLINE: dict[str, str] = {
-    "caught": "caught",
-    "survived": "SURVIVED",
-    "broke": "BROKE",
-    "timeout": "TIMEOUT",
-    # Lower case, like `caught` and unlike the three shouted ones: a refusal is
-    # not bad news about the tests. `test_mutate` asserts every `Outcome` has an
-    # entry here, because the lookup is a plain `[]` -- a missing key raised
-    # `KeyError` mid-run and threw away 200s of answers already paid for.
-    "refused": "refused",
-}
 
 
 def _probe() -> str:
@@ -1469,7 +1505,7 @@ def run(
                 # collected in -- so a caller can tell when a *file* is finished
                 # by counting, without knowing anything about the pool.
                 landed(results[-1])
-            print(f"  {_HEADLINE[verdict.outcome]:9} {mutation.label}")
+            print(f"  {MEANING[verdict.outcome].headline:9} {mutation.label}")
             if verdict.answered:
                 continue
             if strict:

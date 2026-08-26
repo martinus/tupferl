@@ -47,6 +47,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from tools import mutate
+
 
 class Row(NamedTuple):
     """One mutation and what became of it, as `tools/mutate.py --json` writes it."""
@@ -62,12 +64,22 @@ class Row(NamedTuple):
 
     @property
     def answered(self) -> bool:
-        """Caught or survived. `broke` and `timeout` say nothing about a line.
+        """Whether this row says anything about whether its line ran.
 
-        They are excluded from `repair` for that reason: a row that never got to
-        ask is not evidence its line ran.
+        `broke`, `timeout` and `refused` do not, and are excluded from `repair`
+        for that reason: a row that never got to ask is not evidence its line was
+        executed.
+
+        Read from `mutate.MEANING` rather than spelled again here. This was its
+        own tuple of outcome names until adding `refused` showed what that costs:
+        five sites had to be visited, `mypy` could not require it, and the three
+        written as `in (...)` fail *silently* with a wrong answer. An unknown
+        outcome is not `answered` -- a report written by a newer `mutate` is read
+        conservatively rather than optimistically, which is the direction this
+        tool errs in everywhere else.
         """
-        return self.outcome in ("caught", "survived")
+        known = mutate.MEANING.get(self.outcome)
+        return known is not None and known.usable
 
 
 def voided(report: dict[str, Any]) -> bool:

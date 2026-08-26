@@ -1219,15 +1219,27 @@ class TestAMutantTheTypeCheckerRefuses(unittest.TestCase):
         self.assertFalse(mutate.Verdict("refused", "d").answered)
         self.assertNotIn("refused", ("caught", "survived"))
 
-    def test_every_outcome_has_a_headline(self) -> None:
-        """The lookup in `run` is a plain `[]`, so a missing entry is a
-        `KeyError` *mid-sweep* -- which is how adding `refused` threw away 200s
-        of answers already paid for, on a run where the type check worked
-        perfectly. Derived from the type rather than listed, or this guard rots
-        the next time an outcome is added.
+    def test_every_outcome_has_a_meaning(self) -> None:
+        """The enforcement `mypy` cannot give a dict, and the reason `MEANING`
+        exists at all.
+
+        Adding `refused` meant visiting `answered`, `clean`, the headline map and
+        `reached.usable`, and nothing required it: the headline was a plain `[]`
+        that raised `KeyError` 200s into a sweep and discarded every answer
+        already paid for, and the other three were `in (...)` tuples that fail
+        *silently* with a wrong answer -- `clean` did, and would have failed
+        every sweep.
+
+        **Set equality, both directions, derived from the type.** Missing keys
+        crash a run; extra ones are a typo that would never fire. Listing the
+        outcomes here instead of deriving them is how the guard would rot on the
+        next one.
         """
-        for outcome in typing.get_args(mutate.Outcome):
-            self.assertIn(outcome, mutate._HEADLINE, f"{outcome} would crash the run")
+        self.assertEqual(
+            set(typing.get_args(mutate.Outcome)),
+            set(mutate.MEANING),
+            "MEANING and Outcome have drifted apart",
+        )
 
     def test_a_refused_row_does_not_fail_the_sweep(self) -> None:
         """Where `refused` parts company with `broke` and `timeout`.
