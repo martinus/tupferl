@@ -19,6 +19,7 @@ else in this project's testing story is downstream of the harness being honest.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -2011,6 +2012,18 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         `tomli` fallback rests on."""
         self.assertEqual(self.VISIBLE // 2, self.budget(None))
 
+    def test_a_malformed_available_line_is_refused(self) -> None:
+        """A value that is not a number, or a unit that is not `kB`, is not a
+        reading. Falling back to the halving is the honest answer; parsing it
+        anyway would size a pool from whatever `int()` happened to accept.
+
+        Three shapes, because a guard of three `and`ed clauses needs an input
+        that fails each one on its own -- with only well-formed text, swapping
+        an `and` for an `or` survives."""
+        for said in ("MemAvailable: lots kB", "MemAvailable: 4096", "MemAvailable: 4096 MB"):
+            with self.subTest(said=said), self.meminfo(said + "\n"):
+                self.assertEqual(0, mutate._unclaimed(), f"{said!r} was read as a number")
+
     def test_mem_free_is_not_mistaken_for_mem_available(self) -> None:
         """An old kernel writes no `MemAvailable`. Reading `MemFree` instead
         would size the pool from whatever the page cache has not taken, which on
@@ -2173,6 +2186,31 @@ class TestTheProcessTableCarriesBothNumbers(unittest.TestCase):
         self.assertGreater(me.resident, 0, "no resident memory read for this process")
         self.assertGreater(me.address, me.resident, "address space is not above resident")
 
+    def test_the_two_readers_agree_on_resident_as_well(self) -> None:
+        """Not just address space. `resident` is read in pages from `/proc` and
+        in kibibytes from `ps`, so each has its own unit to get wrong, and the
+        mutation that turns either multiply into a divide leaves a number that
+        is still positive -- which is all "greater than zero" can see."""
+        mine = mutate._from_proc()[os.getpid()]
+        theirs = mutate._from_ps()[os.getpid()]
+        self.assertLess(
+            max(mine.resident, theirs.resident) / min(mine.resident, theirs.resident),
+            2.0,
+            f"proc says {mine.resident} resident and ps says {theirs.resident}",
+        )
+
+    def test_the_two_readers_agree_on_parentage_too(self) -> None:
+        """The fields that decide *membership*. `_lane` walks parents and
+        groups, so an index off by one there silently changes which processes a
+        lane is held responsible for -- and nothing else in this file would
+        notice, because the memory figures would still be read correctly."""
+        mine = mutate._from_proc()[os.getpid()]
+        theirs = mutate._from_ps()[os.getpid()]
+        self.assertEqual(os.getppid(), mine.parent)
+        self.assertEqual(mine.parent, theirs.parent)
+        self.assertEqual(os.getpgrp(), mine.group)
+        self.assertEqual(mine.group, theirs.group)
+
     def test_ps_and_proc_agree_about_this_process(self) -> None:
         """The macOS fallback, exercised on every platform.
 
@@ -2236,8 +2274,26 @@ class TestAPsWithoutTheColumnStillGuards(unittest.TestCase):
     def test_a_line_that_is_not_numbers_is_skipped(self) -> None:
         """`ps` writes a header when asked without `=`, and a machine may print
         anything on stderr-ish lines. A row that is not five integers is not a
-        process."""
+        process.
+
+        **The mixed row is the one that matters.** A header is *all* words, so
+        it is refused by `all(...)` and by `any(...)` alike -- a fixture of only
+        those cannot tell the two apart, and the mutation swapping them survived
+        against exactly that. `123 456 789 abc def` is the shape that separates
+        them, and it is also the realistic one: a column that failed to render
+        leaves numbers beside it.
+        """
         self.assertEqual({}, mutate._parse_ps("PID PPID PGID RSS VSZ\nnot a process\n"))
+        self.assertEqual({}, mutate._parse_ps("123 456 789 abc def\n"))
+        self.assertEqual({}, mutate._parse_ps("123 456 789 1024 zzz\n"))
+
+    def test_the_kibibytes_are_multiplied_and_not_divided(self) -> None:
+        """`ps` reports KiB. A divide leaves a number that is still positive,
+        which is all an assertion of "greater than zero" can see -- so this
+        pins the arithmetic against a known input instead."""
+        table = mutate._parse_ps("7 1 7 2048 4096\n")
+        self.assertEqual(2048 * 1024, table[7].resident)
+        self.assertEqual(4096 * 1024, table[7].address)
 
 
 class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
@@ -2307,6 +2363,13 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         kernel's own high-water over a sweep."""
         self.assertIn("sampled", self.said(1892 << 20, 2053 << 20))
 
+    def test_the_threshold_itself_counts_as_thin(self) -> None:
+        """Exactly at `_TIGHT`, which is the only input that tells `>=` from
+        `>`. The pair below uses 95% and 10% and cannot see the difference; the
+        mutant survived the sweep against them."""
+        at = int(mutate._TIGHT * (2000 << 20))
+        self.assertIn(paint.ODD, self.said(at, 2000 << 20, terminal=True))
+
     def test_a_thin_margin_is_shouted_and_a_roomy_one_is_not(self) -> None:
         """The half that makes the line worth printing at all. Without it the
         report is the same colour whether the ceiling is comfortable or one
@@ -2316,6 +2379,48 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         self.assertIn(paint.ODD, tight, "a 95% margin was muttered")
         self.assertNotIn(paint.ODD, roomy, "a 10% margin was shouted")
         self.assertIn(paint.QUIET, roomy)
+
+    def ran(self, *patched: Any) -> str:
+        """One real `run`, with the rows stubbed out.
+
+        `TestTheRunAccountsForItsLanes.ROW` rather than the module's `row()`:
+        that helper's placeholder text appears 2148 times in its file, so
+        `check` refuses it. Referenced at call time, since the class is defined
+        below this one.
+        """
+        only = TestTheRunAccountsForItsLanes.ROW
+        # `ExitStack` rather than a starred `with`, which is a syntax error --
+        # and `TestCase.enterContext` is 3.11, which the 3.10 leg does not have.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(
+                    mutate, "_attempt", lambda *a, **k: mutate.Verdict("caught", "probe")
+                )
+            )
+            for context in patched:
+                stack.enter_context(context)
+            spill = stack.enter_context(support.quiet())
+            mutate.run([only], baseline=False, summarise=False)
+        return spill.getvalue()
+
+    def test_a_run_starts_from_a_fresh_mark(self) -> None:
+        """A `run` that reports without forgetting prints the *previous* run's
+        peak. Set one, and insist it does not come out."""
+        mutate._WATCHED._widest = 999 << 20
+        self.assertNotIn("999 MiB", self.ran(), "a mark from an earlier run was reported")
+
+    def test_a_run_reports_its_headroom_at_all(self) -> None:
+        """The other half of the wiring, and it needs its own test: with
+        `forget` working and no lane sampled, a `run` that never calls
+        `_report_headroom` prints nothing -- which is exactly what a correct run
+        prints too. The two mutants are indistinguishable from one assertion,
+        and both survived the sweep against one.
+
+        So `widest` is pinned rather than the mark, which takes `forget` out of
+        the picture and leaves only "was the report reached".
+        """
+        held = mock.patch.object(mutate._WATCHED, "widest", lambda: 512 << 20)
+        self.assertIn("512 MiB", self.ran(held), "run never reported its headroom")
 
     def test_a_run_that_sampled_nothing_says_nothing(self) -> None:
         """Lanes that each finish inside one sampling interval leave no reading.

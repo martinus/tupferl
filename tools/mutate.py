@@ -524,7 +524,13 @@ class Process(NamedTuple):
     #:
     #: Free: `/proc/<pid>/stat` already carries it one field from the one this
     #: read was doing anyway, so nothing here forks or opens a second file.
-    address: int = 0
+    #:
+    #: **No default.** Both readers fill it, so a default would only ever serve
+    #: a third that had forgotten to -- and forgetting is silent: every ceiling
+    #: question then answers 0 while every assertion about `resident` still
+    #: passes. Two mutants of the default survived the sweep for that reason,
+    #: which is the generator saying the value was unobservable.
+    address: int
 
 
 def _processes() -> dict[int, Process]:
