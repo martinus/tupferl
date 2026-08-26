@@ -2211,6 +2211,25 @@ class TestTheProcessTableCarriesBothNumbers(unittest.TestCase):
         self.assertEqual(os.getpgrp(), mine.group)
         self.assertEqual(mine.group, theirs.group)
 
+    def test_the_group_is_read_where_a_session_would_not_do(self) -> None:
+        """`pgid` and `sid` sit next to each other in `/proc/<pid>/stat`, and
+        for this process they hold the **same number** -- so reading the wrong
+        one of the two is invisible here. The mutant that does exactly that
+        survived the sweep against the assertion above.
+
+        A child that starts a new process *group* without a new session tells
+        them apart: its `pgid` becomes its own pid while its `sid` stays its
+        parent's. `os.setpgrp` rather than `os.setsid`, which would make both.
+        """
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], preexec_fn=os.setpgrp
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        seen = mutate._from_proc()[child.pid]
+        self.assertEqual(child.pid, seen.group, "the process group was read from another field")
+        self.assertNotEqual(os.getsid(0), seen.group, "the fixture cannot tell the two apart")
+
     def test_ps_and_proc_agree_about_this_process(self) -> None:
         """The macOS fallback, exercised on every platform.
 
@@ -2332,6 +2351,13 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         self.assertGreater(
             mutate._WATCHED.widest(), 0, "a live lane was watched and never measured"
         )
+
+    def test_a_fresh_sampler_has_no_mark_at_all(self) -> None:
+        """Read before anything has been watched. Every other test here calls
+        `forget` in `setUp`, so the value `__init__` sets is unobservable to
+        them -- three mutants of it survived the sweep, including one that
+        removed the assignment and left `widest` raising `AttributeError`."""
+        self.assertEqual(0, mutate._Lanes().widest())
 
     def test_forget_starts_a_fresh_mark(self) -> None:
         """`_WATCHED` is a module-level singleton and a process may call `run`

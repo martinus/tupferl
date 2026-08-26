@@ -784,8 +784,17 @@ class _Lanes:
                 # a constant carried in from another repository, and it was
                 # 2.3x wrong here -- see `_FLOOR`. A sweep that measures the
                 # thing it is bounded by can say whether the bound still fits.
-                with self._lock:
-                    self._widest = max(self._widest, *(table[pid].address for pid in members), 0)
+                # Guarded rather than floored with a `0` sentinel. A lane whose
+                # processes all exited between the table read and now has no
+                # members, and `max(..., 0)` would then leave the mark at its
+                # old value -- harmless -- while `max(..., 1)` would raise it to
+                # one byte, which `_report_headroom` reads as a *reading* and
+                # prints as "0 MiB of 2050 MiB". Both mutants of that sentinel
+                # survived the sweep; asking whether anything was seen removes
+                # the constant instead of testing it.
+                if sizes := [table[pid].address for pid in members]:
+                    with self._lock:
+                        self._widest = max(self._widest, *sizes)
                 if held <= ceiling:
                     continue
                 with self._lock:
