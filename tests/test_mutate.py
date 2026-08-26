@@ -37,12 +37,32 @@ from tests import support
 from tools import mutants, mutate, paint, reached, verdict
 from tools.mutants import Mutation, check
 
-#: Seconds a driven probe may take before a test calls it hung. Above the ~2s
-#: an honest `collect(2)` spends and well below `tools/mutate.py`'s `EACH_TEST`
-#: of 30 -- see `TestAHungTestIsBoundedAndNotCredited.collect` for what happens
-#: when it is not, and `tests/test_watch.py` for the same constant and the same
-#: two bounds it has to sit between.
+#: Seconds a driven probe may take before a test calls it hung. Well above the
+#: ~0.5s an honest `collect(ALARM)` spends and well below `tools/mutate.py`'s
+#: `EACH_TEST` of 30 -- see `TestAHungTestIsBoundedAndNotCredited.collect` for
+#: what happens when it is not, and `tests/test_watch.py` for the same constant
+#: and the same two bounds it has to sit between.
+#:
+#: Left at 20 when `ALARM` dropped from 2 to 0.5. The number that matters is the
+#: gap to 30, not the gap to the honest wait: this bound exists to fail a
+#: *hung* probe before the harness's own alarm does, and shrinking it in step
+#: would buy nothing and narrow the margin that stops a slow runner reading as
+#: a hang.
 BOUND = 20
+
+#: Seconds of per-test alarm the hung-test class arms.
+#:
+#: **0.5, not 2.** The test it arms against blocks on a fifo read and does
+#: nothing else, so the alarm is pure waiting: two tests here paid two seconds
+#: each to learn something 0.5s proves identically. Measured on this container:
+#: the class went from 8.4s to 5.0s, against a serial suite of ~133s under the
+#: mutation profile.
+#:
+#: Sub-second is not novel -- `tests/test_verdict.py` already drives the same
+#: probe at `each=0.5`. The floor is the child's own startup (~60ms measured),
+#: and the alarm is armed per *test* rather than per process, so the interpreter
+#: is up long before it can fire.
+ALARM = 0.5
 
 #: The deliberate bug: `tupferl/config.py` stops refusing keys it does not know.
 #: The same row appears in `tools/mutate.py`'s module docstring as the example,
@@ -466,9 +486,10 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         own slot, this helper's selection slid into it and the module ran twice.
 
         **`wait` was 60, which is twice `EACH_TEST`.** The two callers that use
-        the default arm a 2s per-test alarm, so an honest run here takes about
-        two seconds -- but a mutant that disables that alarm leaves the fifo read
-        blocking, and at 60 the harness's own 30s alarm fired first. Measured:
+        the default arm an `ALARM`-second per-test alarm, so an honest run here
+        takes about half a second -- but a mutant that disables that alarm leaves
+        the fifo read blocking, and at 60 the harness's own 30s alarm fired
+        first. Measured:
         seven mutants of `verdict.py`'s alarm (`each_test`, `startTest`'s
         `setitimer`, `build`'s `made.each`) came back `BROKE`, and `BROKE` is
         never `caught` -- so the lines this class exists to guard were unguarded
@@ -516,12 +537,12 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         hangs in when its not-a-regular-file guard is mutated away. PEP 475
         retries a syscall interrupted by a signal, so this only works because the
         handler *raises* rather than setting a flag."""
-        found = self.collect(2)
+        found = self.collect(ALARM)
         self.assertEqual(2, found["ran"], "the run did not get past the hung test")
 
     def test_it_is_never_counted_as_the_test_noticing(self) -> None:
         """The whole safety argument. `noticed` is what `caught` is made of."""
-        found = self.collect(2)
+        found = self.collect(ALARM)
         self.assertEqual([], found["noticed"])
         broke = [str(line) for line in found["broke"]]
         self.assertEqual(1, len(broke), broke)
