@@ -1153,6 +1153,79 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         self.assertFalse(found.baseline_red, "one loose test voided the whole run")
 
 
+class TestAMutantTheTypeCheckerRefuses(unittest.TestCase):
+    """`_refused`: a mutant `mypy` rejects never reaches the tests.
+
+    It cannot reach `main` either -- `mypy tupferl tests tools` is in the
+    preflight and in CI -- so running the selected suite to learn what the type
+    checker says in a fifth of a second is pure waste.
+
+    **The line this draws is the whole of #33's judgement, and it is not the
+    obvious one.** `warn_unreachable` is on for this tree, so 44% of mutants are
+    rejected, but *two thirds of those rejections are `unreachable`*: `if x:`
+    mutated to `if True:` leaves the other branch dead and mypy complains. Those
+    still run. "This condition is always true" is exactly the question a branch
+    mutant puts to the tests, and a real always-true condition -- one arising
+    from the logic rather than from a literal -- is invisible to
+    `--warn-unreachable`. Discarding them would stop the sweep asking about 84%
+    of branches while covering none of the class.
+    """
+
+    def sandbox(self) -> Path:
+        """A copy of this tree, with mypy's cache warmed on it."""
+        box = Path(tempfile.mkdtemp(prefix="tupferl-typed-")) / "tree"
+        self.addCleanup(shutil.rmtree, box.parent, True)
+        shutil.copytree(Path.cwd(), box, ignore=mutate._SKIP, symlinks=True)
+        subprocess.run(
+            [sys.executable, "-m", "mypy", "tupferl", "tools"], cwd=box, capture_output=True
+        )
+        return box
+
+    def check(self, path: str, operator: str) -> str:
+        """Apply the first mutant of `operator` in `path`, and ask `_refused`."""
+        box = self.sandbox()
+        source = (Path.cwd() / path).read_text(encoding="utf-8")
+        every = mutants.generate(source, path, set(range(1, source.count("\n") + 1)), tests="x")
+        wanted = next(m for m in every if m.operator == operator)
+        here = box / path
+        here.write_text(mutate._applied(source, wanted), encoding="utf-8")
+        return mutate._refused(box)
+
+    def test_a_type_error_is_refused(self) -> None:
+        """`return-value` -- 94% of them are rejected, measured, and they are the
+        bulk of what this saves."""
+        self.assertIn(
+            "Incompatible return value type", self.check("tools/verdict.py", "return-value")
+        )
+
+    def test_unreachable_code_alone_still_runs_its_tests(self) -> None:
+        """The half that matters, and the half a blanket "discard what mypy
+        rejects" would get wrong. Without it the sweep silently stops asking
+        whether anything notices a branch that is always taken."""
+        self.assertEqual("", self.check("tools/verdict.py", "branch"))
+
+    def test_an_untouched_tree_refuses_nothing(self) -> None:
+        """The precondition the two above rest on: `mypy` passes on this tree, so
+        a rejection is about the mutation rather than about the repository. If
+        this fails, neither of the others means what it says."""
+        self.assertEqual("", mutate._refused(self.sandbox()))
+
+    def test_a_refusal_is_not_an_answer(self) -> None:
+        """`caught` means *a test noticed*, and that is the whole value of the
+        word. A refusal is evidence about the annotations, not about the suite --
+        folding it in would inflate the number this project reads as its score,
+        in the flattering direction."""
+        self.assertFalse(mutate.Verdict("refused", "d").answered)
+        self.assertNotIn("refused", ("caught", "survived"))
+
+    def test_a_missing_type_checker_lets_the_row_run(self) -> None:
+        """A tool that cannot answer must not be read as an answer. With no
+        `mypy` to run, every row goes to the tests exactly as before rather than
+        being discarded on a failure to look."""
+        with mock.patch("subprocess.run", side_effect=OSError("no mypy here")):
+            self.assertEqual("", mutate._refused(Path.cwd()))
+
+
 class TestMovingTheKillerToTheFront(unittest.TestCase):
     """`Learned`: whatever caught the last row goes first on the next.
 

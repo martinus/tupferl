@@ -271,7 +271,7 @@ _SKIP = shutil.ignore_patterns(
 #: question, and they must never be folded into either real verdict -- a
 #: `broke` counted as `caught` blesses a test that never executed, which is the
 #: failure this module's own docstring calls indistinguishable from a real one.
-Outcome = Literal["caught", "survived", "broke", "timeout"]
+Outcome = Literal["caught", "survived", "broke", "timeout", "refused"]
 
 
 class Verdict(NamedTuple):
@@ -985,6 +985,68 @@ class Learned:
         )
 
 
+#: mypy error codes that do **not** disqualify a mutant.
+#:
+#: `warn_unreachable` is on for this tree, so `if x:` mutated to `if True:`
+#: leaves the other branch dead and mypy says so. That is not a type error and
+#: the mutant must still run: "this condition is always true" is exactly the
+#: question a branch mutant exists to put to the tests, and a real always-true
+#: condition -- one arising from the logic rather than from a literal -- is
+#: invisible to `--warn-unreachable`. Discarding these would stop the sweep
+#: asking about 84% of branches, measured, while covering none of the class.
+KEPT_ANYWAY = frozenset({"unreachable", "redundant-expr"})
+
+
+def _refused(root: Path) -> str:
+    """The first real type error in this sandbox, or "" if there is none.
+
+    A mutant the type checker rejects cannot reach `main`: `mypy tupferl tests
+    tools` is in the preflight and in CI, so nobody could ship the change. Its
+    tests are therefore beside the point, and running the selected suite to learn
+    what `mypy` says in a fraction of a second is the waste this closes --
+    measured at 44% of mutants rejected in total, of which the ~15% that are
+    genuine type errors are what this discards.
+
+    **Never counted as `caught`.** `caught` means *a test noticed*, and its whole
+    value is that it is evidence about the suite. A mutant the checker refused is
+    evidence about the annotations. Folding the two together would inflate the
+    number this project reads as its score, silently and in the flattering
+    direction -- CLAUDE.md §8's own warning. It gets an outcome of its own, and
+    `Verdict.answered` stays false for it, because no question was put.
+
+    Run in the borrowed sandbox, which already holds the mutation. Checking the
+    working tree instead is the tempting mistake and reports the *unmutated* file
+    as clean, passing every mutant through.
+
+    A missing or broken `mypy` returns "" -- the row runs as it always did. A
+    tool that cannot answer must not be read as an answer, which is the same rule
+    `verdict.py` is built on.
+    """
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "mypy", "tupferl", "tools"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=TYPE_CHECK,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    # No `returncode` fast path: a clean run prints no `": error: "` line, so the
+    # loop below already returns "". The branch was written first and the
+    # mutation sweep showed it could not fail -- which for a *guard* means it was
+    # never a guard. Reading the exit status instead of the errors would also be
+    # the wrong test: `warn_unreachable` makes mypy exit non-zero for mutants
+    # this deliberately keeps.
+    for line in done.stdout.splitlines():
+        if ": error: " not in line:
+            continue
+        code = line.rpartition("[")[2].rstrip("]") if line.endswith("]") else ""
+        if code not in KEPT_ANYWAY:
+            return line.strip()
+    return ""
+
+
 def _attempt(
     mutation: Mutation,
     available: queue.Queue[Path],
@@ -1006,6 +1068,10 @@ def _attempt(
             # selection: an empty selection is `WHOLE_SUITE` and means "run
             # everything", so anything pushed onto that list turns it into
             # "run only this". See `verdict.collect`.
+            if refused := _refused(root):
+                # Before the suite, not after: the whole saving is the run that
+                # does not happen.
+                return Verdict("refused", refused)
             # Asked *here*, on the lane, rather than when the row was queued:
             # `run` submits the whole table to the pool at once, so at submit
             # time no verdict exists yet and there is nothing to have learned.
@@ -1029,6 +1095,12 @@ def _attempt(
             source.write_text(original, encoding="utf-8")
     finally:
         available.put(root)
+
+
+#: How long one type check may take before it is abandoned and the row runs as
+#: usual. Measured at 0.18-0.39s against a warm sandbox cache; ten seconds is a
+#: backstop for a cold one, not a budget to fill.
+TYPE_CHECK = 30.0
 
 
 #: What one lane is measured to occupy, as opposed to what `MEMORY` lets it
