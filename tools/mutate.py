@@ -317,19 +317,19 @@ class Report(NamedTuple):
     #: Nothing in `results` means anything when this is set: a suite that already
     #: fails catches every mutation, including the ones no test can see.
     baseline_red: bool = False
-    #: Whether every survivor here was re-run against the whole suite, which is
-    #: what CLAUDE.md promises about a survivor before it is reported.
+    #: Whether every survivor here was run against the whole suite, which is what
+    #: CLAUDE.md promises about a survivor before it is reported.
     #:
-    #: False by default and set only by `confirm`, rather than true by default
-    #: and cleared where the promise fails. The ways to *not* widen keep being
-    #: added -- `--no-confirm`, a red confirmation baseline, a crash mid-sweep --
-    #: and each one that forgot to clear the flag would claim a guarantee it had
-    #: not met. There is exactly one way to earn it, so that is what sets it.
+    #: Now structural rather than earned. Every row walks outward past its
+    #: selection until something notices (`verdict.collect`), so a row *called* a
+    #: survivor has run everything by construction -- there is no second pass to
+    #: skip, no `--no-confirm` to turn off, and no red confirmation baseline to
+    #: suppress a correction. `run` sets it, and the only report that carries
+    #: False is one written before this existed.
     #:
-    #: It is on the report at all because the failure is durable: `_persist`
-    #: writes these rows, `tools/reached.py` reads them back and explains each
-    #: survivor, and until woswoar#269 the only record that the promise had not been
-    #: kept was a line of prose in a terminal nobody scrolls back to.
+    #: Kept on the report rather than dropped, because `_persist` writes these
+    #: rows and `tools/reached.py` reads them back: a sweep recorded under the
+    #: old two-pass tool is still read correctly, and says so (woswoar#269).
     widened: bool = False
     #: What each test that ran cost, by id, across every row *and every baseline
     #: shard* of this run. Not persisted with the verdicts -- it is not an answer
@@ -683,8 +683,14 @@ def _run(
     memory: int = MEMORY,
     each: float = EACH_TEST,
     first: str = "",
+    walk: bool = False,
 ) -> Verdict:
     """What the suite concluded about one mutation, and by which route.
+
+    ``walk`` is "keep going past the selection when nothing in it notices", which
+    is what a *mutation* row wants and a *baseline* row must not have: a baseline
+    asks whether one selection is green, and widening it would make every
+    baseline a whole-suite run. See `verdict.collect`.
 
     The verdict used to be "the exit status was non-zero, and `Ran N` said N was
     not zero". That is wrong in the direction a reader believes, and it shipped:
@@ -728,6 +734,7 @@ def _run(
                     str(memory),
                     str(each),
                     first,
+                    "1" if walk else "0",
                     *tests,
                 ],
                 cwd=root,
@@ -899,6 +906,7 @@ def _attempt(
     timeout: float,
     memory: int,
     each: float,
+    walk: bool = True,
 ) -> Verdict:
     """Apply one mutation in a borrowed sandbox and report what the suite said."""
     root = available.get()
@@ -919,6 +927,7 @@ def _attempt(
                 memory=memory,
                 each=each,
                 first=mutation.first,
+                walk=walk,
             )
         finally:
             # Into the sandbox, not the working tree. Only so the next mutation
@@ -1161,6 +1170,7 @@ def run(
     workers: int | None = None,
     *,
     strict: bool = True,
+    walk: bool = True,
     failfast: bool = False,
     timeout: float = TIMEOUT,
     memory: int = MEMORY,
@@ -1182,7 +1192,7 @@ def run(
     target was measured at two thirds of the wall clock.
 
     ``scope`` names what a red baseline voids, because this function does not
-    always own the whole of "above". A nested pass -- `confirm`, or one batch of
+    always own the whole of "above". A nested pass -- one batch of
     a `sweep` -- prints its rows inside a larger run whose earlier verdicts are
     still good, and "nothing above means anything" reads there as voiding those
     too. The alternative was a second `print` in the caller correcting this one,
@@ -1202,25 +1212,7 @@ def run(
     for mutation in table:
         check(mutation)
 
-    # One shard per target rather than one serial run over the union. Measured on
-    # four pinned cores with eight classes of one slow suite: the mutation phase
-    # took 2.35 s across eight lanes while a single-run baseline took 6.75 s, so
-    # the check meant to cost nothing was two thirds of the wall clock and got
-    # worse as the table grew -- mutations fan out, a union sums.
-    shards = sorted({mutation.tests for mutation in table})
-    # `first` too, or the baseline never sees it. A remembered killer can name a
-    # test *outside* the row's selection -- `confirm` records them from
-    # whole-suite runs, so systematically so -- and if that test is red on the
-    # untouched tree it fails here as well, `noticed[0]` names it, and the row
-    # reports `caught` with a green baseline behind it. That is `confirm`'s own
-    # recorded failure ("credited to a shell-hook test that had never heard of
-    # the file under mutation") coming back through the cache.
-    #
-    # One shard holding all of them, not one each: a shard per remembered test
-    # is the sharding explosion that cost 372s -> 730s, in a new disguise.
-    ahead = " ".join(sorted({name for row in table for name in row.first.split()}))
-    if ahead:
-        shards.append(ahead)
+    shards = baseline_shards(table)
     # Twice the usable cores, which is what `tools/run_tests.py` measured for this
     # same subprocess-wait-bound work (jobs=8 beat jobs=4 by ~9%, jobs=16
     # regressed). An earlier `cpu // 2` here gave two lanes on a four-core runner
@@ -1252,7 +1244,7 @@ def run(
             else []
         )
         futures = [
-            pool.submit(_attempt, mutation, available, failfast, timeout, memory, each)
+            pool.submit(_attempt, mutation, available, failfast, timeout, memory, each, walk)
             for mutation in table
         ]
         if landed is not None:
@@ -1333,9 +1325,36 @@ def run(
                 red = True
                 break
 
+    if not red and (loose := _unbaselined(results, shards)):
+        # After the pool, in a sandbox of its own. These are tests the baseline
+        # never ran, standing behind a `caught` -- so until they are green on the
+        # untouched tree those rows claim something nothing checked. One shard
+        # for all of them; on a table whose selections are good this never runs.
+        print(f"\n{len(loose)} test(s) caught a row without being baselined; checking them...")
+        with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
+            loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
+        if loose_verdict.outcome != "survived":
+            # Only these rows, never the whole run: every other verdict rests on
+            # a shard that *was* green, and voiding those would throw away
+            # answers this found nothing wrong with. `broke` rather than a
+            # correction, because what is known is that the answer cannot be
+            # trusted -- not what the right answer is.
+            why = f"caught by a test that also fails untouched: {loose_verdict.detail}"
+            results = [
+                Result(result.mutation, Verdict("broke", why))
+                if result.verdict.killer in set(loose)
+                else result
+                for result in results
+            ]
+            print(f"  NOT GREEN ({loose_verdict.outcome}) -- rows they caught are reported broke.")
+
     if not red and summarise:
         _summarise(results)
-    report = Report(results, red, times=timings or None)
+    # `widened=walk`, never a bare `True`: the flag's whole job is to say
+    # whether a survivor here has been run against everything, and with `walk`
+    # off it has not. Hard-coding it would make the one report that must not
+    # claim the guarantee the one that claims it loudest.
+    report = Report(results, red, widened=walk, times=timings or None)
     _RUNS.append(report)
     return report
 
@@ -1380,137 +1399,73 @@ def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | 
 WHOLE_SUITE = ""
 
 
-def confirm(
-    report: Report,
-    workers: int | None,
-    timeout: float,
-    memory: int,
-    *,
-    each: float = EACH_TEST,
-    baseline: bool = True,
-) -> Report:
-    """Re-run every survivor against the whole suite, and correct the ones caught.
+def baseline_shards(table: Sequence[Mutation]) -> list[str]:
+    """What the untouched tree must be green on before any verdict counts.
 
-    This is what makes per-file test selection a *speed* decision rather than a
-    correctness one. A survivor reported from a narrow target may simply have
-    been run against the wrong tests, and that error points the expensive way:
-    it sends the author to rewrite a test that was never weak, which is the
-    failure rule 3 exists to prevent, inverted.
+    One shard per distinct selection, plus one holding every remembered `first`.
+    A cached killer can name a test outside its row's selection, so it needs
+    covering too -- one shard for all of them, never one each: a shard per
+    remembered test is the sharding explosion that cost 372s -> 730s, in a new
+    disguise.
 
-    Only survivors, because they are the minority and the only ones whose answer
-    can be wrong in that direction -- a `caught` row was caught by a real test,
-    and no wider suite makes that less true.
+    **Not the whole suite, though every row now walks it.** That was tried and
+    measured, and it fails three ways. It costs a full-suite run per table, which
+    took the preflight from about two minutes to six. It is *recursive* here:
+    the suite contains `test_mutate`, `test_run_tests`, `test_verdict` and three
+    more, so every baseline starts a second harness inside a memory-capped
+    sandbox -- a hazard this module's own docstring records for the rare row that
+    mutates `tools/`, made universal. And it does not finish: measured, the
+    whole suite in a sandbox exceeds `TIMEOUT` and comes back
+    `BASELINE NOT GREEN (timeout)`, which voids every verdict above it.
 
-    **With a baseline, like every other pass, and this is the whole of woswoar#268.**
-    A correction here is the claim "a test the selection had not run noticed
-    this", and on a suite that is already failing the claim is free: `failfast`
-    stops at the first red test, whatever it was about. Both real survivors of
-    one sweep came back credited to a shell-hook test that had never heard of
-    the file under mutation. That is the false `caught` this module exists to
-    make impossible, arriving in the one pass that had no baseline.
+    What the walk needs instead is `_unbaselined`: a row can be caught by a test
+    no shard here covered, and only *those* tests need checking, only when one
+    turns up. See it for why that is the same guarantee for a fraction of the
+    cost.
 
-    The cost is one whole-suite run, not one per survivor: `run` shards its
-    baseline by `Mutation.tests`, and every row here carries `WHOLE_SUITE`, so
-    the set is a single shard queued alongside the survivors in the same lanes.
-
-    ``baseline`` is `--no-baseline` arriving here, and it has to arrive: that
-    flag means "skip the untouched-suite check", and a check it cannot turn off
-    would make it *worse* than useless on the tree it exists for -- a knowingly
-    red one -- by silently suppressing every correction instead of skipping a
-    check. Turned off, this is the pre-woswoar#268 behaviour, false `caught` included,
-    which is what the flag has always been an opt-in to.
+    A function rather than a constant so `--baseline-only` and `run` cannot
+    drift: that flag exists to ask, in one shard's time, the question a sweep
+    will ask later, and it is worth nothing if it asks a different one. It
+    already went stale once here.
     """
-    # Positions, not labels. Two generated rows share a label whenever they touch
-    # the same line with the same operator -- `generate` dedupes on `(span, new)`,
-    # and `mutable()` alone has two `.startswith(...)` calls on one line. Keying
-    # the corrections by label wrote one row's `caught` onto every row spelled the
-    # same way, so a genuine survivor was reported as caught, naming a test that
-    # had never seen it. On this branch's own diff, 23 labels are duplicated.
-    #
-    # `run` appends in table order, and with `strict=False` there is no early
-    # exit, so `again.results` is positionally aligned with `rerun`.
-    if report.baseline_red:
-        # The narrow pass already found the tree red, and its shard is a module
-        # *inside* the whole suite, so this pass would come back red too -- after
-        # paying one whole-suite run per survivor plus a baseline to learn it.
-        # `clean` is already False and nothing here could change that.
-        #
-        # It also drops a "confirming N survivor(s)..." line about a pass that
-        # was never going to correct one.
-        return report
-    survivors = [
-        (where, result)
-        for where, result in enumerate(report.results)
-        if result.verdict.outcome == "survived"
-    ]
-    if not survivors:
-        # Vacuously widened: there was no survivor to re-run, so the promise
-        # holds. Leaving it false here would mark every clean sweep as
-        # unconfirmed, which is the one report this tool exists to produce.
-        return report._replace(widened=True)
-    print(f"\nconfirming {len(survivors)} survivor(s) against the whole suite...")
-    # `rerun` rather than `widened`: `Report.widened` is a different thing three
-    # lines down, and one word for two meanings in one function is a re-read.
-    # `first=""` as well as the widened selection: this pass exists to run the
-    # *whole* suite against each survivor, and a remembered test in front of it
-    # would be the one thing that could make that untrue.
-    rerun = [result.mutation._replace(tests=WHOLE_SUITE, first="") for _, result in survivors]
-    again = run(
-        rerun,
-        baseline=baseline,
-        workers=workers,
-        strict=False,
-        # As the narrow pass does, and for the same reason: the first test that
-        # notices settles the row, and this pass runs the *whole* suite per
-        # survivor -- the one place where not stopping costs the most.
-        failfast=True,
-        timeout=timeout,
-        memory=memory,
-        each=each,
-        summarise=False,
-        # These rows are not the run's answer -- the narrow pass's are, and they
-        # are still good. See `run`'s ``scope``.
-        scope="nothing among the confirmation rows",
-    )
+    shards = sorted({mutation.tests for mutation in table})
+    if ahead := " ".join(sorted({name for row in table for name in row.first.split()})):
+        shards.append(ahead)
+    return shards
 
-    if again.baseline_red:
-        # Suppressed, not voided: the narrow pass had its own green baseline and
-        # its verdicts are worth exactly what they were. Only this line's own
-        # decision is printed here -- `run` has already scoped its warning to the
-        # confirmation rows, which is why that scoping is a parameter there
-        # rather than a correcting sentence here.
-        print("No survivor was corrected; the narrow pass's verdicts stand as reported.")
-        return report
 
-    # Only `caught` corrects a survivor. A confirmation that broke or timed out
-    # answered nothing, and folding it in would print "caught by a test the
-    # selection had not run" about a run in which no test ran at all -- the
-    # exact false `caught` this module was rewritten to make impossible, one
-    # level up. It happened here on the first end-to-end run.
-    corrected = {
-        where: found.verdict
-        for (where, _), found in zip(survivors, again.results, strict=True)
-        if found.verdict.outcome == "caught"
-    }
-    unsure = sum(1 for found in again.results if not found.verdict.answered)
-    if unsure:
-        print(f"{unsure} confirmation(s) could not be answered; those rows stand as reported.")
-    # `again` first so `report` wins: `again` is a `failfast` pass over mutated
-    # trees, where a test that normally costs five seconds stops at its first
-    # assertion and measures a hundredth of one. Recorded as its cost, it enters
-    # the prefix budget every row pays and the real prefix stops being bounded.
-    merged = {**(again.times or {}), **(report.times or {})}
-    if not corrected:
-        return report._replace(widened=True, times=merged or None)
-    print(f"{len(corrected)} of them were caught by a test the selection had not run.")
-    return Report(
-        [
-            Result(result.mutation, corrected.get(where, result.verdict))
-            for where, result in enumerate(report.results)
-        ],
-        report.baseline_red,
-        True,
-        merged or None,
+def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
+    """Killers that no baseline shard covered, so nothing proved them green.
+
+    The hole the walk opens. A row that nothing in its selection notices keeps
+    going through the rest of the suite, so it can be caught by a test no shard
+    ran untouched -- and on a tree that is already red that claim is free, since
+    `failfast` stops at the first red test whatever it was about. Both real
+    survivors of one sweep came back credited to a shell-hook test that had never
+    heard of the file under mutation (woswoar#268). That is the false `caught`
+    this module exists to make impossible.
+
+    Checking *these tests* rather than the whole suite is what keeps the price
+    honest: it is the same guarantee, bought at the size of the exception rather
+    than the size of the suite, and on a table whose selections are good it is
+    empty and costs nothing at all.
+
+    `run_tests.selects` rather than comparing module names, for the reason
+    `Killers.ahead_of` gives: a selection naming a class never matched at all,
+    and `WHOLE_SUITE` -- the empty selection -- covers everything by meaning
+    "run the lot".
+    """
+    if any(not shard for shard in shards):
+        return []
+    reachable = [only for shard in shards for only in shard.split()]
+    return sorted(
+        {
+            result.verdict.killer
+            for result in results
+            if result.verdict.outcome == "caught"
+            and result.verdict.killer
+            and not any(run_tests.selects(result.verdict.killer, only) for only in reachable)
+        }
     )
 
 
@@ -1817,10 +1772,10 @@ def _marker(where: Path) -> Path:
     """The file whose only meaning is that the run is over.
 
     ``--json`` cannot carry that meaning. Under `--batch` and `--all`, `_persist`
-    writes after every file, so the report exists long before the run ends and
-    the confirmation pass has not started -- `tools/watch.py --done` read its
-    arrival as a finish and announced one **nine minutes** early, exiting 0 while
-    the sweep still had eleven files to go. That is this repository's own
+    writes after every file, so the report exists long before the run ends --
+    `tools/watch.py --done` read its arrival as a finish and announced one
+    **nine minutes** early, exiting 0 while the sweep still had eleven files to
+    go. That is this repository's own
     watchdog being told the wrong thing by this module, which is woswoar#275.
 
     A sibling name rather than a suffix swap: `Path("r.json").with_suffix(...)`
@@ -1872,11 +1827,9 @@ def _persist(report: Report, where: Path) -> None:
                 "outcome": result.verdict.outcome,
                 "detail": result.verdict.detail,
                 "killer": result.verdict.killer,
-                # Enough to rebuild the row, not just to read about it. Without
-                # `old`/`new` a resumed sweep could skip a file but never
-                # re-confirm its survivors, and CLAUDE.md promises every
-                # survivor is re-run against the whole suite before it is
-                # reported. A resume must not quietly drop that guarantee.
+                # Enough to rebuild the row, not just to read about it, so a
+                # resumed sweep can re-run a recorded row rather than only read
+                # its verdict back. Cheap to keep and impossible to reconstruct.
                 "old": result.mutation.old,
                 "new": result.mutation.new,
                 "span": list(result.mutation.span) if result.mutation.span else None,
@@ -1898,7 +1851,7 @@ def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
     This used to be `run(mutations)` -- no arguments at all -- so every flag on
     the command line was accepted by `argparse` and then silently dropped:
     `--workers`, `--memory`, `--timeout`, `--each-test`, `--no-baseline`,
-    `--no-confirm` and `--json`. Asking for one lane got two; asking for a report
+    and `--json`. Asking for one lane got two; asking for a report
     got no file, which reads as the run having failed to write one rather than as
     the flag never having been consulted. A flag that silently does nothing is
     the failure this project refuses everywhere else -- `sync` rejects `--ours`
@@ -1909,10 +1862,10 @@ def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
     by hand, so a row that cannot be answered is a mistake in the table, and
     stopping is what gets it fixed.
 
-    Survivors are confirmed against the whole suite unless `--no-confirm`, which
-    is the promise CLAUDE.md makes about a survivor before it is reported. The
-    spec path never kept it, so `--no-confirm` was doubly inert here: it turned
-    off something that was not happening.
+    CLAUDE.md's promise that a survivor has been run against the whole suite is
+    kept by `run` itself now: every row walks outward past its selection, so a
+    hand-written table gets the same guarantee this path could never offer when
+    it was a second pass the spec path did not call.
     """
     report = run(
         mutations,
@@ -1922,15 +1875,6 @@ def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
         memory=args.memory,
         each=args.each_test,
     )
-    if not args.no_confirm:
-        report = confirm(
-            report,
-            args.workers,
-            args.timeout,
-            args.memory,
-            each=args.each_test,
-            baseline=not args.no_baseline,
-        )
     if args.json:
         _persist(report, args.json)
         _marker(args.json).touch()
@@ -1980,11 +1924,9 @@ def _recorded(where: Path | None) -> list[Result]:
     with them and only one is "skip". They must stay in the file it rewrites --
     the first version returned labels only, so a resumed run persisted just the
     batches it had run and *deleted* the answers it had decided to skip, which
-    is the recovery mechanism eating the thing it recovers. They must reach
-    `confirm`, or a resumed sweep reports a survivor that was never re-run
-    against the whole suite. And they must reach `_summarise` and the exit
-    status, or a resume whose new batches are all caught exits 0 while recorded
-    survivors go unmentioned.
+    is the recovery mechanism eating the thing it recovers. And they must reach
+    `_summarise` and the exit status, or a resume whose new batches are all
+    caught exits 0 while recorded survivors go unmentioned.
 
     A half-written file resumes as nothing: re-running everything is the safe
     reading of a crash mid-write.
@@ -2042,8 +1984,9 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     """
     collected = _recorded(args.json)
     # Keyed by file, not by row: a file is recorded entirely or not at all, and
-    # a label is not unique anyway -- 7 are duplicated in the `--all` table, for
-    # the reason `confirm`'s docstring gives.
+    # a label is not unique anyway -- 7 are duplicated in the `--all` table,
+    # because `generate` dedupes on `(span, new)` and two rows touching the same
+    # line with the same operator are spelled identically.
     done = {result.mutation.path for result in collected}
 
     by_file: dict[str, list[Mutation]] = {}
@@ -2053,7 +1996,16 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     for path in sorted(done & {row.path for row in table}):
         print(f"{path}: already recorded, skipping")
     if not by_file:
-        return Report(collected)
+        # `widened=True` on every report this function builds, recorded rows
+        # included. `sweep` is only ever reached from `main`, which always walks;
+        # a rebuilt `Report` that took the field's default would write
+        # `widened: false` onto rows that did walk, which is the flag lying in
+        # exactly the direction it exists to prevent. It is rebuilt four times
+        # here, so this is four chances to forget.
+        #
+        # Asserted rather than derived only in this arm, where there is no run to
+        # ask: every row was read back from a recorded report, and nothing ran.
+        return Report(collected, widened=True)
 
     # Smallest file first, and its rows contiguous. The pool ignores this -- it
     # takes whatever is next -- but results are *collected* in table order, so
@@ -2073,31 +2025,35 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
             return
         print(f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded")
         if args.json:
-            _persist(Report([*collected, *fresh]), args.json)
+            # `True`, not `report.widened`: this runs *during* `_run_generated`
+            # below, so that name is not bound yet and reading it here is a
+            # `NameError` on every `--batch` sweep that persists mid-run. `main`
+            # is the only caller and always walks.
+            _persist(Report([*collected, *fresh], widened=True), args.json)
 
     report = _run_generated(rows, args, landed=finished)
     collected.extend(report.results)
     if args.json:
-        _persist(Report(collected, report.baseline_red), args.json)
+        _persist(Report(collected, report.baseline_red, widened=report.widened), args.json)
     if report.baseline_red:
         print(f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.")
     # `times` carried through, not dropped. Re-wrapping the report without them
     # is what made the cheap prefix silently learn nothing: the run measured
     # every test and the number reached `Killers` as an empty dict.
-    return Report(collected, report.baseline_red, times=report.times)
+    return Report(collected, report.baseline_red, widened=report.widened, times=report.times)
 
 
 def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
     """Run just this table's baseline shards, and say whether they all passed.
 
-    The same shards `run` would build, including the one holding every
-    remembered `first` test -- which is a shard of its own and was the one this
-    author forgot when reproducing a red baseline by hand.
+    `baseline_shards` rather than a second spelling of it, so this cannot answer
+    a different question from the sweep it is meant to predict. ``table`` is no
+    longer read: every row walks the whole suite, so the shard set does not
+    depend on which rows are in it. Kept in the signature because the caller has
+    the table and a future shard set may want it again -- and because dropping
+    it would make this function's *name* the only thing tying it to the run.
     """
-    shards = sorted({mutation.tests for mutation in table})
-    ahead = " ".join(sorted({name for row in table for name in row.first.split()}))
-    if ahead:
-        shards.append(ahead)
+    shards = baseline_shards(table)
     # The same sizing `run` does, so the question is asked under the conditions
     # the sweep will ask it under -- which is the whole point of asking early.
     wanted = args.workers if args.workers is not None else _affordable()
@@ -2182,11 +2138,6 @@ def main(argv: list[str] | None = None) -> int:
         help="run just the untouched-suite check for this table, and stop",
     )
     parser.add_argument(
-        "--no-confirm",
-        action="store_true",
-        help="do not re-run survivors against the whole suite",
-    )
-    parser.add_argument(
         "--json",
         type=Path,
         metavar="PATH",
@@ -2267,24 +2218,7 @@ def main(argv: list[str] | None = None) -> int:
             # retract a marker an earlier complete run earned.
             _marker(args.json).unlink(missing_ok=True)
         report = sweep(table, args) if args.all or args.batch else _run_generated(table, args)
-        if not args.no_confirm:
-            report = confirm(
-                report,
-                args.workers,
-                args.timeout,
-                args.memory,
-                each=args.each_test,
-                baseline=not args.no_baseline,
-            )
-        else:
-            # Nothing to clear: `widened` is false until `confirm` earns it, so
-            # this branch reaches `_persist` saying so without a line here.
-            print("\n--no-confirm: survivors below were not re-run against the whole suite,")
-            print("so one may simply have been run against tests that cannot see it.")
         _summarise(report.results)
-        # After `confirm`, whose verdicts are the ones that stand: a row it
-        # promotes from survivor to caught has a killer worth keeping, and one
-        # it leaves surviving must forget the test that stopped catching it.
         if report.baseline_red:
             # Its verdicts are meaningless by definition, so its killers are
             # too -- and a killer recorded from a red tree is a test that fails
@@ -2297,8 +2231,8 @@ def main(argv: list[str] | None = None) -> int:
             killers.save()
         if args.json:
             _persist(report, args.json)
-            # Last, and after `confirm`: the marker means the whole run is over,
-            # including the pass that can still change a verdict.
+            # Last: the marker means the whole run is over, and nothing after
+            # this point can still change a verdict.
             _marker(args.json).touch()
             # The pid names a process that no longer exists, and a stale one is
             # exactly the false-liveness `watch.py` refuses to answer with.

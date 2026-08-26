@@ -1227,10 +1227,17 @@ def importers(root: Path) -> dict[str, set[str]]:
 def targets_for(path: str, root: Path, index: dict[str, set[str]] | None = None) -> str:
     """The unittest targets a mutant in `path` should be run against.
 
-    A heuristic, and it is allowed to be one *only* because a survivor is
-    re-run against the whole suite before it is reported. That confirmation is
-    what turns "the selection might have missed the test that catches this" from
-    a wrong answer into a slower one.
+    A heuristic, and it is allowed to be one because this is an **ordering**
+    rather than a gate: `verdict.collect` walks a mutation's selection first and
+    then every other test module, stopping at whatever notices. So a selection
+    that misses the killing test costs a longer walk, never a wrong answer.
+
+    That used to be bought by re-running each survivor against the whole suite
+    afterwards, which meant a survivor ran its selection *and then* a superset of
+    it -- 486s of the 52 min one milestone-6 sweep spent on survivors was the
+    same work done twice. Measured across five sweeps, the killer was inside its
+    own selection in 1,516 of 1,516 caught rows, so this heuristic is not merely
+    allowed to be wrong: it has not yet been observed to be.
 
     An empty answer means "run everything", and the caller says so in the row.
     It is not a fallback of convenience: `tests/test_cli.py` drives the CLI by
@@ -1250,6 +1257,7 @@ def targets_for(path: str, root: Path, index: dict[str, set[str]] | None = None)
     # woswoar#216: taking one same-named test module because the name matched
     # left nine mutants reported as survivors that another module catches --
     # `doctor` there called a function no name heuristic can see. The
-    # confirmation pass corrected all nine, so the answer was right either way,
-    # but it paid a whole-suite run per row to get there.
+    # widening corrected all nine, so the answer was right either way, but it
+    # paid a whole-suite run per row to get there. It is now paid for by the walk
+    # continuing, which costs those nine rows the same and the rest nothing.
     return " ".join(sorted(named | imported))

@@ -58,6 +58,7 @@ import sys
 import time
 import traceback
 import unittest
+from pathlib import Path
 from types import TracebackType
 from typing import Any
 
@@ -324,45 +325,93 @@ def each_test(seconds: float) -> float:
     return seconds
 
 
+def every_module(names: list[str]) -> list[str]:
+    """Every test module beside ``names``, found where ``names`` themselves live.
+
+    Globbed from the sandbox rather than handed in, because the caller's row
+    names the *selection* and this is precisely the part it does not name.
+
+    The directory comes from the selection rather than being spelled `tests`
+    here. Two reasons, and the second is why it is not a nicety: the suite this
+    tool runs lives wherever the caller's modules do, and a constant would make
+    the walk unreachable from `tests/test_verdict.py`, whose sandboxes are flat
+    throwaway modules. A guard nothing can drive is the shape CLAUDE.md §2 is
+    about.
+    """
+    found: list[str] = []
+    for package in sorted({name.rpartition(".")[0] for name in names}):
+        root = Path(package.replace(".", "/")) if package else Path()
+        prefix = f"{package}." if package else ""
+        found += [f"{prefix}{beside.stem}" for beside in root.glob("test_*.py")]
+    return sorted(set(found))
+
+
+def _reached(names: list[str], walk: bool) -> list[list[str]]:
+    """The groups to run, in order, one load at a time.
+
+    Each entry is loaded only when the walk reaches it. That laziness is the
+    whole of the design: importing all 29 modules costs 621ms against 0-1ms for
+    one, so loading the ordered list up front would hand back two minutes over a
+    194-row sweep -- more than the second pass this replaced ever cost.
+    """
+    # No `if not names` guard, though an empty selection must reach `discover`
+    # below and not a named load -- the two classify a module that will not
+    # import differently, everything into `TestLoader.errors` where a named load
+    # wraps only what derives from `Exception` (`TestABrokenModuleTakesTwoDiffer
+    # entPaths` holds the measured table). It gets there anyway: `every_module`
+    # asks the selection which package to look in, and an empty selection names
+    # none, so both arms below return `[]` and the caller falls through. A guard
+    # was written here first and no fixture could tell it from its absence.
+    if not walk:
+        # A baseline. It asks whether *this selection* is green, and widening it
+        # would make every baseline a whole-suite run.
+        return [[name] for name in names]
+    chosen = set(names)
+    return [[name] for name in names] + [[m] for m in every_module(names) if m not in chosen]
+
+
 def collect(
-    names: list[str], failfast: bool, each: float = 0.0, first: list[str] | None = None
+    names: list[str],
+    failfast: bool,
+    each: float = 0.0,
+    first: list[str] | None = None,
+    walk: bool = False,
 ) -> dict[str, Any]:
+    """What the suite said, walking outward until something notices.
+
+    The order is `first`, then `names`, then every other test module. A mutation
+    its selection catches therefore costs exactly what the selection costs -- the
+    head of the walk *is* the selection, measured at 100% of 1,516 caught rows
+    across five sweeps -- and one nothing catches has, by the time it is called a
+    survivor, already run the whole suite once.
+
+    That is what removes the second pass. Selection stops being a gate and
+    becomes an ordering, so a miss is slow rather than wrong, and there is
+    nothing left to confirm afterwards.
+
+    **The caller must have baselined the whole suite, not just the selection.**
+    A row that walks outward can be caught by a module its selection never named,
+    and on a tree that is already red that claim is free -- `failfast` stops at
+    the first red test whatever it was about. That is woswoar#268, and it is why
+    `mutate.run` baselines `WHOLE_SUITE` for a walking table.
+    """
     loader = unittest.TestLoader()
-    # No names means the whole suite, and it has to be `discover` rather than
-    # the package name: `loadTestsFromNames(["tests"])` imports the package and
-    # finds nothing in it, so the run comes back green having executed zero
-    # tests. That is reported as `broke` -- correctly, and confusingly, since the
-    # request was for everything.
-    chosen = (
-        loader.loadTestsFromNames(names)
-        if names
-        else loader.discover(".", pattern="test_*.py", top_level_dir=".")
-    )
-    # `first` in its own argument rather than pushed onto `names`, and that is
-    # not tidiness. An empty `names` *means* the whole suite -- `mutate`'s
-    # `WHOLE_SUITE` -- and the fall-through above is how. Prepending to the list
-    # makes it non-empty, so "run everything" quietly became "run these three",
-    # and `confirm` builds exactly that row: it widens a survivor's selection to
-    # `WHOLE_SUITE` while the cheap prefix is still attached. The pass that
-    # promises every survivor was re-run against the whole suite would have run
-    # eight tests and said so.
-    suite = unittest.TestSuite([loader.loadTestsFromNames(first), chosen]) if first else chosen
-    if loader.errors:
-        # Public API, and checked before running: the suite `loadTestsFromNames`
-        # returns for an unimportable module holds a synthetic `_FailedTest`
-        # which *is* a `TestCase`, so running it would report a test noticing.
-        return {
-            "loaded": True,
-            "ran": 0,
-            "noticed": [],
-            "killers": [],
-            "reasons": [],
-            "times": {},
-            # `str()` because typeshed types `errors` as exception classes while
-            # `unittest` actually appends formatted tracebacks; the first line is
-            # the "Failed to import test module: x" that says which.
-            "broke": [str(error).splitlines()[0] for error in loader.errors],
-        }
+    groups = _reached(names, walk)
+    if not groups:
+        chosen = loader.discover(".", pattern="test_*.py", top_level_dir=".")
+        # `first` in its own argument rather than pushed onto `names`, and that is
+        # not tidiness. An empty `names` *means* the whole suite and the branch
+        # above is how; prepending to the list makes it non-empty, so "run
+        # everything" quietly becomes "run only these three".
+        groups, prepared = (
+            [],
+            (unittest.TestSuite([loader.loadTestsFromNames(first), chosen]) if first else chosen),
+        )
+        if loader.errors:
+            return _unloadable(loader)
+        ready: list[unittest.TestSuite] = [prepared]
+    else:
+        ready = []
     armed = each_test(each)
 
     def build(*args: Any, **kwargs: Any) -> Verdicts:
@@ -370,10 +419,47 @@ def collect(
         made.each = armed
         return made
 
-    result = unittest.TextTestRunner(
-        stream=io.StringIO(), verbosity=0, failfast=failfast, resultclass=build
-    ).run(suite)
-    assert isinstance(result, Verdicts)
+    result = build(io.StringIO(), False, 0)
+    result.failfast = failfast
+    broke: list[str] = []
+    if first and groups:
+        head = unittest.TestLoader()
+        ready.append(head.loadTestsFromNames(first))
+        if head.errors:
+            return _unloadable(head)
+    result.startTestRun()
+    try:
+        for suite in ready:
+            suite(result)
+            if result.shouldStop:
+                break
+        else:
+            for group in groups:
+                # `result.noticed` as well as `shouldStop`, and only when
+                # walking. `failfast` is off for a hand-written table -- a red
+                # baseline is a thing you want the whole of -- so `shouldStop`
+                # alone would let a row that has *already* been caught carry on
+                # through the rest of the suite, turning every caught row on
+                # that path into a whole-suite run. Walking outward asks "has
+                # anything noticed yet", which is answered the moment one test
+                # has, whatever the caller wants to see of the rest.
+                #
+                # Not hoisted into the baseline's arm: there `failfast` being
+                # off is the request, and stopping at the first red module would
+                # report one shard of a broken tree as the whole story.
+                if result.shouldStop or (walk and result.noticed):
+                    break
+                # A fresh loader per group: `TestLoader.errors` accumulates, so a
+                # shared one would re-report an earlier group's failure against
+                # every later module.
+                step = unittest.TestLoader()
+                found = step.loadTestsFromNames(group)
+                if step.errors:
+                    broke = [str(error).splitlines()[0] for error in step.errors]
+                    break
+                found(result)
+    finally:
+        result.stopTestRun()
     return {
         "loaded": True,
         "ran": result.testsRun,
@@ -381,18 +467,44 @@ def collect(
         "killers": result.killers,
         "reasons": result.reasons,
         "times": result.times,
-        "broke": result.broke,
+        "broke": result.broke + broke,
+    }
+
+
+def _unloadable(loader: unittest.TestLoader) -> dict[str, Any]:
+    """A module that would not import, reported before anything runs.
+
+    Public API, and checked before running: the suite `loadTestsFromNames`
+    returns for an unimportable module holds a synthetic `_FailedTest` which
+    *is* a `TestCase`, so running it would report a test noticing.
+    """
+    return {
+        "loaded": True,
+        "ran": 0,
+        "noticed": [],
+        "killers": [],
+        "reasons": [],
+        "times": {},
+        # `str()` because typeshed types `errors` as exception classes while
+        # `unittest` actually appends formatted tracebacks; the first line is
+        # the "Failed to import test module: x" that says which.
+        "broke": [str(error).splitlines()[0] for error in loader.errors],
     }
 
 
 def main(argv: list[str]) -> None:
     report, failfast = argv[0], argv[1] == "1"
-    first, names = [n for n in argv[4].split() if n], argv[5:]
+    # `walk` in its own slot rather than inferred from the selection: a baseline
+    # and a mutation can carry the *same* selection and must be run differently
+    # -- the baseline asks whether that selection is green, the mutation asks
+    # what in the whole suite notices. Inferring it from `names` cannot tell them
+    # apart, and getting it wrong turns every baseline into a whole-suite run.
+    first, walk, names = [n for n in argv[4].split() if n], argv[5] == "1", argv[6:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))
     try:
-        written = collect(names, failfast, float(argv[3]), first)
+        written = collect(names, failfast, float(argv[3]), first, walk)
     except BaseException:
         # Said, not inferred. The caller used to conclude "the suite could not be
         # loaded" from an absent file, which is also what a typo in this file

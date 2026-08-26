@@ -37,7 +37,12 @@ Three properties, each of which cost a real debugging session to learn:
   import into a failing one exits non-zero and leaves `Ran 1 test` behind,
   exactly like a test catching it. A harness that reads the exit status reports
   a test that never executed as a test that noticed.
-- **Survivors are re-run against the whole suite** before they are reported.
+- **Every row is run against the whole suite until something notices** -- its
+  selection first, then the rest, stopping at the first test that catches it.
+  So a survivor has run everything by the time it is called one, and a
+  selection that misses the killing test costs a longer walk rather than a
+  wrong answer. There is no second pass over the survivors and no
+  `--no-confirm`; both were removed once the walk made them redundant.
   Per-file test selection is then a speed decision rather than a correctness
   one: a survivor found against a narrow target may just have been run against
   the wrong tests, and that error points the expensive way — it sends the author

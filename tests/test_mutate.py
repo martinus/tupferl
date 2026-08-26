@@ -18,6 +18,7 @@ else in this project's testing story is downstream of the harness being honest.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -65,8 +66,20 @@ UNWATCHED = UNKNOWN_KEY_GUARD._replace(
 class TestTheHarnessAnswersBothWays(unittest.TestCase):
     """The whole loop: copy the tree, apply the edit, run a suite, classify."""
 
+    #: `walk=False` throughout this class, and it is not a shortcut. What these
+    #: assert is the *classification* -- caught, survived, and the tree left
+    #: alone -- which `tests/test_verdict.py` covers the walk of separately. With
+    #: it on, `UNWATCHED` is a survivor by construction, so it runs the whole
+    #: suite before it can be called one: three of these tests went from seconds
+    #: to about two minutes each, and the baseline from one small shard to
+    #: another whole-suite run. That is the design working as intended on a
+    #: sweep and pure cost inside the harness's own tests.
+    WALK = False
+
     def test_a_deliberate_bug_is_caught(self) -> None:
-        report = mutate.run([UNKNOWN_KEY_GUARD], baseline=True, workers=1, summarise=False)
+        report = mutate.run(
+            [UNKNOWN_KEY_GUARD], baseline=True, workers=1, summarise=False, walk=self.WALK
+        )
         self.assertFalse(report.baseline_red, "the untouched tree is not green")
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
 
@@ -74,9 +87,39 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """The other answer. Without this, `test_a_deliberate_bug_is_caught`
         passes just as well against a harness hard-wired to say `caught` -- the
         assertion that passes against its own mutation, from CLAUDE.md §2."""
-        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK)
         self.assertFalse(report.baseline_red)
         self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
+        self.assertFalse(report.widened, "a report that did not walk claimed it had")
+
+    def test_the_walk_catches_what_the_selection_missed(self) -> None:
+        """The walk, end to end through the real harness, on the fixture built to
+        need it.
+
+        `UNWATCHED` is `UNKNOWN_KEY_GUARD`'s edit pointed at `tests.test_paths`,
+        which never parses a config file -- so it survives its *selection* by
+        construction. With the walk on it does not survive the run: the walk goes
+        on past that selection and reaches
+        `tests.test_config.TestRejectingAnUnknownKey`, which does see the edit.
+        That is the whole change in one row, and it is why the pair above sets
+        `walk=False`: with it on there is no survivor there to assert.
+
+        It also disproves a reading of the recorded sweeps I had believed. "The
+        killer was inside its own selection in 1,516 of 1,516 caught rows" cannot
+        mean the tail never catches anything, because those runs never *ran* the
+        tail for a caught row -- a killer outside the selection had no way to be
+        recorded. What that figure actually shows is narrower: the confirmation
+        pass never corrected a survivor in them.
+        """
+        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        self.assertFalse(report.baseline_red, "the untouched tree is not green")
+        self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
+        killer = report.results[0].verdict.killer
+        self.assertTrue(
+            killer.startswith("tests.test_config."),
+            f"caught, but not by the module the walk had to reach: {killer}",
+        )
+        self.assertTrue(report.widened)
 
     def test_the_working_tree_is_untouched(self) -> None:
         """CLAUDE.md §6: the harness must never edit the tree it is run from.
@@ -87,7 +130,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """
         where = Path(UNKNOWN_KEY_GUARD.path)
         before = where.read_bytes()
-        mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False)
+        mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, walk=self.WALK)
         self.assertEqual(before, where.read_bytes())
 
 
@@ -450,6 +493,10 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                     "0",
                     str(each),
                     first,
+                    # A baseline's shape: these tests are about what one named
+                    # selection reports, and a walk would run the sandbox's
+                    # other modules under each of them.
+                    "0",
                     *(("tests.test_hang",) if names is None else names),
                 ],
                 cwd=box,
@@ -600,7 +647,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
     """
 
     def test_a_run_measures_the_tests_it_ran(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
         times = found.times or {}
         self.assertTrue(times, "the run recorded no test timings at all")
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
@@ -611,7 +658,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         self.assertTrue(all(seconds >= 0 for seconds in times.values()))
 
     def test_they_reach_the_cache(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
         cache = mutate.Killers(None)
         cache.learn(found)
         self.assertEqual(found.times or {}, cache.cost)
@@ -663,26 +710,45 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         self.assertEqual("", self.ahead("tests.test_paths").first)
 
 
-class TestConfirmationReallyRunsTheWholeSuite(unittest.TestCase):
-    """CLAUDE.md promises every survivor is re-run against the whole suite
+class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
+    """CLAUDE.md promises every survivor has been run against the whole suite
     before it is reported, and `Report.widened` is the flag that claims it.
 
-    Two things could quietly make that false, and both are one character wide.
-    `WHOLE_SUITE` is the *empty* selection -- `verdict.collect` falls through to
-    `discover` only when the list is empty -- so anything in front of it turns
-    "everything" into "only this". The rows `confirm` builds are exactly the
-    shape that triggers it: a survivor's selection widened while its remembered
-    test is still attached.
+    It used to be earned by a second pass over the survivors. It is structural
+    now: every row walks outward past its selection until something notices, so
+    a row *called* a survivor has run everything by construction. What is left
+    to guard is that `run` says so, and that the one shape which could quietly
+    make "everything" mean "only this" still does not -- `WHOLE_SUITE` is the
+    *empty* selection, and `verdict.collect` falls through to `discover` only
+    when the list is empty, so anything pushed in front of it truncates the run.
     """
 
-    def test_a_widened_row_carries_no_remembered_test(self) -> None:
-        survivor = mutate.Result(
-            row()._replace(first="tests.test_sync.TestTheReport.test_it"),
-            mutate.Verdict("survived"),
+    def test_a_report_claims_the_guarantee_it_now_keeps(self) -> None:
+        """`run` sets it, rather than a later pass earning it. Without this the
+        flag reverts to its old default and `tools/reached.py` prints its caveat
+        about survivors nobody widened -- on a report where they were.
+
+        `run` itself is real; only `_attempt` is stubbed. What is asserted is
+        `run`'s own report construction, and driving it for real would mean
+        finding a mutation caught inside a small module -- which is a fact about
+        the suite, not about this line, and the first attempt at it walked the
+        whole suite for two minutes to assert one boolean.
+        """
+        caught = Mutation(
+            "x:1 in f()",
+            "tests/profiles.py",
+            '{"mutation": (3, 4)}',
+            '{"mutation": (0, 0)}',
+            "tests.test_profiles",
+            operator="branch",
         )
-        widened = survivor.mutation._replace(tests=mutate.WHOLE_SUITE, first="")
-        self.assertEqual("", widened.first)
-        self.assertEqual("", widened.tests)
+        caught_by = mutate.Verdict("caught", "t")
+        with (
+            mock.patch.object(mutate, "_attempt", lambda *a, **k: caught_by),
+            support.quiet(),
+        ):
+            report = mutate.run([caught], baseline=False, workers=1)
+        self.assertTrue(report.widened, "a walked report did not claim the guarantee")
 
     def test_an_empty_selection_behind_a_prefix_still_discovers(self) -> None:
         """The protocol half: an empty selection plus a prefix must run the
@@ -744,7 +810,7 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
 
     It did not. The dispatch was `run(mutations)` -- no arguments -- so
     `argparse` accepted `--workers`, `--memory`, `--timeout`, `--each-test`,
-    `--no-baseline`, `--no-confirm` and `--json`, and every one of them was
+    `--no-baseline` and `--json`, and every one of them was
     dropped on the floor. Asking for one lane got two. Asking for a report got no
     file, which reads as the run having failed to write one rather than as the
     flag never having been consulted, and cost an hour of this author's time
@@ -799,7 +865,7 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
             box = Path(name)
             with mock.patch.object(mutate, "run", watch):
-                mutate.main([str(self.spec(box)), "--no-confirm", *flags])
+                mutate.main([str(self.spec(box)), *flags])
         return seen
 
     def test_workers_reaches_the_run(self) -> None:
@@ -829,9 +895,7 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-spec-") as name:
             box = Path(name)
             report = box / "out.json"
-            mutate.main(
-                [str(self.spec(box)), "--no-baseline", "--no-confirm", "--json", str(report)]
-            )
+            mutate.main([str(self.spec(box)), "--no-baseline", "--json", str(report)])
             self.assertTrue(report.is_file(), "--json wrote nothing")
             self.assertIn("results", json.loads(report.read_text(encoding="utf-8")))
             self.assertTrue(
@@ -876,63 +940,298 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
     SURVIVES = ("PROBE = 8000", "PROBE = 1")
 
     def test_a_caught_table_exits_zero(self) -> None:
-        self.assertEqual(0, self.status(*self.CAUGHT, "--no-confirm"))
+        self.assertEqual(0, self.status(*self.CAUGHT))
 
     def test_a_surviving_table_exits_one(self) -> None:
         """The other half. Without it, "always returns 0" passes the test above
         and a spec file full of decoration reports success.
 
-        `--no-confirm` is stubbed out rather than trusted: a mutant that forces
-        confirmation on would otherwise send this into a whole-suite re-run and
-        past the harness's 30s alarm, which is `BROKE` -- no verdict for the
-        line under test. What this asserts is the exit status, and confirmation
-        of a survivor cannot change it.
+        **`_attempt` is stubbed, and that is a change worth naming.** This used
+        to drive the real mutation with `--no-confirm`, which is what kept a
+        survivor from paying for a whole-suite re-run. There is no such flag
+        now: a survivor walks the rest of the suite inside its own row, by
+        design, so the unstubbed spelling runs this repository's entire suite --
+        about two minutes -- to assert one exit status. Everything from
+        `argparse` to the return value is still real; only the verdict is
+        supplied, and the verdict is not what this asserts.
         """
-        with mock.patch.object(mutate, "confirm", lambda report, *a, **k: report):
-            self.assertEqual(1, self.status(*self.SURVIVES, "--no-confirm"))
+        survived = mutate.Verdict("survived")
+        with tempfile.TemporaryDirectory(prefix="tupferl-exit-") as name, support.quiet():
+            spec = self.spec(Path(name), *self.SURVIVES)
+            with mock.patch.object(mutate, "_attempt", lambda *a, **k: survived):
+                self.assertEqual(1, mutate.main([str(spec), "--no-baseline"]))
 
-    def test_survivors_are_confirmed_against_the_whole_suite_by_default(self) -> None:
-        """CLAUDE.md's promise about a survivor before it is reported. This path
-        never kept it, so `--no-confirm` turned off something that was not
-        happening."""
-        seen: list[bool] = []
-        real = mutate.confirm
 
-        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.append(True)
-            return real(report, *args, **kwargs)
+class TestWhichKillersNothingBaselined(unittest.TestCase):
+    """`_unbaselined`: the hole the walk opens, and the only thing that closes it.
 
-        with mock.patch.object(mutate, "confirm", watch):
-            self.status(*self.CAUGHT)
-        self.assertEqual([True], seen, "survivors were reported without being confirmed")
+    A row nothing in its selection notices keeps going through the rest of the
+    suite, so it can be caught by a test no baseline shard ran untouched. On a
+    tree already red that claim is free -- `failfast` stops at the first red test
+    whatever it was about -- which is the false `caught` of woswoar#268.
 
-    def test_confirmation_is_told_what_the_run_was_told(self) -> None:
-        """Its `baseline` comes from `--no-baseline` like the run's does. Nothing
-        looked at what `confirm` was handed, so a wiring that passed the flag
-        through un-negated -- checking a baseline the caller asked to skip --
-        went unnoticed."""
-        seen: dict[str, Any] = {}
+    Checking these tests rather than the whole suite is what keeps it affordable.
+    The whole-suite baseline was tried and measured: six minutes of preflight, a
+    second harness started inside every sandbox, and finally
+    `BASELINE NOT GREEN (timeout)`, which voids every verdict above it.
+    """
 
-        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.update(kwargs)
-            return report
+    def caught(self, killer: str, tests: str = "tests.test_paths") -> mutate.Result:
+        return mutate.Result(row()._replace(tests=tests), mutate.Verdict("caught", "d", killer))
 
-        with mock.patch.object(mutate, "confirm", watch):
-            self.status(*self.CAUGHT)
-        self.assertFalse(seen["baseline"], "confirmation re-checked a skipped baseline")
+    def test_a_killer_its_shard_covered_needs_nothing(self) -> None:
+        found = self.caught("tests.test_paths.TestA.test_b")
+        self.assertEqual([], mutate._unbaselined([found], ["tests.test_paths"]))
 
-    def test_no_confirm_really_turns_it_off(self) -> None:
-        """The precondition for the test above: if `confirm` ran either way, the
-        assertion there would hold against a wiring that ignored the flag."""
-        seen: list[bool] = []
+    def test_a_killer_no_shard_covered_is_returned(self) -> None:
+        """The one the walk produces. `UNWATCHED` is exactly this shape in the
+        real harness: selected on `tests.test_paths`, caught in `test_config`."""
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        self.assertEqual(
+            ["tests.test_config.TestRejectingAnUnknownKey.test_it"],
+            mutate._unbaselined([found], ["tests.test_paths"]),
+        )
 
-        def watch(report: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.append(True)
-            return report
+    def test_the_whole_suite_shard_covers_everything(self) -> None:
+        """`WHOLE_SUITE` is the *empty* selection and means "run the lot", so a
+        shard list holding one covers every test. Read as a plain string it
+        matches nothing instead, and every killer would be re-checked."""
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        self.assertEqual([], mutate._unbaselined([found], [mutate.WHOLE_SUITE]))
 
-        with mock.patch.object(mutate, "confirm", watch):
-            self.status(*self.CAUGHT, "--no-confirm")
-        self.assertEqual([], seen, "--no-confirm confirmed anyway")
+    def test_only_caught_rows_are_asked_about(self) -> None:
+        """A survivor has no killer to stand behind, and a `broke` row's is not
+        an answer. Without the outcome check a stale `killer` on either would
+        send the run off to baseline a test that decided nothing."""
+        survivor = mutate.Result(row(), mutate.Verdict("survived"))
+        broke = mutate.Result(row(), mutate.Verdict("broke", "d", "tests.test_config.T.t"))
+        self.assertEqual([], mutate._unbaselined([survivor, broke], ["tests.test_paths"]))
+
+    def test_a_class_shard_still_covers_its_own_tests(self) -> None:
+        """`run_tests.selects` rather than comparing module names: a shard naming
+        a class never matched at all when this was spelled by hand, and every row
+        it caught was sent for re-baselining."""
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        covered = ["tests.test_config.TestRejectingAnUnknownKey"]
+        self.assertEqual([], mutate._unbaselined([found], covered))
+
+    def test_one_whole_suite_shard_among_several_covers_everything(self) -> None:
+        """`any`, not `all`. With a single shard the two agree, which is why the
+        test above cannot tell them apart: `all` over one element *is* `any` over
+        it. Given a `WHOLE_SUITE` shard beside a narrow one -- the shape every
+        table with a file nothing imports produces -- `all` is False, the guard
+        does not fire, and every killer is sent off to be re-baselined against a
+        run that already covered it.
+        """
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        mixed = [mutate.WHOLE_SUITE, "tests.test_paths"]
+        self.assertEqual([], mutate._unbaselined([found], mixed))
+
+    def test_a_killer_covered_by_one_shard_of_several_needs_nothing(self) -> None:
+        """The second `any`, and the same trap. A killer is baselined if *some*
+        shard ran it, not if every shard did -- and a table always has several.
+        Read as `all`, a killer in `test_config` is called uncovered because
+        `test_paths` did not also run it, so every caught row in a multi-shard
+        sweep would drag the run into a re-baseline it does not need.
+        """
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        several = ["tests.test_paths", "tests.test_config"]
+        self.assertEqual([], mutate._unbaselined([found], several))
+
+    def test_a_sibling_module_is_not_covered_by_a_prefix_of_its_name(self) -> None:
+        """The dot `run_tests.selects` anchors on, and the reason a bare
+        `startswith` is wrong rather than merely loose.
+
+        `tests.test_sync` is a real shard and `tests.test_sync_cli` is a real
+        module beside it. Read as a prefix, the first covers the second, so a
+        killer in `test_sync_cli` would be called baselined by a shard that never
+        ran it -- the false `caught` this function exists to prevent, arriving
+        through the check meant to catch it. The class test above cannot see this:
+        both spellings agree there.
+        """
+        found = self.caught("tests.test_sync_cli.TestTheRemoteLine.test_it")
+        self.assertEqual(
+            ["tests.test_sync_cli.TestTheRemoteLine.test_it"],
+            mutate._unbaselined([found], ["tests.test_sync"]),
+        )
+
+
+class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
+    """What `run` *does* once `_unbaselined` finds one, which is the whole point
+    of finding it.
+
+    The guard against woswoar#268: a row the walk carried past its selection can
+    be caught by a test the baseline never ran, and if that test fails on the
+    untouched tree the `caught` is free -- `failfast` stops at the first red
+    test whatever it was about. Both real survivors of one sweep came back
+    credited to a shell-hook test that had never heard of the file under
+    mutation.
+
+    Every mutation of this block survived the first sweep of it -- the check
+    fires only when a caught row's killer is unbaselined *and* that test is red
+    untouched, and nothing in the suite arranged both. These do, by supplying the
+    two verdicts and driving the real `run` between them.
+    """
+
+    KILLER = "tests.test_config.TestRejectingAnUnknownKey.test_it"
+
+    def report(self, loose_outcome: mutate.Outcome) -> mutate.Report:
+        """One row, caught by a test its selection never named, with the extra
+        shard answering ``loose_outcome``."""
+        # A real, unique edit: `check` refuses text that is not, and it runs
+        # before anything here is reached. Nothing applies it -- `_attempt` is
+        # supplied below -- but the row still has to be one `run` accepts.
+        one = Mutation(
+            "x:1 in f()",
+            "tests/profiles.py",
+            '{"mutation": (3, 4)}',
+            '{"mutation": (0, 0)}',
+            "tests.test_paths",
+            operator="branch",
+        )
+        caught = mutate.Verdict("caught", "d", self.KILLER)
+
+        def answered(available: Any, tests: Any, *rest: Any) -> mutate.Verdict:
+            """Green for the baseline's own shards, `loose_outcome` for the extra
+            one. Answering every call the same way was the first spelling and it
+            made the *baseline* red, so the run never reached the check under
+            test -- a stub that cannot tell the two callers apart tests neither.
+            """
+            if self.KILLER in list(tests):
+                return mutate.Verdict(loose_outcome, "the untouched tree says so")
+            return mutate.Verdict("survived")
+
+        with (
+            mock.patch.object(mutate, "_attempt", lambda *a, **k: caught),
+            mock.patch.object(mutate, "_borrow", answered),
+            support.quiet() as spill,
+        ):
+            found = mutate.run([one], baseline=True, workers=1, summarise=False)
+        # Kept, not discarded. `quiet` hands back what was written for exactly
+        # this reason: a test that silences output it never asserts on is one
+        # that would pass if the output stopped happening -- and both lines this
+        # block prints survived their own deletion in the first sweep of it.
+        self.said = spill.getvalue()
+        return found
+
+    def test_it_says_that_it_is_checking(self) -> None:
+        """The announcement, which is the only sign a run gives that the walk
+        reached past what was baselined. Deleting it survived the sweep."""
+        self.report("survived")
+        self.assertIn("caught a row without being baselined", self.said)
+        self.assertIn("1 test(s)", self.said)
+
+    def test_it_says_when_the_check_came_back_red(self) -> None:
+        """The other line, and the more important one: a row silently demoted to
+        `broke` with nothing said about why reads as the harness malfunctioning
+        rather than as the guarantee working."""
+        self.report("caught")
+        self.assertIn("NOT GREEN", self.said)
+        self.assertIn("reported broke", self.said)
+
+    def test_a_green_check_leaves_the_verdict_alone(self) -> None:
+        """The common case, and the one that must stay cheap: the test was not
+        baselined, it is green anyway, the row is caught and stays caught."""
+        found = self.report("survived")
+        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
+        self.assertEqual(self.KILLER, found.results[0].verdict.killer)
+
+    def test_a_red_check_refuses_the_verdict(self) -> None:
+        """The failure this exists for. Caught by a test that also fails
+        untouched is not an answer, and reporting it as one is the false
+        `caught` this module is built to make impossible."""
+        found = self.report("caught")
+        self.assertEqual(["broke"], [r.verdict.outcome for r in found.results])
+        self.assertIn("also fails untouched", found.results[0].verdict.detail)
+
+    def test_the_rest_of_the_run_is_not_voided(self) -> None:
+        """Only the rows that test caught. Every other verdict rests on a shard
+        that *was* green, and throwing those away would discard answers this
+        found nothing wrong with -- which is what setting `baseline_red` would
+        do."""
+        found = self.report("caught")
+        self.assertFalse(found.baseline_red, "one loose test voided the whole run")
+
+
+class TestASweepRecordsAsItGoes(unittest.TestCase):
+    """`sweep` persists after every file, and that write happens *inside* the
+    run it is reporting on.
+
+    Which makes it the one place where reading the run's own report is a
+    `NameError` rather than a wrong value: `finished` is called by
+    `_run_generated` while `report = _run_generated(...)` is still evaluating,
+    so the name it would bind is not bound yet. Written after exactly that was
+    introduced here and caught by inspection rather than by this suite -- no
+    test drove `--batch` at all, so the mid-run write had no guard.
+
+    `_run_generated` is stubbed so the callback fires without a real sweep;
+    what is under test is the bookkeeping around it, not the mutating.
+    """
+
+    def sweep(self, box: Path) -> mutate.Report:
+        one = row(path="tests/profiles.py", old='{"mutation": (3, 4)}', new='{"mutation": (0, 0)}')
+        answered = mutate.Result(one, mutate.Verdict("caught", "t"))
+        midway: list[dict[str, Any]] = []
+
+        # `landed=` by its real name, not `**kwargs`. Written as `landed_cb`
+        # first: `sweep` calls `_run_generated(rows, args, landed=finished)`, so
+        # the callback fell into `**kw` and never fired, and both tests below
+        # passed against the very `NameError` they exist to catch. The assert
+        # after the call is what makes that impossible to repeat.
+        fired: list[bool] = []
+
+        def straight_through(rows: Any, args: Any, landed: Any = None) -> Any:
+            assert landed is not None, "sweep stopped passing a callback"
+            fired.append(True)
+            landed(answered)
+            # Read *here*, before returning. The write `landed` triggers is
+            # overwritten by the one after the run, so a test that reads the file
+            # afterwards is asserting on different bytes -- which is why the
+            # mid-run flag survived its own deletion when this read at the end.
+            # These are the bytes a sweep killed mid-run leaves behind, and the
+            # ones `tools/reached.py` would explain.
+            midway.append(json.loads(args.json.read_text(encoding="utf-8")))
+            return mutate.Report([answered], widened=True)
+
+        args = argparse.Namespace(
+            json=box / "out.json",
+            workers=1,
+            timeout=60.0,
+            memory=0,
+            each_test=1.0,
+            no_baseline=True,
+            batch=1,
+            all=False,
+            limit=None,
+        )
+        with mock.patch.object(mutate, "_run_generated", straight_through), support.quiet():
+            done = mutate.sweep([one], args)
+        self.assertEqual([True], fired, "the mid-run callback never ran")
+        self.midway = midway[0]
+        return done
+
+    def test_the_mid_run_write_does_not_reach_for_the_run_s_own_report(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tupferl-sweep-") as name:
+            box = Path(name)
+            report = self.sweep(box)
+            self.assertTrue((box / "out.json").is_file(), "the sweep recorded nothing")
+            self.assertTrue(report.widened, "a swept report dropped the guarantee")
+
+    def test_what_it_wrote_claims_the_guarantee(self) -> None:
+        """The durable half, asserted on both writes.
+
+        `tools/reached.py` reads this file back and prints a caveat about
+        survivors nobody widened, so a `false` here is a claim about the rows
+        that outlives the run -- and the mid-run file is the one a sweep killed
+        by the machine leaves behind, which is the case the per-file recording
+        exists for.
+        """
+        with tempfile.TemporaryDirectory(prefix="tupferl-sweep-") as name:
+            box = Path(name)
+            self.sweep(box)
+            self.assertTrue(self.midway["widened"], f"the mid-run write: {self.midway}")
+            written = json.loads((box / "out.json").read_text(encoding="utf-8"))
+            self.assertTrue(written["widened"], written)
 
 
 class TestASpecFileWithNothingInIt(unittest.TestCase):
