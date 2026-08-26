@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import typing
 import unittest
 from collections.abc import Sequence
@@ -2149,6 +2150,184 @@ class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
         cannot tell that from `> 1`."""
         with mock.patch.dict(os.environ, {mutate._TOTAL: "1"}, clear=True):
             self.assertEqual(1, mutate._budget())
+
+
+class TestTheProcessTableCarriesBothNumbers(unittest.TestCase):
+    """Resident and address space, which are 25x apart and answer different things.
+
+    `_Lanes` kills on resident, because that is what a fork storm spends.
+    `verdict.cap` limits address space, so that is the only number that says
+    whether a lane's ceiling is big enough. Keeping only the first is how
+    `_FLOOR` came to state a 2x margin that was really 1.1x.
+
+    Driven against the real kernel: the subject *is* what `/proc` and `ps`
+    report, and a fixture that supplied the text would be asserting this
+    author's belief about their format rather than reading it.
+    """
+
+    def test_address_space_is_read_and_is_the_larger_of_the_two(self) -> None:
+        """Both fields, from the one read. `address` defaults to 0, so a parser
+        that never filled it would leave every ceiling question unanswerable
+        while every existing assertion about `resident` still passed."""
+        me = mutate._processes()[os.getpid()]
+        self.assertGreater(me.resident, 0, "no resident memory read for this process")
+        self.assertGreater(me.address, me.resident, "address space is not above resident")
+
+    def test_ps_and_proc_agree_about_this_process(self) -> None:
+        """The macOS fallback, exercised on every platform.
+
+        `_processes` picks `/proc` where there is one, so on Linux `_from_ps` is
+        never reached in anger -- and the machine that has nothing else is the
+        one where a broken fallback would first be discovered. Its own docstring
+        says both are tested everywhere for that reason; nothing did.
+
+        Compared loosely on purpose: the two are read a moment apart and the
+        process is running, so demanding equality would be a flake. Within a
+        factor of two is enough to catch the mistakes that matter -- a unit
+        confusion (`ps` reports KiB) or the wrong column.
+        """
+        mine = mutate._from_proc()[os.getpid()]
+        theirs = mutate._from_ps()[os.getpid()]
+        self.assertGreater(theirs.address, 0, "ps reported no address space")
+        self.assertLess(
+            max(mine.address, theirs.address) / min(mine.address, theirs.address),
+            2.0,
+            f"proc says {mine.address} and ps says {theirs.address}",
+        )
+
+
+class TestAPsWithoutTheColumnStillGuards(unittest.TestCase):
+    """A `ps` that cannot report `vsz` must cost the *report*, never the guard.
+
+    Asking for five columns and accepting only five means a `ps` without the
+    fifth yields an empty table -- and an empty table is not a degraded
+    `_Lanes`. It is one that finds no lane members, counts nothing and kills
+    nothing, so the fork storm that took a machine down goes unwatched. Trading
+    that for a line of reporting would be exactly backwards.
+
+    Driven on real `ps` output in both shapes, which is why the parse is its own
+    function: `_from_ps` forks, and a test wanting four columns would otherwise
+    have to mock the fork rather than read what a real `ps` prints.
+    """
+
+    def ran(self, *columns: str) -> str:
+        listed = subprocess.run(
+            ["ps", "-eo", ",".join(f"{name}=" for name in columns)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, listed.returncode, listed.stderr)
+        return listed.stdout
+
+    def test_five_columns_carry_the_address_space(self) -> None:
+        table = mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss", "vsz"))
+        self.assertIn(os.getpid(), table)
+        self.assertGreater(table[os.getpid()].address, 0)
+
+    def test_four_columns_still_populate_the_table(self) -> None:
+        """The half that matters. Without it a missing column silently turns off
+        the only guard against a fork storm on the platform that has no other."""
+        table = mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss"))
+        self.assertIn(os.getpid(), table, "a ps without vsz produced no process table")
+        self.assertGreater(table[os.getpid()].resident, 0, "resident was lost with address")
+        self.assertEqual(0, table[os.getpid()].address, "an address space was invented")
+
+    def test_a_line_that_is_not_numbers_is_skipped(self) -> None:
+        """`ps` writes a header when asked without `=`, and a machine may print
+        anything on stderr-ish lines. A row that is not five integers is not a
+        process."""
+        self.assertEqual({}, mutate._parse_ps("PID PPID PGID RSS VSZ\nnot a process\n"))
+
+
+class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
+    """`_Lanes` measures every lane, not only one it is about to kill.
+
+    Until this existed the only address-space figure anywhere near this module
+    was a constant copied from another repository, and it was 2.3x wrong here.
+    A sweep that measures the thing it is bounded by can say whether the bound
+    still fits; one that measures it *only when killing* can only say so
+    afterwards.
+    """
+
+    #: Comfortably above one sampling interval and far below the harness's own
+    #: 30s per-test alarm, which is the bound `tests/test_watch.py` learned to
+    #: check a test's own timeout against.
+    PATIENCE = 8.0
+
+    def setUp(self) -> None:
+        mutate._WATCHED.forget()
+        self.addCleanup(mutate._WATCHED.forget)
+
+    def test_a_lane_nobody_kills_is_still_measured(self) -> None:
+        """The whole change. A ceiling this generous is never reached, so the
+        old code would have recorded nothing at all about this lane."""
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        mutate._WATCHED.watch(child.pid, 64 << 30)
+        self.addCleanup(mutate._WATCHED.release, child.pid)
+
+        deadline = time.monotonic() + self.PATIENCE
+        while not mutate._WATCHED.widest() and time.monotonic() < deadline:
+            time.sleep(mutate._SAMPLE / 4)
+        self.assertGreater(
+            mutate._WATCHED.widest(), 0, "a live lane was watched and never measured"
+        )
+
+    def test_forget_starts_a_fresh_mark(self) -> None:
+        """`_WATCHED` is a module-level singleton and a process may call `run`
+        more than once -- a spec file calling `verify` twice is the shape that
+        does it. Without this the second run reports the first one's peak."""
+        mutate._WATCHED._widest = 123 << 20
+        self.assertEqual(123 << 20, mutate._WATCHED.widest())
+        mutate._WATCHED.forget()
+        self.assertEqual(0, mutate._WATCHED.widest())
+
+    def said(self, widest: int, ceiling: int, terminal: bool = False) -> str:
+        held = mock.patch.object(mutate._WATCHED, "_widest", widest)
+        with held, support.quiet(terminal) as spill:
+            mutate._report_headroom(ceiling)
+        return spill.getvalue()
+
+    def test_the_line_names_what_was_held_and_what_was_allowed(self) -> None:
+        """Both numbers, because either alone is unactionable: 1892 MiB means
+        nothing without the ceiling, and the ceiling was already printed at the
+        top of a run that may have scrolled."""
+        said = self.said(1892 << 20, 2053 << 20)
+        self.assertIn("1892 MiB", said)
+        self.assertIn("2053 MiB", said)
+        self.assertIn("92%", said)
+
+    def test_it_says_the_figure_is_sampled_and_low(self) -> None:
+        """A number presented as exact invites being divided into. This one is
+        the *current* size read once a second, and measured 3% under the
+        kernel's own high-water over a sweep."""
+        self.assertIn("sampled", self.said(1892 << 20, 2053 << 20))
+
+    def test_a_thin_margin_is_shouted_and_a_roomy_one_is_not(self) -> None:
+        """The half that makes the line worth printing at all. Without it the
+        report is the same colour whether the ceiling is comfortable or one
+        test away from killing every lane."""
+        tight = self.said(1900 << 20, 2000 << 20, terminal=True)
+        roomy = self.said(200 << 20, 2000 << 20, terminal=True)
+        self.assertIn(paint.ODD, tight, "a 95% margin was muttered")
+        self.assertNotIn(paint.ODD, roomy, "a 10% margin was shouted")
+        self.assertIn(paint.QUIET, roomy)
+
+    def test_a_run_that_sampled_nothing_says_nothing(self) -> None:
+        """Lanes that each finish inside one sampling interval leave no reading.
+        Printing "0 MiB of 2053 MiB (0%)" would report a measurement that was
+        never taken as though it were a result -- which is the shape this whole
+        change exists to correct."""
+        self.assertEqual("", self.said(0, 2053 << 20))
+
+    def test_no_ceiling_means_no_share_to_report(self) -> None:
+        """`--memory 0` is "no cap", and a percentage of nothing is a
+        ZeroDivisionError rather than a fact."""
+        self.assertEqual("", self.said(1892 << 20, 0))
 
 
 class TestTheRunAccountsForItsLanes(unittest.TestCase):
