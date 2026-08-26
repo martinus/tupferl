@@ -119,7 +119,7 @@ from pathlib import Path
 from textwrap import indent
 from typing import Literal, NamedTuple
 
-from tools import mutants, run_tests
+from tools import mutants, paint, run_tests
 from tools.cpus import usable_cpus
 from tools.mutants import Mutation, check
 
@@ -312,16 +312,24 @@ class Meaning(NamedTuple):
     #: crosses survivors with coverage and must not read a non-answer as
     #: evidence that a line was executed.
     usable: bool
+    #: What colour the headline is on a terminal. Here rather than at the eleven
+    #: `print`s that show an outcome, for the reason everything else in this
+    #: table is: a fifth outcome that reads as good news in one module and bad
+    #: news in another is the same drift, in the one channel a reader skims
+    #: before reading a word. `paint.QUIET` is the honest default for an outcome
+    #: this build has never heard of -- neither green nor red is a claim it can
+    #: make.
+    colour: str = paint.QUIET
 
 
 #: Keyed by `str`, not by `Outcome`, because `tools/reached.py` reads outcomes
 #: back out of a JSON report where they are plain strings, and a report written
 #: by a newer `mutate` may carry one this build has never heard of.
 MEANING: dict[str, Meaning] = {
-    "caught": Meaning("caught", answered=True, clean=True, usable=True),
-    "survived": Meaning("SURVIVED", answered=True, clean=False, usable=True),
-    "broke": Meaning("BROKE", answered=False, clean=False, usable=False),
-    "timeout": Meaning("TIMEOUT", answered=False, clean=False, usable=False),
+    "caught": Meaning("caught", answered=True, clean=True, usable=True, colour=paint.GOOD),
+    "survived": Meaning("SURVIVED", answered=True, clean=False, usable=True, colour=paint.BAD),
+    "broke": Meaning("BROKE", answered=False, clean=False, usable=False, colour=paint.ODD),
+    "timeout": Meaning("TIMEOUT", answered=False, clean=False, usable=False, colour=paint.ODD),
 }
 
 
@@ -1366,8 +1374,11 @@ def run(
         # silence is how the row that reports `ran out of memory` becomes
         # inexplicable.
         print(
-            f"{lanes} lane(s) at {memory >> 20} MiB each, from {_budget() >> 20} MiB "
-            f"of usable memory ({_why()}) -- see tools.mutate._share."
+            paint.paint(
+                f"{lanes} lane(s) at {memory >> 20} MiB each, from {_budget() >> 20} MiB "
+                f"of usable memory ({_why()}) -- see tools.mutate._share.",
+                paint.QUIET,
+            )
         )
 
     results: list[Result] = []
@@ -1405,8 +1416,11 @@ def run(
                 timings.update(first_look.times or {})
                 if first_look.outcome != "survived":
                     print(
-                        f"  BASELINE NOT GREEN ({first_look.outcome}) -- the suite does not "
-                        f"pass untouched, so {scope} means anything: {first_look.detail}"
+                        paint.paint(
+                            f"  BASELINE NOT GREEN ({first_look.outcome}) -- the suite does not "
+                            f"pass untouched, so {scope} means anything: {first_look.detail}",
+                            paint.BAD + paint.HEAD,
+                        )
                     )
                     # The traceback, not just the name. A red baseline is the one
                     # verdict that cannot be diagnosed by re-running the row, and
@@ -1429,7 +1443,12 @@ def run(
                 # collected in -- so a caller can tell when a *file* is finished
                 # by counting, without knowing anything about the pool.
                 landed(results[-1])
-            print(f"  {MEANING[verdict.outcome].headline:9} {mutation.label}")
+            known = MEANING[verdict.outcome]
+            # Padded first, painted second. `f"{painted:9}"` counts the escape
+            # bytes as columns, so a nine-wide field becomes four and every
+            # coloured row sits five characters left of every plain one. The
+            # argument is in `tools/paint.py`; this is the table it was found in.
+            print(f"  {paint.paint(f'{known.headline:9}', known.colour)} {mutation.label}")
             if verdict.answered:
                 continue
             if strict:
@@ -1447,7 +1466,7 @@ def run(
                 )
             # Not indented under the row by accident: an unanswered row must not
             # be skimmable as one of the two real verdicts.
-            print(f"           -- {verdict.detail}")
+            print(paint.paint(f"           -- {verdict.detail}", known.colour))
         # After the rows, not before, so a red baseline never costs the reader the
         # results they were waiting for -- they are simply told to disbelieve them.
         for future in checking:
@@ -1464,8 +1483,11 @@ def run(
                 # to why -- the old wording asserted a failure that may not have
                 # happened.
                 print(
-                    f"  BASELINE NOT GREEN ({baseline_verdict.outcome}) -- the suite does not "
-                    f"pass untouched, so {scope} means anything: {baseline_verdict.detail}"
+                    paint.paint(
+                        f"  BASELINE NOT GREEN ({baseline_verdict.outcome}) -- the suite does not "
+                        f"pass untouched, so {scope} means anything: {baseline_verdict.detail}",
+                        paint.BAD + paint.HEAD,
+                    )
                 )
                 red = True
                 break
@@ -1475,7 +1497,12 @@ def run(
         # never ran, standing behind a `caught` -- so until they are green on the
         # untouched tree those rows claim something nothing checked. One shard
         # for all of them; on a table whose selections are good this never runs.
-        print(f"\n{len(loose)} test(s) caught a row without being baselined; checking them...")
+        print(
+            paint.paint(
+                f"\n{len(loose)} test(s) caught a row without being baselined; checking them...",
+                paint.ODD,
+            )
+        )
         with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
             loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
         if loose_verdict.outcome != "survived":
@@ -1491,7 +1518,13 @@ def run(
                 else result
                 for result in results
             ]
-            print(f"  NOT GREEN ({loose_verdict.outcome}) -- rows they caught are reported broke.")
+            print(
+                paint.paint(
+                    f"  NOT GREEN ({loose_verdict.outcome}) -- "
+                    f"rows they caught are reported broke.",
+                    paint.BAD,
+                )
+            )
 
     if not red and summarise:
         _summarise(results)
@@ -1509,19 +1542,44 @@ def _summarise(results: Sequence[Result]) -> None:
     survivors = [result for result in results if result.verdict.outcome == "survived"]
     unanswered = [result for result in results if not result.verdict.answered]
     if survivors:
-        print(f"\n{len(survivors)} survived. A test that cannot see the fix removed is decoration:")
+        # `MEANING["survived"].colour`, not `paint.BAD`: this paragraph is about
+        # an outcome, and the table owns what an outcome looks like. A literal
+        # here is a second copy that agrees today.
+        red = MEANING["survived"].colour
+        print(
+            paint.paint(
+                f"\n{len(survivors)} survived. "
+                "A test that cannot see the fix removed is decoration:",
+                red + paint.HEAD,
+            )
+        )
         for result in survivors:
-            print(f"  - {result.mutation.label} ({result.mutation.tests})")
+            # The label painted and the selection not. They are one line, but
+            # the label is the thing to act on and `tests` is how the row got
+            # there -- and a survivor list is read by someone deciding which
+            # three of forty rows to look at first.
+            print(
+                f"  - {paint.paint(result.mutation.label, red)} "
+                f"{paint.paint(f'({result.mutation.tests})', paint.QUIET)}"
+            )
         print("Suspect the fixture before the mutation -- see CLAUDE.md rule 3.")
     if unanswered:
         # Counted separately and never as survivors: these rows asked nothing, and
         # rolling them into either verdict is the error this module exists to
         # avoid, one level up.
         print(
-            f"\n{len(unanswered)} asked nothing, so the table is that much smaller than it looks:"
+            paint.paint(
+                f"\n{len(unanswered)} asked nothing, "
+                "so the table is that much smaller than it looks:",
+                paint.ODD + paint.HEAD,
+            )
         )
         for result in unanswered:
-            print(f"  - {result.mutation.label}: {result.verdict.detail}")
+            # Each row in its own outcome's colour rather than the group's:
+            # `broke` and `timeout` are different answers, and this is the list
+            # where a reader decides which of them to chase.
+            colour = MEANING[result.verdict.outcome].colour
+            print(f"  - {paint.paint(result.mutation.label, colour)}: {result.verdict.detail}")
 
 
 def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | None = None) -> int:
@@ -1873,12 +1931,19 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
             )
         )
         if tests == WHOLE_SUITE:
-            print(f"note: nothing imports {path}, so its rows run the whole suite.")
+            print(
+                paint.paint(
+                    f"note: nothing imports {path}, so its rows run the whole suite.", paint.ODD
+                )
+            )
 
     counted = sum(len(lines) for lines in touched.values())
     print(
-        f"{len(touched)} file(s), {counted} {'' if args.all else 'changed '}lines "
-        f"-> {len(table)} mutants"
+        paint.paint(
+            f"{len(touched)} file(s), {counted} {'' if args.all else 'changed '}lines "
+            f"-> {len(table)} mutants",
+            paint.HEAD,
+        )
     )
     kept, dropped = mutants.cap(table, args.limit)
     if dropped:
@@ -1888,8 +1953,12 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
         for row in dropped:
             share[row.path] = share.get(row.path, 0) + 1
         listed = ", ".join(f"{path} {count}" for path, count in sorted(share.items()))
-        print(f"--limit {args.limit}: {len(dropped)} not run ({listed}).")
-        print("Counts below are out of what ran, not out of what the diff implies.")
+        print(paint.paint(f"--limit {args.limit}: {len(dropped)} not run ({listed}).", paint.ODD))
+        print(
+            paint.paint(
+                "Counts below are out of what ran, not out of what the diff implies.", paint.ODD
+            )
+        )
     return kept
 
 
@@ -1987,7 +2056,7 @@ def _persist(report: Report, where: Path) -> None:
         ),
         encoding="utf-8",
     )
-    print(f"\nwrote {len(rows)} row(s) to {where}")
+    print(paint.paint(f"\nwrote {len(rows)} row(s) to {where}", paint.QUIET))
 
 
 def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
@@ -2139,7 +2208,7 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         if row.path not in done:
             by_file.setdefault(row.path, []).append(row)
     for path in sorted(done & {row.path for row in table}):
-        print(f"{path}: already recorded, skipping")
+        print(paint.paint(f"{path}: already recorded, skipping", paint.QUIET))
     if not by_file:
         # `widened=True` on every report this function builds, recorded rows
         # included. `sweep` is only ever reached from `main`, which always walks;
@@ -2158,7 +2227,9 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     order = sorted(by_file, key=lambda path: len(by_file[path]))
     rows = [row for path in order for row in by_file[path]]
     left = {path: len(by_file[path]) for path in order}
-    print(f"\n{len(rows)} mutant(s) across {len(order)} file(s), in one pool")
+    print(
+        paint.paint(f"\n{len(rows)} mutant(s) across {len(order)} file(s), in one pool", paint.HEAD)
+    )
 
     fresh: list[Result] = []
 
@@ -2168,7 +2239,11 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         left[path] -= 1
         if left[path]:
             return
-        print(f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded")
+        print(
+            paint.paint(
+                f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded", paint.QUIET
+            )
+        )
         if args.json:
             # `True`, not `report.widened`: this runs *during* `_run_generated`
             # below, so that name is not bound yet and reading it here is a
@@ -2181,7 +2256,12 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     if args.json:
         _persist(Report(collected, report.baseline_red, widened=report.widened), args.json)
     if report.baseline_red:
-        print(f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.")
+        print(
+            paint.paint(
+                f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.",
+                paint.BAD + paint.HEAD,
+            )
+        )
     # `times` carried through, not dropped. Re-wrapping the report without them
     # is what made the cheap prefix silently learn nothing: the run measured
     # every test and the number reached `Killers` as an empty dict.
@@ -2213,13 +2293,18 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
             verdict = future.result()
             name = shard if len(shard) < 70 else f"{shard[:67]}..."
             if verdict.outcome == "survived":
-                print(f"  green   {name}")
+                print(f"  {paint.paint('green  ', paint.GOOD)} {paint.paint(name, paint.QUIET)}")
                 continue
             green = False
-            print(f"  RED ({verdict.outcome})  {name}: {verdict.detail}")
+            print(paint.paint(f"  RED ({verdict.outcome})  {name}: {verdict.detail}", paint.BAD))
             if verdict.why:
                 print(indent(verdict.why.rstrip(), "  | "))
-    print(f"\n{len(shards)} baseline shard(s), {'all green' if green else 'NOT green'}.")
+    print(
+        paint.paint(
+            f"\n{len(shards)} baseline shard(s), {'all green' if green else 'NOT green'}.",
+            paint.HEAD + (paint.GOOD if green else paint.BAD),
+        )
+    )
     return green
 
 
@@ -2330,7 +2415,7 @@ def main(argv: list[str] | None = None) -> int:
         killers = Killers(None if args.no_killers else args.killers, budget=args.prefix)
         if args.list:
             for row in table:
-                print(f"  {row.operator:16} {row.label}")
+                print(f"  {paint.paint(f'{row.operator:16}', paint.QUIET)} {row.label}")
             return 0
         # After `--list`, which is about the table rather than about how it will
         # be run, and before the first row.
@@ -2344,12 +2429,21 @@ def main(argv: list[str] | None = None) -> int:
             # on a theory the first could not have confirmed.
             return 0 if _baseline_is_green(table, args) else 1
         if killers.dropped:
-            print(f"{killers.dropped} remembered test(s) no longer load; those rows run as usual.")
+            print(
+                paint.paint(
+                    f"{killers.dropped} remembered test(s) no longer load; "
+                    f"those rows run as usual.",
+                    paint.ODD,
+                )
+            )
         if killers.head:
             spent = sum(killers.cost.get(test, 0.0) for test in killers.head)
             print(
-                f"{len(killers.head)} cheap test(s), {spent:.2f}s, run first "
-                f"where nothing is remembered."
+                paint.paint(
+                    f"{len(killers.head)} cheap test(s), {spent:.2f}s, run first "
+                    f"where nothing is remembered.",
+                    paint.QUIET,
+                )
             )
         if args.json:
             # Before the first row, so a watcher started alongside this one has
@@ -2370,7 +2464,11 @@ def main(argv: list[str] | None = None) -> int:
             # untouched, which is exactly what must never be put in front of a
             # later run. This is the supply line for the false `caught` the
             # baseline shard above guards against; both ends are closed.
-            print("the baseline was red, so nothing was remembered from this run.")
+            print(
+                paint.paint(
+                    "the baseline was red, so nothing was remembered from this run.", paint.BAD
+                )
+            )
         else:
             killers.learn(report)
             killers.save()

@@ -47,7 +47,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from tools import mutate
+from tools import mutate, paint
 
 
 class Row(NamedTuple):
@@ -167,24 +167,51 @@ def partition(rows: list[Row], executed: dict[str, set[int]]) -> Split:
 
 def _summarise(rows: list[Row], split: Split, corrected: int) -> None:
     counts = Counter(row.outcome for row in rows)
-    print(f"{'ALL':<46}{len(rows):>6}")
-    print(f"{'  caught':<46}{counts['caught']:>6}")
+    # Painted line by line rather than by building the table and colouring it
+    # after: the columns are `<46` and `>6`, and a code counted as a column is
+    # how a table stops lining up. `tools/paint.py` says it once; this is the
+    # table where it would show.
+    #
+    # Every colour that belongs to an *outcome* is read out of `mutate.MEANING`,
+    # never spelled again here. Writing `paint.GOOD` beside `caught` is a second
+    # copy that agrees with the table today and diverges the day one changes --
+    # which is the drift the table was introduced to end (#45), reappearing in
+    # the one channel a reader trusts before reading the number.
+    print(paint.paint(f"{'ALL':<46}{len(rows):>6}", paint.HEAD))
+    print(paint.paint(f"{'  caught':<46}{counts['caught']:>6}", mutate.MEANING["caught"].colour))
     for outcome in ("broke", "timeout"):
         if count := counts[outcome]:
-            print(f"{'  ' + outcome + ' (asked nothing)':<46}{count:>6}")
-    print(f"{'  SURVIVED':<46}{split.total:>6}")
-    print(f"{'    on a line NO test executes  (missing test)':<46}{len(split.unreached):>6}")
-    print(f"{'    on a line tests DO execute  (weak/equiv)':<46}{len(split.weak):>6}")
+            line = f"{'  ' + outcome + ' (asked nothing)':<46}{count:>6}"
+            print(paint.paint(line, mutate.MEANING[outcome].colour))
+    survived = mutate.MEANING["survived"].colour
+    print(paint.paint(f"{'  SURVIVED':<46}{split.total:>6}", survived + paint.HEAD))
+    # The two halves of the partition are this module's own reading of one
+    # outcome, not an outcome of their own, so their colours are chosen here: a
+    # missing test is work, a weak-or-equivalent one is a question.
+    print(
+        paint.paint(
+            f"{'    on a line NO test executes  (missing test)':<46}{len(split.unreached):>6}",
+            paint.BAD,
+        )
+    )
+    print(
+        paint.paint(
+            f"{'    on a line tests DO execute  (weak/equiv)':<46}{len(split.weak):>6}", paint.ODD
+        )
+    )
     if corrected:
         # Said out loud, because it is the difference between this partition and
         # a naive one, and because a large number here means the coverage map
         # was taken from a different tree than the run.
         print(
-            f"\n{corrected} line(s) had a caught mutation but were absent from the "
-            "coverage map,\nso the suite reaches them through a subprocess. Folded in."
+            paint.paint(
+                f"\n{corrected} line(s) had a caught mutation but were absent from the "
+                "coverage map,\nso the suite reaches them through a subprocess. Folded in.",
+                paint.QUIET,
+            )
         )
     if not any(row.answered for row in rows):
-        print("\nnothing was answered: no partition is possible.")
+        print(paint.paint("\nnothing was answered: no partition is possible.", paint.ODD))
 
 
 def _by_file(rows: list[Row]) -> None:
@@ -193,7 +220,7 @@ def _by_file(rows: list[Row]) -> None:
     for path, n in sorted(
         Counter(row.path for row in rows).items(), key=lambda kv: (-kv[1], kv[0])
     ):
-        print(f"  {n:5d}  {path}")
+        print(f"  {paint.paint(f'{n:5d}', paint.BAD)}  {path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -240,9 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         # `--no-confirm` unusable with this tool, and `--no-confirm` exists
         # precisely so a long sweep can skip the expensive pass.
         print(
-            "NOTE: this report's survivors were not re-run against the whole suite, so "
-            "some\nmay be a narrow test selection rather than a weak fixture. Confirm on "
-            "a green\ntree before rewriting a test on this evidence.\n"
+            paint.paint(
+                "NOTE: this report's survivors were not re-run against the whole suite, so "
+                "some\nmay be a narrow test selection rather than a weak fixture. Confirm on "
+                "a green\ntree before rewriting a test on this evidence.\n",
+                paint.ODD,
+            )
         )
 
     fixed = repair(raw, rows)
@@ -250,10 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     split = partition(rows, fixed)
     _summarise(rows, split, corrected)
     if split.unreached:
-        print("\nunreached survivors by file:")
+        print(paint.paint("\nunreached survivors by file:", paint.HEAD))
         _by_file(split.unreached)
     if args.list:
-        print("\nunreached survivors:")
+        print(paint.paint("\nunreached survivors:", paint.HEAD))
         for row in sorted(split.unreached, key=lambda r: (r.path, r.line)):
             print(f"  {row.label}")
     return 0

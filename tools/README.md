@@ -16,6 +16,7 @@ off-the-shelf equivalents. Read the docstring before changing a module.
 | a mutation run left more survivors than you can read | [`reached.py`](reached.py) |
 | the suite is slow enough that you are tempted to run a subset | [`run_tests.py`](run_tests.py) |
 | a long job is running detached and silence is ambiguous | [`watch.py`](watch.py) |
+| a tool's output needs a colour, and its log must not get one | [`paint.py`](paint.py) |
 
 ```sh
 python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
@@ -24,8 +25,8 @@ python -m tools.reached sweeps/r.json sweeps/c.json   # survivors missing tests
 python -m tools.watch $PID --log sweeps/r.log --done sweeps/r.json.done --match 'caught|SURVIVED'
 ```
 
-`mutants.py`, `verdict.py` and `cpus.py` are not run directly: they are what
-`mutate.py` and `run_tests.py` are built from. `verdict.py` in particular is a
+`mutants.py`, `verdict.py`, `cpus.py` and `paint.py` are not run directly: they
+are what `mutate.py` and `run_tests.py` are built from. `verdict.py` in particular is a
 *standalone* file on purpose — it is read as source and executed inside each
 mutation's sandbox, so it must not import anything from this package.
 
@@ -77,6 +78,12 @@ because a batch died before it reported anything.
   A claim about a file this project does not have was either rewritten to the
   equivalent file here or dropped — see CLAUDE.md §0 for why a stale claim is
   worse than none.
+- **`paint.py` is new here, and the four tools print through it.** woswoar's
+  print in one colour. The module is mostly about the half that prints
+  *nothing*: a sweep is launched detached with its output redirected, and
+  `watch.py --match 'caught|SURVIVED'` greps that file, so an escape sequence
+  inside the word `caught` would make a healthy run read as a stalled one.
+  Colour is decided by `isatty` per stream and goes around whole words.
 - **`bench.py`, `compare.py` and `sandbox.py` were not ported.** They compare
   two revisions of woswoar and are built around its store; the versions this
   project needs will be written when there is something to measure.

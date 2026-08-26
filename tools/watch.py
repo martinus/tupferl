@@ -65,6 +65,50 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import TextIO
+
+from tools import paint
+
+#: What each of the four answers looks like on a terminal, by the word it starts
+#: with.
+#:
+#: Chosen here rather than where the message is built, because `step` is a *pure
+#: function* and thirty tests in `tests/test_watch.py` assert on the exact string
+#: it returns. Painting inside it would make every one of those assertions depend
+#: on whether the suite was run in a terminal -- green under `tools/run_tests.py`,
+#: which pipes its batches, and red under `python -m unittest discover` in a
+#: shell. Carrying the colour out of `step` instead means widening its result
+#: through all thirty call sites, which is a larger change than this one and
+#: about something else.
+#:
+#: So the print site reads the first word back. An unrecognised one is simply not
+#: painted: a wording change then costs a colour, where a wrong colour would cost
+#: a reader looking at an hour-long job and seeing green where it said DIED.
+SHOUT = {
+    "FINISHED": paint.GOOD + paint.HEAD,
+    "DIED": paint.BAD + paint.HEAD,
+    "STALLED": paint.ODD + paint.HEAD,
+    # Dim, and the only one of the four that repeats. This prints every interval
+    # for an hour; what a reader is waiting for is one of the other three, and
+    # they have to catch an eye that has stopped looking.
+    "working": paint.QUIET,
+}
+
+
+def tint(line: str, out: TextIO | None = None) -> str:
+    """One of `Watch.step`'s answers, dressed for the stream it is going to.
+
+    Public because the guard for `SHOUT` is a test that drives the four real
+    messages through it -- a table keyed on the first word is exactly the thing
+    that goes stale silently when a message is reworded, and the four are built
+    three functions away from here.
+
+    `out` for the same reason `paint.coloured` takes it: the decision is about a
+    stream, and a caller writing somewhere other than stdout -- including a test
+    -- must be able to say which.
+    """
+    return paint.paint(line, SHOUT.get(line.split(" ", 1)[0].rstrip(":"), ""), out)
+
 
 #: Seconds between polls. Twenty rather than one: the events this reports are
 #: minutes apart, and the point of the tool is to be cheap enough to leave
@@ -363,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
             # Flushed, because this is read as it happens rather than afterwards
             # -- an unflushed pipe is a watcher that says nothing for an hour and
             # then everything at once, which is the failure it was written for.
-            print(line, flush=True)
+            print(tint(line), flush=True)
             if status >= 0:
                 return status
         time.sleep(args.interval)
