@@ -1015,6 +1015,29 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         covered = ["tests.test_config.TestRejectingAnUnknownKey"]
         self.assertEqual([], mutate._unbaselined([found], covered))
 
+    def test_one_whole_suite_shard_among_several_covers_everything(self) -> None:
+        """`any`, not `all`. With a single shard the two agree, which is why the
+        test above cannot tell them apart: `all` over one element *is* `any` over
+        it. Given a `WHOLE_SUITE` shard beside a narrow one -- the shape every
+        table with a file nothing imports produces -- `all` is False, the guard
+        does not fire, and every killer is sent off to be re-baselined against a
+        run that already covered it.
+        """
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        mixed = [mutate.WHOLE_SUITE, "tests.test_paths"]
+        self.assertEqual([], mutate._unbaselined([found], mixed))
+
+    def test_a_killer_covered_by_one_shard_of_several_needs_nothing(self) -> None:
+        """The second `any`, and the same trap. A killer is baselined if *some*
+        shard ran it, not if every shard did -- and a table always has several.
+        Read as `all`, a killer in `test_config` is called uncovered because
+        `test_paths` did not also run it, so every caught row in a multi-shard
+        sweep would drag the run into a re-baseline it does not need.
+        """
+        found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
+        several = ["tests.test_paths", "tests.test_config"]
+        self.assertEqual([], mutate._unbaselined([found], several))
+
     def test_a_sibling_module_is_not_covered_by_a_prefix_of_its_name(self) -> None:
         """The dot `run_tests.selects` anchors on, and the reason a bare
         `startswith` is wrong rather than merely loose.
@@ -1031,6 +1054,82 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
             ["tests.test_sync_cli.TestTheRemoteLine.test_it"],
             mutate._unbaselined([found], ["tests.test_sync"]),
         )
+
+
+class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
+    """What `run` *does* once `_unbaselined` finds one, which is the whole point
+    of finding it.
+
+    The guard against woswoar#268: a row the walk carried past its selection can
+    be caught by a test the baseline never ran, and if that test fails on the
+    untouched tree the `caught` is free -- `failfast` stops at the first red
+    test whatever it was about. Both real survivors of one sweep came back
+    credited to a shell-hook test that had never heard of the file under
+    mutation.
+
+    Every mutation of this block survived the first sweep of it -- the check
+    fires only when a caught row's killer is unbaselined *and* that test is red
+    untouched, and nothing in the suite arranged both. These do, by supplying the
+    two verdicts and driving the real `run` between them.
+    """
+
+    KILLER = "tests.test_config.TestRejectingAnUnknownKey.test_it"
+
+    def report(self, loose_outcome: mutate.Outcome) -> mutate.Report:
+        """One row, caught by a test its selection never named, with the extra
+        shard answering ``loose_outcome``."""
+        # A real, unique edit: `check` refuses text that is not, and it runs
+        # before anything here is reached. Nothing applies it -- `_attempt` is
+        # supplied below -- but the row still has to be one `run` accepts.
+        one = Mutation(
+            "x:1 in f()",
+            "tests/profiles.py",
+            '{"mutation": (3, 4)}',
+            '{"mutation": (0, 0)}',
+            "tests.test_paths",
+            operator="branch",
+        )
+        caught = mutate.Verdict("caught", "d", self.KILLER)
+
+        def answered(available: Any, tests: Any, *rest: Any) -> mutate.Verdict:
+            """Green for the baseline's own shards, `loose_outcome` for the extra
+            one. Answering every call the same way was the first spelling and it
+            made the *baseline* red, so the run never reached the check under
+            test -- a stub that cannot tell the two callers apart tests neither.
+            """
+            if self.KILLER in list(tests):
+                return mutate.Verdict(loose_outcome, "the untouched tree says so")
+            return mutate.Verdict("survived")
+
+        with (
+            mock.patch.object(mutate, "_attempt", lambda *a, **k: caught),
+            mock.patch.object(mutate, "_borrow", answered),
+            support.quiet(),
+        ):
+            return mutate.run([one], baseline=True, workers=1, summarise=False)
+
+    def test_a_green_check_leaves_the_verdict_alone(self) -> None:
+        """The common case, and the one that must stay cheap: the test was not
+        baselined, it is green anyway, the row is caught and stays caught."""
+        found = self.report("survived")
+        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
+        self.assertEqual(self.KILLER, found.results[0].verdict.killer)
+
+    def test_a_red_check_refuses_the_verdict(self) -> None:
+        """The failure this exists for. Caught by a test that also fails
+        untouched is not an answer, and reporting it as one is the false
+        `caught` this module is built to make impossible."""
+        found = self.report("caught")
+        self.assertEqual(["broke"], [r.verdict.outcome for r in found.results])
+        self.assertIn("also fails untouched", found.results[0].verdict.detail)
+
+    def test_the_rest_of_the_run_is_not_voided(self) -> None:
+        """Only the rows that test caught. Every other verdict rests on a shard
+        that *was* green, and throwing those away would discard answers this
+        found nothing wrong with -- which is what setting `baseline_red` would
+        do."""
+        found = self.report("caught")
+        self.assertFalse(found.baseline_red, "one loose test voided the whole run")
 
 
 class TestASweepRecordsAsItGoes(unittest.TestCase):
