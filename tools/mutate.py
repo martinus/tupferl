@@ -274,6 +274,57 @@ _SKIP = shutil.ignore_patterns(
 Outcome = Literal["caught", "survived", "broke", "timeout"]
 
 
+class Meaning(NamedTuple):
+    """Everything the rest of the tools need to know about one outcome.
+
+    **One row per outcome, because four scattered spellings is a bug waiting for
+    the next one.** What an outcome implies was written out in four places, and
+    nothing made them agree:
+
+        Verdict.answered   in ("caught", "survived")
+        Report.clean       == "caught"
+        _HEADLINE          [outcome], a plain lookup
+        reached.answered   in ("caught", "survived")
+
+    Adding a fifth outcome means visiting all four, and only one of them fails
+    loudly: `_HEADLINE` is a `[]` and raises `KeyError` *mid-sweep*, throwing
+    away every answer already paid for. The other three are `in (...)` tests
+    that fall through to a **wrong answer, silently** -- a new outcome would
+    quietly count as not-answered, not-clean and not-usable whether or not that
+    is what it means, and nothing anywhere would say so.
+
+    That is not hypothetical: it is what #33 hit while adding one.
+
+    A dict cannot be made total by `mypy`, so the enforcement is a test --
+    `set(get_args(Outcome)) == set(MEANING)`, both directions, derived from the
+    type rather than listing it.
+    """
+
+    #: What a row prints. Lower case is good news or no news; the shouted ones
+    #: are what a reader must not scroll past.
+    headline: str
+    #: Was a question put to the tests at all? `caught` and `survived` are the
+    #: two real verdicts; `broke` and `timeout` asked nothing.
+    answered: bool
+    #: May a sweep of only these rows be called done?
+    clean: bool
+    #: Does the row say anything about whether its line ran? `tools/reached.py`
+    #: crosses survivors with coverage and must not read a non-answer as
+    #: evidence that a line was executed.
+    usable: bool
+
+
+#: Keyed by `str`, not by `Outcome`, because `tools/reached.py` reads outcomes
+#: back out of a JSON report where they are plain strings, and a report written
+#: by a newer `mutate` may carry one this build has never heard of.
+MEANING: dict[str, Meaning] = {
+    "caught": Meaning("caught", answered=True, clean=True, usable=True),
+    "survived": Meaning("SURVIVED", answered=True, clean=False, usable=True),
+    "broke": Meaning("BROKE", answered=False, clean=False, usable=False),
+    "timeout": Meaning("TIMEOUT", answered=False, clean=False, usable=False),
+}
+
+
 class Verdict(NamedTuple):
     outcome: Outcome
     #: The first test that noticed, or the reason nothing could. Printed for
@@ -304,7 +355,7 @@ class Verdict(NamedTuple):
         the exit status each spelled it differently -- and one of the three said
         something subtly other than the other two.
         """
-        return self.outcome in ("caught", "survived")
+        return MEANING[self.outcome].answered
 
 
 class Result(NamedTuple):
@@ -348,7 +399,7 @@ class Report(NamedTuple):
         table as smaller than it was while claiming it was complete.
         """
         return not self.baseline_red and all(
-            result.verdict.outcome == "caught" for result in self.results
+            MEANING[result.verdict.outcome].clean for result in self.results
         )
 
 
@@ -364,12 +415,6 @@ _RUNS: list[Report] = []
 #: Nine wide, as before. `caught` stays lowercase and everything else shouts,
 #: because the eye scanning a pasted table is looking for the rows that are not
 #: the good news.
-_HEADLINE: dict[str, str] = {
-    "caught": "caught",
-    "survived": "SURVIVED",
-    "broke": "BROKE",
-    "timeout": "TIMEOUT",
-}
 
 
 def _probe() -> str:
@@ -1384,7 +1429,7 @@ def run(
                 # collected in -- so a caller can tell when a *file* is finished
                 # by counting, without knowing anything about the pool.
                 landed(results[-1])
-            print(f"  {_HEADLINE[verdict.outcome]:9} {mutation.label}")
+            print(f"  {MEANING[verdict.outcome].headline:9} {mutation.label}")
             if verdict.answered:
                 continue
             if strict:

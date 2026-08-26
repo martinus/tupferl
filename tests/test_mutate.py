@@ -25,13 +25,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import typing
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from tests import support
-from tools import mutants, mutate, verdict
+from tools import mutants, mutate, reached, verdict
 from tools.mutants import Mutation, check
 
 #: Seconds a driven probe may take before a test calls it hung. Above the ~2s
@@ -1243,6 +1244,114 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         learned = mutate.Learned()
         learned.saw("")
         self.assertEqual([], learned.recent, "an empty killer took a slot")
+
+
+class TestWhatAnOutcomeMeans(unittest.TestCase):
+    """`MEANING`: one row per outcome, instead of four spellings that must agree.
+
+    What an outcome implies was written out in `Verdict.answered`,
+    `Report.clean`, the headline map and `reached.Row.answered`. Adding a fifth
+    outcome means visiting all four, and only the headline fails loudly -- it is
+    a `[]` lookup and raises `KeyError` *mid-sweep*, discarding every answer
+    already paid for. The other three fall through to a **wrong answer,
+    silently**, and nothing anywhere says so.
+
+    Both of those happened while #33 added one.
+    """
+
+    def test_meaning_covers_exactly_the_outcomes(self) -> None:
+        """The enforcement `mypy` cannot give a dict.
+
+        Set equality, both directions, **derived from the type**: a missing key
+        crashes a run, an extra one is a typo that would never fire, and listing
+        the outcomes here instead of deriving them is how this guard rots on the
+        next one.
+        """
+        self.assertEqual(
+            set(typing.get_args(mutate.Outcome)),
+            set(mutate.MEANING),
+            "MEANING and Outcome have drifted apart",
+        )
+
+    def test_only_a_real_verdict_counts_as_answered(self) -> None:
+        """`caught` and `survived` say something about the tests. `broke` and
+        `timeout` are the run failing to put the question, and folding either
+        into an answer is the false `caught` this module exists to prevent."""
+        answered = {name for name, what in mutate.MEANING.items() if what.answered}
+        self.assertEqual({"caught", "survived"}, answered)
+
+    def test_only_a_caught_row_leaves_a_sweep_clean(self) -> None:
+        """A survivor is the finding; a broken or timed-out row is a question
+        never put. Neither may report the table as done -- it would claim the
+        table was complete while it was smaller than it looked."""
+        clean = {name for name, what in mutate.MEANING.items() if what.clean}
+        self.assertEqual({"caught"}, clean)
+
+    def test_a_non_answer_is_not_evidence_that_a_line_ran(self) -> None:
+        """What `tools/reached.py` reads it for: it crosses survivors with
+        coverage, and a row that never got to ask is not evidence its line was
+        executed."""
+        usable = {name for name, what in mutate.MEANING.items() if what.usable}
+        self.assertEqual({"caught", "survived"}, usable)
+
+    def test_the_readers_go_through_the_table(self) -> None:
+        """The point of the table is that nothing keeps its own copy. Asserted on
+        the real properties rather than on `MEANING` alone, or the table could be
+        right while every reader ignored it."""
+        for outcome, what in mutate.MEANING.items():
+            verdict = mutate.Verdict(outcome, "d")  # type: ignore[arg-type]
+            self.assertEqual(what.answered, verdict.answered, outcome)
+            self.assertEqual(
+                what.clean, mutate.Report([mutate.Result(row(), verdict)]).clean, outcome
+            )
+
+    #: An outcome that does not exist, standing in for the *next* one.
+    #:
+    #: The four tests above pass just as well against readers that kept their own
+    #: `in ("caught", "survived")` -- of course they do: those copies agree with
+    #: the table *today*, which is exactly why replacing them was safe. They
+    #: diverge only when an outcome is added, and that is the whole thing this
+    #: change is for. So the fixture adds one. Measured: without it, reverting
+    #: any of the three readers to its own tuple survives; with it, all three go
+    #: red.
+    INVENTED = "from-the-future"
+
+    def imagined(self) -> Any:
+        """`MEANING` with a fifth outcome in it, whose flags no hardcoded copy
+        could possibly guess: answered *and* clean *and* usable."""
+        return mock.patch.dict(
+            mutate.MEANING,
+            {self.INVENTED: mutate.Meaning("FUTURE", answered=True, clean=True, usable=True)},
+        )
+
+    def test_answered_follows_a_new_outcome(self) -> None:
+        verdict = mutate.Verdict(self.INVENTED, "d")  # type: ignore[arg-type]
+        with self.imagined():
+            self.assertTrue(verdict.answered, "`answered` is not reading the table")
+
+    def test_clean_follows_a_new_outcome(self) -> None:
+        verdict = mutate.Verdict(self.INVENTED, "d")  # type: ignore[arg-type]
+        with self.imagined():
+            self.assertTrue(
+                mutate.Report([mutate.Result(row(), verdict)]).clean,
+                "`clean` is not reading the table",
+            )
+
+    def test_reached_follows_a_new_outcome(self) -> None:
+        with self.imagined():
+            self.assertTrue(
+                reached.Row("l", "p.py", 1, self.INVENTED).answered,
+                "`reached` is not reading the table",
+            )
+
+    def test_reached_reads_the_same_table(self) -> None:
+        """The fourth copy, in another module. It imports `MEANING` rather than
+        spelling the outcomes again, and an outcome this build does not know is
+        read conservatively -- a report from a newer `mutate` is not evidence."""
+        for outcome, what in mutate.MEANING.items():
+            seen = reached.Row("l", "p.py", 1, outcome)
+            self.assertEqual(what.usable, seen.answered, outcome)
+        self.assertFalse(reached.Row("l", "p.py", 1, "from-the-future").answered)
 
 
 class TestABatchSweepEndToEnd(unittest.TestCase):

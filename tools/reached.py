@@ -47,6 +47,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from tools import mutate
+
 
 class Row(NamedTuple):
     """One mutation and what became of it, as `tools/mutate.py --json` writes it."""
@@ -66,8 +68,14 @@ class Row(NamedTuple):
 
         They are excluded from `repair` for that reason: a row that never got to
         ask is not evidence its line ran.
+
+        Read from `mutate.MEANING` rather than spelled again here, so a new
+        outcome is decided in one place instead of four. An outcome this build
+        does not recognise is *not* answered -- a report from a newer `mutate` is
+        read conservatively, which is the direction this tool errs everywhere.
         """
-        return self.outcome in ("caught", "survived")
+        known = mutate.MEANING.get(self.outcome)
+        return known is not None and known.usable
 
 
 def voided(report: dict[str, Any]) -> bool:
