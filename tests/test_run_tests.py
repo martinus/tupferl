@@ -72,8 +72,15 @@ class Tree(unittest.TestCase):
         self.addCleanup(box.cleanup)
         self.tree = Path(box.name)
         (self.tree / "tools").mkdir()
-        for name in ("__init__.py", "run_tests.py", "cpus.py"):
-            shutil.copy(Path(run_tests.__file__).with_name(name), self.tree / "tools" / name)
+        # Every module, not the three `run_tests` imports today. That list was
+        # hand-kept, and it went stale the first time the runner gained an
+        # import: `tools/paint.py` was added and all four tests in this file
+        # went red with `ImportError: cannot import name 'paint'`, from a tree
+        # this fixture had built wrong rather than from anything under test.
+        # Copying the directory cannot go stale, and the extra files are inert
+        # -- discovery looks in `tests/`.
+        for module in Path(run_tests.__file__).parent.glob("*.py"):
+            shutil.copy(module, self.tree / "tools" / module.name)
         (self.tree / "tests").mkdir()
         (self.tree / "tests" / "__init__.py").write_text("", encoding="utf-8")
 

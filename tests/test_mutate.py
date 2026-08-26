@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,7 +33,7 @@ from typing import Any
 from unittest import mock
 
 from tests import support
-from tools import mutants, mutate, reached, verdict
+from tools import mutants, mutate, paint, reached, verdict
 from tools.mutants import Mutation, check
 
 #: Seconds a driven probe may take before a test calls it hung. Above the ~2s
@@ -1344,6 +1345,54 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
                 "`reached` is not reading the table",
             )
 
+    def test_every_outcome_says_what_colour_it_is(self) -> None:
+        """The fifth column, and the one a reader uses *before* reading a word.
+        An outcome with no colour is an outcome that looks like every other line
+        in a screen of nine hundred."""
+        for outcome, what in mutate.MEANING.items():
+            with self.subTest(outcome=outcome):
+                self.assertRegex(what.colour, r"^\x1b\[[0-9;]+m$")
+
+    def test_the_two_real_verdicts_do_not_share_one(self) -> None:
+        """`caught` and `SURVIVED` are the good news and the finding, and the
+        whole value of the channel is telling them apart at a glance."""
+        self.assertNotEqual(mutate.MEANING["caught"].colour, mutate.MEANING["survived"].colour)
+
+    def test_an_outcome_that_forgets_to_say_claims_nothing(self) -> None:
+        """The default, chosen the way `reached.Row.answered` chooses its own:
+        an outcome this build has never heard of gets the colour that makes no
+        claim, rather than the one that says everything is fine."""
+        invented = mutate.Meaning("FUTURE", answered=True, clean=True, usable=True)
+        self.assertEqual(paint.QUIET, invented.colour)
+
+    #: A colour nothing in the tree uses, so finding it in a line proves the
+    #: line asked the table rather than agreeing with it by coincidence. Every
+    #: real code would be indistinguishable from the literal it replaced.
+    MAGENTA = "\x1b[35m"
+
+    def repainted(self) -> Any:
+        """`MEANING` with `survived` in a colour no reader would choose."""
+        recoloured = mutate.MEANING["survived"]._replace(colour=self.MAGENTA)
+        return mock.patch.dict(mutate.MEANING, {"survived": recoloured})
+
+    def test_the_survivor_paragraph_reads_the_table(self) -> None:
+        """`_summarise` is the part a pull request quotes, and the only reason it
+        is red is that the table says so. Spelling `paint.BAD` there is a second
+        copy that agrees today -- which is exactly what #45 removed from the
+        other four readers."""
+        found = [mutate.Result(row(), mutate.Verdict("survived", "d"))]
+        with self.repainted(), support.quiet(terminal=True) as said:
+            mutate._summarise(found)
+        self.assertIn(self.MAGENTA, said.getvalue(), "the survivor list keeps its own colour")
+
+    def test_reached_reads_the_table_for_colour_too(self) -> None:
+        """The fifth reader, in the other module. It already imports `MEANING`
+        for `answered`; the colour comes from the same row."""
+        survivor = reached.Row("l", "p.py", 1, "survived")
+        with self.repainted(), support.quiet(terminal=True) as said:
+            reached._summarise([survivor], reached.Split([survivor], []), 0)
+        self.assertIn(self.MAGENTA, said.getvalue(), "reached keeps its own colour")
+
     def test_reached_reads_the_same_table(self) -> None:
         """The fourth copy, in another module. It imports `MEANING` rather than
         spelling the outcomes again, and an outcome this build does not know is
@@ -1432,7 +1481,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         (box / "tupferl" / "other.py").write_text(self.CHANGED_OTHER, encoding="utf-8")
         return box
 
-    def sweep(self, box: Path, report: Path) -> tuple[int, str]:
+    def sweep(self, box: Path, report: Path, terminal: bool = False) -> tuple[int, str]:
         """One real `--batch` run, from `argparse` to the done marker.
 
         `_persist` is *wrapped*, not replaced: it still writes, and `self.wrote`
@@ -1450,7 +1499,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         here = Path.cwd()
         os.chdir(box)
         try:
-            with mock.patch.object(mutate, "_persist", watched), support.quiet() as spill:
+            with mock.patch.object(mutate, "_persist", watched), support.quiet(terminal) as spill:
                 code = mutate.main(
                     [
                         "--base",
@@ -1486,6 +1535,49 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
 
         self.assertTrue(written["widened"], "a swept report dropped the guarantee")
         self.assertTrue(report.with_suffix(".json.done").is_file(), "no done marker")
+
+    def test_a_redirected_sweep_carries_no_escape_codes(self) -> None:
+        """The guarantee `tools/watch.py` rests on, driven through a whole run.
+
+        A sweep is started detached with `> sweep.log`, and the watcher counts
+        rows out of that file with `--match 'caught|SURVIVED'`. One escape
+        sequence inside the word and the pattern matches nothing -- so a healthy
+        run reads as a stalled one, which is the wrong answer that looks like a
+        real finding.
+
+        The row is asserted with its spacing, not just its word: this is the
+        line another program parses, and `  caught    ` is what it parses.
+        """
+        box = self.repository()
+        code, said = self.sweep(box, box / "r.json")
+        self.assertEqual(0, code, said)
+        self.assertNotIn("\x1b", said, "a captured run was painted")
+        self.assertIn("  caught    tupferl/tiny.py:", said)
+
+    def test_the_same_sweep_on_a_terminal_is_coloured(self) -> None:
+        """The half that stops the test above from being satisfied by a tool
+        that never colours anything -- which is every version of this code
+        before the colour was added, and would be every version after it broke.
+
+        Same fixture, same run, one stream. The only difference is `isatty`.
+        """
+        box = self.repository()
+        code, said = self.sweep(box, box / "r.json", terminal=True)
+        self.assertEqual(0, code, said)
+        self.assertIn(f"{paint.GOOD}caught", said, "a terminal run was not painted")
+
+    def test_the_colour_does_not_move_the_column(self) -> None:
+        """Pad first, paint second. `f"{painted:9}"` counts the escape bytes as
+        columns, so the coloured row would sit five characters left of a plain
+        one -- invisible in a screenshot of a green run, and a ragged table for
+        anyone reading nine hundred rows.
+
+        Asserted by stripping the codes back off and insisting the line is the
+        one a log file gets, character for character.
+        """
+        box = self.repository()
+        _, coloured = self.sweep(box, box / "r.json", terminal=True)
+        self.assertIn("  caught    tupferl/tiny.py:", re.sub(r"\x1b\[[0-9;]*m", "", coloured))
 
     def test_it_writes_after_each_file_and_again_at_the_end(self) -> None:
         """The point of recording per file: a crash costs one file, not the run.

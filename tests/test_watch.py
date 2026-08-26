@@ -1,14 +1,16 @@
 """`tools/watch.py`: the three answers, and the two ways they were got wrong.
 
 Ported from `martinus/woswoar` (Apache-2.0) and it *ran* unchanged, because
-`tools/watch.py` is unchanged: the two copies differ in their docstrings and
+`tools/watch.py` was unchanged: the two copies differed in their docstrings and
 nothing else. This module imports only the standard library and the tool, so
 nothing had to be adapted -- see `tests/test_reached.py` for why that was worth
 recording.
 
-Three timeouts have since been changed here and a `BOUND` added; see
-`TheCommandLine.ran`. So this is no longer a verbatim copy, and saying it was
-would be the stale claim §0 warns about.
+Both halves of that have since stopped being true, and saying otherwise would be
+the stale claim §0 warns about. Three timeouts were changed here and a `BOUND`
+added (see `TheCommandLine.ran`); and `tools/watch.py` gained `SHOUT` and `tint`,
+which colour its four answers for a terminal -- `TestEveryAnswerIsColoured`
+below.
 
 Issue numbers spelled `woswoar#123` index that repository's issues, not this
 one's. A bare number here would read as a tupferl issue and eventually point at
@@ -26,6 +28,7 @@ would be asserting the belief that was wrong in the first place.
 from __future__ import annotations
 
 import ast
+import io
 import os
 import re
 import resource
@@ -37,7 +40,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools import watch
+from tools import paint, watch
+
+#: The run of SGR codes a painted line starts with -- one or more, since three of
+#: the four answers are a colour *and* bold.
+OPENING = re.compile(r"(?:\x1b\[[0-9;]*m)+")
 
 ANY = re.compile(".")
 
@@ -482,6 +489,84 @@ class TestAJobCanStopWithoutEnding(Fixture):
         line, status = watching.step() or ("", 0)
         self.assertIn("DIED", line)
         self.assertEqual(status, 1)
+
+
+class TestEveryAnswerIsColoured(Fixture):
+    """`SHOUT` is keyed on the word each answer starts with, and the answers are
+    built three functions away from it.
+
+    That is a table which goes stale in silence: reword `working:` to `running:`
+    and nothing fails, nothing warns, and the line a reader watches for an hour
+    is simply never dim again. So the guard drives the four *real* messages --
+    each produced by the same fixture the test above it uses -- rather than a
+    list of words copied out of `SHOUT`, which could only ever agree with
+    itself.
+
+    The colour is asked of an explicit stream, not of `sys.stdout`. Every other
+    assertion in this file is on the exact text `step` returns, and it returns
+    the same text either way: painting happens at the print site, for the reason
+    written at `SHOUT`.
+    """
+
+    class Screen(io.StringIO):
+        """A stream that says it is a terminal, which `io.StringIO` does not.
+
+        A real pty is the better fixture and `tests/test_paint.py` uses one --
+        there, where what a terminal *is* is the subject. Here the subject is
+        which of four codes a line gets, and `isatty` is the whole of what
+        `paint.coloured` asks.
+        """
+
+        def isatty(self) -> bool:
+            return True
+
+    def coloured(self, watching: watch.Watch) -> str:
+        """One real event, painted for a terminal."""
+        line, _ = watching.step() or ("", 0)
+        self.assertTrue(line, "the fixture produced no event to colour")
+        return watch.tint(line, self.Screen())
+
+    def opening(self, painted: str) -> str:
+        """The run of codes `painted` starts with, and nothing after it."""
+        found = OPENING.match(painted)
+        self.assertIsNotNone(found, painted.encode())
+        return found.group() if found else ""
+
+    def test_the_four_answers_get_four_different_colours(self) -> None:
+        """Distinct, because the point of the channel is telling them apart at a
+        glance -- and shouted for the three that are news. `working:` is the one
+        that repeats every interval for an hour, and it is the dim one."""
+        self.done.write_text("{}", encoding="utf-8")
+        finished = self.coloured(self.watching(self.reaped()))
+        self.done.unlink()
+        died = self.coloured(self.watching(self.reaped()))
+        stalled = self.coloured(self.stuck_for(120.0))
+        working = self.coloured(self.watching(os.getpid()))
+
+        for painted in (finished, died, stalled, working):
+            with self.subTest(line=painted.encode()):
+                self.assertTrue(painted.startswith("\x1b["), "an answer went unpainted")
+                self.assertTrue(painted.endswith(paint.OFF))
+        # The *leading* run of codes, matched rather than sliced. The first
+        # spelling of this reached for `rindex("\x1b[")`, which finds the closing
+        # reset -- so what it compared was four whole lines, which differ no
+        # matter what colour they were given. Painting all four alike survived
+        # it; that is CLAUDE.md §2's "suspect the fixture", found by the sweep
+        # for this change.
+        opening = [self.opening(said) for said in (finished, died, stalled, working)]
+        self.assertEqual(4, len(set(opening)), opening)
+
+    def test_the_words_are_still_greppable(self) -> None:
+        """The property `tools/watch.py` itself depends on elsewhere: a code
+        around a word, never inside it."""
+        self.done.write_text("{}", encoding="utf-8")
+        self.assertIn("FINISHED", self.coloured(self.watching(self.reaped())))
+
+    def test_a_reworded_answer_simply_goes_unpainted(self) -> None:
+        """The failure mode chosen at `SHOUT`, asserted so it stays chosen. A
+        word the table does not know gets no colour rather than a guessed one:
+        a wrong colour on a line saying `DIED` costs a reader an hour."""
+        self.assertEqual("running: 3 rows", watch.tint("running: 3 rows", self.Screen()))
 
 
 class TestItForksNothing(Fixture):

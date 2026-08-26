@@ -357,8 +357,30 @@ class Spill(io.StringIO):
         return super().write(text)
 
 
+class Screen(Spill):
+    """A `Spill` that says it is a terminal, which `io.StringIO` does not.
+
+    Not `Terminal`, which is below and is a real pty: this is the *cheap* one,
+    and the two are told apart by name because the difference is the whole
+    reason both exist.
+
+    For the half of `tools/paint.py` that a captured run cannot show. Everything
+    a test captures is a `StringIO`, whose `isatty()` is False -- which is
+    exactly why adding colour to the tools moved no existing assertion, and
+    equally why nothing here could see a colour if this did not exist.
+
+    A real pty is the better fixture and `tests/test_paint.py` uses one, where
+    what a terminal *is* is the subject. Where the subject is what a *tool*
+    prints, `isatty` is the whole of what `paint.coloured` asks, and a pty would
+    add a buffer that has to be drained by somebody.
+    """
+
+    def isatty(self) -> bool:
+        return True
+
+
 @contextmanager
-def quiet() -> Iterator[io.StringIO]:
+def quiet(terminal: bool = False) -> Iterator[io.StringIO]:
     """Swallow stdout and stderr, and hand back what was written.
 
     Both, and returning the text rather than discarding it: a test that silences
@@ -366,9 +388,13 @@ def quiet() -> Iterator[io.StringIO]:
     happening. Used where the *noise* is argparse's usage message and the
     assertion is about the exit status.
 
+    ``terminal`` makes the capture claim to be one, so a test can see what a
+    person would see rather than what a log file gets. Off by default, because
+    a log file is what every other assertion in this suite is about.
+
     Bounded -- see `Spill`.
     """
-    spill = Spill()
+    spill = Screen() if terminal else Spill()
     with redirect_stdout(spill), redirect_stderr(spill):
         yield spill
 

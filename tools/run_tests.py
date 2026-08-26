@@ -60,6 +60,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from tools import paint
 from tools.cpus import usable_cpus
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -382,10 +383,12 @@ def main(argv: list[str] | None = None) -> int:
     skipped = [pair for report in reports for pair in report["skipped"]]
 
     where = f" (shard {args.shard})" if args.shard else ""
-    print(f"\nRan {len(ran)} tests in {len(batches)} batches on {jobs} workers{where}")
+    ran_line = f"\nRan {len(ran)} tests in {len(batches)} batches on {jobs} workers{where}"
+    print(paint.paint(ran_line, paint.HEAD))
     for label, ids in (("FAIL", failures), ("ERROR", errors)):
         for tid in ids:
-            print(f"  {label}: {tid}")  # the traceback is already above, from the batch
+            # the traceback is already above, from the batch
+            print(paint.paint(f"  {label}: {tid}", paint.BAD))
 
     for name in sorted(unloadable):
         # Its own line and its own wording: this is not a test that failed, and
@@ -396,21 +399,28 @@ def main(argv: list[str] | None = None) -> int:
         # The accounting check this script exists for.
         print(f"::error::{len(missing)} discovered tests never ran")
         for tid in sorted(missing):
-            print(f"  never ran: {tid}")
+            print(paint.paint(f"  never ran: {tid}", paint.BAD))
         ok = False
     if duplicated := len(ran) - len(set(ran)):
         print(f"::error::{duplicated} tests ran more than once")
         ok = False
     if skipped:
         for tid, why in skipped:
-            print(f"  skipped: {tid} ({why})")
+            print(paint.paint(f"  skipped: {tid} ({why})", paint.ODD))
         if args.no_skips:
             print(f"::error::{len(skipped)} tests were skipped - an optional tool is missing")
             ok = False
 
+    # The last line, and the one a reader looks at first. `::error::` lines are
+    # deliberately left plain above: GitHub Actions parses that prefix into an
+    # annotation, and wrapping one in escape codes is a guess about a parser
+    # nothing here can test.
     print(
-        f"{'OK' if ok else 'FAILED'} ({len(failures)} failures, {len(errors)} errors, "
-        f"{len(skipped)} skipped)"
+        paint.paint(
+            f"{'OK' if ok else 'FAILED'} ({len(failures)} failures, {len(errors)} errors, "
+            f"{len(skipped)} skipped)",
+            paint.HEAD + (paint.GOOD if ok else paint.BAD),
+        )
     )
     return 0 if ok else 1
 

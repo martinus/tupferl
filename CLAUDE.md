@@ -303,6 +303,7 @@ committed; the only recovery is writing it again from memory.
   | a mutation run left more survivors than you can read | [`tools/reached.py`](tools/reached.py) |
   | the suite is slow enough that you are tempted to run a subset | [`tools/run_tests.py`](tools/run_tests.py) |
   | a long job is running detached and silence is ambiguous | [`tools/watch.py`](tools/watch.py) |
+  | a tool's output needs a colour, and its log must not get one | [`tools/paint.py`](tools/paint.py) |
 
   ```sh
   python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
@@ -311,9 +312,10 @@ committed; the only recovery is writing it again from memory.
   python -m tools.watch $PID --log sweeps/r.log --done sweeps/r.json.done --match 'caught|SURVIVED'
   ```
 
-  All four were ported from `martinus/woswoar` (Apache-2.0), where they were
-  written; their module docstrings carry the argument for each one's shape and
-  say which of its evidence was measured there rather than here.
+  The first four were ported from `martinus/woswoar` (Apache-2.0), where they
+  were written; their module docstrings carry the argument for each one's shape
+  and say which of its evidence was measured there rather than here.
+  `tools/paint.py` was written here.
 
 ---
 
@@ -377,7 +379,7 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
 | `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red |
-| `tools/` | the test infrastructure, ported from `martinus/woswoar`. Its own tests came later (#4): `test_verdict.py` was written here, `test_reached.py` and `test_watch.py` ported unchanged, `test_mutants.py` ported with four assertions re-pointed at this project's layout |
+| `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout |
 | `docs/plan.md` | the plan this is built from |
 
 Five things are not where a newcomer would guess, all on purpose:
@@ -700,6 +702,15 @@ Five things are not where a newcomer would guess, all on purpose:
   instance where the copy and the original disagreed. Where a precondition is
   wanted, look for one the real path already proves: the refusal message names
   the path, and nothing but a real conflict could put it there.
+- **Colour is decided per stream, and a captured stream is not a terminal.**
+  `tools/paint.py` asks `isatty` of the stream being written to, so everything
+  a test captures — `support.quiet`, a `subprocess` pipe, `> sweep.log` — comes
+  back exactly as it did before colour existed. That is why adding it moved no
+  existing assertion, and it is the same property `tools/watch.py --match`
+  depends on. Two rules when you paint a new line: **pad before painting**
+  (`f"{painted:9}"` counts the escape bytes as columns) and put the code around
+  whole words, never inside one. `support.Screen` is the capture that claims to
+  be a terminal, for the half a captured run cannot show.
 - **The generated sweep goes last.** Implement, preflight, review and *apply*
   the review, and only then `python -m tools.mutate --base main`. The table is
   generated from the lines as they stand, so any edit after it invalidates every
