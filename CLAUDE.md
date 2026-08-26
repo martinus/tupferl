@@ -702,6 +702,32 @@ Five things are not where a newcomer would guess, all on purpose:
   instance where the copy and the original disagreed. Where a precondition is
   wanted, look for one the real path already proves: the refusal message names
   the path, and nothing but a real conflict could put it there.
+- **The sweep sizes itself from what is actually free, and says so.**
+  `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the
+  smaller of that and any cgroup limit, leaves a gibibyte, and divides. So a
+  machine with an editor and a browser on it yields a small budget and an idle
+  one a large budget, with nothing to set. The line every run prints names the
+  rule it used:
+
+  ```
+  7 lane(s) at 2053 MiB each, from 14374 MiB of usable memory
+  (15398 MiB unclaimed, less 1024 MiB spare) -- see tools.mutate._share.
+  ```
+
+  Two things follow, and both bit before this existed:
+
+  - **The old rule halved visible memory** on the guess that someone else wanted
+    the other half. On this container that cost more than half the parallelism,
+    because `_share` gives up *lanes* once each one's ceiling would fall under
+    `_FLOOR`: 3 lanes where 7 fit, and a 12-row table at 11.2s against 7.6s over
+    three interleaved pairs. It survives only as the fallback for a machine with
+    no `/proc/meminfo` -- macOS, and the `macos` CI leg is what keeps that arm
+    reachable.
+  - **`TUPFERL_MUTATE_TOTAL` is still there and should now be rare.** It was the
+    documented way to say "this machine is mine"; that question is measured
+    rather than asked. Reach for it to *reproduce* a small machine, not to
+    unlock a large one.
+
 - **Colour is decided per stream, and a captured stream is not a terminal.**
   `tools/paint.py` asks `isatty` of the stream being written to, so everything
   a test captures — `support.quiet`, a `subprocess` pipe, `> sweep.log` — comes

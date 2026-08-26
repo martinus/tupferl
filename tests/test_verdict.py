@@ -525,11 +525,18 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
         # catchable rather than fatal. `while True` reads better and, with the
         # cap mutated away, walks the lane past its whole memory share in about
         # twenty seconds -- measured: the session was killed, and a killed
-        # session says nothing about any mutation. 100 chunks of 8 MiB is 800
-        # MiB: it trips a 512 MiB cap after roughly sixty-four of them, and
+        # session says nothing about any mutation. 40 chunks of 8 MiB is 320
+        # MiB: it trips a 256 MiB cap after roughly twenty-six of them, and
         # when there is no cap it simply ends, leaving `broke` empty and this
         # test red. So the mutant that disables `cap` fails here instead of
         # taking the run with it.
+        #
+        # 256 MiB and 40 chunks, not 512 and 100. The claim under test is that
+        # an exhausted cap is filed as `broke` rather than as a test noticing,
+        # and the size of the cap is not part of it -- the smaller pair reaches
+        # the same `MemoryError` having zeroed a quarter of the memory. The
+        # floor is the interpreter's own address space, which is tens of MiB
+        # here, so 256 keeps an order of magnitude over what must still fit.
         self.module(
             "test_a",
             """
@@ -537,11 +544,11 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
             class T(unittest.TestCase):
                 def test_it(self):
                     held = []
-                    for _ in range(100):
+                    for _ in range(40):
                         held.append(bytearray(8 * 1024 * 1024))
             """,
         )
-        found = self.verdict("test_a", memory=512 * 1024 * 1024)
+        found = self.verdict("test_a", memory=256 * 1024 * 1024)
         self.assertEqual([], found["noticed"], "an out-of-memory test was credited")
         self.assertEqual(1, len(found["broke"]))
         self.assertIn("out of memory", found["broke"][0])
