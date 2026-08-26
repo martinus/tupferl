@@ -702,6 +702,37 @@ Five things are not where a newcomer would guess, all on purpose:
   instance where the copy and the original disagreed. Where a precondition is
   wanted, look for one the real path already proves: the refusal message names
   the path, and nothing but a real conflict could put it there.
+- **A cloud dev container looks "shared" to `tools/mutate.py`, and pays about
+  a third of its sweep time for the mistake.** `_budget()` halves visible memory
+  unless `dedicated()` fires, and `dedicated()` fires on a cgroup limit or `CI` —
+  an ephemeral container has neither, so it gets the halving with nobody else on
+  it. That is not merely conservative: `_share` gives up *lanes* once each one's
+  ceiling would fall under `_FLOOR`, so halving the budget more than halves the
+  parallelism.
+
+  Measured on the 16 GiB, four-core container this was found in, running the
+  same 12-row table, three interleaved pairs:
+
+  | told | lanes | median | vs default |
+  |---|---|---|---|
+  | nothing (default) | 3 | 11.2 s | — |
+  | `TUPFERL_MUTATE_TOTAL=12884901888` (12 GiB) | 6 | 7.6 s | **+32%** |
+  | `TUPFERL_MUTATE_TOTAL=16106127360` (15 GiB) | 7 | 6.2 s | +39% |
+
+  So on a container that is genuinely yours alone, say so:
+
+  ```sh
+  export TUPFERL_MUTATE_TOTAL=12884901888   # 12 GiB; see mutate._budget
+  ```
+
+  **12 GiB rather than the full 15**: `_share` commits `lanes x ceiling` up to
+  whatever it is told, so 15 leaves 0.7 GiB of the machine unaccounted for,
+  which is the over-commitment woswoar#232 exists to prevent. 12 keeps 3.7 GiB
+  of real headroom and buys six of the seven lanes.
+
+  This is a fact about the *machine*, not about the repository, so it belongs in
+  the environment rather than in a default here — `mutate._budget` already says
+  that being told beats guessing.
 - **Colour is decided per stream, and a captured stream is not a terminal.**
   `tools/paint.py` asks `isatty` of the stream being written to, so everything
   a test captures — `support.quiet`, a `subprocess` pipe, `> sweep.log` — comes
