@@ -568,6 +568,15 @@ Five things are not where a newcomer would guess, all on purpose:
   clearing `ECHO`, so the same call swallows the keypress on one and echoes it
   on the other. `conflicts.one_key` sets `ICANON` and `ECHO` itself and echoes
   the key deliberately, which is the same on every supported interpreter.
+- **`unittest`'s display string changed in 3.11, and `verdict.Verdicts.noticed`
+  holds it.** 3.10 renders `test_it (test_a.T)` where 3.11+ renders
+  `test_it (test_a.T.test_it)`. Four tests asserting on the *content* of
+  `noticed` passed locally and turned the `test (3.10)` leg red. Assert on
+  `killers` instead -- the same test as `module.Class.method`, which is what a
+  loader takes back. `verdict.py` already says why it is recorded separately:
+  "a display format is not an API". Asserting `len(noticed)` or that it is
+  empty is fine; asserting what is *in* it is not.
+
 - **`TestCase.enterContext` is 3.11.** On the 3.10 leg it is an
   `AttributeError`, so the tests reach for `contextlib.ExitStack` instead. Same
   family as the `tomllib` gotcha above, and the same leg catches it.

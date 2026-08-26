@@ -939,12 +939,18 @@ class TestTheWalkPastTheSelection(Probe):
         exactly the false survivor the confirmation pass existed to correct."""
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_chosen", failfast=True, walk=True)
+        # `killers`, not `noticed`. The two hold the same test, but `noticed` is
+        # the *display* string and its shape changed in 3.11: 3.10 renders
+        # `test_it (test_chosen.Chosen)` where later versions render
+        # `test_it (test_chosen.Chosen.test_it)`. Asserting on it passed here and
+        # turned the `test (3.10)` leg red -- and `verdict.py` says why in the
+        # field's own comment: `killers` exists "because `mutate` feeds these
+        # straight to a loader and a display format is not an API".
         self.assertEqual(
-            ["test_it (test_beside.Beside.test_it)"],
-            found["noticed"],
+            ["test_beside.Beside.test_it"],
+            found["killers"],
             "the walk did not reach past the selection",
         )
-        self.assertEqual(["test_beside.Beside.test_it"], found["killers"])
 
     def test_it_stops_once_the_selection_itself_notices(self) -> None:
         """The cost half, and the one that makes the walk affordable: a caught
@@ -958,7 +964,7 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=True)
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        self.assertEqual(["test_it (test_chosen.Chosen.test_it)"], found["noticed"])
+        self.assertEqual(["test_chosen.Chosen.test_it"], found["killers"])
         self.assertFalse(self.reached(), "a module past the answer was imported anyway")
 
     def test_it_stops_on_a_notice_even_with_failfast_off(self) -> None:
@@ -972,7 +978,7 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=True)
         found = self.verdict("test_chosen", failfast=False, walk=True)
-        self.assertEqual(["test_it (test_chosen.Chosen.test_it)"], found["noticed"])
+        self.assertEqual(["test_chosen.Chosen.test_it"], found["killers"])
         self.assertFalse(self.reached(), "the walk carried on past its own answer")
 
     def test_a_baseline_does_not_walk(self) -> None:
@@ -1004,7 +1010,7 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_beside", "test_chosen", walk=False)
-        self.assertEqual(["test_it (test_beside.Beside.test_it)"], found["noticed"])
+        self.assertEqual(["test_beside.Beside.test_it"], found["killers"])
         self.assertEqual(2, found["ran"], "a red baseline stopped at its first red module")
 
 
