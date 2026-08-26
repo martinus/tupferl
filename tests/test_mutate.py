@@ -1104,9 +1104,30 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         with (
             mock.patch.object(mutate, "_attempt", lambda *a, **k: caught),
             mock.patch.object(mutate, "_borrow", answered),
-            support.quiet(),
+            support.quiet() as spill,
         ):
-            return mutate.run([one], baseline=True, workers=1, summarise=False)
+            found = mutate.run([one], baseline=True, workers=1, summarise=False)
+        # Kept, not discarded. `quiet` hands back what was written for exactly
+        # this reason: a test that silences output it never asserts on is one
+        # that would pass if the output stopped happening -- and both lines this
+        # block prints survived their own deletion in the first sweep of it.
+        self.said = spill.getvalue()
+        return found
+
+    def test_it_says_that_it_is_checking(self) -> None:
+        """The announcement, which is the only sign a run gives that the walk
+        reached past what was baselined. Deleting it survived the sweep."""
+        self.report("survived")
+        self.assertIn("caught a row without being baselined", self.said)
+        self.assertIn("1 test(s)", self.said)
+
+    def test_it_says_when_the_check_came_back_red(self) -> None:
+        """The other line, and the more important one: a row silently demoted to
+        `broke` with nothing said about why reads as the harness malfunctioning
+        rather than as the guarantee working."""
+        self.report("caught")
+        self.assertIn("NOT GREEN", self.said)
+        self.assertIn("reported broke", self.said)
 
     def test_a_green_check_leaves_the_verdict_alone(self) -> None:
         """The common case, and the one that must stay cheap: the test was not
