@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import typing
 import unittest
 from pathlib import Path
 from typing import Any
@@ -1217,6 +1218,31 @@ class TestAMutantTheTypeCheckerRefuses(unittest.TestCase):
         in the flattering direction."""
         self.assertFalse(mutate.Verdict("refused", "d").answered)
         self.assertNotIn("refused", ("caught", "survived"))
+
+    def test_every_outcome_has_a_headline(self) -> None:
+        """The lookup in `run` is a plain `[]`, so a missing entry is a
+        `KeyError` *mid-sweep* -- which is how adding `refused` threw away 200s
+        of answers already paid for, on a run where the type check worked
+        perfectly. Derived from the type rather than listed, or this guard rots
+        the next time an outcome is added.
+        """
+        for outcome in typing.get_args(mutate.Outcome):
+            self.assertIn(outcome, mutate._HEADLINE, f"{outcome} would crash the run")
+
+    def test_a_refused_row_does_not_fail_the_sweep(self) -> None:
+        """Where `refused` parts company with `broke` and `timeout`.
+
+        All three leave `answered` false, but for different reasons: those two
+        are questions the run failed to put and should have, while this one is a
+        question the type checker made *moot*. About 15% of mutants are refused,
+        so counting them as unclean would fail every sweep.
+        """
+        refused = mutate.Result(row(), mutate.Verdict("refused", "d"))
+        caught = mutate.Result(row(), mutate.Verdict("caught", "d", "t"))
+        self.assertTrue(mutate.Report([caught, refused]).clean)
+        self.assertFalse(
+            mutate.Report([caught, mutate.Result(row(), mutate.Verdict("broke"))]).clean
+        )
 
     def test_a_missing_type_checker_lets_the_row_run(self) -> None:
         """A tool that cannot answer must not be read as an answer. With no

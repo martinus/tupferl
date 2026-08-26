@@ -346,9 +346,17 @@ class Report(NamedTuple):
         had a way to ask. A row that broke or timed out is not clean: it is a
         question the run failed to put, and calling it green would report the
         table as smaller than it was while claiming it was complete.
+
+        **`refused` is clean, and that is the one place it parts company with
+        `broke` and `timeout`.** Those three all leave `answered` false, but for
+        different reasons: a broken or timed-out row is a question the run failed
+        to put and should have, while a refused row is one the type checker made
+        *moot* -- the mutation cannot compile, so no change of that shape can
+        reach `main`, and there is nothing for a test to have noticed. Failing a
+        sweep over it would fail every sweep, since ~15% of mutants are refused.
         """
         return not self.baseline_red and all(
-            result.verdict.outcome == "caught" for result in self.results
+            result.verdict.outcome in ("caught", "refused") for result in self.results
         )
 
 
@@ -369,6 +377,11 @@ _HEADLINE: dict[str, str] = {
     "survived": "SURVIVED",
     "broke": "BROKE",
     "timeout": "TIMEOUT",
+    # Lower case, like `caught` and unlike the three shouted ones: a refusal is
+    # not bad news about the tests. `test_mutate` asserts every `Outcome` has an
+    # entry here, because the lookup is a plain `[]` -- a missing key raised
+    # `KeyError` mid-run and threw away 200s of answers already paid for.
+    "refused": "refused",
 }
 
 
