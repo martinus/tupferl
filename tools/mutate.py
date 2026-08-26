@@ -899,6 +899,92 @@ def _applied(original: str, mutation: Mutation) -> str:
     return original[:start] + mutation.new + original[end:]
 
 
+#: How many recently-successful tests `Learned` keeps in front of a row.
+#:
+#: Small on purpose. Measured across five sweeps, a row's killer is the *same
+#: test* as the previous row's 27-42% of the time and in the same module 85-95%,
+#: so nearly all of the signal is in the most recent one or two -- and every test
+#: kept here is one every later row pays for before reaching its own selection.
+#: Eight leaves room for a few interleaved lanes without the head becoming a
+#: second, unbudgeted `prefix()`.
+LEARNED = 8
+
+
+class Learned:
+    """Whatever caught the last row, tried first on the next one.
+
+    bzip2's move-to-front stage, and it works here for the same reason it works
+    there: after the Burrows-Wheeler transform symbols come in runs, and a
+    sweep's rows arrive sorted by file and line, so consecutive mutants sit in
+    the same function and are usually caught by the same test.
+
+    **This is the one ordering mechanism that learns during the run.**
+    `Killers.known` is exact per-mutant memory keyed on
+    `sha256(path, operator, old, new)`, so it misses by construction on the sweep
+    that matters most -- `--base main` generates rows from *changed* lines, whose
+    text is new. `Killers.prefix()` is computed once before the table starts,
+    from the previous run's cache, and cannot know that the row now running is in
+    the same function as the one before it. Neither looks at adjacency; this only
+    looks at adjacency.
+
+    **Consulted in `_attempt`, not in `ahead_of`.** `run` submits every row to
+    the pool up front, so a row's `first` is fixed before any verdict exists;
+    what a lane knows when it actually picks the row up is the whole point.
+
+    **It reorders, never selects.** The learned tests go in front of
+    `Mutation.first`, and `Mutation.tests` is untouched -- the asymmetry
+    `Killers` already documents. A wrong guess costs one test; it can never make
+    a `caught` that nothing verified. Nor can it smuggle in an unbaselined
+    verdict: a killer no shard covered is caught by `_unbaselined` whatever put
+    it in front.
+
+    Ids are learned from verdicts of *this* run, so unlike `Killers.known` they
+    demonstrably load and need no validation pass.
+    """
+
+    def __init__(self, keep: int = LEARNED) -> None:
+        self.keep = keep
+        #: Newest first. A list rather than a `deque` because `ahead` reads it
+        #: whole under the lock and the length is single digits.
+        self.recent: list[str] = []
+        # `run` drives its lanes from threads, so both ends of this are shared.
+        self._lock = threading.Lock()
+
+    def saw(self, killer: str) -> None:
+        """Move ``killer`` to the front, dropping the oldest past `keep`."""
+        if not killer:
+            return
+        with self._lock:
+            if killer in self.recent:
+                self.recent.remove(killer)
+            self.recent.insert(0, killer)
+            del self.recent[self.keep :]
+
+    def ahead(self, row: Mutation) -> str:
+        """The learned tests this row can reach, newest first.
+
+        Cut to what the row's selection covers, for the reason `ahead_of` gives:
+        a test in a module that does not import the mutated file cannot see the
+        mutation, so running it first is pure cost. An empty selection is
+        `WHOLE_SUITE` and reaches everything.
+
+        Already-remembered tests are dropped rather than repeated -- `first` is
+        run in order, and naming a test twice buys nothing and costs a run.
+        """
+        with self._lock:
+            recent = list(self.recent)
+        if not recent:
+            return ""
+        already = set(row.first.split())
+        reachable = row.tests.split()
+        return " ".join(
+            test
+            for test in recent
+            if test not in already
+            and (not reachable or any(run_tests.selects(test, only) for only in reachable))
+        )
+
+
 def _attempt(
     mutation: Mutation,
     available: queue.Queue[Path],
@@ -907,6 +993,7 @@ def _attempt(
     memory: int,
     each: float,
     walk: bool = True,
+    learned: Learned | None = None,
 ) -> Verdict:
     """Apply one mutation in a borrowed sandbox and report what the suite said."""
     root = available.get()
@@ -919,16 +1006,23 @@ def _attempt(
             # selection: an empty selection is `WHOLE_SUITE` and means "run
             # everything", so anything pushed onto that list turns it into
             # "run only this". See `verdict.collect`.
-            return _run(
+            # Asked *here*, on the lane, rather than when the row was queued:
+            # `run` submits the whole table to the pool at once, so at submit
+            # time no verdict exists yet and there is nothing to have learned.
+            ahead = learned.ahead(mutation) if learned is not None else ""
+            verdict = _run(
                 mutation.tests.split(),
                 root,
                 failfast=failfast,
                 timeout=timeout,
                 memory=memory,
                 each=each,
-                first=mutation.first,
+                first=f"{ahead} {mutation.first}".strip() if ahead else mutation.first,
                 walk=walk,
             )
+            if learned is not None and verdict.outcome == "caught":
+                learned.saw(verdict.killer)
+            return verdict
         finally:
             # Into the sandbox, not the working tree. Only so the next mutation
             # to borrow this copy starts from clean source.
@@ -1234,6 +1328,10 @@ def run(
     results: list[Result] = []
     timings: dict[str, float] = {}
     red = False
+    # One shared list, not one per lane. Rows go to the pool one at a time, so a
+    # lane sees roughly every Nth row rather than a contiguous block -- per-lane
+    # lists would each learn a thinned-out version of the same signal.
+    learning = Learned()
     with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
         checking = (
             [
@@ -1244,7 +1342,9 @@ def run(
             else []
         )
         futures = [
-            pool.submit(_attempt, mutation, available, failfast, timeout, memory, each, walk)
+            pool.submit(
+                _attempt, mutation, available, failfast, timeout, memory, each, walk, learning
+            )
             for mutation in table
         ]
         if landed is not None:

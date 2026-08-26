@@ -1153,6 +1153,98 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         self.assertFalse(found.baseline_red, "one loose test voided the whole run")
 
 
+class TestMovingTheKillerToTheFront(unittest.TestCase):
+    """`Learned`: whatever caught the last row goes first on the next.
+
+    The only ordering mechanism in the file that learns *during* a run.
+    `Killers.known` is keyed on the mutation's text, so it misses by
+    construction on `--base main`, whose rows are new lines; `Killers.prefix()`
+    is computed once before the table starts. Neither looks at the fact that
+    consecutive rows sit in the same function, which is what this is for --
+    measured at 27-42% same killing test as the previous row, against 1-3% by
+    chance.
+    """
+
+    def row(self, tests: str = "tests.test_sync", first: str = "") -> Mutation:
+        return row()._replace(tests=tests, first=first)
+
+    def test_the_last_killer_comes_first(self) -> None:
+        learned = mutate.Learned()
+        learned.saw("tests.test_sync.TestTheDecisionTable.test_it")
+        self.assertEqual("tests.test_sync.TestTheDecisionTable.test_it", learned.ahead(self.row()))
+
+    def test_the_newest_wins(self) -> None:
+        """Move-to-*front*, not append. Without the reordering this is a queue,
+        and a queue hands back the oldest killer first -- which is the one the
+        walk has moved furthest away from."""
+        learned = mutate.Learned()
+        for name in ("a", "b", "c"):
+            learned.saw(f"tests.test_sync.T.test_{name}")
+        self.assertEqual(
+            ["tests.test_sync.T.test_c", "tests.test_sync.T.test_b", "tests.test_sync.T.test_a"],
+            learned.ahead(self.row()).split(),
+        )
+
+    def test_seeing_one_again_moves_it_rather_than_repeating_it(self) -> None:
+        """The move half of move-to-front. Appending a duplicate would spend a
+        slot on a test already in the list and push a real one off the end."""
+        learned = mutate.Learned()
+        for name in ("a", "b", "a"):
+            learned.saw(f"tests.test_sync.T.test_{name}")
+        self.assertEqual(
+            ["tests.test_sync.T.test_a", "tests.test_sync.T.test_b"],
+            learned.ahead(self.row()).split(),
+        )
+
+    def test_it_is_bounded(self) -> None:
+        """Or it grows to the size of the suite, and every row pays for the whole
+        of it before reaching its own selection -- a second `prefix()` with no
+        budget."""
+        learned = mutate.Learned(keep=3)
+        for index in range(10):
+            learned.saw(f"tests.test_sync.T.test_{index}")
+        self.assertEqual(3, len(learned.ahead(self.row()).split()))
+
+    def test_a_test_the_row_cannot_reach_is_not_offered(self) -> None:
+        """The guard `Killers.ahead_of` gives: a test in a module that does not
+        import the mutated file cannot see the mutation, so running it first is
+        pure cost."""
+        learned = mutate.Learned()
+        learned.saw("tests.test_paths.T.test_it")
+        self.assertEqual("", learned.ahead(self.row(tests="tests.test_sync")))
+
+    def test_a_whole_suite_row_reaches_everything(self) -> None:
+        """`WHOLE_SUITE` is the *empty* selection and means "run the lot", so
+        every learned test is reachable from it. Read as a plain string it
+        matches nothing and the row is offered none of them."""
+        learned = mutate.Learned()
+        learned.saw("tests.test_paths.T.test_it")
+        self.assertEqual(
+            "tests.test_paths.T.test_it",
+            learned.ahead(self.row(tests=mutate.WHOLE_SUITE)),
+        )
+
+    def test_what_the_row_already_remembers_is_not_repeated(self) -> None:
+        """`first` runs in order, so naming a test twice costs a run and buys
+        nothing."""
+        learned = mutate.Learned()
+        learned.saw("tests.test_sync.T.test_it")
+        self.assertEqual("", learned.ahead(self.row(first="tests.test_sync.T.test_it")))
+
+    def test_an_empty_killer_is_not_learned(self) -> None:
+        """A survivor and a `broke` row both carry `killer=""`.
+
+        Asserted on `recent`, not on `ahead`. An empty name is filtered by the
+        reachability check on its way out, and `" ".join` swallows it besides --
+        so through `ahead` this guard is invisible and its mutant survived. What
+        it actually costs is a *slot*: `keep` is eight, and a stored blank is one
+        fewer real test in front of every later row.
+        """
+        learned = mutate.Learned()
+        learned.saw("")
+        self.assertEqual([], learned.recent, "an empty killer took a slot")
+
+
 class TestABatchSweepEndToEnd(unittest.TestCase):
     """`--batch` driven all the way through `main`, in a repository of its own.
 
@@ -1346,6 +1438,34 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             written["baseline_red"],
             f"a red baseline never reached the report\n{spill.getvalue()}",
         )
+
+    def test_a_real_sweep_feeds_the_killer_forward(self) -> None:
+        """`Learned` on the real path, which the unit tests above cannot show.
+
+        They drive the class directly; this drives `main`, so it is the only
+        thing that proves the lane consults it at all and that a verdict landing
+        updates it. Both halves are asserted: something *was* fed forward, and
+        the verdicts are unchanged -- an ordering that altered an answer would
+        be the one failure this whole file exists to prevent.
+        """
+        fed: list[str] = []
+        real = mutate.Learned.ahead
+
+        def watched(inner: mutate.Learned, row: Mutation) -> str:
+            got = real(inner, row)
+            fed.append(got)
+            return got
+
+        box = self.repository()
+        report = box / "r.json"
+        with mock.patch.object(mutate.Learned, "ahead", watched):
+            code, said = self.sweep(box, report)
+        self.assertEqual(0, code, said)
+        self.assertTrue(any(fed), f"nothing was ever fed forward: {fed}")
+        outcomes = [
+            row["outcome"] for row in json.loads(report.read_text(encoding="utf-8"))["results"]
+        ]
+        self.assertEqual(["caught"] * len(outcomes), outcomes, "the ordering changed an answer")
 
     def test_a_second_run_skips_the_file_already_recorded(self) -> None:
         """Resume, which is the reason any of this records per file.
