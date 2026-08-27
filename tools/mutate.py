@@ -181,10 +181,31 @@ MEMORY = 4 << 30
 #: without lowering the ceiling was the over-commitment that replaced it, at 16
 #: lanes x 4 GiB = 64 GiB on a 63 GiB machine. One number cannot answer both.
 #:
-#: Measured, and by running the thing rather than reasoning about it: one
-#: whole-suite probe peaks at 838 MiB of address space here, and survives a cap
-#: of 1 GiB but not 768 MiB. Twice the smallest cap that works, so the margin is
-#: a stated factor rather than a number that happens to be round.
+#: **The margin this used to claim does not hold, and the figure behind it was
+#: another machine's.** The line here read: "one whole-suite probe peaks at 838
+#: MiB of address space *here*, and survives a cap of 1 GiB but not 768 MiB.
+#: Twice the smallest cap that works." That 838 MiB was measured in woswoar, and
+#: "here" travelled with the sentence when the file did.
+#:
+#: Measured on this machine, sampling every process inside a real lane over four
+#: sweeps: **1766, 1828, 1892 and 1901 MiB**. So an honest lane process needs
+#: about 1.85 GiB, and against the 2053 MiB ceiling a seven-lane run hands out
+#: that is a margin of roughly **1.1x, not 2x**.
+#:
+#: Kept at 2 GiB rather than raised, and the reason is evidence rather than
+#: nerve: no lane has ever been killed for memory on this machine, so the number
+#: works even though the argument for it did not. Raising it to an honest 2x of
+#: 1901 MiB would mean 3802 MiB a lane and **three lanes where seven run today**
+#: -- a real cost, for a risk nothing has yet demonstrated.
+#:
+#: What replaces the stale claim is a measurement rather than a better constant:
+#: every run now prints what its heaviest lane process actually held against
+#: what it was allowed (`_report_headroom`), so the margin on *this* machine is
+#: visible without going looking, and a machine where 2 GiB is not enough says
+#: so on the first run instead of after a wall of `BROKE`.
+#:
+#: Do not read the 1.85 GiB as a licence to lower this. It is what an honest run
+#: needs; the ceiling has to be above it, not near it.
 _FLOOR = 2 << 30
 
 #: How a lane tells a harness it starts itself what it may spend.
@@ -491,20 +512,47 @@ _SAMPLE = 1.0
 
 
 class Process(NamedTuple):
-    """One row of the process table, in the three fields a lane cares about."""
+    """One row of the process table, in the four fields a lane cares about."""
 
     parent: int
     group: int
     resident: int
+    #: Address space, which is what `verdict.cap` limits and therefore the only
+    #: number that says whether a lane's *ceiling* is big enough. Kept beside
+    #: `resident` rather than instead of it because the two answer different
+    #: questions and both are needed -- see `_processes`.
+    #:
+    #: Free: `/proc/<pid>/stat` already carries it one field from the one this
+    #: read was doing anyway, so nothing here forks or opens a second file.
+    #:
+    #: **No default.** Both readers fill it, so a default would only ever serve
+    #: a third that had forgotten to -- and forgetting is silent: every ceiling
+    #: question then answers 0 while every assertion about `resident` still
+    #: passes. Two mutants of the default survived the sweep for that reason,
+    #: which is the generator saying the value was unobservable.
+    address: int
 
 
 def _processes() -> dict[int, Process]:
     """Every process this user can see, by pid.
 
-    Resident rather than address space, because resident is what the OOM killer
-    counts and what a fork storm actually spends. The one that took this machine
-    down was 4,340 processes holding 26 GB of RSS between them and 961 GB of
-    address space, and only one of those two numbers is a reason to intervene.
+    **Both, because they answer different questions and the two are 25x apart.**
+
+    `_Lanes` intervenes on *resident*, because resident is what the OOM killer
+    counts and what a fork storm actually spends: the storm that took this
+    machine down was 4,340 processes holding 26 GB of RSS between them and 961
+    GB of address space, and only one of those is a reason to kill anything.
+
+    `address` is carried for the opposite reason -- it is what `verdict.cap`
+    limits, so it is the only number that says whether a lane's *ceiling* is big
+    enough. Reading it costs nothing: `/proc/<pid>/stat` has it one field from
+    the resident figure this was already parsing.
+
+    Keeping only one of them is how `_FLOOR` came to state a margin that was not
+    holding. Confusing the two is worse: a lane's tree holds ~73 MiB resident
+    and one of its processes reaches ~1.85 GiB of address space, so a lane count
+    divided out of the resident figure gives every lane a ceiling that honest
+    work cannot fit inside, and the sweep comes back all `BROKE`.
 
     Two readers rather than one, and `/proc` first: reading it forks nothing,
     while `ps` is a fork that can fail at exactly the moment its answer matters.
@@ -541,23 +589,56 @@ def _from_proc() -> dict[int, Process]:
             continue
         with suppress(ValueError):
             table[int(entry.name)] = Process(
-                parent=int(fields[1]), group=int(fields[2]), resident=int(fields[21]) * page
+                parent=int(fields[1]),
+                group=int(fields[2]),
+                resident=int(fields[21]) * page,
+                # Field 23 of `proc(5)`, in bytes already -- unlike `rss` two
+                # fields along, which is in pages.
+                address=int(fields[20]),
             )
     return table
 
 
 def _from_ps() -> dict[int, Process]:
     """`_processes` where there is no `/proc`, which is macOS."""
-    table: dict[int, Process] = {}
     listed = subprocess.run(
         ["ps", "-eo", "pid=,ppid=,pgid=,rss="], capture_output=True, text=True, check=False
     )
-    for line in listed.stdout.splitlines():
+    return _parse_ps(listed.stdout)
+
+
+def _parse_ps(text: str) -> dict[int, Process]:
+    """`ps` output: pid, parent, group and resident, and no address space.
+
+    **`vsz` is asked for and then not used, so it is not asked for.** The first
+    version of this read it, and the macOS leg printed `heaviest lane process
+    held 401357 MiB of its 4096 MiB ceiling (9799%)`. That is not a bug in the
+    arithmetic: macOS counts reserved regions no Linux `RLIMIT_AS` figure would,
+    so the number is real and means something else entirely.
+
+    Reporting it against a ceiling would be twice wrong, because macOS **does
+    not enforce that ceiling** -- `verdict.cap` has said so since it was written
+    and `tests/test_verdict.py` names two classes the workflow excludes for it.
+    There is no ceiling here to have headroom against, so `address` stays 0,
+    `_report_headroom` finds nothing to report, and the run says nothing rather
+    than something impressive and false.
+
+    What macOS still gets is the half that works: `_Lanes` counts *resident*,
+    which is what a fork storm spends, and on the platform that ignores
+    `RLIMIT_AS` it is the only guard there is.
+
+    Its own function so the parse can be driven from text. `_from_ps` forks, and
+    a test would otherwise have to mock the fork rather than read what a real
+    `ps` prints.
+    """
+    table: dict[int, Process] = {}
+    for line in text.splitlines():
         fields = line.split()
-        if len(fields) == 4 and all(field.isdigit() for field in fields):
-            pid, parent, group, resident = (int(field) for field in fields)
-            # Kibibytes, which POSIX does not promise and both platforms do.
-            table[pid] = Process(parent=parent, group=group, resident=resident * 1024)
+        if len(fields) != 4 or not all(field.isdigit() for field in fields):
+            continue
+        pid, parent, group, resident = (int(field) for field in fields)
+        # Kibibytes, which POSIX does not promise and both platforms do.
+        table[pid] = Process(parent=parent, group=group, resident=resident * 1024, address=0)
     return table
 
 
@@ -647,6 +728,11 @@ class _Lanes:
         self._killed: dict[int, int] = {}
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        #: The most address space any single watched process has been seen
+        #: holding. Run-wide rather than per lane: what it answers is "was the
+        #: ceiling big enough", and one process coming close is the whole
+        #: answer -- `verdict.cap` bounds each process separately.
+        self._widest = 0
 
     def watch(self, group: int, ceiling: int) -> None:
         """Count `group` against `ceiling` from now on. ``0`` is no cap."""
@@ -664,6 +750,16 @@ class _Lanes:
                     target=self._sample, args=(self._stop,), name="mutate-lanes", daemon=True
                 )
                 self._thread.start()
+
+    def widest(self) -> int:
+        """The most address space one watched process has held since `forget`."""
+        with self._lock:
+            return self._widest
+
+    def forget(self) -> None:
+        """Start a fresh high-water mark, so one run does not report another's."""
+        with self._lock:
+            self._widest = 0
 
     def release(self, group: int) -> int:
         """Stop counting, and say what it held if this is what killed it."""
@@ -686,6 +782,22 @@ class _Lanes:
             for leader, ceiling in watched.items():
                 members = _lane(leader, table)
                 held = sum(table[pid].resident for pid in members)
+                # Recorded for every lane, not only for one that is killed.
+                # Until this existed the only address-space figure anywhere was
+                # a constant carried in from another repository, and it was
+                # 2.3x wrong here -- see `_FLOOR`. A sweep that measures the
+                # thing it is bounded by can say whether the bound still fits.
+                # Guarded rather than floored with a `0` sentinel. A lane whose
+                # processes all exited between the table read and now has no
+                # members, and `max(..., 0)` would then leave the mark at its
+                # old value -- harmless -- while `max(..., 1)` would raise it to
+                # one byte, which `_report_headroom` reads as a *reading* and
+                # prints as "0 MiB of 2050 MiB". Both mutants of that sentinel
+                # survived the sweep; asking whether anything was seen removes
+                # the constant instead of testing it.
+                if sizes := [table[pid].address for pid in members]:
+                    with self._lock:
+                        self._widest = max(self._widest, *sizes)
                 if held <= ceiling:
                     continue
                 with self._lock:
@@ -1447,6 +1559,11 @@ def run(
             )
         )
 
+    # A fresh high-water mark, so this run reports its own. `_WATCHED` is a
+    # module-level singleton and a process may call `run` more than once -- a
+    # spec file calling `verify` twice is the shape that does it.
+    _WATCHED.forget()
+
     results: list[Result] = []
     timings: dict[str, float] = {}
     red = False
@@ -1592,6 +1709,8 @@ def run(
                 )
             )
 
+    _report_headroom(memory)
+
     if not red and summarise:
         _summarise(results)
     # `widened=walk`, never a bare `True`: the flag's whole job is to say
@@ -1601,6 +1720,46 @@ def run(
     report = Report(results, red, widened=walk, times=timings or None)
     _RUNS.append(report)
     return report
+
+
+#: How much of its ceiling one lane process may reach before the line saying so
+#: is shouted rather than muttered. Not the stated 2x margin `_FLOOR` claims:
+#: this machine runs at ~92%, so shouting below 2x would shout on every run and
+#: train a reader to skip the line. 90% is "one more test away", which is the
+#: point at which somebody should look.
+_TIGHT = 0.90
+
+
+def _report_headroom(ceiling: int) -> None:
+    """Say how close the heaviest lane process came to its ceiling.
+
+    **Because the ceiling was a number nobody had checked here.** `_FLOOR`
+    claimed a whole-suite probe peaks at 838 MiB of address space and that its
+    2x margin therefore held; measured on this machine it is ~1.85 GiB against a
+    2053 MiB ceiling, a margin of about 1.1x. Nothing printed either figure, so
+    the only way to discover it was to go looking -- and the stale one was
+    exactly the number a reader would use to argue the floor could come *down*,
+    which is the change that kills every lane.
+
+    Sampled, so it understates: `_SAMPLE` is a second and the figure is the
+    *current* size read from `/proc/<pid>/stat` rather than the kernel's own
+    `VmPeak` high-water. Measured against `VmPeak` over one sweep, the
+    understatement was **3%** -- worth naming, and not worth a second file read
+    per process per second to remove.
+
+    Silent when nothing was sampled, which is a run whose lanes each finished
+    inside one interval. Saying "0 MiB of 2053" there would be a measurement
+    reported as a result, which is the shape this function exists to correct.
+    """
+    widest = _WATCHED.widest()
+    if not widest or ceiling <= 0:
+        return
+    share = widest / ceiling
+    said = (
+        f"heaviest lane process held {widest >> 20} MiB of its {ceiling >> 20} MiB "
+        f"ceiling ({share:.0%}, sampled, ~3% under)"
+    )
+    print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
 
 
 def _summarise(results: Sequence[Result]) -> None:

@@ -723,6 +723,27 @@ Five things are not where a newcomer would guess, all on purpose:
     three interleaved pairs. It survives only as the fallback for a machine with
     no `/proc/meminfo` -- macOS, and the `macos` CI leg is what keeps that arm
     reachable.
+  - **Every run also says how close it came.** The last line of a sweep names
+    what its heaviest lane process held against what it was allowed:
+
+    ```
+    heaviest lane process held 1892 MiB of its 2053 MiB ceiling (92%, sampled, ~3% under)
+    ```
+
+    That number is why `_FLOOR`'s comment was corrected. It claimed a lane peaks
+    at 838 MiB with a 2x margin — measured in woswoar, and it travelled here with
+    the word "here" attached. On this machine four sweeps gave 1766, 1828, 1892
+    and 1901 MiB, so the real margin is about **1.1x**. `_FLOOR` stays at 2 GiB
+    because nothing has ever been killed for memory, but the figure behind it is
+    now measured rather than inherited, and the line is yellow above 90% so a
+    machine where it does not fit says so on the first run rather than after a
+    wall of `BROKE`.
+
+    **Do not divide the budget by a *resident* figure to pick a lane count.** A
+    lane's tree holds ~73 MiB resident while one of its processes reaches
+    ~1.85 GiB of address space — 25x apart, and only the second is what the
+    ceiling caps. An issue filed on that confusion (#52, since rewritten) would
+    have given every lane a 1032 MiB ceiling and killed all of them.
   - **`TUPFERL_MUTATE_TOTAL` is still there and should now be rare.** It was the
     documented way to say "this machine is mine"; that question is measured
     rather than asked. Reach for it to *reproduce* a small machine, not to

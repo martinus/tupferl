@@ -101,12 +101,17 @@ jobs:
       #   unlimited ceiling as `sys.maxsize` rather than `RLIM_INFINITY`, so
       #   neither the arithmetic nor the enforcement of `verdict.cap` can be
       #   observed here. `tools/verdict.py` has said macOS ignores that limit
-      #   since it was written; this is the first suite that depends on it.
+      #   since it was written; this is the first suite that depends on it;
+      # - there is no `/proc` here, so `mutate._from_proc` is unreachable and
+      #   the address-space field it alone reads cannot be compared with
+      #   anything. `_processes` dispatches to `ps` instead, and what that
+      #   reader does give is checked by a class that runs everywhere.
       - run: >
           python -m tools.run_tests --no-skips
           --exclude tests.test_gitrepo.TestAPathThatIsNotUtf8
           --exclude tests.test_verdict.TestTheMemoryCapsArithmetic
           --exclude tests.test_verdict.TestAnOutOfMemoryTestIsNotAnAnswer
+          --exclude tests.test_mutate.TestWhereThereIsAProc
 
   install:
     # Plan §6: the install a user actually performs. Not `pip install -e .`,
