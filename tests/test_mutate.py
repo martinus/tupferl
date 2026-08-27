@@ -2616,6 +2616,217 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         self.assertEqual("", self.said(1892 << 20, 0))
 
 
+class TestSurvivorsSomebodyHasAlreadyRead(unittest.TestCase):
+    """`known-survivors.json`: a disposition per row, carried to the next sweep.
+
+    **The problem it exists for.** A whole-tree sweep found 557 survivors, and
+    triaging them in prose does not survive to the following Sunday: the sweep
+    produces the same 557 rows with nothing to say which were already
+    understood, so either somebody reads all of them again or nobody reads any.
+    Both have happened here.
+
+    Keyed by content, like `Killers` -- file, operator, and the text going in
+    and out -- so a row keeps its disposition when the code around it moves.
+    A key made from a line number would go empty on the first edit above it,
+    which is every edit.
+
+    **The hazard is the whole design.** A record of accepted survivors is how a
+    project stops looking at them, so three things are load-bearing: the count
+    is always printed, a stale entry is reported loudly, and `--accept` writes
+    `TODO` rather than a reason it invented.
+    """
+
+    def rows(self, *labels: str) -> list[mutate.Result]:
+        return [
+            mutate.Result(
+                Mutation(
+                    label,
+                    "tupferl/sync.py",
+                    f"old{n}",
+                    f"new{n}",
+                    "tests.test_sync",
+                    operator="branch",
+                ),
+                mutate.Verdict("survived", ""),
+            )
+            for n, label in enumerate(labels)
+        ]
+
+    def record(self, rows: dict[str, object] | str) -> Path:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-known-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        where = box / "known-survivors.json"
+        where.write_text(rows if isinstance(rows, str) else json.dumps(rows), encoding="utf-8")
+        return where
+
+    def test_an_unread_survivor_is_fresh(self) -> None:
+        found = mutate.sort_survivors(self.rows("a"), {})
+        self.assertEqual(1, len(found.fresh))
+        self.assertEqual([], found.accepted)
+
+    def test_a_recorded_survivor_is_not_fresh_and_keeps_its_reason(self) -> None:
+        """The reason travels with it. A key alone would say "somebody looked"
+        without saying what they concluded, which is the difference between a
+        record and a mute list."""
+        results = self.rows("a")
+        why = "a progress line; nothing asserts on it"
+        found = mutate.sort_survivors(
+            results, {mutate._key(results[0].mutation): mutate.Accepted(why, 1)}
+        )
+        self.assertEqual([], found.fresh)
+        self.assertEqual([(results[0], why)], found.accepted)
+
+    def test_a_new_survivor_beside_a_known_one_is_still_reported(self) -> None:
+        """The point of the whole thing: 556 read and 1 new must read as 1, not
+        as 557 or as nothing."""
+        results = self.rows("known", "brand new")
+        found = mutate.sort_survivors(
+            results, {mutate._key(results[0].mutation): mutate.Accepted("read", 1)}
+        )
+        self.assertEqual(1, len(found.fresh))
+        self.assertEqual("brand new", found.fresh[0].mutation.label)
+
+    def test_a_caught_row_is_not_a_survivor_however_it_is_recorded(self) -> None:
+        """Accepting a key must not make a *caught* row invisible, or a test
+        that starts failing to catch something would be silently absorbed."""
+        caught = [mutate.Result(self.rows("a")[0].mutation, mutate.Verdict("caught", "t"))]
+        found = mutate.sort_survivors(
+            caught, {mutate._key(caught[0].mutation): mutate.Accepted("read", 1)}
+        )
+        self.assertEqual([], found.fresh)
+        self.assertEqual([], found.accepted)
+
+    def test_an_entry_matching_nothing_is_called_stale(self) -> None:
+        """A record for code that has gone is a claim about a tree that no
+        longer exists -- and the row it used to cover may have been replaced by
+        one nobody has read. Reported rather than quietly kept."""
+        found = mutate.sort_survivors(
+            self.rows("a"), {"deadbeefdeadbeef": mutate.Accepted("long gone", 1)}
+        )
+        self.assertEqual(["deadbeefdeadbeef"], found.stale)
+
+    def test_a_key_that_matched_a_caught_row_is_not_stale(self) -> None:
+        """The row was generated; it simply stopped surviving. Calling that
+        stale would churn the file every time a test started working."""
+        caught = [mutate.Result(self.rows("a")[0].mutation, mutate.Verdict("caught", "t"))]
+        found = mutate.sort_survivors(
+            caught, {mutate._key(caught[0].mutation): mutate.Accepted("read", 1)}
+        )
+        self.assertEqual([], found.stale)
+
+    def test_an_unreadable_record_reports_more_rather_than_less(self) -> None:
+        """A JSON comma lost in a merge must not silently accept every survivor
+        in the tree. Empty is the safe answer, and it is the loud one."""
+        for broken in (
+            "{not json",
+            "[]",
+            '"a string"',
+            '{"key": 4}',
+            '{"key": "a bare reason"}',  # the shape before `seen` existed
+            '{"key": {"why": "read", "seen": 0}}',  # a count that covers nothing
+            '{"key": {"why": "read"}}',
+            '{"key": {"seen": 2}}',
+        ):
+            with self.subTest(broken=broken):
+                self.assertEqual({}, mutate.known_survivors(self.record(broken)))
+
+    def test_a_missing_record_is_not_an_error(self) -> None:
+        """The ordinary case before anybody has accepted anything, and the case
+        in a fresh clone."""
+        self.assertEqual({}, mutate.known_survivors(Path("/nonexistent/known.json")))
+
+    def test_a_well_formed_record_is_read(self) -> None:
+        """The precondition. Without it, every assertion above is satisfied by
+        a reader that always answers empty."""
+        self.assertEqual(
+            {"abc": mutate.Accepted("why", 3)},
+            mutate.known_survivors(self.record({"abc": {"why": "why", "seen": 3}})),
+        )
+
+    def test_a_second_row_of_a_shape_already_read_is_fresh(self) -> None:
+        """**The count is the whole point.** `_key` is content, not position, so
+        two identical mutations in one file share a key -- measured, 557
+        survivors over 432 keys on the first whole-tree sweep. Recorded as a
+        set, accepting one would absorb 125 rows nobody read, and would keep
+        absorbing every future one of that shape.
+
+        Both rows here have the same operator and the same text, so they *are*
+        one key; a record of `seen: 1` covers exactly one of them.
+        """
+        results = self.rows("a", "a")
+        results[1] = mutate.Result(results[0].mutation, mutate.Verdict("survived", ""))
+        key = mutate._key(results[0].mutation)
+        self.assertEqual(key, mutate._key(results[1].mutation), "the fixture must collide")
+
+        one = mutate.sort_survivors(results, {key: mutate.Accepted("read", 1)})
+        self.assertEqual(1, len(one.fresh))
+        self.assertEqual(1, len(one.accepted))
+
+        both = mutate.sort_survivors(results, {key: mutate.Accepted("read", 2)})
+        self.assertEqual([], both.fresh)
+        self.assertEqual(2, len(both.accepted))
+
+
+class TestWhenARecordedSweepGoesRed(unittest.TestCase):
+    """`_status`: the one thing the record is allowed to change about CI.
+
+    Excusing a read survivor is the point; excusing anything else would make the
+    weekly sweep a job that cannot fail, which is worse than not having it. So
+    every other reason a run is not clean has a row here.
+    """
+
+    def report(self, *outcomes: mutate.Outcome, baseline_red: bool = False) -> mutate.Report:
+        return mutate.Report(
+            [
+                mutate.Result(
+                    Mutation(f"row {n}", "tupferl/sync.py", "a", "b", "t", operator="branch"),
+                    mutate.Verdict(outcome, ""),
+                )
+                for n, outcome in enumerate(outcomes)
+            ],
+            baseline_red=baseline_red,
+        )
+
+    def status(self, report: mutate.Report, fresh: int = 0) -> int:
+        survivors = [r for r in report.results if r.verdict.outcome == "survived"]
+        sorted_out = mutate.Survivors(
+            survivors[:fresh], [(r, "read") for r in survivors[fresh:]], []
+        )
+        return mutate._status(report, sorted_out)
+
+    def test_a_sweep_whose_every_survivor_was_read_is_green(self) -> None:
+        self.assertEqual(0, self.status(self.report("caught", "survived", "survived")))
+
+    def test_one_survivor_nobody_read_is_red(self) -> None:
+        self.assertEqual(1, self.status(self.report("caught", "survived", "survived"), fresh=1))
+
+    def test_a_row_that_broke_is_red_however_the_survivors_stand(self) -> None:
+        """A question the run failed to put is not a question answered. If the
+        record could excuse this, a sweep where every mutant crashed would
+        report success."""
+        self.assertEqual(1, self.status(self.report("caught", "broke", "survived")))
+
+    def test_a_row_that_timed_out_is_red(self) -> None:
+        self.assertEqual(1, self.status(self.report("caught", "timeout")))
+
+    def test_a_red_baseline_is_red_even_with_nothing_else_wrong(self) -> None:
+        """Its verdicts are meaningless, so "no fresh survivors" says nothing."""
+        self.assertEqual(1, self.status(self.report("caught", baseline_red=True)))
+
+    def test_an_all_caught_sweep_is_green(self) -> None:
+        """The precondition: without it every assertion above is satisfied by a
+        function that always answers 1."""
+        self.assertEqual(0, self.status(self.report("caught", "caught")))
+
+    def test_a_stale_entry_alone_does_not_turn_the_run_red(self) -> None:
+        """It is reported loudly and dropped by `--accept`, but it describes
+        code that has *gone* -- there is nothing in this tree to fix, and a red
+        run demanding one would be the job that cries wolf."""
+        report = self.report("caught")
+        stale = mutate.Survivors([], [], ["deadbeefdeadbeef"])
+        self.assertEqual(0, mutate._status(report, stale))
+
+
 class TestWhatBaselineOnlyAnswers(unittest.TestCase):
     """`_baseline_is_green`: `--baseline-only`, which exists to ask in one
     shard's time the question a sweep will ask in an hour.

@@ -1790,9 +1790,22 @@ def _report_headroom(ceiling: int) -> None:
     print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
 
 
-def _summarise(results: Sequence[Result]) -> None:
-    """The part a pull request quotes when the news is bad."""
-    survivors = [result for result in results if result.verdict.outcome == "survived"]
+def _summarise(results: Sequence[Result], accepted: dict[str, Accepted] | None = None) -> None:
+    """The part a pull request quotes when the news is bad.
+
+    ``accepted`` splits the survivors into ones somebody has already read and
+    ones nobody has. The accepted ones are *counted and not listed*: the count
+    is what stops the file becoming a way to hide them, and the list is what
+    would bury the rows that are new.
+    """
+    sorted_out = sort_survivors(results, accepted or {})
+    if accepted is not None:
+        _report_known(sorted_out)
+    survivors = (
+        sorted_out.fresh
+        if accepted is not None
+        else [result for result in results if result.verdict.outcome == "survived"]
+    )
     unanswered = [result for result in results if not result.verdict.answered]
     if survivors:
         # `MEANING["survived"].colour`, not `paint.BAD`: this paragraph is about
@@ -1833,6 +1846,106 @@ def _summarise(results: Sequence[Result]) -> None:
             # where a reader decides which of them to chase.
             colour = MEANING[result.verdict.outcome].colour
             print(f"  - {paint.paint(result.mutation.label, colour)}: {result.verdict.detail}")
+
+
+def _accept(sorted_out: Survivors, accepted: dict[str, Accepted]) -> None:
+    """Write this run's unread survivors into the record, and drop stale rows.
+
+    `--accept` is a *deliberate* act, and it is why this is a flag rather than
+    something a run does when it feels like it: recording a survivor is saying
+    somebody read it and decided, and a tool that did that on its own would be
+    deciding on their behalf.
+
+    The reason it writes is a placeholder naming the file and function, because
+    a reason nobody wrote is not a reason -- the row is there to be edited, and
+    a reviewer seeing `TODO` in the diff is the point rather than an oversight.
+    """
+    gone = set(sorted_out.stale)
+    rows = {key: row for key, row in accepted.items() if key not in gone}
+    for result in sorted_out.fresh:
+        key = _key(result.mutation)
+        if (already := rows.get(key)) is not None:
+            # Another row of a shape already read. The count rises rather than
+            # the reason being rewritten: what changed is how many there are.
+            rows[key] = already._replace(seen=already.seen + 1)
+        else:
+            rows[key] = Accepted(f"TODO: why is {result.mutation.label} acceptable?", 1)
+    KNOWN.write_text(
+        json.dumps(
+            {key: {"why": row.why, "seen": row.seen} for key, row in rows.items()},
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(
+        paint.paint(
+            f"recorded {len(sorted_out.fresh)} new and dropped {len(sorted_out.stale)} stale; "
+            # Both numbers, because they differ: on the first whole-tree sweep
+            # 557 survivors shared 432 keys, and a report of either alone reads
+            # as the other.
+            f"{KNOWN} now holds {len(rows)} key(s) covering "
+            f"{sum(row.seen for row in rows.values())} survivor(s). "
+            "Every new row says TODO on purpose.",
+            paint.ODD,
+        )
+    )
+
+
+def _status(report: Report, sorted_out: Survivors) -> int:
+    """Red or green, once the record has had its say.
+
+    **It asks "is anything new", not "is anything alive".** That is the whole
+    point of the record: a sweep whose every survivor somebody has already read
+    and written a reason for has nothing to report, and a job that goes red
+    every week is one nobody looks at by the third week.
+
+    `Report.clean` is left alone -- it is a fact about the run, and `verify`
+    still uses it for hand-written tables, where a survivor is never expected
+    and there is no record to consult.
+
+    The "is it bad" question goes to `MEANING` rather than being spelled out
+    here, so this stays `clean` with the accepted survivors excused rather than
+    becoming a second copy of the table that agrees today.
+    """
+    troubled = any(
+        not MEANING[result.verdict.outcome].clean
+        for result in report.results
+        if result.verdict.outcome != "survived"
+    )
+    return 1 if sorted_out.fresh or troubled or report.baseline_red else 0
+
+
+def _report_known(sorted_out: Survivors) -> None:
+    """Say how many survivors were already understood, and what is stale.
+
+    **Printed whenever there is a baseline**, because a baseline whose size is
+    invisible is one nobody re-reads: the number going up unnoticed is how a
+    record stops meaning "understood" and starts meaning "ignored". Silent at
+    zero, which is every hand-written spec file -- there is no baseline there
+    to be invisible, and a line saying so on every `verify()` run is noise
+    that would train the eye past the line that matters.
+    """
+    if sorted_out.accepted:
+        print(
+            paint.paint(
+                f"{len(sorted_out.accepted)} survivor(s) already recorded in {KNOWN} "
+                f"-- counted, not listed.",
+                paint.QUIET,
+            )
+        )
+    if sorted_out.stale:
+        # Loud, because a stale entry is a claim about code that no longer
+        # exists -- and the row it used to cover may have been replaced by one
+        # nobody has read.
+        print(
+            paint.paint(
+                f"{len(sorted_out.stale)} entr(y/ies) in {KNOWN} match nothing this run "
+                f"generated; the code they describe has moved or gone.",
+                paint.ODD,
+            )
+        )
 
 
 def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | None = None) -> int:
@@ -1937,6 +2050,98 @@ KILLERS = Path("sweeps/killers.json")
 #: A budget rather than a count, because what matters is the seconds every row
 #: pays up front, and tests do not all cost the same.
 PREFIX = 0.5
+
+
+#: Survivors somebody has looked at, keyed the way `Killers` keys a killer.
+#:
+#: **Committed, unlike everything else a sweep writes.** `sweeps/` is ignored
+#: because a report is transient; this is the opposite -- it is the record of
+#: which survivors have been read and what was decided about them, and it is
+#: reviewed in a pull request like any other claim about the tree.
+#:
+#: The problem it exists for: a whole-tree sweep found 557 survivors, and
+#: triaging them in prose does not survive to the next sweep. The following
+#: Sunday produces the same 557 rows with nothing to say which were already
+#: understood, so either somebody reads all of them again or nobody reads any of
+#: them. Both have happened.
+KNOWN = Path("known-survivors.json")
+
+
+class Accepted(NamedTuple):
+    """What was decided about one kind of survivor, and how many there were."""
+
+    why: str
+    #: **How many rows of this shape somebody read.** `_key` is content, never
+    #: position -- that is what lets a row keep its disposition when the code
+    #: around it moves, and it is also why two identical mutations in one file
+    #: share a key. Measured on the first whole-tree sweep: 557 survivors
+    #: collapsed to 432 keys, so 125 rows would have been absorbed by a sibling
+    #: nobody read.
+    #:
+    #: With a count, the 126th occurrence of a shape is still new. Without one,
+    #: accepting `if x:` becoming `if True:` once in a file accepts every such
+    #: line in it, for ever -- which is the failure this whole record exists to
+    #: prevent, arriving through its own key.
+    seen: int
+
+
+def known_survivors(where: Path = KNOWN) -> dict[str, Accepted]:
+    """Every accepted survivor's key, why it was accepted, and how many.
+
+    Missing or unreadable is an empty answer rather than an error: a run that
+    cannot read the file must report *more* than it should, never less. The
+    failure this guards against is a record that silently swallows everything
+    because a JSON comma went missing in a merge.
+    """
+    try:
+        rows = json.loads(where.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(rows, dict):
+        return {}
+    found: dict[str, Accepted] = {}
+    for key, value in rows.items():
+        if not isinstance(value, dict):
+            continue
+        why, seen = value.get("why"), value.get("seen")
+        if isinstance(why, str) and isinstance(seen, int) and seen > 0:
+            found[str(key)] = Accepted(why, seen)
+    return found
+
+
+class Survivors(NamedTuple):
+    """This run's survivors, split by whether anybody has read them before."""
+
+    fresh: list[Result]
+    #: Accepted, with the reason each was accepted for.
+    accepted: list[tuple[Result, str]]
+    #: Keys in the file that this run's table never produced. Reported so the
+    #: file cannot quietly accumulate rows for code that no longer exists --
+    #: which is how a baseline stops describing the tree it claims to.
+    stale: list[str]
+
+
+def sort_survivors(results: Sequence[Result], accepted: dict[str, Accepted]) -> Survivors:
+    """Split survivors into ones somebody has read and ones nobody has.
+
+    **Counted, not merely matched.** A key covers as many rows as were read, and
+    the next one of that shape is fresh -- see `Accepted.seen` for the 125 rows
+    that would otherwise have been absorbed by a sibling.
+    """
+    fresh: list[Result] = []
+    seen: list[tuple[Result, str]] = []
+    left = {key: row.seen for key, row in accepted.items()}
+    for result in results:
+        if result.verdict.outcome != "survived":
+            continue
+        key = _key(result.mutation)
+        if left.get(key, 0) > 0:
+            left[key] -= 1
+            seen.append((result, accepted[key].why))
+        else:
+            fresh.append(result)
+    reached = {_key(result.mutation) for result in results}
+    return Survivors(fresh, seen, sorted(set(accepted) - reached))
 
 
 def _key(mutation: Mutation) -> str:
@@ -2684,6 +2889,11 @@ def main(argv: list[str] | None = None) -> int:
         help="ignore and do not update the remembered killers",
     )
     parser.add_argument(
+        "--accept",
+        action="store_true",
+        help=f"record this run's survivors in {KNOWN} so later runs report only new ones",
+    )
+    parser.add_argument(
         "--prefix",
         type=float,
         default=PREFIX,
@@ -2755,7 +2965,11 @@ def main(argv: list[str] | None = None) -> int:
             # retract a marker an earlier complete run earned.
             _marker(args.json).unlink(missing_ok=True)
         report = sweep(table, args) if args.all or args.batch else _run_generated(table, args)
-        _summarise(report.results)
+        accepted = known_survivors()
+        _summarise(report.results, accepted)
+        sorted_out = sort_survivors(report.results, accepted)
+        if args.accept:
+            _accept(sorted_out, accepted)
         if report.baseline_red:
             # Its verdicts are meaningless by definition, so its killers are
             # too -- and a killer recorded from a red tree is a test that fails
@@ -2778,7 +2992,7 @@ def main(argv: list[str] | None = None) -> int:
             # The pid names a process that no longer exists, and a stale one is
             # exactly the false-liveness `watch.py` refuses to answer with.
             _pidfile(args.json).unlink(missing_ok=True)
-        return 0 if report.clean else 1
+        return _status(report, sorted_out)
 
     already = len(_RUNS)
     namespace = runpy.run_path(args.script)
