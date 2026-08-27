@@ -440,6 +440,39 @@ Five things are not where a newcomer would guess, all on purpose:
   message legitimately cannot take that shape, argue it in the PR and change
   the check; do not add an exception list, which is how the rule stops meaning
   anything.
+- **Every survivor has a disposition, and it lives in `known-survivors.json`.**
+  A whole-tree sweep found 557 survivors. Triaging them in prose does not
+  survive to the following Sunday: the next sweep produces the same 557 rows
+  with nothing to say which were already understood, so either somebody reads
+  all of them again or nobody reads any. Both have happened here. The record
+  holds one row per survivor, so a sweep reports only what is *new*:
+
+  ```sh
+  python -m tools.mutate --base main --accept   # record this run's survivors
+  ```
+
+  Four things about it are load-bearing, and each is a way it could quietly
+  become a mute list instead of a record:
+
+  - **`--accept` is a flag, never automatic.** Recording a survivor is saying
+    somebody read it and decided; a run that did that by itself would be
+    deciding on their behalf.
+  - **A new row says `TODO`, and that is the point.** The tool writes a
+    placeholder naming the file and function, because a reason nobody wrote is
+    not a reason. Seeing `TODO` in a diff is the review.
+  - **A row is counted, not merely matched.** `_key` is content and not
+    position — that is what lets a disposition survive the code moving — and it
+    is also why two identical mutations in one file share a key. Measured: the
+    557 survivors collapse to **432 keys**, so a record shaped as a set would
+    absorb 125 rows nobody read, and would go on absorbing every future one of
+    those shapes. `Accepted.seen` is how the 126th is still new.
+  - **A stale entry is reported loudly.** It is a claim about code that has
+    gone, and the row it used to cover may have been replaced by one nobody has
+    read.
+
+  An unreadable file reads as *empty*, so a lost comma reports every survivor
+  rather than none. The failure to guard against is always the flattering one.
+
 - **Never read a raw survivor list as a bug count.** Cross it with coverage
   (`python -m tools.reached results.json coverage.json --list`): a survivor on a
   line no test executes is a missing test; a survivor on a line the suite does
