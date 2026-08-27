@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import itertools
 import json
 import os
 import re
@@ -1502,6 +1503,126 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         self.assertIn("1 asked nothing", said)
 
 
+class TestWhichFileASweepReachesFirst(unittest.TestCase):
+    """`by_size`: smallest file first, and every file's rows kept together.
+
+    Two paths built their table differently. `sweep` sorted by size; the plain
+    `--base` path did not, because `generated` assembles with `for path in
+    sorted(touched)` and a `ThreadPoolExecutor` runs futures in submission
+    order -- so alphabetical order became execution order by accident, and
+    nobody chose it.
+
+    Measured on this tree before the fix, the order files were reached in:
+    `cpus.py` (3 rows), `mutants.py` (514), `mutate.py` (738), `paint.py` (19).
+    A run stopped early answered three rows and then ground through the two
+    largest files. After: 3, 19, 22, 29, 31, 38, 52, 77 -- seven whole files in
+    the first 194 rows.
+    """
+
+    def rows(self, sizes: dict[str, int]) -> list[Mutation]:
+        """A table with `sizes[path]` rows in each file, built in *path* order
+        so that the sort has something to undo."""
+        return [
+            Mutation(f"{path}:{n} x", path, "a", "b", "tests.test_sync")
+            for path in sorted(sizes)
+            for n in range(sizes[path])
+        ]
+
+    def test_the_smallest_file_comes_first(self) -> None:
+        """Ascending by row count, not by name. `a.py` is both alphabetically
+        first and the largest, so a table that came back in path order would
+        look identical to one that was never sorted."""
+        grouped = mutate.by_size(self.rows({"a.py": 5, "b.py": 1, "c.py": 3}))
+        self.assertEqual(["b.py", "c.py", "a.py"], list(grouped))
+
+    def test_every_row_survives_the_ordering(self) -> None:
+        """A sort that drops rows would still pass the assertion above. The
+        table is a work list before it is an order."""
+        table = self.rows({"a.py": 5, "b.py": 1, "c.py": 3})
+        self.assertEqual(
+            sorted(row.label for row in table),
+            sorted(row.label for rows in mutate.by_size(table).values() for row in rows),
+        )
+
+    def test_a_file_keeps_its_rows_together_and_in_order(self) -> None:
+        """Contiguity is load-bearing twice: `sweep.finished` counts a file down
+        to zero by relying on it, and `Learned`'s move-to-front rests on
+        consecutive rows sitting in the same function. Interleaving them is a
+        measured dead end -- see CLAUDE.md."""
+        grouped = mutate.by_size(self.rows({"a.py": 3, "b.py": 1}))
+        self.assertEqual(["a.py:0 x", "a.py:1 x", "a.py:2 x"], [r.label for r in grouped["a.py"]])
+
+    def test_files_of_the_same_size_keep_a_stable_order(self) -> None:
+        """Nothing about size separates them, so the answer must not depend on
+        dictionary iteration luck -- a table that reorders equal files between
+        runs would make two sweeps of one tree incomparable."""
+        even = {"c.py": 2, "a.py": 2, "b.py": 2}
+        self.assertEqual(["a.py", "b.py", "c.py"], list(mutate.by_size(self.rows(even))))
+
+    def test_an_empty_table_is_not_an_error(self) -> None:
+        """`--base main` on a diff that touches no mutable file. `generated`
+        passes whatever it has."""
+        self.assertEqual({}, mutate.by_size([]))
+
+    def repository(self) -> Path:
+        """Two mutable files whose changed lines differ in number, committed and
+        then changed, so `generated` has a real diff to read.
+
+        `wee.py` sorts *after* `many.py`, so path order and size order disagree
+        -- without that the fixture cannot tell a sorted table from an
+        unsorted one, which is the shape that made an earlier attempt here
+        useless (`--limit 40` gave every file two rows, so every ordering
+        looked identical).
+        """
+        box = Path(tempfile.mkdtemp(prefix="tupferl-order-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tupferl").mkdir()
+        (box / "tupferl" / "__init__.py").write_text("", encoding="utf-8")
+        many = "\n".join(f"def f{n}(x):\n    return x + {n}\n" for n in range(6))
+        (box / "tupferl" / "many.py").write_text(many, encoding="utf-8")
+        (box / "tupferl" / "wee.py").write_text("def g(x):\n    return x + 1\n", encoding="utf-8")
+
+        def git(*argv: str) -> None:
+            subprocess.run(("git", *argv), cwd=box, check=True, capture_output=True)
+
+        git("init", "-q")
+        git("config", "user.email", "order@example.invalid")
+        git("config", "user.name", "order")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        (box / "tupferl" / "many.py").write_text(many.replace("+", "-"), encoding="utf-8")
+        (box / "tupferl" / "wee.py").write_text("def g(x):\n    return x - 1\n", encoding="utf-8")
+        return box
+
+    def test_the_generated_table_itself_comes_back_smallest_first(self) -> None:
+        """The fix, rather than the rule it uses.
+
+        Every assertion above drives `by_size` directly, so a `generated` that
+        never called it would satisfy all of them -- and that is exactly the
+        state this issue describes: the rule existed in `sweep` and the plain
+        path did not use it.
+        """
+        box = self.repository()
+        args = argparse.Namespace(
+            all=False, base="HEAD", only=[], limit=0, operator=[], skip_operator=[]
+        )
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with support.quiet():
+                table = mutate.generated(args)
+        finally:
+            os.chdir(here)
+
+        reached = [path for path, _ in itertools.groupby(row.path for row in table)]
+        self.assertEqual(
+            ["tupferl/wee.py", "tupferl/many.py"],
+            reached,
+            "the smaller file did not come first",
+        )
+        self.assertEqual(2, len(reached), "a file's rows were split rather than kept together")
+
+
 class TestABatchSweepEndToEnd(unittest.TestCase):
     """`--batch` driven all the way through `main`, in a repository of its own.
 
@@ -1721,6 +1842,28 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         self.assertGreaterEqual(len(self.wrote), 3, f"writes: {self.wrote}\n{said}")
         self.assertLess(self.wrote[0], self.wrote[-1], f"nothing was written mid-run: {self.wrote}")
         self.assertEqual(self.wrote[-1], max(self.wrote), "the last write was not the complete one")
+
+        # **Each write lands on a file boundary**, which is the claim "recorded
+        # per file" actually makes. The three assertions above hold just as well
+        # for a sweep that wrote after every *row*, and a write that lands
+        # mid-file is worse than no write: `_recorded` keys resume by path, so a
+        # crash after it leaves a report claiming a file is done when it is not,
+        # and the rest of that file is never re-run.
+        #
+        # Measured: `left = {path: 1 ...}` -- a countdown that fires on each
+        # file's first row -- survived this test until the boundaries were
+        # named.
+        written = json.loads((box / "r.json").read_text(encoding="utf-8"))
+        per_file: dict[str, int] = {}
+        for record in written["results"]:
+            per_file[record["path"]] = per_file.get(record["path"], 0) + 1
+        boundaries = set(itertools.accumulate(per_file[path] for path in per_file))
+        for count in self.wrote:
+            self.assertIn(
+                count,
+                boundaries,
+                f"a write of {count} rows landed mid-file; boundaries are {sorted(boundaries)}",
+            )
 
     def test_the_pidfile_is_cleared_when_the_run_is_over(self) -> None:
         """A stale pid is the false liveness `watch.py` refuses to answer with,
