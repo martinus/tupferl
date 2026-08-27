@@ -1021,6 +1021,169 @@ class TestTheWalkPastTheSelection(Probe):
         self.assertEqual(2, found["ran"], "a red baseline stopped at its first red module")
 
 
+class TestTellingAnAnswerFromACarrier(unittest.TestCase):
+    """`_exhausted` and `_carrier`, the two that decide whether a test gets
+    *credited* with noticing a mutation.
+
+    Both limits raise inside a real `TestCase`, so they reach `addError`
+    indistinguishable by protocol from that test asserting something -- and filed
+    as answers they credit a test that asserted nothing, which is a mutation
+    reported as caught by a test that never looked at it. That is the one error
+    this whole tool cannot afford.
+
+    Driven directly rather than through `collect`: the module docstring's rule is
+    that nothing here may arm the alarm or set the rlimit in the process running
+    the suite, and these two are a tuple lookup and a string format.
+    """
+
+    @staticmethod
+    def raised(kind: type[BaseException]) -> Any:
+        """A real `sys.exc_info()`, raised rather than assembled.
+
+        A hand-built tuple with `None` for the traceback is not the shape that
+        reaches `addError`, and the point of both functions is what they do with
+        what actually arrives there.
+        """
+        try:
+            raise kind("x")
+        except BaseException:
+            return sys.exc_info()
+
+    def carrier(self, kind: type[BaseException] | None, each: float = 30.0) -> str:
+        from tools import verdict
+
+        return verdict._carrier("test_it", None if kind is None else self.raised(kind), each)
+
+    def exhausted(self, kind: type[BaseException] | None) -> bool:
+        from tools import verdict
+
+        return verdict._exhausted(None if kind is None else self.raised(kind))
+
+    def test_an_ordinary_failure_is_an_answer(self) -> None:
+        """The most important row: an `AssertionError` is a test noticing the
+        mutation, and anything that called it a carrier would report every
+        caught row as broke."""
+        self.assertEqual("", self.carrier(AssertionError))
+        self.assertFalse(self.exhausted(AssertionError))
+
+    def test_no_error_at_all_is_an_answer(self) -> None:
+        self.assertEqual("", self.carrier(None))
+        self.assertFalse(self.exhausted(None))
+
+    def test_the_alarm_is_a_carrier_and_quotes_the_bound(self) -> None:
+        from tools import verdict
+
+        said = self.carrier(verdict.Hung, each=1.5)
+        self.assertIn("did not finish", said)
+        self.assertIn("1.5s", said)
+
+    def test_the_cap_is_a_carrier(self) -> None:
+        self.assertIn("ran out of memory", self.carrier(MemoryError))
+        self.assertTrue(self.exhausted(MemoryError))
+
+    def test_a_subclass_of_the_cap_counts_too(self) -> None:
+        """`issubclass` rather than `is`: the cap can surface as a subclass
+        raised by an extension module, and `is` would credit the test."""
+
+        class Worse(MemoryError):
+            pass
+
+        self.assertTrue(self.exhausted(Worse))
+        self.assertIn("ran out of memory", self.carrier(Worse))
+
+    def test_it_reads_the_class_and_not_the_instance(self) -> None:
+        """`err[0]`, never `err[1]`. Building the instance is itself an
+        allocation that may not have succeeded, and asking `issubclass` of one
+        raises `TypeError` from inside the handler for an error -- which
+        replaces the row's verdict with a traceback about the verdict.
+
+        The fixture puts a *different* class in slot 1 so that reading the wrong
+        slot cannot accidentally agree with reading the right one.
+        """
+        from tools import verdict
+
+        swapped: Any = (MemoryError, *self.raised(ValueError)[1:])
+        other: Any = (ValueError, *self.raised(MemoryError)[1:])
+        self.assertTrue(verdict._exhausted(swapped))
+        self.assertFalse(verdict._exhausted(other))
+
+
+class TestWhenTheAlarmIsArmedAtAll(unittest.TestCase):
+    """`each_test`, whose return value is quoted in every `broke` message.
+
+    A run with no alarm armed must report `0s` rather than a bound that was never
+    in force -- and, more than that, it must not arm one when it was asked not
+    to. The value alone cannot say: `each_test(0)` returns `0.0` whether or not
+    it installed a handler first, so every test here reads the handler.
+    """
+
+    def setUp(self) -> None:
+        import signal
+
+        if not hasattr(signal, "SIGALRM"):  # pragma: no cover - not this platform
+            self.skipTest("no SIGALRM here")
+        self.was = signal.getsignal(signal.SIGALRM)
+        self.addCleanup(signal.signal, signal.SIGALRM, self.was)
+
+    def handler(self) -> object:
+        import signal
+
+        return signal.getsignal(signal.SIGALRM)
+
+    def test_zero_arms_nothing(self) -> None:
+        """The value is `0.0` either way, so the handler is the assertion. Under
+        `not seconds and not hasattr(...)` this still returns 0 -- and installs
+        an alarm the caller asked not to have."""
+        from tools import verdict
+
+        self.assertEqual(0.0, verdict.each_test(0))
+        self.assertIs(self.was, self.handler(), "an alarm was armed for a run that asked for none")
+
+    def test_a_bound_arms_the_handler_that_raises(self) -> None:
+        """The other half: a class that armed nothing would pass the test above.
+        `_ring` raises rather than setting a flag, because PEP 475 makes Python
+        *retry* a syscall interrupted by a signal -- a handler that returned
+        would be swallowed by the blocking read a hung test sits in."""
+        from tools import verdict
+
+        self.assertEqual(2.5, verdict.each_test(2.5))
+        self.assertIs(verdict._ring, self.handler())
+
+    def test_a_platform_without_the_alarm_arms_nothing(self) -> None:
+        """Windows, which plan §2 puts out of scope for v1 -- so this is the
+        only way the guard is reachable at all."""
+        import types
+        from unittest import mock
+
+        from tools import verdict
+
+        # A stand-in module with no `SIGALRM` on it, rather than deleting the
+        # attribute from the real one: the real `signal` is shared with the
+        # interpreter running this suite, and a window where it has no `SIGALRM`
+        # is a window where anything else that reads it breaks. Same shape as
+        # the `tomllib` gotcha in CLAUDE.md -- the claim is "this branch asks
+        # for that name", and standing something there that lacks it is exactly
+        # that claim.
+        with mock.patch.object(verdict, "signal", types.SimpleNamespace()):
+            self.assertEqual(0.0, verdict.each_test(5))
+        self.assertIs(self.was, self.handler())
+
+    def test_off_the_main_thread_it_gives_up_rather_than_raising(self) -> None:
+        """`signal.signal` raises `ValueError` off the main thread, and this runs
+        wherever the caller put it. Returning `0.0` is what makes the messages
+        honest there; the exception would take the whole run down."""
+        import threading
+
+        from tools import verdict
+
+        answer: list[float] = []
+        thread = threading.Thread(target=lambda: answer.append(verdict.each_test(5)))
+        thread.start()
+        thread.join()
+        self.assertEqual([0.0], answer)
+        self.assertIs(self.was, self.handler())
+
+
 class TestWhereTheWalkLooks(unittest.TestCase):
     """`every_module` follows the selection's own package rather than a constant.
 
@@ -1083,6 +1246,19 @@ class TestWhereTheWalkLooks(unittest.TestCase):
         self.assertEqual(8, len(found))
 
     def test_a_flat_selection_looks_beside_itself(self) -> None:
+        # **Imported before the chdir, and that is load-bearing.** The harness
+        # runs a shard as `python -c <the source of verdict.py>`, where
+        # `sys.path[0]` is `''` -- resolved against the *current* directory at
+        # each import rather than fixed at startup, as `python -m` fixes it. So
+        # an import issued from inside the box below looks for `tools/` in the
+        # box and does not find it.
+        #
+        # It only bites when this is the first test in the process to import
+        # `tools.verdict`, which is why the suite is green and a baseline shard
+        # selecting *only this module* was not: `mutate` could not measure
+        # `tools/verdict.py` against its own tests at all, and reported
+        # `BASELINE NOT GREEN` for every table that tried.
+        self.every(["tests.test_verdict"])
         with tempfile.TemporaryDirectory(prefix="tupferl-walk-") as name:
             box = Path(name)
             (box / "test_one.py").write_text("", encoding="utf-8")

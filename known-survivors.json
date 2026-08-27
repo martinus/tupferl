@@ -555,10 +555,6 @@
   "seen": 1,
   "why": "equivalent, and the reason is an invariant worth stating: every rule carries the blob to the side that does *not* already hold it -- `TO_REPO` carries `home`, `TO_HOME` carries `stored` -- so writing it to the other side is a no-op and `write` reports no change. The backup is gated on `found != outcome.blob`, which is false in exactly those cases."
  },
- "54591cdd033c2046": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:324 in each_test() -- returns `None` instead of `0.0`. Triaged from the whole-tree sweep; unread."
- },
  "5466a73933169eb5": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/run_tests.py:405 in main() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
@@ -574,10 +570,6 @@
  "55d5b40bade7e38a": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:898 in generate() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "565c54c880878c9b": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:171 in _carrier() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
  "56a26fc50e065301": {
   "seen": 1,
@@ -710,10 +702,6 @@
  "6e8aca54cf249e0f": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1149 in _imported() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "6ef3a0b27033ec24": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:172 in _carrier() -- returns `None` instead of `''`. Triaged from the whole-tree sweep; unread."
  },
  "6f3634f8f69514cf": {
   "seen": 1,
@@ -1171,10 +1159,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1175 in _statements() -- the call to `stack.append(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "bb1ab8758615be5e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:319 in each_test() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
  "bb5f4da581c096de": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:976 in _run() -- returns `None` instead of `Verdict('broke', str(written[\u2026`. Triaged from the whole-tree sweep; unread."
@@ -1273,7 +1257,7 @@
  },
  "c96d30b744843f4f": {
   "seen": 4,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:158 in _exhausted() -- `0` becomes `-1`. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent for every shape unittest hands to `addError`, same as the `1` mutation on this line: the guard reads a slot that is None exactly when slot 0 is. Slot -1 is the traceback, which is the one that could in principle be None on its own -- nothing in this suite or in `unittest` produces that."
  },
  "cb48d09bfcf8269e": {
   "seen": 1,
@@ -1297,7 +1281,7 @@
  },
  "ced7b751cbd406b2": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:342 in every_module() -- the ordering is reversed. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent: this sorts the *packages* the walk visits, and the function ends `return sorted(set(found))` -- so the order the names are appended in is not observable. The sort on line 346 *is* guarded, by `test_what_it_returns_is_sorted`."
  },
  "cf21dde548b00f2a": {
   "seen": 1,
@@ -1306,10 +1290,6 @@
  "d02dec918447cea4": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1216 in importers() -- the `.startswith(...)` filter accepts everything. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "d3560b92b441b8cc": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:319 in each_test() -- `or` becomes `and`. Triaged from the whole-tree sweep; unread."
  },
  "d3fe3bd36813eef2": {
   "seen": 1,
@@ -1441,7 +1421,7 @@
  },
  "e406577f873afdb9": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:342 in every_module() -- `sorted` becomes `list`. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent, same argument: the package order feeds a result that is sorted again before it is returned."
  },
  "e512d739852fa03c": {
   "seen": 4,
@@ -1562,10 +1542,6 @@
  "f559e7996a7d12dd": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1889 in _unbaselined() -- `sorted` becomes `list`. Triaged from the whole-tree sweep; unread."
- },
- "f6b63ceef6da00fb": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:171 in _carrier() -- `or` becomes `and`. Triaged from the whole-tree sweep; unread."
  },
  "f7ca6650e86323b1": {
   "seen": 1,
