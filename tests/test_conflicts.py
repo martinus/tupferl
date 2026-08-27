@@ -414,6 +414,41 @@ class TestOneKeypress(unittest.TestCase):
             self.key()
         self.assertEqual([(1, 0)], seen)
 
+    def test_reading_the_rest_of_an_escape_stops_waiting_after_a_tenth_of_a_second(self) -> None:
+        """The pair `rest_of_escape` needs, which is the opposite of `one_key`'s.
+
+        `VMIN = 0, VTIME = 1` is "give me whatever has arrived, and wait up to a
+        tenth of a second for it" -- the only thing that lets a *lone* Escape
+        come back at all. `VMIN = 1` there would block for ever on the byte that
+        is never coming, and `VTIME = 0` would make the read return before the
+        terminal had delivered the `[B` of a Down arrow, splitting one keypress
+        into three answers, the last of which is `b` -- *keep both*.
+
+        The fixture types the whole sequence at once, so both bytes are already
+        buffered and every one of those pairs produces the same answer from the
+        outside. Reading the driver from inside the second read is the only
+        place the difference exists.
+        """
+        seen: list[tuple[int, int]] = []
+        self.terminal.type("\x1b[B")
+        real = os.read
+
+        def peek(fd: int, size: int) -> bytes:
+            seen.append(self.blocking())
+            return real(fd, size)
+
+        with mock.patch("os.read", peek):
+            self.key()
+        # The count first. Without it `seen[1:]` and `[(0, 1)] * 0` are both
+        # empty, so a `one_key` that never reached `rest_of_escape` at all would
+        # satisfy the assertion below -- which is the half of this the escape
+        # sequence exists to reach.
+        self.assertEqual(
+            3, len(seen), f"the whole sequence was not read one byte at a time: {seen}"
+        )
+        self.assertEqual((1, 0), seen[0], "the first byte is one blocking read")
+        self.assertEqual([(0, 1), (0, 1)], seen[1:], "the rest is a timed read")
+
     def test_it_is_restored_even_when_the_read_raises(self) -> None:
         """The case the `finally` exists for, and the one the test above cannot
         see: an interrupt at the prompt must not leave the user's shell with

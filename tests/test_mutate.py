@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -2614,6 +2615,101 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         """`--memory 0` is "no cap", and a percentage of nothing is a
         ZeroDivisionError rather than a fact."""
         self.assertEqual("", self.said(1892 << 20, 0))
+
+
+class TestWhyAProbeThatWroteNothingDied(unittest.TestCase):
+    """`_signalled`: the sentence a row gets when there is nothing else to say.
+
+    It is reached only when a probe produced no report *and* said nothing on its
+    way out, so it is the whole of what a reader sees about that row -- and it
+    had no test. The distinction it exists to draw is between "the mutation did
+    this" and "the machine did this", which is the difference between a row worth
+    reading and a row worth re-running.
+    """
+
+    def test_an_ordinary_exit_names_the_status(self) -> None:
+        self.assertEqual("the probe exited 3 without writing a report", mutate._signalled(3))
+
+    def test_a_clean_exit_with_no_report_is_still_an_exit(self) -> None:
+        """Zero is on the boundary, and it is the side that is not a signal:
+        `subprocess` spells a signal as a *negative* number, so `>= 0` and `> 0`
+        differ exactly here -- and under `> 0` a probe that exited 0 would be
+        reported as killed by signal 0, which is not a signal at all."""
+        self.assertEqual("the probe exited 0 without writing a report", mutate._signalled(0))
+
+    def test_a_kill_says_which_signal_and_what_it_usually_means(self) -> None:
+        """`SIGKILL` is the one that matters: it is what the host OOM killer
+        sends, so it is what a lane looks like where `verdict.cap` is not
+        enforced. Both causes are named because a sweep of this module produced
+        the second, and a message naming the wrong one costs more than a message
+        naming none."""
+        said = mutate._signalled(-signal.SIGKILL)
+        self.assertIn("killed by SIGKILL", said)
+        self.assertIn("ran out of memory", said)
+        self.assertIn("killed the session it was in", said)
+
+    def test_any_other_signal_is_named_without_the_guess(self) -> None:
+        """The other half. Without it, a `_signalled` that appended the
+        out-of-memory clause to *every* signal passes the test above -- and
+        would tell a reader their machine was out of memory every time a probe
+        timed out."""
+        said = mutate._signalled(-signal.SIGTERM)
+        self.assertIn("killed by SIGTERM", said)
+        self.assertNotIn("ran out of memory", said)
+
+    def test_a_number_that_is_not_a_signal_does_not_raise(self) -> None:
+        """`signal.Signals(-returncode)` raises for a number outside the set,
+        and this runs inside the handler for a probe that already failed --
+        where an exception replaces the row's reason with a traceback about the
+        reason."""
+        self.assertIn("killed by ?", mutate._signalled(-999))
+
+
+class TestTheLastThingARunManagedToSay(unittest.TestCase):
+    """`_tail`: the log's final line, which is a `BROKE` row's whole reason.
+
+    `_run` reads it before falling back to `_signalled`, so an empty answer here
+    is what decides whether a reader is told what the probe said or only how it
+    died. Every arm returns a string, because the caller puts it straight into a
+    `Verdict`.
+    """
+
+    def tail(self, text: str) -> str:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-tail-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        noise = box / "noise.log"
+        noise.write_text(text, encoding="utf-8")
+        return mutate._tail(noise)
+
+    def test_the_last_line_is_what_comes_back(self) -> None:
+        self.assertEqual("the last one", self.tail("first\nsecond\nthe last one\n"))
+
+    def test_trailing_blank_lines_are_not_the_last_line(self) -> None:
+        """A process that dies mid-write leaves them, and "" as a reason reads
+        as a row nobody can explain rather than as one that said something."""
+        self.assertEqual("real", self.tail("real\n\n\n   \n"))
+
+    def test_a_log_with_nothing_in_it_is_empty_rather_than_an_error(self) -> None:
+        """`_run` spells this `_tail(noise) or _signalled(...)`, so the empty
+        string is what hands the question on. An `IndexError` from the last-line
+        read would replace the row's reason with a traceback."""
+        self.assertEqual("", self.tail(""))
+
+    def test_a_log_that_was_never_written_is_empty_too(self) -> None:
+        """The `OSError` arm. A probe killed before it opened its log leaves no
+        file at all, which is precisely the case `_signalled` exists for."""
+        self.assertEqual("", mutate._tail(Path("/nonexistent/noise.log")))
+
+    def test_bytes_that_are_not_utf8_do_not_stop_the_report(self) -> None:
+        """`errors="replace"`. A probe's log is whatever the tests under it
+        wrote, and this project has a test that deliberately puts invalid UTF-8
+        in a path -- so a strict decode here would turn one row's reason into an
+        exception during the summary of every other."""
+        box = Path(tempfile.mkdtemp(prefix="tupferl-tail-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        noise = box / "noise.log"
+        noise.write_bytes(b"fine\nbroken \xff\xfe here\n")
+        self.assertIn("broken", mutate._tail(noise))
 
 
 class TestSurvivorsSomebodyHasAlreadyRead(unittest.TestCase):

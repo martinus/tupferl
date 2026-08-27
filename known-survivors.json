@@ -15,17 +15,13 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1022 in _unquote() -- the `.endswith(...)` filter accepts everything. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "037852f5e0fa4915": {
-  "seen": 2,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:485 -- `1` becomes `0`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
  "042c1f73a47d1770": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:975 in _run() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
  "04630dbe22cc6996": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/manifest.py:325 in ignored() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: the guard is an early-out for the common case, and `any([])` is `False` -- the same answer the body computes from an empty pattern list."
  },
  "05106c43efda1114": {
   "seen": 1,
@@ -47,17 +43,9 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:779 in _Lanes._sample() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
- "078830120c29a50a": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:496 in _signalled() -- returns `None` instead of `f'the probe exited {returncod\u2026`. Triaged from the whole-tree sweep; unread."
- },
  "084032cd80a4d9c4": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:231 in somewhere_in() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "084fcc951b927dbf": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:495 in _signalled() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent, measured: with the guard skipped, an empty `run` still returns `True` from the comprehension -- `whole[0:0] == []` holds and the range is never empty. The guard says the answer plainly rather than deriving it."
  },
  "0866a80e13e71a90": {
   "seen": 1,
@@ -147,10 +135,6 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2667 in main() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
- "15f52be0539974ed": {
-  "seen": 2,
-  "why": "TODO: no test executes this line -- tupferl/gitrepo.py:512 in conflicted() -- returns `None` instead of `{}`."
- },
  "1648c547658110d4": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1174 in _statements() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -162,10 +146,6 @@
  "16d0c04e9becd895": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1622 in run() -- the call to `timings.update(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "16ecec2803006675": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:495 in _signalled() -- `>=` becomes `>`. Triaged from the whole-tree sweep; unread."
  },
  "1721e18900fa572c": {
   "seen": 1,
@@ -219,10 +199,6 @@
   "seen": 1,
   "why": "TODO: no test executes this line -- tools/run_tests.py:266 in main() -- the call to `parser.add_argument(...)` never happens."
  },
- "1f1e9270e6697bfe": {
-  "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/gitrepo.py:474 in unmerged() -- the ordering is reversed. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
  "1fd96f5a2418f577": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1194 in importers() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -230,10 +206,6 @@
  "1fe0d13152613728": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2693 in main() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "1fe7a4f1c3fab87f": {
-  "seen": 18,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:495 in _signalled() -- `0` becomes `-1`. Triaged from the whole-tree sweep; unread."
  },
  "201bcb2b2675f2e2": {
   "seen": 1,
@@ -257,7 +229,7 @@
  },
  "22ca917a9b621dff": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/doctor.py:187 in writable() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "unreachable in CI and locally, both of which run as root: root ignores the mode bits, so no directory is unwritable. `test_doctor.TestTheBackupCheck.test_a_directory_that_exists_and_cannot_be_written_fails` is the test, and it skips itself with that reason."
  },
  "22da8c151d875b75": {
   "seen": 1,
@@ -413,7 +385,7 @@
  },
  "3616a5b62d062e5e": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:301 in Backups.take() -- `exist_ok=True` is dropped. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "unreachable within one run: `self.where` is set once per `Backups`, so the directory is created once. Two runs in the same second would collide, and no test can produce that without controlling the clock."
  },
  "3751adcd77f7bb35": {
   "seen": 1,
@@ -429,7 +401,7 @@
  },
  "38181b00621d37d1": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/gitrepo.py:426 in distance() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "named in the code: `distance`'s own comment calls this an equivalent mutant and says why -- a git that would not compare produces output the parse below rejects anyway, reaching the same `None`."
  },
  "394911e732a4546e": {
   "seen": 1,
@@ -469,7 +441,7 @@
  },
  "3da34923c7b3d759": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:473 in held() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "unreachable without breaking git mid-call: the branch fires when git lists a stage and then will not produce it. `held` is called with modes git has just reported, so producing the state means killing git between two of its own calls."
  },
  "3e09f9a12d6fbea5": {
   "seen": 1,
@@ -477,11 +449,11 @@
  },
  "3f0da11f95f03a2b": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/manage.py:191 in init() -- `exist_ok=True` is dropped. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "unreachable: `init` refuses a repository that already exists, so the config file's parent is always being created for the first time. The flag is there for the shape of the call rather than for a case this code can meet."
  },
  "41824fddf2c80ff0": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/doctor.py:257 in report() -- `0` becomes `1`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: `default=0` is used only when `found` is empty, and an empty `found` produces no lines for the width to pad. Measured: `'ab'.ljust(-1)` and `'ab'.ljust(0)` are both `'ab'`."
  },
  "41b092241d657e0d": {
   "seen": 1,
@@ -523,10 +495,6 @@
   "seen": 2,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/run_tests.py:346 in main() -- `2` becomes `1`. Triaged from the whole-tree sweep; unread."
  },
- "45b2d563e0e271a6": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:504 in _signalled() -- returns `None` instead of `f'the probe was killed by {na\u2026`."
- },
  "463dca82ff41ab80": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:769 in _Lanes.release() -- the `not` is dropped. Triaged from the whole-tree sweep; unread."
@@ -546,10 +514,6 @@
  "4bf66940ed0b3189": {
   "seen": 4,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2517 in sweep.finished() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "4c765e1eb40d48ad": {
-  "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:505 in rest_of_escape() -- `mode[6][termios.VTIME]` is never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
  "4d1cb3c9af05117b": {
   "seen": 1,
@@ -585,11 +549,11 @@
  },
  "52ec3930250ffa26": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/manage.py:242 in add() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "a real gap, and a narrow one: forcing the branch sends a *file* to `manifest.collect`, which walks it and yields nothing, so `add` on a single file would admit nothing at all. Nothing distinguishes it because every add test that passes a file also passes through `check`, which already recorded the name. Worth a test; it needs `collect`'s behaviour on a non-directory pinned first, which is a change to `manifest` rather than to a fixture."
  },
  "53adeced17891419": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:792 in apply() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent, and the reason is an invariant worth stating: every rule carries the blob to the side that does *not* already hold it -- `TO_REPO` carries `home`, `TO_HOME` carries `stored` -- so writing it to the other side is a no-op and `write` reports no change. The backup is gated on `found != outcome.blob`, which is false in exactly those cases."
  },
  "54591cdd033c2046": {
   "seen": 1,
@@ -605,7 +569,7 @@
  },
  "55bd999b89cdcc77": {
   "seen": 1,
-  "why": "TODO: no test executes this line -- tupferl/doctor.py:188 in writable() -- returns `None` instead of `Check(False, 'backups', f'{wh\u2026`."
+  "why": "same as `doctor.py:187` -- the line only runs for an unwritable directory, which root does not have. Its test exists and skips."
  },
  "55d5b40bade7e38a": {
   "seen": 1,
@@ -637,7 +601,7 @@
  },
  "596c3933ada77648": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/merge.py:171 in keep_both() -- `or` becomes `and`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "named in the code: `keep_both`'s own comment says this branch is not reachable through the prompt, which offers `[b]` only for a text file, and reports rather than asserts the two ways it could happen."
  },
  "59f4a3c9fd7dfe54": {
   "seen": 1,
@@ -683,10 +647,6 @@
   "seen": 1,
   "why": "TODO: no test executes this line -- tools/run_tests.py:213 in _Recorder.startTest() -- the call to `super().startTest(...)` never happens."
  },
- "61574966f2f61ce1": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1004 in _tail() -- `-1` becomes `1`."
- },
  "6159c53f3e81f0e1": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:900 in generate() -- the call to `seen.add(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -710,10 +670,6 @@
  "655cbb96b5a952ca": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1106 in every_line() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "65808a2ac70ba16f": {
-  "seen": 14,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1004 in _tail() -- `1` becomes `2`."
  },
  "66149fff98eb7a7e": {
   "seen": 1,
@@ -769,7 +725,7 @@
  },
  "714a5e2faddfb392": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tupferl/gitrepo.py:513 in conflicted() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent: an exit status git sets also means empty stdout, and the parse below turns that into `{}` by itself -- the loop sees one empty field, `not raw` skips it, and the same empty dict comes back. The guard is an early-out, not a decision. Its neighbour on 514 (`return {}` becoming `return None`) *is* caught, by `TestWhenGitWillNotAnswerAboutConflicts`."
  },
  "766bee6e4108287f": {
   "seen": 1,
@@ -831,10 +787,6 @@
   "seen": 6,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:121 in cap() -- `0` becomes `1`. Triaged from the whole-tree sweep; unread."
  },
- "80846acfafb9a8a8": {
-  "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:556 in one_key() -- `0` becomes `1`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
  "80abad915ab1ddce": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1547 in run() -- `is not` becomes `is`. Triaged from the whole-tree sweep; unread."
@@ -865,19 +817,15 @@
  },
  "875b76487e97c890": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/gitrepo.py:346 in stage() -- `1` becomes `2`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: the code is read only through `Result.ok` (`code != 0`) and `gitrepo.reason`, neither of which distinguishes 1 from 2. Nothing in the package branches on a particular non-zero status."
  },
  "879d13fd2685d6ee": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2038 in Killers.ahead_of() -- `-` becomes `+`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "8807f65332876416": {
-  "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:556 in one_key() -- `0` becomes `-1`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
  "8845ba5590eed393": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:528 in reconcile() -- `any` becomes `all`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "measured and named in the suite: `TestWhenOneSideReplacedTheFileWithASymlink`'s docstring records that git splits a type change into two paths of one stage each (`{'.config/thing': {3: 0o120000}, '.config/thing~HEAD': {2: 0o100644}}`), so a file with *mixed* stage kinds cannot be built and the two spellings cannot be told apart."
  },
  "88566d60e7e20fee": {
   "seen": 1,
@@ -897,7 +845,7 @@
  },
  "8ad88aa7ed4c72fa": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/config.py:41 in toml() -- `>=` becomes `>`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent, measured: `sys.version_info` on a real 3.11.0 is `(3, 11, 0, 'final', 0)`, which is already `> (3, 11)`. The two spellings can only differ for a version tuple of exactly `(3, 11)`, which no interpreter reports."
  },
  "8af2663a656ae6cb": {
   "seen": 1,
@@ -906,10 +854,6 @@
  "8b52b775bfd2d5f6": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2130 in generated() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "8bbc30689a5e975c": {
-  "seen": 13,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1004 in _tail() -- `1` becomes `0`."
  },
  "8bf929acac03092e": {
   "seen": 1,
@@ -979,14 +923,6 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:665 in _lane() -- the call to `kids.setdefault(row.parent, []).append(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
- "938d56580443dda1": {
-  "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:555 in one_key() -- `mode[6][termios.VMIN]` is never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "93d2a7cca430b197": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:495 in _signalled() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "9476ceeca43ea8cc": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1111 in every_line() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -1035,10 +971,6 @@
   "seen": 1,
   "why": "TODO: no test executes this line -- tools/run_tests.py:401 in main() -- the ordering is reversed."
  },
- "9bd09fd1c6d12ec4": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:501 in _signalled() -- `==` becomes `!=`."
- },
  "9c82d4991d7419af": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2572 in _baseline_is_green() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
@@ -1080,8 +1012,8 @@
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:573 in _from_proc() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
  "a53382cc782c2f44": {
-  "seen": 3,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:233 in somewhere_in() -- `1` becomes `2`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "seen": 1,
+  "why": "equivalent: one extra starting offset, whose slice is one element short and so cannot match. Same argument as the `-`/`+` mutant on this line."
  },
  "a588c4f72bffc645": {
   "seen": 1,
@@ -1113,7 +1045,7 @@
  },
  "a9efda6de2c726e7": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/doctor.py:257 in report() -- `0` becomes `-1`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: as above -- the default is reached only with nothing to pad, and `ljust` treats every width below the string's length alike."
  },
  "ab2cb4b86b7bc889": {
   "seen": 1,
@@ -1121,7 +1053,7 @@
  },
  "ab538f035ef97115": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/gitrepo.py:522 in conflicted() -- `or` becomes `and`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent given git's contract: the two operands disagree only for a row that is non-empty *and* malformed, and `ls-files -u -z` always emits three fields. The trailing empty field after the final NUL satisfies both spellings. The guard is there so a future git cannot turn a merge into a `ValueError`, which is a claim about git rather than about this code."
  },
  "ab61e36965934dd5": {
   "seen": 1,
@@ -1257,7 +1189,7 @@
  },
  "bdb6ec52c393c0f3": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:564 in reconcile() -- returns `None` instead of `[]`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent through every caller: `integrate` truth-tests the result (`if not left`) and puts it in a message only when it is non-empty, so `None` and `[]` are the same answer. A type violation with no reader -- worth a note, not a fixture."
  },
  "bde69398cb075bb9": {
   "seen": 1,
@@ -1289,7 +1221,7 @@
  },
  "c39e4c578e3bfa77": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:794 in apply() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent, same invariant as `sync.py:792`: the blob is always the side the other one is missing, so the extra write changes no bytes and takes no backup."
  },
  "c3e5e95b97bd570b": {
   "seen": 1,
@@ -1309,7 +1241,7 @@
  },
  "c5623c2f225cc753": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:417 in integrate() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: after a concluded merge git has cleared `MERGE_HEAD`, so the extra `git merge --abort` fails and its `Result` is discarded. The guard stops a *successful* merge being undone by its own `finally`, which is a claim about a git that behaved differently."
  },
  "c5b2f387e307620f": {
   "seen": 1,
@@ -1343,13 +1275,9 @@
   "seen": 4,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:158 in _exhausted() -- `0` becomes `-1`. Triaged from the whole-tree sweep; unread."
  },
- "ca260767e14331b0": {
-  "seen": 3,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:309 in describe() -- the call to `lines.append(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
  "cb48d09bfcf8269e": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:233 in resolve() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: with `base` `None` the two comparisons inside are `Blob == None`, which is `False` (measured), so the forced branch falls through to exactly the merge the unforced code reaches."
  },
  "ccf3c0e1eb774513": {
   "seen": 1,
@@ -1447,10 +1375,6 @@
   "seen": 1,
   "why": "TODO: no test executes this line -- tools/mutate.py:1644 in run() -- the call to `pending.cancel(...)` never happens."
  },
- "db474cf09370f0eb": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tupferl/sync.py:446 in undone() -- the call to `gitrepo.abort_merge(...)` never happens."
- },
  "db4bff910bc0a509": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:991 in _run() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
@@ -1461,11 +1385,11 @@
  },
  "dbc04bb253f7ad88": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:233 in somewhere_in() -- `-` becomes `+`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: the extra iterations slice past the end of `whole` and produce lists shorter than `run`, which cannot equal it. Measured: a run that is absent stays absent with the wider range."
  },
  "dbc07c68c46d145d": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/sync.py:519 in reconcile() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent for the names git can produce, same argument as `gitrepo.py:474`: `conflicted`'s dict is built in git's own byte order. The user-facing ordering that this feeds is asserted by `TestWhenSeveralFilesCannotBeSettled`."
  },
  "dc376b70a2bca7c6": {
   "seen": 1,
@@ -1527,10 +1451,6 @@
   "seen": 1,
   "why": "TODO: no test executes this line -- tools/mutate.py:2673 in main() -- the `if` is never taken."
  },
- "e68d36f8b8262855": {
-  "seen": 15,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:495 in _signalled() -- `0` becomes `1`. Triaged from the whole-tree sweep; unread."
- },
  "e6ff316da77295a3": {
   "seen": 3,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1817 in verify() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
@@ -1591,10 +1511,6 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2570 in _baseline_is_green() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
- "ef968e244ef3d4f0": {
-  "seen": 2,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1003 in _tail() -- returns `None` instead of `''`."
- },
  "f00e66f25ab06dbd": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2730 in main() -- the call to `_summarise(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -1635,10 +1551,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2709 in main() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "f454ada4947ee206": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:497 in _signalled() -- `in` becomes `not in`. Triaged from the whole-tree sweep; unread."
- },
  "f471a63f6a4a0d25": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2737 in main() -- the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -1650,10 +1562,6 @@
  "f559e7996a7d12dd": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1889 in _unbaselined() -- `sorted` becomes `list`. Triaged from the whole-tree sweep; unread."
- },
- "f625ac6183214b6e": {
-  "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/conflicts.py:556 in one_key() -- `mode[6][termios.VTIME]` is never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
  "f6b63ceef6da00fb": {
   "seen": 1,
@@ -1670,10 +1578,6 @@
  "f90788e320e05988": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:427 in collect() -- the call to `ready.append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "f9b3ef4ee948db57": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1004 in _tail() -- returns `None` instead of `spoken[-1].strip() if spoken \u2026`."
  },
  "fa023bbfdcece64c": {
   "seen": 1,
@@ -1697,7 +1601,7 @@
  },
  "fcaf6ff1213c97b1": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/gitrepo.py:474 in unmerged() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent for the names git can produce: `conflicted` builds its dict from `ls-files -u -z`, which git emits in byte order, and UTF-8 byte order agrees with Python's code-point order. The *reversal* of this line is caught by `test_two_conflicted_files_come_back_in_a_settled_order`; only the redundancy of sorting an already-sorted list is not."
  },
  "fdf7c7970efd0316": {
   "seen": 1,
@@ -1721,7 +1625,7 @@
  },
  "ff5554e8685e5cac": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tupferl/manifest.py:124 in named() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent, measured: `Path.cwd() / Path('/etc/x')` is `/etc/x` -- pathlib's `/` returns the right operand when it is absolute, so taking the branch for an already-absolute path is the identity."
  },
  "ffdd15a617c9f9e4": {
   "seen": 1,
