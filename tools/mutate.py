@@ -2184,7 +2184,54 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
                 "Counts below are out of what ran, not out of what the diff implies.", paint.ODD
             )
         )
-    return kept
+    # Ordered here, at the source: this is where path order came from, and both
+    # `sweep` and the plain path take their rows from it. After `cap`, which
+    # re-sorts what it kept back into path order -- so the round-robin it uses
+    # to *choose* rows never reaches the order they run in.
+    return [row for rows in by_size(kept).values() for row in rows]
+
+
+def by_size(table: Sequence[Mutation]) -> dict[str, list[Mutation]]:
+    """The table grouped by file, smallest file first, each file's rows together.
+
+    **One rule, two callers, because the two paths disagreed.** `sweep` sorted
+    this way and the plain `--base` path did not: `generated` builds its table
+    with `for path in sorted(touched)`, and a `ThreadPoolExecutor` runs futures
+    in submission order, so *alphabetical* order became execution order by
+    accident of assembly. Nobody chose it.
+
+    What that cost is measured in tupferl#49: a 132-row sweep across five files
+    was stopped after 32 minutes and 59 rows, and every one of them was in
+    `mutate.py` because `mutate` sorts first. `paint.py` was a module the same
+    diff had just added, and not one of its 19 rows had been looked at. Worse,
+    the first file was the *expensive* one -- 39 of those 59 rows survived, and
+    a survivor only earns the name after the full walk -- so path order spent
+    the whole budget on the slowest file and produced no coverage of the rest.
+
+    Smallest first, so a run that is stopped has answered whole files. **Each
+    file's rows stay contiguous**, and that is load-bearing twice over:
+
+    - `sweep`'s `finished` counts a file down to zero by relying on it, which is
+      what makes the per-file `--json` write safe;
+    - `Learned` (tupferl#43) is move-to-front, and its docstring rests on rows
+      arriving sorted by file and line so that consecutive mutants sit in the
+      same function. Interleaving *rows* across files was this issue's first
+      proposal and is a measured dead end -- replayed over 906 recorded rows the
+      move-to-front hit rate falls from 72.8% to 27.3%, and nothing fails: same
+      verdicts, no counter, just a slower sweep. See CLAUDE.md.
+
+    Composes with `Killers.ahead_of`, which despite the name does not reorder
+    rows at all -- it maps each one to itself with `first` set, so table order
+    survives it. The issue warned they might conflict; they do not.
+
+    A plain `dict`, whose insertion order the caller reads back: `sweep` wants
+    the grouping for its countdown and `generated` wants the flat rows, and one
+    of them building its own would be the second spelling this replaces.
+    """
+    grouped: dict[str, list[Mutation]] = {}
+    for row in table:
+        grouped.setdefault(row.path, []).append(row)
+    return {path: grouped[path] for path in sorted(grouped, key=lambda name: len(grouped[name]))}
 
 
 def _bytes(said: str) -> int:
@@ -2428,10 +2475,7 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     # line with the same operator are spelled identically.
     done = {result.mutation.path for result in collected}
 
-    by_file: dict[str, list[Mutation]] = {}
-    for row in table:
-        if row.path not in done:
-            by_file.setdefault(row.path, []).append(row)
+    by_file = by_size([row for row in table if row.path not in done])
     for path in sorted(done & {row.path for row in table}):
         print(paint.paint(f"{path}: already recorded, skipping", paint.QUIET))
     if not by_file:
@@ -2446,12 +2490,13 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         # ask: every row was read back from a recorded report, and nothing ran.
         return Report(collected, widened=True)
 
-    # Smallest file first, and its rows contiguous. The pool ignores this -- it
-    # takes whatever is next -- but results are *collected* in table order, so
-    # contiguous rows are what let `finished` count a file down to zero.
-    order = sorted(by_file, key=lambda path: len(by_file[path]))
-    rows = [row for path in order for row in by_file[path]]
-    left = {path: len(by_file[path]) for path in order}
+    # Smallest file first, and its rows contiguous -- `by_size`, which the plain
+    # `--base` path now shares. The pool ignores the order; it takes whatever is
+    # next. But results are *collected* in table order, so contiguous rows are
+    # what let `finished` count a file down to zero.
+    order = list(by_file)
+    rows = [row for rows_here in by_file.values() for row in rows_here]
+    left = {path: len(rows_here) for path, rows_here in by_file.items()}
     print(
         paint.paint(f"\n{len(rows)} mutant(s) across {len(order)} file(s), in one pool", paint.HEAD)
     )
