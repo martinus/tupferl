@@ -2616,6 +2616,501 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         self.assertEqual("", self.said(1892 << 20, 0))
 
 
+class TestWhatBaselineOnlyAnswers(unittest.TestCase):
+    """`_baseline_is_green`: `--baseline-only`, which exists to ask in one
+    shard's time the question a sweep will ask in an hour.
+
+    **All fourteen of its mutants survived, and nothing called it.** Two full
+    sweeps were paid for here to learn what it prints, and `is not` becoming
+    `is` at :2554 inverts its answer -- a red tree reported green, which sends
+    someone into a sweep whose every verdict is already void.
+
+    `_borrow` is stubbed. What this function *does* is fan shards out, read
+    every verdict, and reduce them to one bool; driving real sandboxes would
+    make the answer a property of this machine's suite, which is the reason
+    nothing tested it. The shards it asks for come from `baseline_shards`, which
+    is tested beside this.
+    """
+
+    ARGS = argparse.Namespace(workers=2, memory=mutate.MEMORY, timeout=30.0, each_test=0.0)
+
+    def asked(self, *verdicts: mutate.Verdict) -> tuple[bool, str, list[list[str]]]:
+        """Drive it with one canned verdict per shard, and record what each
+        lane was asked to run."""
+        seen: list[list[str]] = []
+        answers = list(verdicts)
+
+        def borrow(_available: Any, shard: list[str], *rest: Any) -> mutate.Verdict:
+            seen.append(shard)
+            return answers[len(seen) - 1]
+
+        table = [
+            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", f"tests.shard{n}")
+            for n in range(len(verdicts))
+        ]
+        with mock.patch.object(mutate, "_borrow", borrow), support.quiet() as spill:
+            green = mutate._baseline_is_green(table, self.ARGS)
+        return green, spill.getvalue(), seen
+
+    def test_every_shard_green_is_green(self) -> None:
+        """`survived` is the untouched suite passing, which is the one place
+        the mutation vocabulary reads backwards."""
+        green, said, _ = self.asked(mutate.Verdict("survived", ""), mutate.Verdict("survived", ""))
+        self.assertTrue(green)
+        self.assertIn("all green", said)
+
+    def test_one_red_shard_is_enough(self) -> None:
+        """It is an `and` over the shards. A tree where any shard fails is a
+        tree where no verdict above it means anything."""
+        green, said, _ = self.asked(
+            mutate.Verdict("survived", ""), mutate.Verdict("caught", "boom")
+        )
+        self.assertFalse(green)
+        self.assertIn("NOT green", said)
+
+    def test_a_shard_that_asked_nothing_is_red_too(self) -> None:
+        """`broke` and `timeout` are not passes. The old wording asserted a
+        failure that may not have happened; what matters is that neither is
+        evidence the tree is sound."""
+        for outcome in ("broke", "timeout"):
+            with self.subTest(outcome=outcome):
+                green, _, _ = self.asked(mutate.Verdict(outcome, "d"))
+                self.assertFalse(green, f"{outcome} was read as a pass")
+
+    def test_it_asks_about_exactly_the_shards_the_sweep_will(self) -> None:
+        """`baseline_shards` rather than a second spelling of it -- the flag is
+        worth nothing if it asks a different question from the run it predicts,
+        and it went stale that way once already."""
+        table = [
+            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", f"tests.shard{n}") for n in range(2)
+        ]
+        _, _, seen = self.asked(mutate.Verdict("survived", ""), mutate.Verdict("survived", ""))
+        self.assertEqual([s.split() for s in mutate.baseline_shards(table)], seen)
+
+    def test_a_red_shard_says_which_and_why(self) -> None:
+        """A red baseline is the one verdict that cannot be diagnosed by
+        re-running the row: the shard is rarely reproducible by hand, so the
+        reason has to come out with it."""
+        _, said, _ = self.asked(mutate.Verdict("caught", "tests.shard0.T.test_x failed"))
+        self.assertIn("tests.shard0", said)
+        self.assertIn("test_x failed", said)
+
+
+class TestWhatVerifyReturns(unittest.TestCase):
+    """`verify`: the number a spec file's exit status is made of.
+
+    **All seven of its mutants survived, and nothing in the suite calls it.**
+    Every spec file in the repository ends `raise SystemExit(verify(...))`, so
+    this is the function that decides whether a hand-written table passes --
+    and `1` becoming `0` at :1819 means a table full of survivors exits green.
+    That is woswoar#213's own symptom, the bug `_RUNS` was introduced to fix,
+    reachable again through the function that reports it.
+
+    `run` is stubbed rather than driven: what `verify` does is *count*, and a
+    real sweep would make the count a property of the machine.
+    """
+
+    def counted(self, report: mutate.Report) -> int:
+        with mock.patch.object(mutate, "run", lambda *a, **k: report):
+            return mutate.verify([row()])
+
+    def outcomes(self, *kinds: str, red: bool = False) -> mutate.Report:
+        results = [
+            mutate.Result(row(), mutate.Verdict(kind, "d"))  # type: ignore[arg-type]
+            for kind in kinds
+        ]
+        return mutate.Report(results, red)
+
+    def test_a_clean_table_counts_nothing(self) -> None:
+        self.assertEqual(0, self.counted(self.outcomes("caught", "caught")))
+
+    def test_every_survivor_is_counted(self) -> None:
+        """Not "was there one". A spec file's author reads this number to know
+        how much is wrong, and `1` for three survivors is a wrong answer that
+        still exits red -- which is why an exit status alone cannot check it."""
+        self.assertEqual(
+            3, self.counted(self.outcomes("survived", "caught", "survived", "survived"))
+        )
+
+    def test_a_row_that_asked_nothing_is_not_a_survivor(self) -> None:
+        """`broke` and `timeout` asked nothing. Counting them as survivors
+        would send an author to rewrite a test that was never weak; not
+        counting them at all is what the whole-table count below is for."""
+        self.assertEqual(0, self.counted(self.outcomes("broke", "timeout", "caught")))
+
+    def test_a_red_baseline_condemns_the_whole_table(self) -> None:
+        """Every verdict above a red baseline is meaningless, so the count is
+        the table's size rather than its survivors -- and a `0` there would let
+        a spec file pass on a tree where nothing was proven at all."""
+        self.assertEqual(3, self.counted(self.outcomes("caught", "caught", "caught", red=True)))
+
+    def test_a_red_baseline_beats_a_clean_looking_table(self) -> None:
+        """The precondition for the test above: with every row caught, the
+        survivor count is 0, so only the baseline check can produce a non-zero
+        answer. Without this pairing, "returns 3" is satisfied by a function
+        that ignores the baseline and counts something else."""
+        self.assertEqual(0, self.counted(self.outcomes("caught", "caught", "caught")))
+
+
+class TestWhatMemoryTheMachineWillAdmitTo(unittest.TestCase):
+    """`_visible_memory`: the smallest of everything that bounds this process.
+
+    Fourteen of its fifteen mutants survived, all on lines the suite executes.
+    Its own docstring names the failure: "in a 2 GiB container on a 62 GiB host
+    it answers 62 and the container is OOM-killed with every per-lane cap
+    respected." Dropping the `limits.append` restores that bug exactly, and
+    nothing noticed.
+
+    Each limit is supplied by a file this test writes or a variable it sets, so
+    the answer is about the arithmetic rather than about this machine.
+    """
+
+    def limits(self, cgroup: int | None = None, /, **environment: str) -> int:
+        """The answer on a machine whose only limits are the ones given here.
+
+        Positional-only for the reason `TestWhoOwnsTheMachine.budget` is:
+        `**environment` carries variable names, and a keyword parameter beside
+        it is one renamed constant away from a caller setting this instead.
+        """
+        box = Path(tempfile.mkdtemp(prefix="tupferl-limits-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        where = box / "memory.max"
+        if cgroup is not None:
+            where.write_text(f"{cgroup}\n", encoding="utf-8")
+        # Pointed at a file this test wrote, so the cgroup arm is reachable at
+        # all -- the paths were two literals inside two functions until now, and
+        # nothing could put a limit where either would look.
+        seen = mock.patch.object(mutate, "CGROUPS", (str(where),))
+        with seen, mock.patch.dict(os.environ, environment, clear=True):
+            return mutate._visible_memory()
+
+    def test_a_budget_named_in_the_environment_binds(self) -> None:
+        """`TUPFERL_MUTATE_BUDGET` is what a nested harness inherits, and it is
+        the one limit a test can set without a kernel."""
+        asked = 3 << 30
+        self.assertLessEqual(self.limits(**{mutate._BUDGET: str(asked)}), asked)
+
+    def test_the_smallest_limit_wins(self) -> None:
+        """`min`, not the first found. A host with plenty of RAM and a small
+        inherited budget must answer the budget -- that is the whole point."""
+        small, large = 1 << 30, 900 << 30
+        self.assertLessEqual(self.limits(**{mutate._BUDGET: str(small)}), small)
+        self.assertGreater(self.limits(**{mutate._BUDGET: str(large)}), small)
+
+    def test_nonsense_in_the_variable_is_ignored_rather_than_obeyed(self) -> None:
+        """A limit of zero or a word is not a limit. Obeying it would hand every
+        lane a ceiling of nothing, and the run would fail for a reason no output
+        explains."""
+        host = self.limits()
+        for said in ("", "0", "-1", "lots"):
+            with self.subTest(said=said):
+                self.assertEqual(host, self.limits(**{mutate._BUDGET: said}))
+
+    def test_a_cgroup_ceiling_binds_below_the_host(self) -> None:
+        """The bug the function was written for: "in a 2 GiB container on a 62
+        GiB host it answers 62 and the container is OOM-killed with every
+        per-lane cap respected." A limit the kernel has carved out has to win."""
+        self.assertEqual(2 << 30, self.limits(2 << 30))
+
+    def test_a_cgroup_that_says_nothing_is_not_a_limit(self) -> None:
+        """A missing file is the ordinary case on a machine with no cgroup, and
+        reading it as zero would hand every lane a ceiling of nothing."""
+        self.assertGreater(self.limits(None), 0)
+
+    def test_it_never_answers_zero(self) -> None:
+        """Zero divides into `_affordable` and `_share`. A machine that will say
+        nothing at all still has to run something."""
+        self.assertGreater(self.limits(), 0)
+
+
+class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
+    """`_lane`: the process group, unioned with every descendant that left it.
+
+    **Nine of its ten mutants survived**, including `and` becoming `or` and `in`
+    becoming `not in` on the line that performs the union. The suite reaches
+    every one of those lines -- `reached.py` classifies all nine as weak fixture
+    rather than missing test -- so this is CLAUDE.md section 2's "suspect the
+    fixture" with the evidence attached.
+
+    The union is woswoar#234. A nested `_run` gives its probes sessions of their
+    own, so they leave the group; one was found alive eleven minutes into a
+    sweep whose per-row bound is 300 seconds, reparented to init and counted by
+    nobody. Either half alone misses it, and a table of hand-built rows is the
+    only way to put a process in exactly one of the two sets.
+    """
+
+    def table(self, *rows: tuple[int, int, int]) -> dict[int, mutate.Process]:
+        """`(pid, parent, group)` triples. Memory is irrelevant to membership,
+        so it is the same for every row -- a figure that varied would invite an
+        assertion about the wrong thing."""
+        return {
+            pid: mutate.Process(parent=parent, group=group, resident=1 << 20, address=1 << 20)
+            for pid, parent, group in rows
+        }
+
+    def test_the_group_alone_is_not_enough(self) -> None:
+        """A grandchild that called `setsid` is in the leader's *descendants*
+        and not in its group. Miss it and its memory is nobody's problem, which
+        is exactly what woswoar#234 was."""
+        escaped = self.table((10, 1, 10), (11, 10, 10), (12, 11, 12))
+        self.assertEqual({10, 11, 12}, mutate._lane(10, escaped))
+
+    def test_the_descendants_alone_are_not_enough(self) -> None:
+        """The other half, and the fixture that makes the first one mean
+        something. A process in the group whose parent is elsewhere -- a `git`
+        the suite forked and then reparented -- is in the group and not in the
+        tree."""
+        adopted = self.table((10, 1, 10), (20, 1, 10))
+        self.assertEqual({10, 20}, mutate._lane(10, adopted))
+
+    def test_another_lane_is_not_swept_in(self) -> None:
+        """The assertion that stops "return everything" from passing. Two lanes
+        run side by side in every real sweep, and a membership rule that claims
+        both would have `_end` killing a lane that was working."""
+        two = self.table((10, 1, 10), (11, 10, 10), (30, 1, 30), (31, 30, 30))
+        self.assertEqual({10, 11}, mutate._lane(10, two))
+        self.assertEqual({30, 31}, mutate._lane(30, two))
+
+    def test_a_pid_the_table_does_not_hold_is_not_invented(self) -> None:
+        """The table is a snapshot and processes exit while it is being read.
+        A member that is no longer there must not be returned, or `_end_lane`
+        signals a pid the kernel has since handed to something else."""
+        gone = self.table((10, 1, 10), (11, 10, 10))
+        del gone[11]
+        self.assertEqual({10}, mutate._lane(10, gone))
+
+    def test_a_leader_that_is_gone_answers_for_nothing(self) -> None:
+        """`release` may run after the lane has exited. An empty answer is
+        right; a `KeyError` would take the sampler thread down with it."""
+        self.assertEqual(set(), mutate._lane(99, self.table((10, 1, 10))))
+
+    #: A grandchild that leaves the group, printed by the middle process so the
+    #: test knows its pid without guessing. Bounded well under the harness's own
+    #: 30s per-test alarm, and killed in `addCleanup` either way.
+    ESCAPE = (
+        "import os, subprocess, sys, time;"
+        "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'],"
+        " preexec_fn=os.setsid);"
+        "print(g.pid, flush=True); time.sleep(20)"
+    )
+
+    def test_a_real_nested_probe_that_left_the_group_is_still_found(self) -> None:
+        """The bug this class was written to test for, against real processes.
+
+        The hand-built tables above are faithful -- pid, parent and group are
+        everything `_lane` reads -- but this is the shape woswoar#234 describes
+        and it is worth building for real: a probe (its own session), the suite
+        it runs (inheriting that group), and a *nested* harness's probe that
+        calls `setsid` and leaves it.
+
+        Measured before the fix: `_lane` returned the first two and not the
+        third. The walk tested membership in `found`, which starts holding the
+        whole group -- so it stopped at every group member, and a group member
+        is exactly what the middle process is. The descendant half only ever
+        reached escapees whose parent was the leader itself, which is the one
+        shape that needs it least.
+        """
+        middle = (
+            f"import subprocess, sys, time;"
+            f"m = subprocess.Popen([sys.executable, '-c', {self.ESCAPE!r}], stdout=sys.stdout);"
+            f"time.sleep(20)"
+        )
+        leader = subprocess.Popen(
+            [sys.executable, "-c", middle],
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(leader.wait)
+        self.addCleanup(leader.kill)
+        assert leader.stdout is not None
+        escapee = int(leader.stdout.readline().strip())
+        self.addCleanup(self.reap, escapee)
+
+        table = mutate._processes()
+        self.assertNotEqual(
+            leader.pid,
+            table[escapee].group,
+            "the fixture's grandchild never left the group, so it proves nothing",
+        )
+        self.assertIn(escapee, mutate._lane(leader.pid, table), "the escapee was not counted")
+
+    def reap(self, escapee: int) -> None:
+        """The grandchild is its own session leader, so killing the tree above
+        it does not reach it -- which is the whole point of the fixture."""
+        with contextlib.suppress(OSError):
+            os.killpg(escapee, 9)
+
+    def test_a_cycle_in_the_table_does_not_hang_the_sampler(self) -> None:
+        """`/proc` is read row by row while the machine runs, so the snapshot
+        need not be a consistent tree -- a pid reused between two reads can make
+        one appear to be its own ancestor. The walk is `while stack`, and the
+        sampler holds a lock."""
+        looped = self.table((10, 1, 10), (11, 10, 10), (12, 11, 12))
+        looped[10] = looped[10]._replace(parent=12)
+        self.assertEqual({10, 11, 12}, mutate._lane(10, looped))
+
+
+class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
+    """`baseline_shards`: one shard per distinct selection, plus one for the
+    remembered killers.
+
+    Six of its eight mutants survived, all on lines the suite executes. A red
+    baseline voids every verdict above it, so a shard set that checks the wrong
+    thing makes a whole sweep meaningless -- quietly, because the rows still
+    print their verdicts.
+
+    A function rather than a constant so `--baseline-only` and `run` cannot
+    drift; it already went stale once. These assert the shape both callers
+    depend on.
+    """
+
+    def rows(self, *pairs: tuple[str, str]) -> list[Mutation]:
+        return [
+            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", tests, first=first)
+            for n, (tests, first) in enumerate(pairs)
+        ]
+
+    def test_one_shard_per_distinct_selection(self) -> None:
+        """Distinct, not one per row: a table of two hundred rows against three
+        selections is three suite runs, not two hundred."""
+        table = self.rows(("tests.a", ""), ("tests.b", ""), ("tests.a", ""))
+        self.assertEqual(["tests.a", "tests.b"], mutate.baseline_shards(table))
+
+    def test_the_remembered_killers_get_one_shard_between_them(self) -> None:
+        """One for all of them, never one each. A shard per remembered test is
+        the sharding explosion that took 372s to 730s, in a new disguise."""
+        table = self.rows(("tests.a", "tests.x.X.test_one"), ("tests.a", "tests.y.Y.test_two"))
+        shards = mutate.baseline_shards(table)
+        self.assertEqual(2, len(shards), shards)
+        self.assertIn("tests.x.X.test_one tests.y.Y.test_two", shards)
+
+    def test_a_killer_outside_its_row_s_selection_is_still_covered(self) -> None:
+        """Why the extra shard exists at all: a cached killer can name a test
+        the row's own selection does not run, and an unchecked killer is the
+        false `caught` the baseline exists to prevent."""
+        table = self.rows(("tests.a", "tests.elsewhere.E.test_it"))
+        self.assertIn("tests.elsewhere.E.test_it", " ".join(mutate.baseline_shards(table)))
+
+    def test_no_killers_means_no_extra_shard(self) -> None:
+        """The precondition. Without it, "the killers get a shard" is equally
+        satisfied by a function that always appends one -- and an empty shard
+        runs the whole suite, which is the one thing `baseline_shards`'
+        docstring says it must not do."""
+        self.assertEqual(["tests.a"], mutate.baseline_shards(self.rows(("tests.a", ""))))
+
+    def test_an_empty_table_needs_nothing_checked(self) -> None:
+        self.assertEqual([], mutate.baseline_shards([]))
+
+
+class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
+    """`_share` and `_affordable`: the product of lanes and ceiling, bounded.
+
+    **These decide whether a sweep fits on the machine, and 22 of their 24
+    mutants survived the whole-tree sweep.** `verdict.cap` bounds one lane and
+    `_affordable` counts lanes, and for one release each was defensible while
+    the pair was not: sixteen lanes at a 4 GiB ceiling is 64 GiB on a 62 GiB
+    machine, so a table could drive the host into the OOM killer with every
+    individual limit respected. That is woswoar#232, and it happened three times.
+
+    **Asserted as properties, never against a second copy of the formula.**
+    `_share`'s answer is `min(wanted, _affordable(), budget // floor)` paired
+    with `min(memory, max(floor, budget // lanes))`; a test that recomputes that
+    has copied the code and holds for any value of it. What follows are the
+    claims a reader of `_share`'s docstring would make -- the product fits, the
+    order of concessions is lanes-last, a pin is honoured -- each of which a
+    wrong implementation can fail.
+
+    Driven directly rather than through `run`, which is why they were untested:
+    every existing test that reaches `_share` reaches it through a real sweep,
+    where the lane count is whatever this machine allows, so the assertion ends
+    up being about the machine and holds for any value of it.
+    """
+
+    def sharing(self, budget: int, wanted: int, memory: int, pinned: bool = False) -> mutate.Share:
+        """`_share` on a machine with exactly `budget` to spend."""
+        with mock.patch.object(mutate, "_budget", lambda: budget):
+            return mutate._share(wanted, memory, pinned)
+
+    def test_the_product_never_exceeds_the_budget(self) -> None:
+        """woswoar#232 in one line, and the reason the two numbers are chosen
+        together rather than separately. Swept across shapes, because a single
+        pair is satisfied by an implementation that happens to fit it."""
+        for budget in (2 << 30, 8 << 30, 64 << 30):
+            for wanted in (1, 3, 7, 16):
+                with self.subTest(budget=budget >> 20, wanted=wanted):
+                    share = self.sharing(budget, wanted, mutate.MEMORY)
+                    self.assertLessEqual(
+                        share.lanes * share.memory,
+                        budget,
+                        f"{share.lanes} lanes x {share.memory >> 20} MiB exceeds {budget >> 20}",
+                    )
+
+    def test_more_memory_never_means_fewer_lanes(self) -> None:
+        """Monotonicity. Nothing else here would catch a comparison flipped in
+        the lane arithmetic, because any single budget still yields *a* number
+        that looks plausible."""
+        seen = [self.sharing(gib << 30, 16, mutate.MEMORY).lanes for gib in (2, 4, 8, 16, 64)]
+        self.assertEqual(sorted(seen), seen, f"lanes fell as the budget grew: {seen}")
+
+    def test_lanes_are_given_up_only_after_the_ceiling_has_been(self) -> None:
+        """The order of concessions, which is `_share`'s whole argument: lower
+        the ceiling first, because it is headroom for a pathological row rather
+        than something an honest one spends, and give up lanes only when that
+        share would fall under `_FLOOR`."""
+        roomy = self.sharing(64 << 30, 8, mutate.MEMORY)
+        self.assertEqual(8, roomy.lanes, "a big machine gave up lanes it did not need to")
+        tight = self.sharing(4 << 30, 8, mutate.MEMORY)
+        self.assertLess(tight.lanes, 8, "a small machine kept lanes it cannot afford")
+        self.assertGreaterEqual(tight.memory, mutate._FLOOR, "the ceiling went under the floor")
+
+    def test_a_pinned_worker_count_is_kept(self) -> None:
+        """`--workers` is a caller with a reason this cannot see --
+        `TestItRunsThemInParallel` pins four to assert that mutations overlap at
+        all, and on a machine too small to afford four it would otherwise assert
+        the machine rather than the mechanism."""
+        self.assertEqual(9, self.sharing(2 << 30, 9, mutate.MEMORY, pinned=True).lanes)
+
+    def test_the_ceiling_still_shrinks_around_a_pin(self) -> None:
+        """The half of pinning that is worth having: the *count* is the caller's
+        to fix, the ceiling is not."""
+        share = self.sharing(4 << 30, 16, mutate.MEMORY, pinned=True)
+        self.assertLess(share.memory, mutate.MEMORY, "a pinned run kept a ceiling it cannot fund")
+
+    def test_no_cap_passes_straight_through(self) -> None:
+        """`--memory 0` is "no cap", spelled the way `--limit 0` beside it
+        already means. There is no product to bound once one factor is infinite,
+        and quietly imposing one would be the flag lying."""
+        share = self.sharing(1 << 30, 12, 0)
+        self.assertEqual(12, share.lanes)
+        self.assertEqual(0, share.memory)
+
+    def test_there_is_always_at_least_one_lane(self) -> None:
+        """A budget under one lane's floor still has to run. Zero lanes is a
+        pool that never starts and a sweep that reports nothing."""
+        self.assertGreaterEqual(self.sharing(1 << 20, 4, mutate.MEMORY).lanes, 1)
+        self.assertGreaterEqual(self.sharing(1 << 20, 0, mutate.MEMORY).lanes, 1)
+
+    def test_the_ceiling_never_exceeds_what_was_asked_for(self) -> None:
+        """`--memory` is an upper bound the caller set. A roomy machine may not
+        raise it -- a caller who already sandboxed us meant it."""
+        share = self.sharing(64 << 30, 2, 512 << 20)
+        self.assertLessEqual(share.memory, 512 << 20)
+
+    def test_affordable_divides_the_budget_by_what_a_lane_uses(self) -> None:
+        """`_LANE`, not `MEMORY`. Dividing by the *ceiling* assumes every lane is
+        simultaneously pathological -- the over-restriction woswoar#227 removed,
+        where a 16 GiB laptop dropped to two lanes and a 7 GiB runner to one."""
+        with mock.patch.object(mutate, "_budget", lambda: 16 << 30):
+            self.assertEqual((16 << 30) // mutate._LANE, mutate._affordable())
+
+    def test_affordable_never_answers_zero(self) -> None:
+        """A machine too small for one lane still gets one; the ceiling is what
+        stops it, within seconds, rather than a pool that never starts."""
+        with mock.patch.object(mutate, "_budget", lambda: 1 << 20):
+            self.assertEqual(1, mutate._affordable())
+
+
 class TestTheRunAccountsForItsLanes(unittest.TestCase):
     """The line is printed when the machine cut the run down, and not when it
     did not.

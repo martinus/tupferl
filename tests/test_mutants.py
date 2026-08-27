@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1035,6 +1036,65 @@ class TestABoundedCallStillReturns(unittest.TestCase):
             "assert len(kept) == 7, kept\n"
             "assert len(dropped) == 23, dropped"
         )
+
+
+class TestWhichTestsARowRunsAgainst(unittest.TestCase):
+    """`targets_for`: the named module, unioned with everything that imports it.
+
+    Five of its seven mutants survived, all on lines the suite executes. It is
+    a heuristic and allowed to be one -- the walk means a missed killer costs a
+    longer run, never a wrong verdict -- but `.startswith(...)` accepting
+    everything would silently change what `WHOLE_SUITE` means, and an empty
+    answer is what makes a row run the whole suite.
+
+    A tree of its own, because the answer depends on which files exist beside
+    the one being asked about.
+    """
+
+    def tree(self, *tests: str) -> Path:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-targets-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tupferl").mkdir()
+        (box / "tests").mkdir()
+        (box / "tupferl" / "widget.py").write_text("x = 1\n", encoding="utf-8")
+        for name in tests:
+            (box / "tests" / name).write_text("import unittest\n", encoding="utf-8")
+        return box
+
+    def test_the_module_named_after_the_file_is_found(self) -> None:
+        box = self.tree("test_widget.py")
+        self.assertEqual("tests.test_widget", mutants.targets_for("tupferl/widget.py", box, {}))
+
+    def test_an_aspect_module_is_found_too(self) -> None:
+        """`test_<stem>_<aspect>.py` is the convention CLAUDE.md records, and
+        `sync` has four such modules -- a rule that missed them would run the
+        sync engine's rows against a fraction of their tests."""
+        box = self.tree("test_widget.py", "test_widget_properties.py")
+        found = mutants.targets_for("tupferl/widget.py", box, {}).split()
+        self.assertEqual(["tests.test_widget", "tests.test_widget_properties"], found)
+
+    def test_a_merely_similar_name_is_not_a_match(self) -> None:
+        """The half that stops `startswith` from accepting everything.
+        `test_widgets.py` is a different module, and matching it would make the
+        selection quietly wrong for every file whose name is a prefix of
+        another -- `copies` and `config`, `manage` and `manifest`."""
+        box = self.tree("test_widget.py", "test_widgetry.py", "test_widgets.py")
+        self.assertEqual("tests.test_widget", mutants.targets_for("tupferl/widget.py", box, {}))
+
+    def test_what_imports_it_is_unioned_in(self) -> None:
+        """Both halves. The named module alone misses a test that drives this
+        code through something else, and the import closure alone misses the
+        module named for it when nothing imports it directly."""
+        box = self.tree("test_widget.py")
+        index = {"tupferl.widget": {"tests.test_elsewhere"}}
+        found = mutants.targets_for("tupferl/widget.py", box, index).split()
+        self.assertEqual(["tests.test_elsewhere", "tests.test_widget"], found)
+
+    def test_nothing_at_all_is_an_empty_answer(self) -> None:
+        """Empty is what `mutate.WHOLE_SUITE` reads as "run everything". The
+        unsafe answer would be to call it "no tests" and skip the row, which
+        reads as coverage nobody has."""
+        self.assertEqual("", mutants.targets_for("tupferl/widget.py", self.tree(), {}))
 
 
 class TestCappingTheTable(unittest.TestCase):

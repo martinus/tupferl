@@ -14,13 +14,16 @@ script exists -- untested.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
+from tests import support
 from tools import run_tests
 
 #: A test module that runs one test and then takes its process down mid-batch,
@@ -185,6 +188,99 @@ class TestWhatTheRunSaysAboutItself(Tree):
         self.add("test_healthy.py", HEALTHY)
         done = self.run_it("--jobs", "2")
         self.assertNotIn("FAIL:", done.stdout)
+
+
+class TestWhatABatchReports(unittest.TestCase):
+    """`run_batch`: the JSON a worker leaves behind, which is all the parent knows.
+
+    **Twelve of its thirteen mutants survived, and nothing called it directly.**
+    Every test in this file drives `run_tests` end to end, so `run_batch` ran
+    only inside a subprocess -- invisible to coverage, and asserted on only
+    through whatever the parent printed afterwards.
+
+    That matters because the accounting check this module exists for --
+    `ids discovered == ids reported` -- is fed entirely by these files. A batch
+    that under-reports its `ran` list makes the parent announce tests that never
+    ran; one that over-reports hides a batch that died.
+
+    Written to a real file by the real function, because the file *is* the
+    interface.
+    """
+
+    def batch(self, body: str, *names: str) -> dict[str, Any]:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-batch-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tests_batch").mkdir()
+        (box / "tests_batch" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "tests_batch" / "test_it.py").write_text(body, encoding="utf-8")
+        out = box / "report.json"
+        sys.path.insert(0, str(box))
+        try:
+            with support.quiet():
+                run_tests.run_batch([f"tests_batch.test_it.{name}" for name in names], out)
+        finally:
+            sys.path.remove(str(box))
+            for name in [m for m in sys.modules if m.startswith("tests_batch")]:
+                del sys.modules[name]
+        return dict(json.loads(out.read_text(encoding="utf-8")))
+
+    PASSES = (
+        "import unittest\n"
+        "class Green(unittest.TestCase):\n"
+        "    def test_one(self): pass\n"
+        "    def test_two(self): pass\n"
+        "class Red(unittest.TestCase):\n"
+        "    def test_fails(self): self.assertEqual(1, 2)\n"
+        "    def test_errors(self): raise RuntimeError('boom')\n"
+        "class Skipped(unittest.TestCase):\n"
+        "    @unittest.skip('a reason worth carrying')\n"
+        "    def test_skipped(self): pass\n"
+    )
+
+    def test_every_test_it_ran_is_named(self) -> None:
+        """The list the accounting check subtracts from. A batch that reports
+        fewer ids than it ran makes the parent announce tests that never ran --
+        which is the false alarm, where the missing half is the real one."""
+        said = self.batch(self.PASSES, "Green")
+        self.assertEqual(
+            ["tests_batch.test_it.Green.test_one", "tests_batch.test_it.Green.test_two"],
+            sorted(said["ran"]),
+        )
+
+    def test_a_failure_and_an_error_are_kept_apart(self) -> None:
+        """Two different things: an assertion that did not hold, and code that
+        raised on the way. Folding them together loses which one a reader is
+        looking at, and `main` prints them under different labels."""
+        said = self.batch(self.PASSES, "Red")
+        self.assertEqual(["tests_batch.test_it.Red.test_fails"], said["failures"])
+        self.assertEqual(["tests_batch.test_it.Red.test_errors"], said["errors"])
+
+    def test_a_skip_carries_its_reason(self) -> None:
+        """The reason is not printed by the child at this verbosity, so if the
+        report drops it there is nowhere else to get it -- and `--no-skips`
+        exists to make a silent skip loud."""
+        said = self.batch(self.PASSES, "Skipped")
+        self.assertEqual(
+            [["tests_batch.test_it.Skipped.test_skipped", "a reason worth carrying"]],
+            said["skipped"],
+        )
+
+    def test_a_module_that_will_not_import_is_reported_and_not_run(self) -> None:
+        """Discovery in the parent sets unloadable modules aside, and this is
+        the belt to that brace: a module can import there and not here. The
+        classes that *did* load must still run."""
+        said = self.batch("import nothing_by_this_name  # noqa: F401\n", "Anything")
+        self.assertTrue(said["unloadable"], "a broken import was not reported")
+        self.assertEqual([], said["ran"])
+
+    def test_a_green_batch_reports_nothing_wrong(self) -> None:
+        """The precondition. Without it every assertion above is satisfied by a
+        report that lists everything under every key."""
+        said = self.batch(self.PASSES, "Green")
+        self.assertEqual([], said["failures"])
+        self.assertEqual([], said["errors"])
+        self.assertEqual([], said["skipped"])
+        self.assertEqual({}, said["unloadable"])
 
 
 class TestPacking(unittest.TestCase):

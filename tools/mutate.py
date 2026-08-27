@@ -664,11 +664,26 @@ def _lane(leader: int, table: dict[int, Process]) -> set[int]:
     for pid, row in table.items():
         kids.setdefault(row.parent, []).append(pid)
     found = {pid for pid, row in table.items() if row.group == leader}
+    # `seen` rather than `found` as the visited set, and the difference is the
+    # whole of woswoar#234 rather than a tidy-up.
+    #
+    # `found` starts holding the entire process *group*, so testing membership
+    # in it stopped the walk at every group member -- and a group member is
+    # precisely what a nested harness's `_run` is. The descendant half then only
+    # ever reached escapees whose parent was the leader itself, which is the one
+    # shape that needs it least.
+    #
+    # Measured against real processes, leader -> middle (in the group) ->
+    # grandchild (`setsid`, out of it): the grandchild was in neither the count
+    # nor the kill. That is the eleven-minutes-alive symptom the union was added
+    # to remove, still present in the fix for it.
+    seen: set[int] = set()
     stack = [leader]
     while stack:
         pid = stack.pop()
-        if pid in found and pid != leader:
+        if pid in seen:
             continue
+        seen.add(pid)
         found.add(pid)
         stack.extend(kids.get(pid, ()))
     return found & set(table)
@@ -1216,7 +1231,7 @@ def _visible_memory() -> int:
     threshold this repository uses.
     """
     limits = []
-    for where in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+    for where in CGROUPS:
         try:
             said = Path(where).read_text(encoding="utf-8").strip()
         except OSError:
@@ -1243,6 +1258,19 @@ def _visible_memory() -> int:
 #: kernel text, rather than patching the function that reads it -- which would
 #: leave the parsing, the one part with anything to get wrong, unexercised.
 MEMINFO = Path("/proc/meminfo")
+
+#: Where a cgroup publishes the memory ceiling it has carved out, v2 first.
+#:
+#: A module constant for the reason `MEMINFO` is one: `_visible_memory` and
+#: `_confined` both read these, and until this existed the tuple was spelled
+#: twice -- so a path corrected in one place stayed wrong in the other, and
+#: neither could be pointed at a file a test had written. Fourteen of
+#: `_visible_memory`'s fifteen mutants survived the whole-tree sweep, and the
+#: cgroup read is where most of them sat.
+CGROUPS = (
+    "/sys/fs/cgroup/memory.max",
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+)
 
 
 def _unclaimed() -> int:
@@ -1303,7 +1331,7 @@ def _confined() -> int:
         host = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     if not host:
         return 0
-    for where in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+    for where in CGROUPS:
         try:
             said = Path(where).read_text(encoding="utf-8").strip()
         except OSError:
