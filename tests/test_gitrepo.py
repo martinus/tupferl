@@ -376,6 +376,29 @@ class TestReadingTheStagesOfAConflict(ConflictedIndex):
     asking about here rather than three layers up.
     """
 
+    def test_two_conflicted_files_come_back_in_a_settled_order(self) -> None:
+        """`unmerged` sorts, and one conflicted file cannot show it.
+
+        The name the user is told to go and resolve comes from here, and a list
+        whose order moved between two runs of the same repository would read as
+        two different answers. One file passes against a sort, a reverse and no
+        sort at all -- the shape of fixture §2 warns about -- so this diverges
+        two, committed in the order that is *not* the answer.
+        """
+        for name in (".zshrc", ".bashrc"):
+            self.commit(name, b"base\n")
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        for name in (".zshrc", ".bashrc"):
+            self.commit(name, b"ours\n")
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        for name in (".zshrc", ".bashrc"):
+            self.commit(name, b"theirs\n")
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        subprocess.run(
+            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+        )
+        self.assertEqual([".bashrc", ".zshrc"], gitrepo.unmerged(self.repo))
+
     def test_a_clean_repository_has_nothing_conflicted(self) -> None:
         """The empty answer, which every caller reads as "nothing to settle"."""
         self.commit(".bashrc", b"one\n")
@@ -441,6 +464,44 @@ class TestReadingTheStagesOfAConflict(ConflictedIndex):
             ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
         )
         self.assertEqual(0o120000, gitrepo.conflicted(self.repo)["link"][gitrepo.OURS])
+
+
+class TestWhenGitWillNotAnswerAboutConflicts(support.SandboxCase):
+    """The two ways `conflicted` gets no answer, and the empty dict both give.
+
+    Both matter because of what the caller does with the result: `sync.reconcile`
+    iterates it and `integrate` reads "nothing unmerged" as "there is no conflict
+    to settle". `None` there is an `AttributeError` from inside an unfinished
+    merge -- the state the whole `finally` in `integrate` exists to keep the user
+    out of -- so the empty answer is a promise about the *type*, not a
+    convenience.
+
+    Neither path was reached by any test: everything else here drives a real
+    conflict, where git always answers.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.plain = self.home / "not-a-repo"
+        self.plain.mkdir()
+
+    def test_a_directory_that_is_not_a_repository_has_nothing_conflicted(self) -> None:
+        """git exits non-zero with "not a git repository". The precondition is
+        asserted first: run against a real repository this is vacuous, because a
+        clean repository answers `{}` too."""
+        self.assertFalse((self.plain / ".git").exists(), "the fixture is a repository")
+        self.assertEqual({}, gitrepo.conflicted(self.plain))
+
+    def test_a_git_that_cannot_be_run_at_all_has_nothing_conflicted(self) -> None:
+        """The `OSError` arm, which is a different line from the exit-status one.
+
+        `PATH=""`, never `del PATH`: with the variable *absent* `subprocess`
+        falls back to `confstr("CS_PATH")` and finds `/usr/bin/git` anyway, so
+        the obvious spelling of this fixture runs git successfully and passes for
+        the wrong reason.
+        """
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertEqual({}, gitrepo.conflicted(self.plain))
 
 
 class TestAPathThatIsNotUtf8(ConflictedIndex):

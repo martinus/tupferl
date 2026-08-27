@@ -27,7 +27,7 @@ import unittest
 from unittest import mock
 
 from tests import support
-from tupferl import conflicts, gitrepo, paths
+from tupferl import conflicts, errors, gitrepo, paths, sync
 from tupferl.errors import TupferlError
 
 #: What each machine commits. Distinct, and neither a prefix of the other, so no
@@ -689,6 +689,51 @@ class TestWhenTheMergeCannotBeConcluded(TwoCommits):
         self.assertIn("the merge was undone", done.stderr)
         self.assertIsNone(gitrepo.unfinished(self.second.repo))
         self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+
+
+class TestUndoneUndoesTheMergeItself(support.SandboxCase):
+    """`sync.undone`, called directly, because through `sync` it cannot be seen.
+
+    Its docstring makes a promise the message repeats to the user -- "the merge
+    was undone, so nothing is half-done" -- and says why it lives in one function
+    rather than at each of the three raise sites: *a fourth failure added later
+    cannot forget it*.
+
+    Both sites that reach it today are inside `integrate`, whose `finally` aborts
+    as well, so dropping the call here changes nothing anybody can observe from
+    outside: `TestWhenTheMergeCannotBeConcluded` passes either way, and a
+    mutation sweep found exactly that. Testing the guarantee where it is made,
+    rather than where it currently happens to be doubled, is what makes the
+    fourth site safe -- which is the only reason the line exists.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.home / "r", self.env)
+        self.commit(b"base\n")
+        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+        self.commit(b"ours\n")
+        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+        self.commit(b"theirs\n")
+        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        # Left to fail: that is what leaves MERGE_HEAD behind.
+        gitrepo.merge(self.repo, "other")
+
+    def commit(self, text: bytes) -> None:
+        (self.repo / ".bashrc").write_bytes(text)
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", "x"], cwd=self.repo, env=self.env)
+
+    def test_the_fixture_really_left_a_merge_in_progress(self) -> None:
+        """The assertion below is vacuous without it: a repository that was never
+        mid-merge reports nothing unfinished whatever `undone` does."""
+        self.assertIsNotNone(gitrepo.unfinished(self.repo))
+
+    def test_it_raises_and_leaves_no_merge_behind(self) -> None:
+        with self.assertRaises(errors.TupferlError) as raised:
+            sync.undone(self.repo, "something went wrong")
+        self.assertIn("the merge was undone", str(raised.exception))
+        self.assertIsNone(gitrepo.unfinished(self.repo))
 
 
 class TestWhenSeveralFilesCannotBeSettled(support.TwoMachines):
