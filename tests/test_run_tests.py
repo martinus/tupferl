@@ -283,6 +283,109 @@ class TestWhatABatchReports(unittest.TestCase):
         self.assertEqual({}, said["unloadable"])
 
 
+class TestTheWaysARunIsRefusedRatherThanRunEmpty(Tree):
+    """Every filter that could select nothing, and the refusal it earns instead.
+
+    These are the guards §8 is about. A selector that matches nothing reports
+    "Ran 0 tests" and exits 0 -- indistinguishable in a CI log from a suite that
+    passed -- and each of them is reachable from a typo in a workflow file that
+    nobody would ever see fail. `main` refuses instead, and until now nothing
+    asserted that: the *exit status* of the happy path was covered and none of
+    these branches was.
+
+    Each refusal has its accepting twin in the same class, because a `main` that
+    refused every selector would satisfy the refusals on their own and make the
+    tool unusable in exactly the jobs these flags exist for.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.add("test_healthy.py", HEALTHY)
+
+    def test_only_that_matches_nothing_is_refused(self) -> None:
+        done = self.run_it("--only", "tests.test_nothing_like_this")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("no test class matches", done.stdout)
+
+    def test_only_that_matches_still_runs(self) -> None:
+        done = self.run_it("--only", "tests.test_healthy")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 2 tests", done.stdout)
+
+    def test_exclude_that_matches_nothing_is_refused(self) -> None:
+        """One pattern at a time, and each has to match something. Checking only
+        that the set shrank would let a renamed class stop being excluded as
+        long as some *other* pattern still matched -- and the job that needs
+        this passes two, so that is the likely case rather than the exotic one.
+        """
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy", "--exclude", "TestGone")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("TestGone", done.stdout)
+
+    def test_exclude_that_matches_takes_the_class_out(self) -> None:
+        """The twin, and it names what it kept: a run that excluded nothing also
+        exits 0, so the status alone says nothing here."""
+        self.add("test_second.py", HEALTHY.replace("TestHealthy", "TestSecond"))
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 2 tests", done.stdout)
+
+    def test_excluding_the_last_class_is_refused_rather_than_run_empty(self) -> None:
+        """**Found by writing the tests above, and fixed in this change.**
+
+        Every pattern matched, so the loop above is satisfied -- and the run then
+        packed one *empty* batch, spawned a worker with no names, watched
+        argparse refuse it, printed `::error::batch died without reporting` and
+        **exited 0**. An annotated error on a green job, which is the exact
+        failure this whole script exists to refuse.
+        """
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("nothing would run", done.stdout)
+        self.assertNotIn("died without reporting", done.stdout)
+
+    def test_a_selection_matching_only_a_broken_module_still_reports_it(self) -> None:
+        """The `not unloadable` half of that guard, which nothing else reaches.
+
+        A module that will not import has no classes, so "nothing would run" is
+        *true* of it -- and saying that instead sends the reader looking for a
+        filter that is wrong when what is wrong is the module. The run is red
+        either way, which is why the assertion is on the words: without this,
+        dropping `and not unloadable` passes every other test here.
+        """
+        self.add("test_broken.py", BROKEN_IMPORT)
+        done = self.run_it("--only", "tests.test_broken")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("could not import tests.test_broken", done.stdout)
+        self.assertNotIn("nothing would run", done.stdout)
+
+    def test_a_malformed_shard_is_refused(self) -> None:
+        """`--shard` is one-based: `I` is `1..N`. `0/2` is out of range, and so
+        is `3/2`."""
+        for spec in ("0/2", "3/2", "one/two", "2"):
+            with self.subTest(spec=spec):
+                done = self.run_it("--shard", spec)
+                self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+                self.assertIn("::error::", done.stdout)
+
+    def test_more_shards_than_classes_is_refused(self) -> None:
+        """The one that would otherwise be silent. An empty shard reports "Ran 0
+        tests" and exits 0 -- the partial run that is green because nothing
+        happened -- and it can only come from a matrix that outgrew the suite,
+        so every shard would go on being green as classes were removed."""
+        done = self.run_it("--shard", "1/9")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("more shards than there are classes", done.stdout)
+
+    def test_a_shard_that_fits_runs_its_share(self) -> None:
+        """Without this the class is satisfied by a `main` that refuses every
+        `--shard`, which is the flag CI splits the suite with."""
+        self.add("test_second.py", HEALTHY.replace("TestHealthy", "TestSecond"))
+        done = self.run_it("--shard", "1/2")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 2 tests", done.stdout)
+
+
 class TestPacking(unittest.TestCase):
     """`pack` decides both splits -- classes over processes, and shards over
     machines -- so it is worth its own tests without a suite to run."""
