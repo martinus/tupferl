@@ -602,40 +602,43 @@ def _from_proc() -> dict[int, Process]:
 def _from_ps() -> dict[int, Process]:
     """`_processes` where there is no `/proc`, which is macOS."""
     listed = subprocess.run(
-        ["ps", "-eo", "pid=,ppid=,pgid=,rss=,vsz="], capture_output=True, text=True, check=False
+        ["ps", "-eo", "pid=,ppid=,pgid=,rss="], capture_output=True, text=True, check=False
     )
     return _parse_ps(listed.stdout)
 
 
 def _parse_ps(text: str) -> dict[int, Process]:
-    """`ps` output, in either the four columns this used to ask for or the five
-    it asks for now.
+    """`ps` output: pid, parent, group and resident, and no address space.
 
-    **Four is still accepted, and that is a safety decision rather than
-    tolerance.** Requiring five means a `ps` without `vsz` yields an empty
-    table, and an empty table is not a degraded `_Lanes` -- it is one that finds
-    no members, counts nothing, and therefore kills nothing. Trading the guard
-    against a fork storm for a line of reporting would be exactly backwards, so
-    a missing fifth column costs the headroom figure and nothing else.
+    **`vsz` is asked for and then not used, so it is not asked for.** The first
+    version of this read it, and the macOS leg printed `heaviest lane process
+    held 401357 MiB of its 4096 MiB ceiling (9799%)`. That is not a bug in the
+    arithmetic: macOS counts reserved regions no Linux `RLIMIT_AS` figure would,
+    so the number is real and means something else entirely.
 
-    `vsz` is POSIX and macOS has it, so this arm is not expected to be reached.
-    It is here because the failure it prevents is silent: nothing would say the
-    sampler had stopped working.
+    Reporting it against a ceiling would be twice wrong, because macOS **does
+    not enforce that ceiling** -- `verdict.cap` has said so since it was written
+    and `tests/test_verdict.py` names two classes the workflow excludes for it.
+    There is no ceiling here to have headroom against, so `address` stays 0,
+    `_report_headroom` finds nothing to report, and the run says nothing rather
+    than something impressive and false.
+
+    What macOS still gets is the half that works: `_Lanes` counts *resident*,
+    which is what a fork storm spends, and on the platform that ignores
+    `RLIMIT_AS` it is the only guard there is.
 
     Its own function so the parse can be driven from text. `_from_ps` forks, and
-    a test that wanted four-column output would otherwise have to mock the fork
-    rather than read what a real `ps` prints.
+    a test would otherwise have to mock the fork rather than read what a real
+    `ps` prints.
     """
     table: dict[int, Process] = {}
     for line in text.splitlines():
         fields = line.split()
-        if len(fields) not in (4, 5) or not all(field.isdigit() for field in fields):
+        if len(fields) != 4 or not all(field.isdigit() for field in fields):
             continue
-        pid, parent, group, resident = (int(field) for field in fields[:4])
-        # Kibibytes, which POSIX does not promise and both platforms do. `vsz`
-        # the same, and it is the only address-space figure `ps` gives.
-        address = int(fields[4]) * 1024 if len(fields) == 5 else 0
-        table[pid] = Process(parent=parent, group=group, resident=resident * 1024, address=address)
+        pid, parent, group, resident = (int(field) for field in fields)
+        # Kibibytes, which POSIX does not promise and both platforms do.
+        table[pid] = Process(parent=parent, group=group, resident=resident * 1024, address=0)
     return table
 
 

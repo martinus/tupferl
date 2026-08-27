@@ -2165,57 +2165,48 @@ class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
             self.assertEqual(1, mutate._budget())
 
 
-class TestTheProcessTableCarriesBothNumbers(unittest.TestCase):
-    """Resident and address space, which are 25x apart and answer different things.
+class TestEveryReaderGivesTheFourFieldsThatDecideMembership(unittest.TestCase):
+    """pid, parent, group and resident, from whichever reader this platform has.
 
-    `_Lanes` kills on resident, because that is what a fork storm spends.
-    `verdict.cap` limits address space, so that is the only number that says
-    whether a lane's ceiling is big enough. Keeping only the first is how
-    `_FLOOR` came to state a 2x margin that was really 1.1x.
+    `_lane` walks parents and groups to decide which processes a lane answers
+    for, and `_Lanes` kills on resident. Those four are what every platform must
+    get right, so this class runs everywhere.
 
     Driven against the real kernel: the subject *is* what `/proc` and `ps`
-    report, and a fixture that supplied the text would be asserting this
-    author's belief about their format rather than reading it.
+    report, and a fixture supplying the text would assert this author's belief
+    about their format rather than reading it.
+    """
+
+    def test_this_process_is_found_with_its_parentage_and_memory(self) -> None:
+        me = mutate._processes()[os.getpid()]
+        self.assertEqual(os.getppid(), me.parent)
+        self.assertEqual(os.getpgrp(), me.group)
+        self.assertGreater(me.resident, 0, "no resident memory read for this process")
+
+
+@unittest.skipUnless(Path("/proc/self/stat").exists(), "there is no /proc here")
+class TestWhereThereIsAProc(unittest.TestCase):
+    """The half only Linux can answer, and the reader only Linux uses.
+
+    `_from_proc` is unreachable without a `/proc`, so these compare it against
+    `ps` and check the address-space field that `_report_headroom` rests on.
+    Named in the macOS job's `--exclude` list rather than left to skip: that
+    job passes `--no-skips`, which exists to catch a suite quietly doing
+    nothing.
     """
 
     def test_address_space_is_read_and_is_the_larger_of_the_two(self) -> None:
-        """Both fields, from the one read. `address` defaults to 0, so a parser
-        that never filled it would leave every ceiling question unanswerable
-        while every existing assertion about `resident` still passed."""
-        me = mutate._processes()[os.getpid()]
-        self.assertGreater(me.resident, 0, "no resident memory read for this process")
+        """Both fields, from the one read. Without `address` every ceiling
+        question is unanswerable while every assertion about `resident` still
+        passes."""
+        me = mutate._from_proc()[os.getpid()]
+        self.assertGreater(me.resident, 0)
         self.assertGreater(me.address, me.resident, "address space is not above resident")
-
-    def test_the_two_readers_agree_on_resident_as_well(self) -> None:
-        """Not just address space. `resident` is read in pages from `/proc` and
-        in kibibytes from `ps`, so each has its own unit to get wrong, and the
-        mutation that turns either multiply into a divide leaves a number that
-        is still positive -- which is all "greater than zero" can see."""
-        mine = mutate._from_proc()[os.getpid()]
-        theirs = mutate._from_ps()[os.getpid()]
-        self.assertLess(
-            max(mine.resident, theirs.resident) / min(mine.resident, theirs.resident),
-            2.0,
-            f"proc says {mine.resident} resident and ps says {theirs.resident}",
-        )
-
-    def test_the_two_readers_agree_on_parentage_too(self) -> None:
-        """The fields that decide *membership*. `_lane` walks parents and
-        groups, so an index off by one there silently changes which processes a
-        lane is held responsible for -- and nothing else in this file would
-        notice, because the memory figures would still be read correctly."""
-        mine = mutate._from_proc()[os.getpid()]
-        theirs = mutate._from_ps()[os.getpid()]
-        self.assertEqual(os.getppid(), mine.parent)
-        self.assertEqual(mine.parent, theirs.parent)
-        self.assertEqual(os.getpgrp(), mine.group)
-        self.assertEqual(mine.group, theirs.group)
 
     def test_the_group_is_read_where_a_session_would_not_do(self) -> None:
         """`pgid` and `sid` sit next to each other in `/proc/<pid>/stat`, and
         for this process they hold the **same number** -- so reading the wrong
-        one of the two is invisible here. The mutant that does exactly that
-        survived the sweep against the assertion above.
+        one is invisible here, and the mutant that does it survived the sweep.
 
         A child that starts a new process *group* without a new session tells
         them apart: its `pgid` becomes its own pid while its `sid` stays its
@@ -2230,41 +2221,76 @@ class TestTheProcessTableCarriesBothNumbers(unittest.TestCase):
         self.assertEqual(child.pid, seen.group, "the process group was read from another field")
         self.assertNotEqual(os.getsid(0), seen.group, "the fixture cannot tell the two apart")
 
-    def test_ps_and_proc_agree_about_this_process(self) -> None:
-        """The macOS fallback, exercised on every platform.
-
-        `_processes` picks `/proc` where there is one, so on Linux `_from_ps` is
-        never reached in anger -- and the machine that has nothing else is the
-        one where a broken fallback would first be discovered. Its own docstring
-        says both are tested everywhere for that reason; nothing did.
+    def test_the_two_readers_agree_on_resident(self) -> None:
+        """`resident` is read in pages from `/proc` and in kibibytes from `ps`,
+        so each has its own unit to get wrong -- and the mutation that turns
+        either multiply into a divide leaves a number that is still positive,
+        which is all "greater than zero" can see.
 
         Compared loosely on purpose: the two are read a moment apart and the
-        process is running, so demanding equality would be a flake. Within a
-        factor of two is enough to catch the mistakes that matter -- a unit
-        confusion (`ps` reports KiB) or the wrong column.
+        process is running, so demanding equality would be a flake.
         """
         mine = mutate._from_proc()[os.getpid()]
         theirs = mutate._from_ps()[os.getpid()]
-        self.assertGreater(theirs.address, 0, "ps reported no address space")
         self.assertLess(
-            max(mine.address, theirs.address) / min(mine.address, theirs.address),
+            max(mine.resident, theirs.resident) / min(mine.resident, theirs.resident),
             2.0,
-            f"proc says {mine.address} and ps says {theirs.address}",
+            f"proc says {mine.resident} resident and ps says {theirs.resident}",
         )
 
+    #: Comfortably above one sampling interval and far below the harness's own
+    #: 30s per-test alarm, which is the bound `tests/test_watch.py` learned to
+    #: check a test's own timeout against.
+    PATIENCE = 8.0
 
-class TestAPsWithoutTheColumnStillGuards(unittest.TestCase):
-    """A `ps` that cannot report `vsz` must cost the *report*, never the guard.
+    def test_a_lane_nobody_kills_is_still_measured(self) -> None:
+        """The whole change, and it lives here because the number it asserts on
+        comes from `/proc`.
 
-    Asking for five columns and accepting only five means a `ps` without the
-    fifth yields an empty table -- and an empty table is not a degraded
-    `_Lanes`. It is one that finds no lane members, counts nothing and kills
-    nothing, so the fork storm that took a machine down goes unwatched. Trading
-    that for a line of reporting would be exactly backwards.
+        `_from_ps` reports no address space at all, deliberately, so on macOS a
+        watched lane is measured at 0 and this assertion could not hold. It was
+        in the platform-independent class until the macOS leg said otherwise --
+        which is the same mistake as the four tests above, caught before a
+        second red run rather than after it.
 
-    Driven on real `ps` output in both shapes, which is why the parse is its own
-    function: `_from_ps` forks, and a test wanting four columns would otherwise
-    have to mock the fork rather than read what a real `ps` prints.
+        A ceiling this generous is never reached, so the old code would have
+        recorded nothing at all about this lane.
+        """
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.addCleanup(mutate._WATCHED.forget)
+        mutate._WATCHED.forget()
+        mutate._WATCHED.watch(child.pid, 64 << 30)
+        self.addCleanup(mutate._WATCHED.release, child.pid)
+
+        deadline = time.monotonic() + self.PATIENCE
+        while not mutate._WATCHED.widest() and time.monotonic() < deadline:
+            time.sleep(mutate._SAMPLE / 4)
+        self.assertGreater(
+            mutate._WATCHED.widest(), 0, "a live lane was watched and never measured"
+        )
+
+    def test_the_two_readers_agree_on_parentage(self) -> None:
+        mine = mutate._from_proc()[os.getpid()]
+        theirs = mutate._from_ps()[os.getpid()]
+        self.assertEqual(mine.parent, theirs.parent)
+        self.assertEqual(mine.group, theirs.group)
+
+
+class TestWhatPsIsAskedFor(unittest.TestCase):
+    """Four columns, and no address space.
+
+    The first version read `vsz` too, and the macOS leg reported `401357 MiB of
+    its 4096 MiB ceiling (9799%)`. macOS counts reserved regions no `RLIMIT_AS`
+    figure would -- and it does not enforce that ceiling at all, so there was
+    nothing there for the number to be headroom *against*.
+
+    Driven on real `ps` output, which is why the parse is its own function:
+    `_from_ps` forks, and a test would otherwise have to mock the fork rather
+    than read what a real `ps` prints.
     """
 
     def ran(self, *columns: str) -> str:
@@ -2277,18 +2303,24 @@ class TestAPsWithoutTheColumnStillGuards(unittest.TestCase):
         self.assertEqual(0, listed.returncode, listed.stderr)
         return listed.stdout
 
-    def test_five_columns_carry_the_address_space(self) -> None:
-        table = mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss", "vsz"))
-        self.assertIn(os.getpid(), table)
-        self.assertGreater(table[os.getpid()].address, 0)
-
-    def test_four_columns_still_populate_the_table(self) -> None:
-        """The half that matters. Without it a missing column silently turns off
-        the only guard against a fork storm on the platform that has no other."""
+    def test_the_four_fields_are_read_from_real_output(self) -> None:
         table = mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss"))
-        self.assertIn(os.getpid(), table, "a ps without vsz produced no process table")
-        self.assertGreater(table[os.getpid()].resident, 0, "resident was lost with address")
-        self.assertEqual(0, table[os.getpid()].address, "an address space was invented")
+        self.assertIn(os.getpid(), table, "ps produced no process table")
+        self.assertEqual(os.getppid(), table[os.getpid()].parent)
+        self.assertGreater(table[os.getpid()].resident, 0)
+
+    def test_no_address_space_is_invented(self) -> None:
+        """0 rather than a guess, so `_report_headroom` stays silent where there
+        is no enforced ceiling to compare against."""
+        self.assertEqual(
+            0, mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss"))[os.getpid()].address
+        )
+
+    def test_a_fifth_column_is_refused_rather_than_misread(self) -> None:
+        """`vsz` is not asked for, so a row carrying it is not this reader's
+        output. Taking the first four fields of it anyway would be reading a
+        format nobody promised."""
+        self.assertEqual({}, mutate._parse_ps("7 1 7 2048 4096\n"))
 
     def test_a_line_that_is_not_numbers_is_skipped(self) -> None:
         """`ps` writes a header when asked without `=`, and a machine may print
@@ -2310,9 +2342,7 @@ class TestAPsWithoutTheColumnStillGuards(unittest.TestCase):
         """`ps` reports KiB. A divide leaves a number that is still positive,
         which is all an assertion of "greater than zero" can see -- so this
         pins the arithmetic against a known input instead."""
-        table = mutate._parse_ps("7 1 7 2048 4096\n")
-        self.assertEqual(2048 * 1024, table[7].resident)
-        self.assertEqual(4096 * 1024, table[7].address)
+        self.assertEqual(2048 * 1024, mutate._parse_ps("7 1 7 2048\n")[7].resident)
 
 
 class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
@@ -2333,24 +2363,6 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
     def setUp(self) -> None:
         mutate._WATCHED.forget()
         self.addCleanup(mutate._WATCHED.forget)
-
-    def test_a_lane_nobody_kills_is_still_measured(self) -> None:
-        """The whole change. A ceiling this generous is never reached, so the
-        old code would have recorded nothing at all about this lane."""
-        child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
-        )
-        self.addCleanup(child.wait)
-        self.addCleanup(child.kill)
-        mutate._WATCHED.watch(child.pid, 64 << 30)
-        self.addCleanup(mutate._WATCHED.release, child.pid)
-
-        deadline = time.monotonic() + self.PATIENCE
-        while not mutate._WATCHED.widest() and time.monotonic() < deadline:
-            time.sleep(mutate._SAMPLE / 4)
-        self.assertGreater(
-            mutate._WATCHED.widest(), 0, "a live lane was watched and never measured"
-        )
 
     def test_a_fresh_sampler_has_no_mark_at_all(self) -> None:
         """Read before anything has been watched. Every other test here calls
