@@ -166,5 +166,80 @@ class TestThePreflightMatchesCI(unittest.TestCase):
         self.assertEqual(sorted(found), found)
 
 
+class TestTheScheduledSweepSaysWhatItSwept(unittest.TestCase):
+    """`mutation.yml` had no test at all, and it is the workflow that runs for
+    hours unattended.
+
+    The hazard is CLAUDE.md section 8's: **a report cannot say what it was asked
+    for.** `results.json` covering only the 41% of rows that are `tupferl/` is
+    indistinguishable from one covering the tree, and a run killed part-way
+    writes a report that reads exactly like a complete one -- `--all` implies
+    `--batch`, so `_persist` writes after every file and the upload step is
+    `if: always()`. The count looks right either way.
+
+    Hand-parsed, like the rest of this file: `pyyaml` is not a declared
+    dependency, and adding one to read four lines would be the larger change.
+    That cost is real -- a hand parser can find nothing and then assert nothing
+    -- so `established` states the precondition before anything else runs.
+    """
+
+    SWEEP = ROOT / ".github" / "workflows" / "mutation.yml"
+
+    def setUp(self) -> None:
+        raw = self.SWEEP.read_text(encoding="utf-8")
+        # **Comments stripped, and this is not tidiness.** The first version of
+        # these tests searched the whole file, and two of four hand-made edits
+        # survived: `scope.txt` appears in the comment *above* the `path:` list
+        # that collects it, and `timeout-minutes: 420` still matches when it has
+        # been commented out. Both assertions were matching the prose that
+        # explains the setting rather than the setting.
+        #
+        # No `#` appears inside a value in this file -- not in the `${{ }}`
+        # expressions and not in the echoed strings -- so cutting at the first
+        # one is exact here rather than approximate.
+        self.text = "\n".join(line.split("#", 1)[0] for line in raw.splitlines())
+        #: The prose, kept separately so a test can assert a setting is *not*
+        #: only described.
+        self.prose = raw
+
+    def test_the_file_is_the_one_this_thinks_it_is(self) -> None:
+        """The precondition. Every assertion below is a substring search, and a
+        renamed file or a rewritten job would make all of them pass by finding
+        nothing to disagree with."""
+        self.assertIn("name: mutation sweep", self.text)
+        self.assertIn("python -m tools.mutate --all", self.text)
+        self.assertIn("upload-artifact", self.text)
+
+    def test_the_comment_stripping_leaves_the_settings_alone(self) -> None:
+        """The fixture's own precondition. Strip too much and every assertion
+        below passes by finding nothing; strip too little and they pass by
+        finding a comment. Both happened."""
+        self.assertIn("timeout-minutes:", self.text, "stripping removed the settings")
+        self.assertNotIn("Measured, not guessed", self.text, "comments are still being read")
+
+    def test_both_ways_of_running_it_record_their_scope(self) -> None:
+        """Two branches, and the `--base` one is the *more* important: a report
+        from a partial sweep is the one that could be mistaken for a whole
+        one."""
+        scoped = [line for line in self.text.splitlines() if "scope.txt" in line]
+        self.assertGreaterEqual(
+            sum(1 for line in scoped if "tee" in line), 2, f"a branch records nothing: {scoped}"
+        )
+
+    def test_the_scope_is_uploaded_beside_the_report(self) -> None:
+        """Written and not collected is the same as not written. The artifact is
+        the only thing that outlives the runner."""
+        after = self.text.split("upload-artifact", 1)[1]
+        self.assertIn("results.json", after)
+        self.assertIn("scope.txt", after, "the scope is recorded and then thrown away")
+
+    def test_the_job_still_has_a_ceiling(self) -> None:
+        """`ci.yml`'s jobs are checked for this above; this workflow is in
+        another file and was never covered. A sweep with no ceiling holds a
+        runner until GitHub's own limit, and a running job's log is a 404 -- a
+        hang is the one failure with nothing to read."""
+        self.assertRegex(self.text, r"timeout-minutes:\s*\d+")
+
+
 if __name__ == "__main__":
     unittest.main()

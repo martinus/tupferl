@@ -29,7 +29,23 @@ jobs:
     runs-on: ubuntu-latest
     # Hours by design, and the ceiling is here so a wedged run is reported
     # rather than silently holding a runner until GitHub's own limit.
-    timeout-minutes: 300
+    #
+    # **Measured, not guessed: the whole tree takes almost exactly five hours.**
+    # 2999 rows in ~300 minutes at seven lanes on a 4-core, 16 GiB machine --
+    # the same shape as this runner. At 300 the job was a coin flip decided by
+    # how loaded the runner happened to be, and losing it was quiet: a killed
+    # run still uploads a report, because `--all` implies `--batch` and
+    # `_persist` writes after every file.
+    #
+    # 420 rather than 360, because the rate is not uniform and the tail is the
+    # expensive part. `sweep` runs the smallest file first (tupferl#49), so the
+    # last file is the largest -- `tools/mutate.py`, 738 rows, whose selection
+    # is the slowest module in the suite and whose rows survive most often, and
+    # a survivor only earns the name after the whole walk. Measured: 2.15 s/row
+    # cumulative at 20 minutes, 5.4 s/row by the end, 12 s/row marginal through
+    # that tail. A budget set from the early rate would be 1.8 hours, and wrong
+    # by nearly three times.
+    timeout-minutes: 420
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,8 +59,10 @@ jobs:
       - name: sweep
         run: |
           if [ -n "${{ inputs.base }}" ]; then
+            echo "scope: changed against ${{ inputs.base }}" | tee scope.txt
             python -m tools.mutate --base "${{ inputs.base }}" --json results.json
           else
+            echo "scope: every mutable line under tupferl/ and tools/" | tee scope.txt
             python -m tools.mutate --all --json results.json
           fi
       - name: what survived, and why
@@ -54,5 +72,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mutation-results
-          path: results.json
+          # `scope.txt` beside the report, because the report cannot say what it
+          # was asked for. A `results.json` covering only the 41% of rows that
+          # are `tupferl/` is indistinguishable from one covering the tree, and
+          # a run killed part-way writes a report that reads exactly like a
+          # complete one -- CLAUDE.md section 8's "green you cannot explain",
+          # with the count looking right either way.
+          path: |
+            results.json
+            scope.txt
           if-no-files-found: warn
