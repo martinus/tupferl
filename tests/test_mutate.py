@@ -3069,6 +3069,96 @@ class TestWhenARecordedSweepGoesRed(unittest.TestCase):
         self.assertEqual(0, mutate._status(report, stale))
 
 
+class TestWhatIsTriedAheadOfARow(unittest.TestCase):
+    """`Learned.ahead`: the move-to-front head a row runs before its own
+    selection, and the three ways it can quietly stop paying for itself."""
+
+    def row(self, tests: str = "tests.test_sync", first: str = "") -> Mutation:
+        return Mutation("a row", "tupferl/sync.py", "a", "b", tests, first=first)
+
+    def learned(self, *tests: str) -> mutate.Learned:
+        made = mutate.Learned()
+        for test in tests:
+            made.saw(test)
+        return made
+
+    def test_with_nothing_remembered_there_is_no_head(self) -> None:
+        """The first row of every run. `""` and not `None`: the caller splits
+        it, and `None.split()` is an `AttributeError` before the sweep starts."""
+        self.assertEqual("", mutate.Learned().ahead(self.row()))
+
+    def test_a_remembered_test_the_row_can_reach_is_offered(self) -> None:
+        self.assertEqual(
+            "tests.test_sync.T.test_it",
+            self.learned("tests.test_sync.T.test_it").ahead(self.row()),
+        )
+
+    def test_a_test_outside_the_rows_selection_is_not_offered(self) -> None:
+        """A test in a module that does not import the mutated file cannot see
+        the mutation, so running it first is pure cost -- paid by every row."""
+        self.assertEqual("", self.learned("tests.test_merge.T.test_it").ahead(self.row()))
+
+    def test_one_reachable_test_among_several_is_the_one_offered(self) -> None:
+        """`any`, not `all`. With a single-module selection the two agree, so
+        this needs a row whose selection names two modules and a head holding a
+        test from one of them -- under `all` nothing is ever offered and the
+        cache silently stops working."""
+        head = self.learned("tests.test_merge.T.test_it")
+        row = self.row(tests="tests.test_sync tests.test_merge")
+        self.assertEqual("tests.test_merge.T.test_it", head.ahead(row))
+
+    def test_a_row_that_already_names_a_test_is_not_given_it_twice(self) -> None:
+        """`first` is run in order, and naming a test twice buys nothing and
+        costs a run."""
+        head = self.learned("tests.test_sync.T.test_it")
+        self.assertEqual("", head.ahead(self.row(first="tests.test_sync.T.test_it")))
+
+    def test_a_row_with_no_selection_reaches_everything(self) -> None:
+        """`WHOLE_SUITE` is the empty selection, and it means "run the lot" --
+        so nothing in the head is out of reach."""
+        head = self.learned("tests.test_merge.T.test_it")
+        self.assertEqual(
+            "tests.test_merge.T.test_it", head.ahead(self.row(tests=mutate.WHOLE_SUITE))
+        )
+
+
+class TestTheEdgesOfSizingALane(unittest.TestCase):
+    """`_share` at its boundaries, which the ordinary cases cannot reach.
+
+    Every other test of it asks for several lanes and a real cap. These ask what
+    happens at one lane, at no cap, and when the budget divides to less than the
+    floor -- the three places its `max`es and `min`s are doing something rather
+    than agreeing.
+    """
+
+    def test_no_cap_still_yields_at_least_one_lane(self) -> None:
+        """`--memory 0` passes straight through: there is no product to bound
+        once a factor is infinite, and imposing one quietly would be the flag
+        lying. The `max(1, ...)` is what stops `--workers 0` meaning no lanes at
+        all, which would hang rather than fail."""
+        self.assertEqual(1, mutate._share(0, 0, pinned=False).lanes)
+        self.assertEqual(1, mutate._share(1, 0, pinned=False).lanes)
+        self.assertEqual(0, mutate._share(4, 0, pinned=False).memory)
+
+    def test_a_ceiling_never_falls_below_the_floor(self) -> None:
+        """`max(floor, budget // lanes)`. Read as `min`, a pinned run that asks
+        for more lanes than the budget divides into gives each of them a share
+        far under the floor -- and every one is killed for holding what a lane
+        normally holds, which reads as the mutation crashing.
+        """
+        with mock.patch.object(mutate, "_budget", return_value=mutate._FLOOR):
+            share = mutate._share(8, mutate.MEMORY, pinned=True)
+        self.assertEqual(8, share.lanes, "the pin was not honoured")
+        self.assertGreaterEqual(share.memory, mutate._FLOOR)
+
+    def test_an_explicit_cap_under_the_floor_is_the_callers_call(self) -> None:
+        """They may be reproducing a small machine on purpose, so the cap is
+        obeyed rather than corrected -- and it still decides how many fit."""
+        asked = mutate._FLOOR // 4
+        share = mutate._share(8, asked, pinned=False)
+        self.assertEqual(asked, share.memory)
+
+
 class TestTheSmallDecisionsNothingAsked(unittest.TestCase):
     """Five one-line judgements, each reached by every run and asserted by none.
 
@@ -3592,6 +3682,34 @@ class TestWhatMemoryTheMachineWillAdmitTo(unittest.TestCase):
         seen = mock.patch.object(mutate, "CGROUPS", (str(where),))
         with seen, mock.patch.dict(os.environ, environment, clear=True):
             return mutate._visible_memory()
+
+    def test_a_cgroup_that_says_max_is_not_a_number(self) -> None:
+        """cgroup v2 writes the literal `max` for "no limit". Read as a number
+        it raises `ValueError` out of `_visible_memory`, which runs before every
+        sweep -- so the tool would refuse to start on any machine whose cgroup
+        is unlimited, which is most of them. Nothing wrote that word before.
+        """
+        box = Path(tempfile.mkdtemp(prefix="tupferl-limits-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        where = box / "memory.max"
+        where.write_text("max\n", encoding="utf-8")
+        with (
+            mock.patch.object(mutate, "CGROUPS", (str(where),)),
+            mock.patch.dict(os.environ, {}, clear=True),
+        ):
+            self.assertGreater(mutate._visible_memory(), 0)
+
+    def test_the_host_total_is_one_of_the_limits(self) -> None:
+        """With no cgroup and no inherited budget, what this machine physically
+        has is the only bound left -- and it has to be *in* the list. Dropping
+        the append restores the bug this function was written for: a 2 GiB
+        container on a 62 GiB host answering 62.
+
+        Asserted against `sysconf` rather than a constant, because the number is
+        this machine's and the claim is that it reached the answer.
+        """
+        physical = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        self.assertEqual(physical, self.limits())
 
     def test_a_budget_named_in_the_environment_binds(self) -> None:
         """`TUPFERL_MUTATE_BUDGET` is what a nested harness inherits, and it is
