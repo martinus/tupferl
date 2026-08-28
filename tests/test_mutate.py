@@ -1863,7 +1863,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
     #: did until this existed.
     #: `x + x`, not `x * 3`. The suite below asserts `s(4) == 8`, so the old
     #: spelling made `test_doubles` **fail on the changed tree** -- every
-    #: `other.py` mutant was then "caught" by a test that was already red, and
+    #: `zeta.py` mutant was then "caught" by a test that was already red, and
     #: the sweep's own guard said so on every run ("caught by a test that also
     #: fails untouched") with nothing asserting on it. `--no-baseline` is what
     #: let it sit: these tests are about writes and row counts, so a meaningless
@@ -1873,10 +1873,10 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
     CHANGED_OTHER = "def s(x):\n    return x + x\n"
     OTHER_SUITE = (
         "import unittest\n"
-        "from tupferl import other\n\n"
+        "from tupferl import zeta\n\n"
         "class T(unittest.TestCase):\n"
-        "    def test_doubles(self): self.assertEqual(8, other.s(4))\n"
-        "    def test_zero(self): self.assertEqual(0, other.s(0))\n"
+        "    def test_doubles(self): self.assertEqual(8, zeta.s(4))\n"
+        "    def test_zero(self): self.assertEqual(0, zeta.s(0))\n"
     )
 
     def repository(self) -> Path:
@@ -1888,8 +1888,8 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             (box / package / "__init__.py").write_text("", encoding="utf-8")
         (box / "tupferl" / "tiny.py").write_text(self.MODULE, encoding="utf-8")
         (box / "tests" / "test_tiny.py").write_text(self.SUITE, encoding="utf-8")
-        (box / "tupferl" / "other.py").write_text(self.OTHER, encoding="utf-8")
-        (box / "tests" / "test_other.py").write_text(self.OTHER_SUITE, encoding="utf-8")
+        (box / "tupferl" / "zeta.py").write_text(self.OTHER, encoding="utf-8")
+        (box / "tests" / "test_zeta.py").write_text(self.OTHER_SUITE, encoding="utf-8")
 
         def git(*argv: str) -> None:
             subprocess.run(("git", *argv), cwd=box, check=True, capture_output=True)
@@ -1900,7 +1900,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         git("add", "-A")
         git("commit", "-qm", "base")
         (box / "tupferl" / "tiny.py").write_text(self.CHANGED, encoding="utf-8")
-        (box / "tupferl" / "other.py").write_text(self.CHANGED_OTHER, encoding="utf-8")
+        (box / "tupferl" / "zeta.py").write_text(self.CHANGED_OTHER, encoding="utf-8")
         return box
 
     def sweep(
@@ -1959,7 +1959,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         outcomes = [row["outcome"] for row in written["results"]]
         self.assertEqual(["caught"] * len(outcomes), outcomes, said)
         self.assertEqual(
-            {"tupferl/tiny.py", "tupferl/other.py"},
+            {"tupferl/tiny.py", "tupferl/zeta.py"},
             {row["path"] for row in written["results"]},
             "the batch did not cover both files",
         )
@@ -2103,9 +2103,9 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         # selection, and every row here selects its own module -- so a third
         # file is in no shard, is never a killer (the real ones fail first), and
         # is therefore completely inert. Measured: with it deleted this test
-        # still passed, because the fixture's `other.py` suite was itself red
+        # still passed, because the fixture's `zeta.py` suite was itself red
         # and *that* was setting the flag. The precondition was never
-        # established, which is CLAUDE.md §2's shape exactly; fixing `other.py`
+        # established, which is CLAUDE.md §2's shape exactly; fixing `zeta.py`
         # in this change is what exposed it.
         red = box / "tests" / "test_tiny.py"
         red.write_text(
@@ -2201,7 +2201,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         # 3103 rows; here `MODULE`'s repeated `x * 3` is the same shape, small.
         #
         # Derived from the report rather than hard-coded, because `by_size` puts
-        # the smallest file first: an index picked by hand landed in `other.py`
+        # the smallest file first: an index picked by hand landed in `zeta.py`
         # and missed the pair entirely, and the mutant survived.
         first: dict[tuple[str, str], int] = {}
         cut = None
@@ -2236,11 +2236,70 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         # Summed across the printed lines, because the count is per file and
         # the cut leaves two files partly recorded. Asserting on one line would
         # pass for a run that reported the other as untouched.
+        #
+        # `-?\d+`, not `\d+`. Without the sign this reads "-2" as 2, and the
+        # counter's `+ 1` becoming `- 1` then prints -2 and -1 where 2 and 1
+        # belong and still sums to 3. The mutation survived on exactly that.
         self.assertEqual(
             len(kept),
-            sum(int(n) for n in re.findall(r"(\d+) row\(s\) already recorded", said)),
+            sum(int(n) for n in re.findall(r"(-?\d+) row\(s\) already recorded", said)),
             f"the skip lines do not account for every recorded row\n{said}",
         )
+
+    def test_the_per_row_writes_are_silent_and_the_last_one_is_not(self) -> None:
+        """`announce`, which nothing asserted: both its mutants survived.
+
+        Since #46 a whole-tree run writes 3124 times, and "wrote N row(s)" after
+        every one is the loudest thing in the log while saying the same thing
+        each time. Both halves, because either alone is satisfied by a
+        `_persist` that never prints or always does.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        code, said = self.sweep(box, report)
+        self.assertEqual(0, code, said)
+        rows = len(json.loads(report.read_text(encoding="utf-8"))["results"])
+        wrote = said.count("wrote ")
+        self.assertLess(wrote, rows, f"a line per row reached the log\n{said}")
+        self.assertGreaterEqual(wrote, 1, f"no write was ever announced\n{said}")
+
+    def test_the_skipped_files_are_listed_in_order(self) -> None:
+        """`sorted`, and **the fixture is what makes it observable.**
+
+        `by_size` emits the smaller file first, so the counts go into the dict
+        in size order and a dict keeps what it was given. The second module was
+        called `other.py`, which is both the smaller file *and* the
+        alphabetically first one -- the two orders agreed, and `sorted`
+        becoming `list` was invisible. It is `zeta.py` now: smaller, so it is
+        counted first, and last alphabetically, so the two orders disagree.
+
+        That rename is the whole test. Asserting `sorted(listed) == listed`
+        against the old fixture was a tautology, which is CLAUDE.md §2's "two
+        symmetric inputs" wearing a different hat.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        # One row short of the whole table: every file but the last is fully
+        # recorded and the last is partly, so both are listed.
+        written = json.loads(report.read_text(encoding="utf-8"))
+        written["results"] = written["results"][:-1]
+        report.write_text(json.dumps(written), encoding="utf-8")
+
+        self.wrote = []
+        _, said = self.sweep(box, report)
+        # The precondition, read off the table rather than off the output: the
+        # counts are inserted in the order rows appear, so `sorted` only does
+        # work when that order is not already alphabetical. Asserted, because
+        # this is exactly what was silently untrue before the rename.
+        appeared = list(dict.fromkeys(row["path"] for row in written["results"]))
+        self.assertNotEqual(
+            sorted(appeared), appeared, "the fixture no longer distinguishes the two orders"
+        )
+
+        listed = re.findall(r"(\S+): -?\d+ row\(s\) already recorded", said)
+        self.assertEqual(2, len(listed), f"both files should be listed\n{said}")
+        self.assertEqual(sorted(listed), listed, f"the skip lines are not in order\n{said}")
 
     def test_a_crash_during_a_write_leaves_the_previous_report(self) -> None:
         """`_persist` renames into place, so the report is never half-written.
@@ -2347,7 +2406,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         code, said = self.sweep(
             box,
             box / "r.json",
-            extra=["--accept", "--only", "tupferl/other.py"],
+            extra=["--accept", "--only", "tupferl/zeta.py"],
             scope=["--all"],
         )
         self.assertTrue(self.kept(where), f"a filtered run deleted a reviewed reason\n{said}")
