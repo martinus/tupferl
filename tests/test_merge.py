@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from tests import support
-from tupferl import gitrepo, merge
+from tupferl import conflicts, gitrepo, merge
+from tupferl.copies import Blob
 from tupferl.errors import TupferlError
 
 BASE = b"one\ntwo\nthree\n"
@@ -255,3 +258,70 @@ class TestKeepingBothVersions(unittest.TestCase):
         with self.assertRaises(TupferlError) as raised:
             merge.keep_both(".icon", b"\x00base", b"\x00mine", b"\x00theirs")
         self.assertIn(".icon", str(raised.exception))
+
+
+class TestTheConflictStyleCannotComeFromTheUser(unittest.TestCase):
+    """A user's `merge.conflictStyle` must not reach the markers `hunks` parses.
+
+    This guard existed as `-c merge.conflictStyle=merge` and was inert. Measured
+    on **git 2.55**: `merge-file` takes the setting from a config *file* and
+    ignores `-c`, so the pin failed in exactly the case it was written for --
+    while on 2.43, which ignored the setting altogether, no test could tell.
+
+    So the config is written to a real file and `GIT_CONFIG_GLOBAL` points at
+    it, which is how an ordinary user's `~/.gitconfig` reaches git. `-c` would
+    reproduce nothing.
+
+    Both halves are asserted because they fail differently: the *bytes* carry a
+    base section, and `hunks` then attributes that section to **this computer**
+    -- so the prompt showed the user their own version with the merge base
+    stapled underneath it, and `[m]`/`[t]` acted on a side they had been shown
+    wrongly.
+    """
+
+    #: Long enough that the two changed lines are not one hunk: `git merge-file`
+    #: needs three lines of agreement to keep two disagreements apart, and this
+    #: file's usual five-line fixture has exactly three between its ends.
+    LINES = b"a\nb\nc\nd\ne\nf\ng\n"
+    MINE = b"MINE-IS-HERE\nb\nc\nd\ne\nf\ng\n"
+    THEIRS = b"THEIRS-IS-HERE\nb\nc\nd\ne\nf\ng\n"
+
+    def merged_under(self, style: str) -> merge.Merged:
+        """`three_way` run as if the user's `~/.gitconfig` said `style`."""
+        box = tempfile.TemporaryDirectory(prefix="tupferl-conflictstyle-")
+        self.addCleanup(box.cleanup)
+        config = Path(box.name) / "gitconfig"
+        config.write_text(f"[merge]\n\tconflictstyle = {style}\n", encoding="utf-8")
+        patched = mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_SYSTEM": os.devnull},
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
+        return merge.three_way(".bashrc", self.LINES, self.MINE, self.THEIRS)
+
+    def test_no_setting_puts_a_base_section_in_the_markers(self) -> None:
+        for style in ("merge", "diff3", "zdiff3"):
+            with self.subTest(style=style):
+                got = self.merged_under(style)
+                self.assertEqual(1, got.conflicts)
+                self.assertIsNotNone(got.data)
+                assert got.data is not None
+                self.assertNotIn(b"|||||||", got.data)
+
+    def test_the_two_sides_are_still_attributed_to_the_right_computers(self) -> None:
+        """The consequence, rather than the marker: what the prompt would show."""
+        got = self.merged_under("zdiff3")
+        assert got.data is not None
+        sides = conflicts.Sides(
+            PurePosixPath(".bashrc"),
+            Blob(self.LINES, False),
+            Blob(self.MINE, False),
+            Blob(self.THEIRS, False),
+            got.data,
+            got.conflicts,
+        )
+        found = conflicts.hunks(sides)
+        self.assertEqual(1, len(found))
+        self.assertEqual([b"MINE-IS-HERE"], found[0].mine)
+        self.assertEqual([b"THEIRS-IS-HERE"], found[0].theirs)
