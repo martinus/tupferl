@@ -1829,8 +1829,23 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
     #: all three -- `test_boundary` is what kills `>` becoming `>=`, which
     #: survives against 5 and 1 alone because the two differ only at 2. Without
     #: it the run exits 1 and every assertion here would be about a failure.
+    #: `a` and `b` are the same expression twice, and they are here for #46.
+    #: Two rows of one file then share an `old` and a `new` and differ only in
+    #: their `span` -- so a resume key that drops the span reads the second as
+    #: already answered. Without them `(path, new)` is as unique as
+    #: `(path, span, new)` and the two spellings are indistinguishable;
+    #: measured on the real tree, `_key` collapses 556 of 3103 rows.
+    #: **Not dead locals.** The first spelling of this made them unused, and
+    #: both rows then honestly survived -- two survivors, exit 1, and the eleven
+    #: tests here that assert a clean run went red. `test_four` is what catches
+    #: them: at `x == 4` the sum is 24 against a threshold of 18, so `a` losing
+    #: its multiply drops it to 13 and the answer flips. `test_boundary` still
+    #: catches `>` becoming `>=`, which needs a case landing exactly on 18.
     MODULE = "def n(x):\n    if x > 2:\n        return 'big'\n    return 'small'\n"
-    CHANGED = "def n(x):\n    if x > 3:\n        return 'big'\n    return 'small'\n"
+    CHANGED = (
+        "def n(x):\n    a = x * 3\n    b = x * 3\n"
+        "    if a + b > 18:\n        return 'big'\n    return 'small'\n"
+    )
     SUITE = (
         "import unittest\n"
         "from tupferl import tiny\n\n"
@@ -1838,6 +1853,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         "    def test_big(self): self.assertEqual('big', tiny.n(9))\n"
         "    def test_small(self): self.assertEqual('small', tiny.n(1))\n"
         "    def test_boundary(self): self.assertEqual('small', tiny.n(3))\n"
+        "    def test_four(self): self.assertEqual('big', tiny.n(4))\n"
     )
 
     #: A **second** file, and it is what makes the two writes distinguishable.
@@ -1845,14 +1861,22 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
     #: to produce the same report, and dropping the end-of-sweep write leaves
     #: the per-file one -- so each mutant survives behind the other, and both
     #: did until this existed.
+    #: `x + x`, not `x * 3`. The suite below asserts `s(4) == 8`, so the old
+    #: spelling made `test_doubles` **fail on the changed tree** -- every
+    #: `zeta.py` mutant was then "caught" by a test that was already red, and
+    #: the sweep's own guard said so on every run ("caught by a test that also
+    #: fails untouched") with nothing asserting on it. `--no-baseline` is what
+    #: let it sit: these tests are about writes and row counts, so a meaningless
+    #: verdict cost nothing until #46's resume test began comparing row sets.
+    #: A red fixture reporting rows as caught is this project's oldest trap.
     OTHER = "def s(x):\n    return x * 2\n"
-    CHANGED_OTHER = "def s(x):\n    return x * 3\n"
+    CHANGED_OTHER = "def s(x):\n    return x + x\n"
     OTHER_SUITE = (
         "import unittest\n"
-        "from tupferl import other\n\n"
+        "from tupferl import zeta\n\n"
         "class T(unittest.TestCase):\n"
-        "    def test_doubles(self): self.assertEqual(8, other.s(4))\n"
-        "    def test_zero(self): self.assertEqual(0, other.s(0))\n"
+        "    def test_doubles(self): self.assertEqual(8, zeta.s(4))\n"
+        "    def test_zero(self): self.assertEqual(0, zeta.s(0))\n"
     )
 
     def repository(self) -> Path:
@@ -1864,8 +1888,8 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             (box / package / "__init__.py").write_text("", encoding="utf-8")
         (box / "tupferl" / "tiny.py").write_text(self.MODULE, encoding="utf-8")
         (box / "tests" / "test_tiny.py").write_text(self.SUITE, encoding="utf-8")
-        (box / "tupferl" / "other.py").write_text(self.OTHER, encoding="utf-8")
-        (box / "tests" / "test_other.py").write_text(self.OTHER_SUITE, encoding="utf-8")
+        (box / "tupferl" / "zeta.py").write_text(self.OTHER, encoding="utf-8")
+        (box / "tests" / "test_zeta.py").write_text(self.OTHER_SUITE, encoding="utf-8")
 
         def git(*argv: str) -> None:
             subprocess.run(("git", *argv), cwd=box, check=True, capture_output=True)
@@ -1876,7 +1900,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         git("add", "-A")
         git("commit", "-qm", "base")
         (box / "tupferl" / "tiny.py").write_text(self.CHANGED, encoding="utf-8")
-        (box / "tupferl" / "other.py").write_text(self.CHANGED_OTHER, encoding="utf-8")
+        (box / "tupferl" / "zeta.py").write_text(self.CHANGED_OTHER, encoding="utf-8")
         return box
 
     def sweep(
@@ -1899,9 +1923,9 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         self.wrote: list[int] = []
         real = mutate._persist
 
-        def watched(found: mutate.Report, where: Path) -> None:
+        def watched(found: mutate.Report, where: Path, announce: bool = True) -> None:
             self.wrote.append(len(found.results))
-            real(found, where)
+            real(found, where, announce)
 
         here = Path.cwd()
         os.chdir(box)
@@ -1935,7 +1959,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         outcomes = [row["outcome"] for row in written["results"]]
         self.assertEqual(["caught"] * len(outcomes), outcomes, said)
         self.assertEqual(
-            {"tupferl/tiny.py", "tupferl/other.py"},
+            {"tupferl/tiny.py", "tupferl/zeta.py"},
             {row["path"] for row in written["results"]},
             "the batch did not cover both files",
         )
@@ -2012,13 +2036,20 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         _, said = self.sweep(box, box / "r.json")
         self.assertNotIn("not run", said)
 
-    def test_it_writes_after_each_file_and_again_at_the_end(self) -> None:
-        """The point of recording per file: a crash costs one file, not the run.
+    def test_it_writes_after_every_row_and_again_at_the_end(self) -> None:
+        """The point of recording per row: a crash costs one row, not one file.
+
+        **This assertion is inverted from what it was**, and deliberately. It
+        used to insist every write landed on a file *boundary*, because resume
+        keyed on the path and a mid-file write left a report claiming a file was
+        done when it was not. #46 moved both halves together -- resume keys on
+        the row now -- so a mid-file write is the feature rather than the hazard,
+        and the old assertion would forbid exactly what the change is for.
 
         Asserted on the *sequence* of writes, not their number. The last two are
         the same size -- the final rewrite of a finished sweep -- so a count
-        alone cannot show that the earlier, smaller write ever happened, and
-        that earlier write is exactly what a crash leaves behind.
+        alone cannot show that the earlier, smaller writes ever happened, and
+        those earlier writes are exactly what a crash leaves behind.
         """
         box = self.repository()
         code, said = self.sweep(box, box / "r.json")
@@ -2027,27 +2058,18 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         self.assertLess(self.wrote[0], self.wrote[-1], f"nothing was written mid-run: {self.wrote}")
         self.assertEqual(self.wrote[-1], max(self.wrote), "the last write was not the complete one")
 
-        # **Each write lands on a file boundary**, which is the claim "recorded
-        # per file" actually makes. The three assertions above hold just as well
-        # for a sweep that wrote after every *row*, and a write that lands
-        # mid-file is worse than no write: `_recorded` keys resume by path, so a
-        # crash after it leaves a report claiming a file is done when it is not,
-        # and the rest of that file is never re-run.
-        #
-        # Measured: `left = {path: 1 ...}` -- a countdown that fires on each
-        # file's first row -- survived this test until the boundaries were
-        # named.
+        # **A write after every row**, which is the claim "recorded per row"
+        # makes and the three assertions above do not: they hold just as well
+        # for the per-file version this replaced. Counted against the report's
+        # own size rather than against a constant, so the fixture growing a
+        # file does not turn this into a test of the number 5.
         written = json.loads((box / "r.json").read_text(encoding="utf-8"))
-        per_file: dict[str, int] = {}
-        for record in written["results"]:
-            per_file[record["path"]] = per_file.get(record["path"], 0) + 1
-        boundaries = set(itertools.accumulate(per_file[path] for path in per_file))
-        for count in self.wrote:
-            self.assertIn(
-                count,
-                boundaries,
-                f"a write of {count} rows landed mid-file; boundaries are {sorted(boundaries)}",
-            )
+        rows = len(written["results"])
+        self.assertEqual(
+            list(range(1, rows + 1)),
+            self.wrote[:rows],
+            f"a row landed without a write; {rows} rows, writes {self.wrote}",
+        )
 
     def test_the_pidfile_is_cleared_when_the_run_is_over(self) -> None:
         """A stale pid is the false liveness `watch.py` refuses to answer with,
@@ -2075,10 +2097,20 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         box = self.repository()
         # Red on the untouched tree, which is what a baseline is for. The rows
         # still run; their verdicts are what `baseline_red` invalidates.
-        (box / "tests" / "test_red.py").write_text(
-            "import unittest\n\n"
-            "class T(unittest.TestCase):\n"
-            "    def test_it(self): self.fail('red on the untouched tree')\n",
+        #
+        # **Appended to a module a shard actually runs**, not written to a new
+        # `tests/test_red.py`. `baseline_shards` is one shard per distinct
+        # selection, and every row here selects its own module -- so a third
+        # file is in no shard, is never a killer (the real ones fail first), and
+        # is therefore completely inert. Measured: with it deleted this test
+        # still passed, because the fixture's `zeta.py` suite was itself red
+        # and *that* was setting the flag. The precondition was never
+        # established, which is CLAUDE.md §2's shape exactly; fixing `zeta.py`
+        # in this change is what exposed it.
+        red = box / "tests" / "test_tiny.py"
+        red.write_text(
+            red.read_text(encoding="utf-8")
+            + "    def test_red(self): self.fail('red on the untouched tree')\n",
             encoding="utf-8",
         )
         report = box / "r.json"
@@ -2122,6 +2154,217 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             row["outcome"] for row in json.loads(report.read_text(encoding="utf-8"))["results"]
         ]
         self.assertEqual(["caught"] * len(outcomes), outcomes, "the ordering changed an answer")
+
+    def truncated(self, box: Path, report: Path, keep: int) -> list[str]:
+        """Run a real sweep, then cut the report to its first `keep` rows.
+
+        What a crash mid-file leaves behind, built from a real report rather
+        than by hand: a report written by this version of `_persist`, holding
+        whatever fields it actually writes. A fixture assembled by hand would
+        pass just as well if `_persist` stopped recording `span`, which is the
+        one field the resume key needs.
+
+        The caller has already swept, so this only cuts -- re-sweeping here
+        would answer the rows it is about to remove a second time.
+        """
+        written = json.loads(report.read_text(encoding="utf-8"))
+        written["results"] = written["results"][:keep]
+        report.write_text(json.dumps(written), encoding="utf-8")
+        return [row["label"] for row in written["results"]]
+
+    def test_a_crash_mid_file_costs_one_row_and_not_the_file(self) -> None:
+        """#46, and the whole of it. Both halves have to be here.
+
+        The cut lands *inside* a file, which is what the old resume could not
+        express: keyed by path, it read that file as done and silently dropped
+        every row of it that had never run -- a report claiming answers it never
+        had. On the real tree that was up to 673 rows, 23% of the table.
+
+        So the second run must do two things at once, and each is a way for the
+        fix to be wrong in a different direction: re-run exactly the rows the
+        cut removed (or the report claims answers it never had), and re-run
+        *only* those (or resume records nothing and the whole mechanism is
+        decoration).
+        """
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        whole = json.loads(report.read_text(encoding="utf-8"))
+        every = [row["label"] for row in whole["results"]]
+        # **The cut lands between two rows a key without the span cannot tell
+        # apart**, which is two requirements in one. It is inside a file, so the
+        # old path-keyed resume would call that file done and drop the rest --
+        # the defect. And it separates a colliding pair, so a resume keyed on
+        # `(path, new)` reads the second as already answered and drops it too:
+        # without that, the span is unobservable and dropping it from the key
+        # passes this test. Measured on the real tree, `_key` collapses 556 of
+        # 3103 rows; here `MODULE`'s repeated `x * 3` is the same shape, small.
+        #
+        # Derived from the report rather than hard-coded, because `by_size` puts
+        # the smallest file first: an index picked by hand landed in `zeta.py`
+        # and missed the pair entirely, and the mutant survived.
+        first: dict[tuple[str, str], int] = {}
+        cut = None
+        for at, record in enumerate(whole["results"]):
+            twin = (record["path"], record["new"])
+            if twin in first:
+                cut = at
+                break
+            first[twin] = at
+        self.assertIsNotNone(cut, f"the fixture has no colliding pair; see MODULE\n{every}")
+        keep = typing.cast(int, cut)
+
+        kept = self.truncated(box, report, keep)
+        self.wrote = []
+        code, said = self.sweep(box, report)
+        self.assertEqual(0, code, said)
+
+        again = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(
+            sorted(every),
+            sorted(row["label"] for row in again["results"]),
+            f"the resumed report is not the whole table\n{said}",
+        )
+        # `self.wrote[0]` is the size of the first write of the second run: the
+        # rows carried over plus the one just answered. Anything larger means
+        # rows were carried that this run did not do and did not keep.
+        self.assertEqual(
+            len(every) - len(kept),
+            max(self.wrote) - len(kept),
+            f"the second run did not re-run exactly the missing rows\n{said}",
+        )
+        # Summed across the printed lines, because the count is per file and
+        # the cut leaves two files partly recorded. Asserting on one line would
+        # pass for a run that reported the other as untouched.
+        #
+        # `-?\d+`, not `\d+`. Without the sign this reads "-2" as 2, and the
+        # counter's `+ 1` becoming `- 1` then prints -2 and -1 where 2 and 1
+        # belong and still sums to 3. The mutation survived on exactly that.
+        self.assertEqual(
+            len(kept),
+            sum(int(n) for n in re.findall(r"(-?\d+) row\(s\) already recorded", said)),
+            f"the skip lines do not account for every recorded row\n{said}",
+        )
+
+    def test_the_per_row_writes_are_silent_and_the_last_one_is_not(self) -> None:
+        """`announce`, which nothing asserted: both its mutants survived.
+
+        Since #46 a whole-tree run writes 3124 times, and "wrote N row(s)" after
+        every one is the loudest thing in the log while saying the same thing
+        each time. Both halves, because either alone is satisfied by a
+        `_persist` that never prints or always does.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        code, said = self.sweep(box, report)
+        self.assertEqual(0, code, said)
+        rows = len(json.loads(report.read_text(encoding="utf-8"))["results"])
+        wrote = said.count("wrote ")
+        self.assertLess(wrote, rows, f"a line per row reached the log\n{said}")
+        self.assertGreaterEqual(wrote, 1, f"no write was ever announced\n{said}")
+
+    def test_the_skipped_files_are_listed_in_order(self) -> None:
+        """`sorted`, and **the fixture is what makes it observable.**
+
+        `by_size` emits the smaller file first, so the counts go into the dict
+        in size order and a dict keeps what it was given. The second module was
+        called `other.py`, which is both the smaller file *and* the
+        alphabetically first one -- the two orders agreed, and `sorted`
+        becoming `list` was invisible. It is `zeta.py` now: smaller, so it is
+        counted first, and last alphabetically, so the two orders disagree.
+
+        That rename is the whole test. Asserting `sorted(listed) == listed`
+        against the old fixture was a tautology, which is CLAUDE.md §2's "two
+        symmetric inputs" wearing a different hat.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        # One row short of the whole table: every file but the last is fully
+        # recorded and the last is partly, so both are listed.
+        written = json.loads(report.read_text(encoding="utf-8"))
+        written["results"] = written["results"][:-1]
+        report.write_text(json.dumps(written), encoding="utf-8")
+
+        self.wrote = []
+        _, said = self.sweep(box, report)
+        # The precondition, read off the table rather than off the output: the
+        # counts are inserted in the order rows appear, so `sorted` only does
+        # work when that order is not already alphabetical. Asserted, because
+        # this is exactly what was silently untrue before the rename.
+        appeared = list(dict.fromkeys(row["path"] for row in written["results"]))
+        self.assertNotEqual(
+            sorted(appeared), appeared, "the fixture no longer distinguishes the two orders"
+        )
+
+        listed = re.findall(r"(\S+): -?\d+ row\(s\) already recorded", said)
+        self.assertEqual(2, len(listed), f"both files should be listed\n{said}")
+        self.assertEqual(sorted(listed), listed, f"the skip lines are not in order\n{said}")
+
+    def test_a_batch_sweep_without_a_report_runs_and_writes_nothing(self) -> None:
+        """`if args.json:` around the per-row write, which every other test here
+        satisfies by always passing `--json`.
+
+        Found by the sweep: the guard becoming `if True:` survived, because no
+        test drives a batch run without one -- and there it would call
+        `_persist(..., None)` and die in `with_name` on a `NoneType`. The rows
+        still have to run and the verdicts still have to be reported; the only
+        thing absent is the file.
+        """
+        box = self.repository()
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with support.quiet() as spill:
+                code = mutate.main(
+                    ["--base", "HEAD", "--batch", "--no-baseline", "--workers", "1", "--no-killers"]
+                )
+        finally:
+            os.chdir(here)
+        said = spill.getvalue()
+        self.assertEqual(0, code, said)
+        self.assertIn("caught", said, f"no row was reported\n{said}")
+        self.assertEqual([], sorted(box.glob("*.json")), "a run with no --json wrote one anyway")
+
+    def test_a_crash_during_a_write_leaves_the_previous_report(self) -> None:
+        """`_persist` renames into place, so the report is never half-written.
+
+        Optional before #46 and required after it: at one write a row rather
+        than one a file, the sweep spends about 1.4% of its life mid-write
+        instead of 0.01%, and `_recorded` reads a truncated report as *nothing*.
+        A recovery mechanism whose own recovery file is the likeliest casualty
+        is not one.
+
+        The write is killed **part-way through**, which is the only failure the
+        two spellings answer differently. The first version of this raised from
+        `json.dumps` instead -- so nothing was written at all, in place or
+        aside, and the mutation putting the write back in place *survived* it.
+        Here the file is opened, half the text lands, and then it raises: what a
+        full disk or an OOM kill leaves behind.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        before = report.read_text(encoding="utf-8")
+
+        real = Path.write_text
+        opened: list[Path] = []
+
+        def half(target: Path, data: str, encoding: str | None = None, **rest: Any) -> int:
+            opened.append(target)
+            real(target, data[: len(data) // 2], encoding=encoding)
+            raise MemoryError("killed part-way through the write")
+
+        with mock.patch.object(Path, "write_text", half), self.assertRaises(MemoryError):
+            mutate._persist(mutate.Report([], widened=True), report, announce=False)
+        self.assertEqual(before, report.read_text(encoding="utf-8"), "the report was damaged")
+        self.assertNotIn(report, opened, "the report itself was opened for writing")
+        self.assertEqual(real, Path.write_text, "the patch leaked")
+
+        # And the precondition: a write that *completes* still replaces it, or
+        # the assertion above is satisfied by a `_persist` that never writes.
+        mutate._persist(mutate.Report([], widened=True), report, announce=False)
+        self.assertEqual([], json.loads(report.read_text(encoding="utf-8"))["results"])
 
     def bogus(self, box: Path) -> Path:
         """A record holding one key for a file this fixture has never had.
@@ -2188,7 +2431,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         code, said = self.sweep(
             box,
             box / "r.json",
-            extra=["--accept", "--only", "tupferl/other.py"],
+            extra=["--accept", "--only", "tupferl/zeta.py"],
             scope=["--all"],
         )
         self.assertTrue(self.kept(where), f"a filtered run deleted a reviewed reason\n{said}")
