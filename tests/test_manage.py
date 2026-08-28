@@ -931,6 +931,69 @@ class TestWhatAddSays(unittest.TestCase):
         self.assertIn("(host)", long[0])
 
 
+class TestSayingTheWorkIsNotSharedYet(support.SandboxCase):
+    """`add` and `remove` commit locally and do not push, so until a sync runs
+    the change exists on this machine and nowhere else.
+
+    Issue #60 asked whether they should sync by themselves. They should not: a
+    sync can stop at a conflict prompt and open `$EDITOR`, so `tupferl add
+    .bashrc` would be able to pause and ask about an unrelated file. What was
+    missing is that neither command *said* so -- both report success, which is
+    the whole reason the gap is easy to miss.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        remote = support.make_remote(self.tmp / "remote.git", self.env)
+        self.assertEqual(0, self.call("init", str(remote)))
+        (self.home / ".bashrc").write_text("one\n", encoding="utf-8")
+
+    def call(self, *argv: str) -> int:
+        with support.quiet():
+            return cli.main(list(argv))
+
+    def spoken(self, *argv: str) -> str:
+        with support.quiet() as said:
+            self.assertEqual(0, cli.main(list(argv)), said.getvalue())
+        return said.getvalue()
+
+    def test_add_says_the_file_is_not_shared_yet(self) -> None:
+        self.assertIn(manage.NOT_SHARED, self.spoken("add", str(self.home / ".bashrc")))
+
+    def test_it_names_the_command_that_would_share_it(self) -> None:
+        """**Not `assertIn(manage.NOT_SHARED, ...)`, which is the constant
+        compared with itself.** Every other test here asserts the message
+        *arrives*, and all of them go on passing if it is shortened to "not
+        shared yet" -- measured: that mutation survived them.
+
+        What the line is for is telling someone who has just been told their
+        `add` succeeded what to do next, so the command name is the part worth
+        pinning. Read from the output rather than from the constant.
+        """
+        said = self.spoken("add", str(self.home / ".bashrc"))
+        advice = next(line for line in said.splitlines() if "not shared" in line)
+        self.assertIn("tupferl sync", advice)
+
+    def test_remove_says_it_too(self) -> None:
+        """The same gap in the other direction: the file is gone from this
+        machine's repository and still on every other one."""
+        self.assertEqual(0, self.call("add", str(self.home / ".bashrc")))
+        self.assertIn(manage.NOT_SHARED, self.spoken("remove", str(self.home / ".bashrc")))
+
+    def test_an_add_that_changed_nothing_does_not_send_the_user_to_sync(self) -> None:
+        """The arm where nothing was committed. There is no work waiting, so
+        the advice would be to run a sync with nothing in it -- and a line that
+        appears whether or not it means anything is one nobody reads.
+
+        This is the half that makes the two tests above assertions rather than
+        a line that is always printed.
+        """
+        self.assertEqual(0, self.call("add", str(self.home / ".bashrc")))
+        again = self.spoken("add", str(self.home / ".bashrc"))
+        self.assertIn("no change", again)
+        self.assertNotIn(manage.NOT_SHARED, again)
+
+
 class TestAddingADirectoryOfMany(support.SandboxCase):
     """#28 end to end: the README's own example is a directory of hundreds."""
 
@@ -945,13 +1008,28 @@ class TestAddingADirectoryOfMany(support.SandboxCase):
             self.assertEqual(0, cli.main(["add", *paths]))
         return said.getvalue()
 
+    def summary(self, *paths: str) -> list[str]:
+        """The lines `add` writes *about the files*, without the trailing
+        advisory.
+
+        `NOT_SHARED` is one line on every successful `add`, and this class
+        counts lines to check that a hundred files summarise to one. Filtered
+        by identity rather than by position, so a future line added anywhere
+        does not silently shift what these tests believe they are counting.
+        """
+        return [
+            line
+            for line in self.added(*paths).splitlines()
+            if line.strip() and line != manage.NOT_SHARED
+        ]
+
     def test_a_hundred_files_are_one_line(self) -> None:
         where = self.home / ".local" / "share" / "app"
         where.mkdir(parents=True)
         for number in range(100):
             (where / f"f{number:03d}.conf").write_text("x\n", encoding="utf-8")
 
-        said = [line for line in self.added(str(where)).splitlines() if line.strip()]
+        said = self.summary(str(where))
         self.assertEqual(1, len(said), said)
         self.assertIn("added 100 files", said[0])
 
@@ -971,7 +1049,7 @@ class TestAddingADirectoryOfMany(support.SandboxCase):
 
         for number in (0, 1):
             (where / f"f{number:03d}.conf").write_text("changed\n", encoding="utf-8")
-        said = [line for line in self.added(str(where)).splitlines() if line.strip()]
+        said = self.summary(str(where))
         self.assertEqual(2, len(said), said)
         self.assertTrue(all(line.startswith("updated ") for line in said), said)
 
