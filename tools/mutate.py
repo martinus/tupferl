@@ -2175,6 +2175,18 @@ def _key(mutation: Mutation) -> str:
 
     Hashed rather than concatenated because `old` and `new` are whole
     statements: the keys would otherwise be kilobytes and the file unreadable.
+
+    **The outcome is deliberately not in it**, though the record now covers
+    `BROKE` and `TIMEOUT` as well as survivors -- so a reason written for a row
+    that survived also excuses the same row once it starts raising, and the
+    reason is then about the wrong thing. The alternative is worse: a row near
+    the alarm flips between `BROKE` and `TIMEOUT` by itself -- seven of
+    `watch.main`'s did, from a fixture racing the harness -- and keying on the
+    outcome would make each flip a fresh unread row and a red sweep, which is
+    the "goes red every week so nobody looks" failure the record exists to
+    prevent. A reason can go stale in *meaning* while its key stays valid; that
+    is true of survivors too, and the answer to it is a reviewer reading the
+    file, not a finer key.
     """
     parts = "\0".join((mutation.path, mutation.operator, mutation.old, mutation.new))
     return hashlib.sha256(parts.encode("utf-8")).hexdigest()[:16]
