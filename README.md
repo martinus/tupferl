@@ -20,8 +20,9 @@ On the next computer, one line — `init` runs the first sync itself:
 tupferl init git@github.com:me/dotfiles.git
 ```
 
-> Every command above works today. The `pipx install` does not yet — PyPI is the
-> last milestone. For now: `pipx install git+https://github.com/martinus/tupferl`.
+Or `uv tool install tupferl`, or `pip install --user tupferl`. To run the
+unreleased main branch instead:
+`pipx install git+https://github.com/martinus/tupferl`.
 
 ## Simple on purpose
 

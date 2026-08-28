@@ -75,6 +75,56 @@ with an empty `bypass_actors` so it binds administrators too. GitHub does not
 read the file; it has to be applied once by hand, and
 [its README](.github/rulesets/README.md) says how and how to verify it took.
 
+### Cutting a release
+
+Tag, and [`.github/workflows/release.yml`](.github/workflows/release.yml) does
+the rest — build, PyPI, and the GitHub release with generated notes.
+
+**The version lives in `tupferl/__init__.py` and nowhere else.** `pyproject.toml`
+takes it from there (`dynamic = ["version"]`), ci.yml's `install` job asserts the
+installed `--version` matches that line, and the release refuses a tag that
+disagrees with it. So a release is two steps, not one:
+
+1. Bump `__version__` in a PR like any other change, and merge it.
+2. `git tag -a v1.2.3 -m 'tupferl 1.2.3' && git push origin v1.2.3`.
+
+Doing it the other way round — tagging first — builds a wheel carrying the *old*
+number and publishes it under a release named for the new one, and PyPI keeps
+whichever number the wheel says. The guard exists because that mistake is only
+visible to someone who reads the file list.
+
+Three things run before anything is built, and none is a formality:
+
+- the tag matches `tupferl/__init__.py`;
+- the tagged commit is on `origin/main` — a tag can be pushed from anywhere, and
+  that is the one path around "every change reaches main through a green PR";
+- the full preflight, again, on the tagged tree. A tag proves somebody typed a
+  command, not that CI ever saw this commit — and a red main is exactly when
+  someone reaches for a release of the last good one.
+
+`tests/test_release.py` asserts all three exist, for the same reason
+`tests/test_ci.py` exists: a release that quietly stopped checking looks exactly
+like one that checked and was satisfied.
+
+**`workflow_dispatch` is a dry run.** It builds, runs `twine check --strict`,
+installs the built wheel into a fresh virtualenv and asks its `--version` — and
+publishes nothing, because both publishing jobs test `github.ref` for a tag
+rather than relying on anyone remembering not to press it.
+
+**Publishing is the one irreversible act in this repository.** A version number,
+once taken on PyPI, can never be reused: a wrong 1.0.0 is 1.0.1 for ever. That is
+why every check is before the upload, why `skip-existing` is not set (re-running
+a finished release should be an error somebody reads, not a green tick over a
+no-op), and why PyPI goes before the GitHub release — both orders leave a partial
+state if the second half fails, and this one leaves the installable half done.
+
+Authentication is [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/),
+so there is no API token in the repository to leak or rotate. It is configured
+once, by hand, on PyPI: owner `martinus`, repository `tupferl`, workflow
+`release.yml`, environment `pypi`. Until that exists the `pypi` job fails at the
+upload with an OIDC error, having already built and checked everything — which
+is the right place for it to fail.
+
 ### The CI gate job
 
 Require **one** status check that `needs:` every other job, not thirty job names
