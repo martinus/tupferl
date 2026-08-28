@@ -551,6 +551,14 @@ class TestBeingAskedBeforeAChangeIsStored(support.TwoMachines):
         self.assertEqual("alpha EDITED\nbeta\n", self.first.read(MANAGED))
         self.assertEqual("alpha\nbeta\n", self.first.stored(MANAGED).read_text())
 
+    def test_a_run_with_nothing_skipped_does_not_mention_it(self) -> None:
+        """The half of the summary line that is easy to leave untested: `if
+        left:` becoming always-true appends ", 0 left alone" to every run and
+        the "1 left alone" assertion above passes for it regardless."""
+        _, said = self.synced("l")
+        self.assertIn("1 changed", said)
+        self.assertNotIn("left alone", said, "a clean run advertised a count of nothing")
+
     def test_the_diff_is_shown_before_the_keys_and_is_oriented_outward(self) -> None:
         """The complaint that produced this prompt was that a diff's direction
         is not obvious enough to bet a dotfile on. The repository's copy is what
