@@ -56,9 +56,14 @@ DEFAULT_MAX_FILE_SIZE = 1024 * 1024
 #: Every key the file may contain, and the type it must have. A table rather than
 #: a series of `get` calls, because it is also what the error message lists --
 #: two lists would let the message drift from what is accepted.
+#: Two, and both are facts about the *repository* rather than about a machine.
+#: There were four. `hostname` and `editor` went together and for one reason:
+#: this file is committed and shared, so a per-machine answer set here reaches
+#: every machine that clones it -- which is the opposite of what "this host is
+#: called work-laptop" or "I edit with kakoune" means. Both now come from
+#: somewhere per-machine: `TUPFERL_HOSTNAME` or the system's own name, and git's
+#: editor chain.
 KNOWN: dict[str, type] = {
-    "hostname": str,
-    "editor": str,
     "ignore": list,
     "max_file_size": int,
 }
@@ -80,8 +85,6 @@ class Config:
     is left is where an optimisation sequence stops.
     """
 
-    hostname: str | None = None
-    editor: str | None = None
     ignore: list[str] = field(default_factory=list)
     max_file_size: int = DEFAULT_MAX_FILE_SIZE
 

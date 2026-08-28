@@ -571,15 +571,18 @@ class TestWhatMayBeMerged(unittest.TestCase):
         about overlays in general."""
         self.assertFalse(self.mergeable(f"{paths.META}/hosts/{self.ELSEWHERE}/.vimrc"))
 
-    def test_the_settings_file_is_merged(self) -> None:
-        """The reason the rule is not "skip everything under `.tupferl/`": two
-        machines really can disagree about it."""
-        self.assertTrue(self.mergeable(f"{paths.META}/config.toml"))
-
-    def test_anything_else_under_meta_is_not(self) -> None:
-        """A closed rule rather than a list of known-bad names, so a directory
-        added under `.tupferl/` later is refused until somebody admits it."""
-        for name in (f"{paths.META}/whatever", f"{paths.META}/state", f"{paths.META}/hosts/x"):
+    def test_nothing_under_meta_is_merged_but_this_hosts_overlay(self) -> None:
+        """`.tupferl/config.toml` used to be the exception, because the settings
+        lived in the repository and two machines really could disagree about
+        them. The settings are a dotfile in `$HOME` now, so they arrive by the
+        ordinary path and `META` holds only machinery again -- which makes this
+        a closed rule rather than a rule with a name in it."""
+        for name in (
+            f"{paths.META}/config.toml",
+            f"{paths.META}/whatever",
+            f"{paths.META}/state",
+            f"{paths.META}/hosts/x",
+        ):
             with self.subTest(name=name):
                 self.assertFalse(self.mergeable(name))
 

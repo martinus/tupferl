@@ -200,11 +200,23 @@ No other commands in version 1.
   - No `GitPython`. Call the `git` binary through `subprocess`. This
     keeps behavior identical to the user's git and avoids a heavy
     dependency.
-- **Config:** `.tupferl/config.toml`, read with stdlib `tomllib`.
-  Settings: hostname override, editor override, files to ignore. Nothing
-  about *how output looks* belongs here -- this file is shared between
-  machines, and a pager or an editor is a fact about one of them. Those
-  come from git's config, which is per-machine and already set.
+- **Config:** `~/.config/tupferl/config.toml`, read with stdlib `tomllib`.
+  Two settings: files to ignore, and the size limit.
+
+  **This section said `.tupferl/config.toml`, inside the repository, and
+  that was wrong.** A file in the repository is the repository speaking to
+  every machine that clones it, so the two per-machine settings it also
+  held -- a hostname and an editor -- each needed an environment override
+  above them and a paragraph explaining why. Both are gone: the hostname
+  comes from `$TUPFERL_HOSTNAME` or the system, the editor from git's own
+  chain (`$GIT_EDITOR`, `core.editor`, `$VISUAL`, `$EDITOR`), and the file
+  itself is now a dotfile in `$HOME` that `tupferl add` shares if you want
+  it shared. tupferl manages its own config the way it manages yours, so
+  "is this shared?" has one mechanism instead of a special rule.
+
+  It also means `.tupferl/` in the repository holds only machinery --
+  `hosts/` and `state/` -- and `manifest.mergeable` lost the exception it
+  needed to let the settings file through.
 - **State snapshots:** store snapshots as content-addressed blobs or
   plain copies under `.tupferl/state/<hostname>/`. Snapshots are
   per-host and are committed to the repository, so every host knows

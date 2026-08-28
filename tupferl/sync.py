@@ -866,8 +866,8 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
     or `--theirs` nothing is ever left, so a scripted sync that finds conflicts
     still returns 0 -- which is the point of the flags.
     """
-    repo, config = manage.open_repo()
-    host = paths.hostname(config.hostname)
+    repo, _ = manage.open_repo()
+    host = paths.hostname()
     home = paths.home()
 
     marker = gitrepo.unfinished(repo)
@@ -877,7 +877,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
             f"abort it with git, then sync again."
         )
 
-    settler = conflicts.answering(config, no_input, ours, theirs, repo)
+    settler = conflicts.answering(no_input, ours, theirs, repo)
     remote = gitrepo.first_remote(repo)
     branch = gitrepo.branch(repo)
     if remote is None:

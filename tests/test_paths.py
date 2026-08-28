@@ -75,16 +75,35 @@ class TestWhereTheBackupsGo(Environment):
         self.assertFalse(paths.backup_dir().is_relative_to(paths.repo_dir()))
 
 
-class TestTheHostname(Environment):
-    def test_the_environment_beats_the_config_file(self) -> None:
-        """Both given, and different: `config.toml` is committed and therefore
-        shared, so a value in it cannot be this machine's own name."""
-        self.only(HOME="/home/someone", TUPFERL_HOSTNAME="from-env")
-        self.assertEqual("from-env", paths.hostname("from-config"))
+class TestWhereTheSettingsGo(Environment):
+    """`config_file`, which answers with no repository at all.
 
-    def test_the_config_file_beats_the_system(self) -> None:
+    That is half the point of the move: the settings used to live inside the
+    repository, so reading them meant finding it first -- and meant the
+    repository imposing them on every machine that cloned it.
+    """
+
+    def test_the_config_is_a_dotfile_in_home_not_a_file_in_the_repository(self) -> None:
+        """It lived at `<repo>/.tupferl/config.toml` and was therefore the
+        repository's word to every machine that cloned it. Now it is this
+        machine's, and sharing it is `tupferl add` like any other dotfile."""
         self.only(HOME="/home/someone")
-        self.assertEqual("from-config", paths.hostname("from-config"))
+        self.assertEqual(Path("/home/someone/.config/tupferl/config.toml"), paths.config_file())
+
+    def test_xdg_config_home_moves_it(self) -> None:
+        self.only(HOME="/home/someone", XDG_CONFIG_HOME="/elsewhere")
+        self.assertEqual(Path("/elsewhere/tupferl/config.toml"), paths.config_file())
+
+
+class TestTheHostname(Environment):
+    def test_the_environment_beats_the_system(self) -> None:
+        """The only override there is. `.tupferl/config.toml` had a `hostname`
+        above the system's answer and below this one; it was removed, because
+        that file is committed and therefore shared, so a value in it cannot be
+        *this* machine's own name."""
+        self.only(HOME="/home/someone", TUPFERL_HOSTNAME="from-env")
+        with mock.patch("socket.gethostname", return_value="the-system-name"):
+            self.assertEqual("from-env", paths.hostname())
 
     def test_the_system_name_loses_its_domain(self) -> None:
         self.only(HOME="/home/someone")
@@ -124,9 +143,6 @@ class TestTheRepositoryLayout(unittest.TestCase):
             Path("/repo/.tupferl/state/work-laptop"),
             paths.snapshot_dir(Path("/repo"), "work-laptop"),
         )
-
-    def test_the_config_is_in_the_meta_directory(self) -> None:
-        self.assertEqual(Path("/repo/.tupferl/config.toml"), paths.config_file(Path("/repo")))
 
     def test_a_hostile_hostname_cannot_escape(self) -> None:
         """The check is on the path builders too, not only on `hostname()` --

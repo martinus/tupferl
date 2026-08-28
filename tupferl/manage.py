@@ -38,21 +38,6 @@ from tupferl import copies, gitrepo, manifest, paths
 from tupferl.config import Config, load
 from tupferl.errors import TupferlError
 
-#: What `init` writes when it has cloned an empty remote. Comments only, so it
-#: parses to the defaults -- its job is to exist, giving the repository a first
-#: commit and a branch. A clone with no commits is on an unborn branch, which is
-#: the one state where `HEAD` does not resolve and half of git answers oddly;
-#: normalising it once here is cheaper than every later command asking.
-TEMPLATE = """\
-# tupferl settings. Every key is optional; these are the defaults.
-#
-# hostname = "this-machine"     # overridden by TUPFERL_HOSTNAME, which is what a
-#                               # second machine must use -- this file is shared.
-# editor = "vim"                # for the conflict prompt
-# ignore = ["*.log", ".cache"]  # a pattern also hides everything under it
-# max_file_size = 1048576       # bytes
-"""
-
 #: How many names a generated commit message lists before it summarises. Long
 #: enough that an ordinary `add` names everything it did, short enough that
 #: `git log --oneline` stays readable after adding a directory of two hundred.
@@ -73,7 +58,7 @@ def open_repo() -> tuple[Path, Config]:
             f"{repo} exists but is not a git repository; move it aside, then run "
             f"`tupferl init <git-url>`."
         )
-    return repo, load(paths.config_file(repo))
+    return repo, load(paths.config_file())
 
 
 def a_few(names: list[PurePosixPath]) -> str:
@@ -185,18 +170,22 @@ def init(url: str) -> int:
 
     print(f"cloned {url} into {repo}")
     if not gitrepo.has_commits(repo):
-        # An empty remote: the first-run case, and the only one where this
-        # writes anything. See TEMPLATE for why it is worth a commit.
-        settings = paths.config_file(repo)
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text(TEMPLATE, encoding="utf-8")
-        record(
-            repo,
-            [settings],
-            f"tupferl: start a repository on {paths.hostname()}",
-            "the settings file",
-        )
-        print(f"the remote was empty, so {settings.name} was created and committed")
+        # An empty remote, and the only reason this needs a commit at all: a
+        # clone with no commits is on an unborn branch, which is the one state
+        # where `HEAD` does not resolve and half of git answers oddly.
+        # Normalising it once here is cheaper than every later command asking.
+        #
+        # Empty, because there is nothing to put in it. This used to write
+        # `.tupferl/config.toml` and commit that -- the settings now live in
+        # `$HOME` like any other dotfile, and inventing a file for git's benefit
+        # is how a repository grows a file nobody asked for.
+        done = gitrepo.commit(repo, f"tupferl: start a repository on {paths.hostname()}", True)
+        if not done.ok:
+            raise TupferlError(
+                f"could not make the first commit in {repo}: {gitrepo.reason(done)}; "
+                f"run `tupferl doctor` and try again."
+            )
+        print("the remote was empty, so an empty first commit was made to start the branch")
     print("next: `tupferl add <path>...` to start managing files")
     return 0
 
@@ -211,7 +200,7 @@ def add(wanted: list[str], to_host: bool, anyway: bool = False) -> int:
     """
     repo, config = open_repo()
     home = paths.home()
-    host = paths.hostname(config.hostname)
+    host = paths.hostname()
     root = manifest.location(repo, host, to_host)
 
     # A dict used as an ordered set: keys only, because the source is always
@@ -348,9 +337,9 @@ def remove(wanted: str, from_host: bool) -> int:
     exist either, the file simply stops being managed and `sync.stale` prunes
     the snapshot on its own.
     """
-    repo, config = open_repo()
+    repo, _ = open_repo()
     home = paths.home()
-    host = paths.hostname(config.hostname)
+    host = paths.hostname()
 
     name = manifest.relative(wanted, home)
 

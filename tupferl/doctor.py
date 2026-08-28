@@ -116,7 +116,7 @@ def repository(repo: Path) -> Check:
     return Check(True, "repository", str(repo))
 
 
-def settings(repo: Path) -> tuple[Check, Config]:
+def settings() -> tuple[Check, Config]:
     """Does the config file parse, and what does it say?
 
     Returns the parsed settings as well as the check, because the next two
@@ -124,7 +124,7 @@ def settings(repo: Path) -> tuple[Check, Config]:
     file changed in between -- a small window, and the kind that produces a
     report nobody can reproduce.
     """
-    where = paths.config_file(repo)
+    where = paths.config_file()
     try:
         found = load(where)
     except TupferlError as wrong:
@@ -137,7 +137,7 @@ def settings(repo: Path) -> tuple[Check, Config]:
 def host(config: Config) -> Check:
     """Does this machine have a name that can key a host overlay?"""
     try:
-        return Check(True, "hostname", paths.hostname(config.hostname))
+        return Check(True, "hostname", paths.hostname())
     except TupferlError as wrong:
         return Check(False, "hostname", str(wrong))
 
@@ -239,7 +239,7 @@ def checks() -> list[Check]:
     found = [git_present()]
     repo = paths.repo_dir()
     here = repository(repo)
-    parsed, config = settings(repo)
+    parsed, config = settings()
     found.extend([here, parsed, host(config)])
     found.append(remote(repo, ok=here.ok is True))
     found.append(writable(paths.backup_dir()))

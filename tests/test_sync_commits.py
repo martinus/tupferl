@@ -617,46 +617,6 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachines):
         self.assertNotIn("FROM-A", snapshot.read_text())
 
 
-class TestNotEverythingUnderMetaIsRefused(support.TwoMachines):
-    """The other half, and the reason the fix is not "skip all of `.tupferl/`".
-
-    `config.toml` lives there and is a legitimate subject for the prompt: two
-    machines really can disagree about it, and refusing it would send the user
-    to `git pull` for a file the tool is otherwise happy to manage.
-
-    **This is the only admission under `paths.META` a two-machine test can
-    show.** The other one -- this host's own overlay -- needs both machines to
-    write the *same* host's overlay, which needs a shared hostname, which
-    necessarily collides `state/<host>/` as well: the snapshot is then refused
-    first and the overlay never reaches the prompt. So that admission is checked
-    where the rule lives, in `test_manifest.TestWhatMayBeMerged`, and this class
-    says why it is not here.
-    """
-
-    def settings(self, machine: support.Computer, text: str) -> None:
-        where = machine.repo / paths.META / "config.toml"
-        where.write_text(text, encoding="utf-8")
-        support.git(["add", "-A"], cwd=machine.repo, env=machine.env)
-        support.git(["commit", "-m", "settings"], cwd=machine.repo, env=machine.env)
-
-    def test_a_conflicting_config_is_settled_rather_than_refused(self) -> None:
-        """Different hostnames, so nothing under `state/` collides and the only
-        conflict is the one this test is about."""
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
-        self.settings(self.second, "max_file_size = 2000000\n")
-        self.settings(self.first, "max_file_size = 3000000\n")
-        # Through `sync`, not a raw push: `init` above already pushed, so a
-        # bare `git push` here is a non-fast-forward and the fixture fails
-        # before the test starts.
-        self.assertEqual(0, self.first.call("sync"))
-
-        status, said = self.second.say("sync", "--ours")
-        self.assertEqual(0, status, said)
-        self.assertNotIn("not a dotfile this machine merges", said)
-        settled = (self.second.repo / paths.META / "config.toml").read_text()
-        self.assertIn("2000000", settled)
-
-
 class TestSettlingWithTheEditor(TwoCommits):
     """`[e]` over a commit conflict, which no other test here covers."""
 

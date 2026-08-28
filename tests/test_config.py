@@ -28,24 +28,18 @@ class TestReadingTheSettings(unittest.TestCase):
         self.assertEqual(Config(), parse("", WHERE))
 
     def test_every_known_key_arrives(self) -> None:
-        """All four at once, each with a value nothing else in the file shares,
-        so a parser that put one in the wrong field would be visible."""
+        """Both at once, each with a value the other does not share, so a parser
+        that put one in the wrong field would be visible.
+
+        There were four. `hostname` and `editor` went together: this file is
+        committed and shared, so a per-machine answer set here reaches every
+        machine that clones it.
+        """
         found = parse(
-            'hostname = "work-laptop"\n'
-            'editor = "nvim"\n'
-            'ignore = ["*.log", ".cache/**"]\n'
-            "max_file_size = 2048\n",
+            'ignore = ["*.log", ".cache/**"]\nmax_file_size = 2048\n',
             WHERE,
         )
-        self.assertEqual(
-            Config(
-                hostname="work-laptop",
-                editor="nvim",
-                ignore=["*.log", ".cache/**"],
-                max_file_size=2048,
-            ),
-            found,
-        )
+        self.assertEqual(Config(ignore=["*.log", ".cache/**"], max_file_size=2048), found)
 
     def test_the_default_size_limit_is_one_megabyte(self) -> None:
         """Plan §5 names the number, so it is asserted rather than derived."""
@@ -53,9 +47,8 @@ class TestReadingTheSettings(unittest.TestCase):
         self.assertEqual(DEFAULT_MAX_FILE_SIZE, parse("", WHERE).max_file_size)
 
     def test_a_partial_file_keeps_the_other_defaults(self) -> None:
-        found = parse('editor = "vim"', WHERE)
-        self.assertEqual("vim", found.editor)
-        self.assertIsNone(found.hostname)
+        found = parse("max_file_size = 2048", WHERE)
+        self.assertEqual(2048, found.max_file_size)
         self.assertEqual([], found.ignore)
 
 
@@ -72,8 +65,9 @@ class TestTheTableAndTheRecordAgree(unittest.TestCase):
         self.assertEqual(set(KNOWN), {field.name for field in fields(Config)})
 
     def test_every_field_has_the_type_the_table_claims(self) -> None:
-        """Reading the annotation, not the default: `hostname` defaults to
-        `None`, so a default-based check would say its type is `NoneType`."""
+        """Reading the annotation, not the default: a field whose default is
+        `None` or an empty list would have a default-based check say its type is
+        `NoneType` or `list` regardless of what the table claims."""
         for name, expected in KNOWN.items():
             with self.subTest(key=name):
                 said = Config.__annotations__[name]
@@ -149,7 +143,7 @@ class TestRejectingAnUnknownKey(unittest.TestCase):
         """
         with self.assertRaises(TupferlError) as caught:
             parse("nonsense = 1", WHERE)
-        self.assertIn("editor, hostname, ignore, max_file_size", str(caught.exception))
+        self.assertIn("ignore, max_file_size", str(caught.exception))
 
     def test_the_file_is_named(self) -> None:
         with self.assertRaises(TupferlError) as caught:
@@ -165,7 +159,7 @@ class TestRejectingAWrongValue(unittest.TestCase):
 
     def test_a_number_where_a_string_belongs(self) -> None:
         with self.assertRaises(TupferlError):
-            parse("editor = 7", WHERE)
+            parse("ignore = 7", WHERE)
 
     def test_a_boolean_is_not_a_number(self) -> None:
         """`True` is an `int` in Python, so an `isinstance` check alone accepts
@@ -220,8 +214,8 @@ class TestLoadingFromDisk(unittest.TestCase):
 
     def test_a_real_file_is_parsed(self) -> None:
         where = self.box / "config.toml"
-        where.write_text('editor = "helix"\n', encoding="utf-8")
-        self.assertEqual("helix", load(where).editor)
+        where.write_text("max_file_size = 4096\n", encoding="utf-8")
+        self.assertEqual(4096, load(where).max_file_size)
 
 
 if __name__ == "__main__":

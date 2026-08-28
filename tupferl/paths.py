@@ -41,6 +41,7 @@ ENV_KEYS = (
     "PAGER",
     "TUPFERL_DIR",
     "TUPFERL_HOSTNAME",
+    "XDG_CONFIG_HOME",
     "VISUAL",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
@@ -123,14 +124,25 @@ def backup_dir() -> Path:
     return state_dir() / "backup"
 
 
-def config_file(repo: Path) -> Path:
-    """The settings file, inside the repository and therefore shared.
+def config_file() -> Path:
+    """tupferl's own settings: a dotfile like any other, in `$HOME`.
 
-    Shared is the point for `ignore` and `max_file_size` -- every machine should
-    agree about those -- and is exactly why `hostname` is *not* only read from
-    here. See `hostname`.
+    **It used to live in the repository**, at `.tupferl/config.toml`, which plan
+    §5 asked for -- and that made it a file the repository imposed on every
+    machine that cloned it. Two of its four keys were per-machine facts and had
+    to be overridden from the environment, each with a paragraph explaining why
+    the override existed.
+
+    Here instead, which answers the question the other way round: the settings
+    are this machine's, and sharing them is `tupferl add
+    ~/.config/tupferl/config.toml` like anything else -- with `--host` if one
+    machine should differ. tupferl manages its own dotfile the way it manages
+    yours, so "is this shared?" has one mechanism rather than a special rule.
+
+    No repository argument, which is the other half: settings no longer depend
+    on finding a repository first.
     """
-    return repo / META / "config.toml"
+    return _base("XDG_CONFIG_HOME", ".config") / "tupferl" / "config.toml"
 
 
 def check_hostname(name: str) -> str:
@@ -156,16 +168,17 @@ def check_hostname(name: str) -> str:
     return name
 
 
-def hostname(configured: str | None = None) -> str:
+def hostname() -> str:
     """This machine's name, as host overlays and snapshots are keyed by.
 
-    Precedence is environment, then config, then the system -- and the
-    environment being *above* the config file is the part worth explaining.
-    `config.toml` lives in the repository and is committed, so a `hostname` set
-    there applies to every machine that clones it, which is the opposite of what
-    "this host is called work-laptop" means. The config key is honoured because
-    plan §5 asks for it and it is the right answer for a single-machine
-    installation; `TUPFERL_HOSTNAME` is what a *second* machine uses to disagree.
+    `TUPFERL_HOSTNAME`, then the system's own answer. **There is no config key**,
+    and there was one: plan §5 asked for a `hostname` in `.tupferl/config.toml`,
+    and that file lives in the repository and is committed -- so a name set there
+    applies to *every* machine that clones it, which is the opposite of what
+    "this host is called work-laptop" means. It was honoured with the
+    environment above it and documented as a divergence, which is two rungs and
+    a paragraph to explain a setting that is wrong wherever it is used by more
+    than one machine. Removed rather than explained again.
 
     The system name is cut at the first dot: `laptop.local` and `laptop` are the
     same machine, and a DNS suffix that appears on one network and not another
@@ -174,8 +187,6 @@ def hostname(configured: str | None = None) -> str:
     said = os.environ.get("TUPFERL_HOSTNAME")
     if said:
         return check_hostname(said)
-    if configured:
-        return check_hostname(configured)
     # Imported here rather than at the top: `socket` costs 4.1ms of a 63.7ms
     # `tupferl --version`, and this is the only line that needs it -- a machine
     # that has said its own name in the environment or the settings never asks
