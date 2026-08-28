@@ -550,7 +550,7 @@ UNFINISHED = ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD")
 
 
 def configured_pager(repo: Path) -> str:
-    """`core.pager`, or `""` when git has none.
+    """`pager.diff`, else `core.pager`, or `""` when git has neither.
 
     Here because this module is every call to git, and because *this* is the
     point of reading it: a user who set `core.pager = delta` configured how they
@@ -558,9 +558,51 @@ def configured_pager(repo: Path) -> str:
     `~/.gitconfig` also gets the include directives, the system file and the
     per-repository override for free -- all of which a hand-rolled reader would
     get wrong on the machine that used them.
+
+    **`pager.diff` first, which this missed.** git's order for a command's pager
+    is `GIT_PAGER`, then `pager.<cmd>`, then `core.pager`, then `PAGER` -- and
+    reading only `core.pager` finds nothing on a machine that configured the
+    per-command key, which is the common shape:
+
+        [pager]
+            diff = "if [ -t 1 ]; then delta; else cat; fi"
+
+    That user had `delta` set up for every git command and `tupferl status
+    --diff` printed plain. Measured against git 2.43 with both keys set: the
+    `pager.diff` one runs.
+
+    `diff` is the right command name to ask under. It is the question this
+    output is -- a unified diff -- and the same reasoning that makes reading
+    git's config right at all: they configured how they read a diff.
+
+    **`pager.<cmd>` may be a boolean, and then it is not a command.** Measured
+    against git 2.43, with `core.pager` and `$PAGER` both set:
+
+    | `pager.diff` | git |
+    |---|---|
+    | a string | runs it |
+    | `false`, `no`, `off`, `0` | **no pager at all** -- neither `core.pager` nor `$PAGER` is read |
+    | `true`, `yes`, `on`, `1` | says *page*, not how: falls to `core.pager`, then `$PAGER` |
+
+    Read as a command instead, `false` would be *spawned* -- it exits 1, which
+    is not one of the two codes `show` falls back on, so the user would get an
+    empty screen and no diff. Nobody would connect that to a setting that means
+    "do not page".
+
+    git is asked whether the value is a boolean rather than the answer being
+    reimplemented here, because "which spellings are false" is six of them and
+    a list that would go stale silently. A false one comes back as `cat`, which
+    is git's own way of saying *do not page* and which `show` already knows.
     """
-    found = git(["config", "--get", "core.pager"], cwd=repo)
-    return found.out if found.ok else ""
+    found = git(["config", "--get", "pager.diff"], cwd=repo)
+    if found.ok:
+        yes_or_no = git(["config", "--get", "--bool", "pager.diff"], cwd=repo)
+        if not yes_or_no.ok:
+            return found.out
+        if yes_or_no.out == "false":
+            return "cat"
+    core = git(["config", "--get", "core.pager"], cwd=repo)
+    return core.out if core.ok else ""
 
 
 def configured_editor(repo: Path) -> str:

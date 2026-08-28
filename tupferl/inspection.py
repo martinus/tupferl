@@ -35,7 +35,6 @@ uses, so the two cannot disagree about which side is `---`.
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -133,9 +132,8 @@ def pager(repo: Path) -> str:
     string is git's way of saying *no pager* -- an `or` chain reads that as
     "unset" and falls through to the next source, which is the opposite.
     """
-    for name in ("GIT_PAGER",):
-        if name in os.environ:
-            return os.environ[name]
+    if "GIT_PAGER" in os.environ:
+        return os.environ["GIT_PAGER"]
     if found := gitrepo.configured_pager(repo):
         return found
     return os.environ.get("PAGER", "")
@@ -155,14 +153,34 @@ def show(text: str, repo: Path, out: TextIO) -> None:
     the diff and the pager is only how.
     """
     command = pager(repo) if out.isatty() else ""
-    if not command or shlex.split(command)[:1] == ["cat"]:
+    if not command or command.strip() == "cat":
         # `cat` is git's spelling of "no pager", and running it would fork a
-        # process to do what the line below does.
+        # process to do what the line below does. Compared whole, which is git's
+        # own test -- it does not parse the value to reach this conclusion, and
+        # anything longer than the bare word is a command somebody wrote.
         print(text, file=out)
         return
     try:
-        subprocess.run(
-            shlex.split(command),
+        ran = subprocess.run(
+            # **Through a shell, because git runs its pager through one.** A
+            # pager is a command *line*, not an argv, and the common
+            # configuration is not a bare program name:
+            #
+            #     [pager]
+            #         diff = "if [ -t 1 ]; then delta; else cat; fi"
+            #
+            # `shlex.split` turns that into `['if', '[', '-t', ...]` and execs
+            # `if`, which is not a program -- so the `OSError` arm below caught
+            # it and printed the diff plain. The user saw exactly what they see
+            # with no pager configured at all, which is why this read as
+            # "tupferl ignores my config" rather than as an error.
+            #
+            # `shell=True` on a string from the user's own git config, which is
+            # the same trust boundary git draws: `pager.c` sets `use_shell` and
+            # hands the value over unparsed. Nothing untrusted reaches here --
+            # a dotfile's *contents* go to the pager's stdin, never to the shell.
+            command,
+            shell=True,
             input=text,
             text=True,
             check=False,
@@ -173,6 +191,25 @@ def show(text: str, repo: Path, out: TextIO) -> None:
         )
     except (OSError, BrokenPipeError, ValueError) as unusable:
         print(f"{command} could not show the diff ({unusable}); here it is plain.", file=out)
+        print(text, file=out)
+        return
+    if ran.returncode in (126, 127):
+        # **The shell swallows what `exec` used to raise.** Running the pager
+        # directly, a name that is not on `PATH` was an `OSError` and the arm
+        # above printed the diff. Through a shell it is a *return code* -- 127
+        # for not found, 126 for found and not executable -- and `check=False`
+        # reads that as a run that happened. The user then gets an empty screen
+        # and no diff, which is the one thing this function promises never to
+        # do; the guarantee moved with the mechanism rather than surviving it.
+        #
+        # Only these two, and only because the shell reserves them for exactly
+        # this. Any other non-zero status is the pager's own -- `q` in `less`,
+        # a `head` that stopped early -- and the text did reach it, so printing
+        # again would show the diff twice.
+        print(
+            f"{command} could not show the diff (exit {ran.returncode}); here it is plain.",
+            file=out,
+        )
         print(text, file=out)
 
 
