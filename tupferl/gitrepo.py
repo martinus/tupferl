@@ -671,15 +671,28 @@ def merge_file(
     marks = [argument for label in labels for argument in ("-L", label)]
     mode = ["--union"] if union else []
     # The conflict style is pinned rather than left to the user's git config,
-    # because `conflicts.hunks` parses the markers back out to show them. git
-    # 2.43 ignores `merge.conflictStyle` for `merge-file` -- measured, with the
-    # setting at `merge`, `diff3` and `zdiff3`, all three giving the two-section
-    # form -- so this changes nothing today. It is here so that a git which
-    # started honouring it could not turn a base section into something the
-    # parser reads as the repository's version.
-    style = ["-c", "merge.conflictStyle=merge"]
+    # because `conflicts.hunks` parses the markers back out to show them. The
+    # git that "started honouring it" this guard was written against has
+    # arrived: measured on **git 2.55**, `merge-file` takes `merge.conflictStyle`
+    # from a config *file* and emits the three-section form, where 2.43 ignored
+    # the setting entirely.
+    #
+    # **`-c` is not the pin, and was never tested to be.** Measured on 2.55 with
+    # the config isolated, `-c merge.conflictStyle=zdiff3` produces the
+    # *two*-section form -- so `merge-file` reads the file and ignores the
+    # command-line override, and the `-c` spelling this used to carry was inert
+    # in exactly the case it existed for. A user with `merge.conflictStyle =
+    # zdiff3` in `~/.gitconfig` -- an ordinary setting -- got a base section that
+    # `conflicts.hunks` read as part of *this computer's* version, so the prompt
+    # showed them the wrong side and `[m]`/`[t]` could discard the edit they
+    # meant to keep.
+    #
+    # `--no-diff3` rather than `--no-zdiff3`: both defeat either setting
+    # (measured, all four combinations), and `--diff3` is far older than
+    # `--zdiff3`, which arrived in git 2.35.
+    style = ["--no-diff3"]
     return git(
-        [*style, "merge-file", *mode, *marks, str(ours), str(base), str(theirs)],
+        ["merge-file", *style, *mode, *marks, str(ours), str(base), str(theirs)],
         cwd=ours.parent,
     )
 

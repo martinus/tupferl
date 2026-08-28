@@ -796,12 +796,33 @@ written down.
   whose consequence is the user pressing the other key and destroying their own
   edit. `conflicts.trustworthy` checks the parse against the two real files and
   `describe` shows nothing rather than showing it swapped.
-- **`git merge-file` ignores `merge.conflictStyle`.** Measured against git 2.43
-  with the setting at `merge`, `diff3` and `zdiff3`: all three gave the
-  two-section form. `gitrepo.merge_file` passes `-c merge.conflictStyle=merge`
-  anyway, because `conflicts.hunks` parses the markers back out and a git that
-  started honouring it would turn a base section into something the parser reads
-  as the repository's version.
+- **`git merge-file` honours `merge.conflictStyle` from a config *file* and
+  ignores `-c`.** This entry used to say it ignored the setting entirely --
+  measured against git 2.43, where `merge`, `diff3` and `zdiff3` all gave the
+  two-section form -- and `gitrepo.merge_file` carried
+  `-c merge.conflictStyle=merge` against the day a git started honouring it.
+  That day came, and **the pin did not work**. Measured on git 2.55:
+
+  | config | argv | base section? |
+  |---|---|---|
+  | isolated | *(none)* | no |
+  | isolated | `-c merge.conflictStyle=zdiff3` | **no** |
+  | file `zdiff3` | `-c merge.conflictStyle=merge` | **yes** |
+  | file `zdiff3` | `--no-diff3` | no |
+
+  So the override a reader would reach for is the one spelling that does
+  nothing, and the guard was inert in exactly the case it existed for. A user
+  with `merge.conflictStyle = zdiff3` in `~/.gitconfig` got a base section that
+  `conflicts.hunks` attributed to *this computer*, so the prompt showed the
+  wrong side and `[m]`/`[t]` could discard the edit they meant to keep. It is
+  `--no-diff3` now (older than `--zdiff3`, which arrived in git 2.35), and
+  `tests/test_merge.TestTheConflictStyleCannotComeFromTheUser` writes a real
+  config file and points `GIT_CONFIG_GLOBAL` at it, because `-c` reproduces
+  nothing.
+
+  The general lesson is bigger than the flag: **a guard written for a future
+  that has not arrived cannot be tested, and this one was wrong from the day it
+  was written.** Nothing could have told the difference on 2.43.
 - **`tcsetattr` with `TCSADRAIN` can block for ever on a pty.** It waits for the
   terminal's pending *output* to drain, and a pty starts with `ECHO` on — so
   every key a fixture types is echoed into an output queue that, in these tests,
