@@ -137,7 +137,11 @@ Requirements for the prompt:
 - Show the conflicting lines directly in the terminal, side by side
   or unified, with color.
 - Every choice is one keypress.
-- `[e]` opens `$EDITOR` on a file with standard conflict markers.
+- `[e]` opens the user's editor on a file with standard conflict markers.
+  Which editor is git's answer, in git's order, with tupferl's own setting
+  ahead of it: `editor` in `.tupferl/config.toml`, then `GIT_EDITOR`, then
+  `core.editor`, then `$VISUAL`, then `$EDITOR`. Someone who configured an
+  editor for git configured how they edit text.
 - `[s] skip` leaves the file untouched and reports it at the end.
 - A `--theirs` / `--ours` / `--no-input` flag set allows scripted use.
 
@@ -178,15 +182,29 @@ No other commands in version 1.
 - **Dependencies:** keep them minimal.
   - `click` or stdlib `argparse` for the CLI (agent's choice; prefer
     fewer dependencies).
-  - `rich` is allowed for the conflict UI and colored diffs. It is
-    worth one dependency.
+  - `rich` is allowed for the conflict UI. It is worth one dependency,
+    and nothing imports it yet.
+  - **The "colored diffs" half of that sanction is spent, and not on
+    `rich`.** `status --diff` writes a plain unified diff and hands it to
+    the pager git is already configured with -- `GIT_PAGER`, then
+    `core.pager`, then `$PAGER` -- so a machine set up for `delta` is
+    already set up for this, and tupferl colours nothing itself. Only
+    when stdout is a terminal, so a redirected diff stays plain and
+    pipeable; and no fallback to `less`, because paging output that never
+    paged before is a change to everyone's day for the sake of the few
+    who asked. A pager that is missing or exits early is caught and the
+    diff printed plainly: the diff is the point and the pager is only
+    how.
   - Dev extra (`pip install -e '.[dev]'`): `hypothesis`, `ruff`,
     `mypy`, `coverage`. Never runtime dependencies.
   - No `GitPython`. Call the `git` binary through `subprocess`. This
     keeps behavior identical to the user's git and avoids a heavy
     dependency.
 - **Config:** `.tupferl/config.toml`, read with stdlib `tomllib`.
-  Settings: hostname override, editor override, files to ignore.
+  Settings: hostname override, editor override, files to ignore. Nothing
+  about *how output looks* belongs here -- this file is shared between
+  machines, and a pager or an editor is a fact about one of them. Those
+  come from git's config, which is per-machine and already set.
 - **State snapshots:** store snapshots as content-addressed blobs or
   plain copies under `.tupferl/state/<hostname>/`. Snapshots are
   per-host and are committed to the repository, so every host knows
@@ -347,8 +365,9 @@ next starts.
    `tools/mutate.py` ported from woswoar and proven against a
    deliberate one-line bug, Hypothesis profiles, and the CI gate
    job. The test infrastructure exists before the first feature.
-2. **Repo management:** `init`, `add`, `remove`, listing; git calls
-   through subprocess.
+2. **Repo management:** `init`, `add`, `remove`, and listing what is
+   managed; git calls through subprocess. (Listing was its own `list`
+   verb until §4's table folded it into `status --all`.)
 3. **Sync engine, no conflicts:** snapshots, change detection,
    auto-resolution for one-sided changes, commit + push + pull.
    Property tests 1–4 land in this milestone, before the example
@@ -356,8 +375,8 @@ next starts.
 4. **3-way merge and the conflict UI:** the interactive prompt,
    editor handoff, `--theirs/--ours/--no-input`.
 5. **Host overlays.**
-6. **Safety and polish:** backups, error messages, `status` and
-   `diff` output quality.
+6. **Safety and polish:** backups, error messages, and the quality of
+   what `status` prints in each of its three shapes.
 7. **Packaging:** PyPI metadata, README, `pipx` verification.
 
 ## 9. Open questions for the agent

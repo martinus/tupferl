@@ -37,6 +37,10 @@ classifiers = [
 # `rich` is sanctioned by plan §5 for the conflict UI. It is not listed yet
 # because nothing imports it yet, and a declared dependency nobody uses is a
 # dependency nobody notices going stale.
+#
+# The other half of that sanction -- coloured diffs -- was spent without it:
+# `status --diff` hands a plain unified diff to the pager git is configured
+# with, so the colour comes from the user's `delta` and costs no dependency.
 dependencies = ["tomli>=2.0; python_version < '3.11'"]
 
 [project.optional-dependencies]
