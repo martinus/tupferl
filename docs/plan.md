@@ -187,14 +187,16 @@ No other commands in version 1.
   - **The "colored diffs" half of that sanction is spent, and not on
     `rich`.** `status --diff` writes a plain unified diff and hands it to
     the pager git is already configured with -- `GIT_PAGER`, then
-    `core.pager`, then `$PAGER` -- so a machine set up for `delta` is
-    already set up for this, and tupferl colours nothing itself. Only
-    when stdout is a terminal, so a redirected diff stays plain and
-    pipeable; and no fallback to `less`, because paging output that never
-    paged before is a change to everyone's day for the sake of the few
-    who asked. A pager that is missing or exits early is caught and the
-    diff printed plainly: the diff is the point and the pager is only
-    how.
+    `pager.diff`, then `core.pager`, then `$PAGER` -- so a machine set up
+    for `delta` is already set up for this, and tupferl colours nothing
+    itself. The value is a shell command line and is run through a shell,
+    which is what git does and what the common `pager.diff = "if [ -t 1 ];
+    then delta; else cat; fi"` needs. Only when stdout is a terminal, so a
+    redirected diff stays plain and pipeable; and no fallback to `less`,
+    because paging output that never paged before is a change to
+    everyone's day for the sake of the few who asked. A pager that is
+    missing or exits early is caught and the diff printed plainly: the
+    diff is the point and the pager is only how.
   - Dev extra (`pip install -e '.[dev]'`): `hypothesis`, `ruff`,
     `mypy`, `coverage`. Never runtime dependencies.
   - No `GitPython`. Call the `git` binary through `subprocess`. This

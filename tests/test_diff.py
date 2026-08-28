@@ -310,8 +310,8 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
             encoding="utf-8",
         )
 
-    def configure(self, command: str) -> None:
-        support.git(["config", "core.pager", command], self.first.repo, self.first.env)
+    def configure(self, command: str, key: str = "core.pager") -> None:
+        support.git(["config", key, command], self.first.repo, self.first.env)
 
     def diff(self, terminal: bool = True) -> str:
         """`difference` with a stream that claims to be a terminal, or not.
@@ -401,6 +401,131 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         self.first.env["GIT_PAGER"] = ""
         self.assertIn("--- .bashrc", self.diff())
         self.assertFalse(self.seen.exists(), "core.pager ran despite an empty GIT_PAGER")
+
+    def test_pager_diff_is_read_and_beats_core_pager(self) -> None:
+        """**The bug.** `configured_pager` read only `core.pager`, so a machine
+        configured the per-command way -- which is the common shape -- got a
+        plain diff and read that as tupferl ignoring its config.
+
+        git's order for a command's pager is `GIT_PAGER`, then `pager.<cmd>`,
+        then `core.pager`, then `PAGER`. Measured against git 2.43 with both
+        keys set: the `pager.diff` one runs.
+
+        Both keys set, not just the new one. With `core.pager` unset this
+        passes for an implementation that reads `pager.diff` *instead of*
+        `core.pager` rather than before it, and the test below would then be
+        the only thing left holding the old key up.
+        """
+        self.configure(f"{sys.executable} {self.tmp / 'never.py'}")
+        self.configure(f"{sys.executable} {self.fake}", key="pager.diff")
+        self.diff()
+        self.assertIn("--- .bashrc", self.paged())
+
+    def test_core_pager_still_works_when_pager_diff_is_unset(self) -> None:
+        """The other half. Reading the new key must not cost the old one, and a
+        test of `pager.diff` alone cannot show that."""
+        self.configure(f"{sys.executable} {self.fake}")
+        self.diff()
+        self.assertIn("--- .bashrc", self.paged())
+
+    def test_git_pager_still_beats_pager_diff(self) -> None:
+        """The new rung goes *below* the environment variable, not above it.
+        Reading `pager.diff` first in the function is not the same as reading it
+        first in the order, and this is the assertion that tells them apart."""
+        self.configure(f"{sys.executable} {self.tmp / 'never.py'}", key="pager.diff")
+        chosen = self.tmp / "chosen.txt"
+        picked = self.tmp / "picked.py"
+        picked.write_text(
+            f"import sys, pathlib\npathlib.Path({str(chosen)!r}).write_text(sys.stdin.read())\n",
+            encoding="utf-8",
+        )
+        self.first.env["GIT_PAGER"] = f"{sys.executable} {picked}"
+        self.diff()
+        self.assertIn("--- .bashrc", chosen.read_text(encoding="utf-8"))
+
+    def test_a_pager_that_is_a_shell_command_line_works(self) -> None:
+        """**The second half of the bug**, and the one that would have kept the
+        diff plain even after the key was fixed.
+
+        A pager is a command *line*, not an argv, and git runs it through a
+        shell. The reported configuration was
+
+            diff = "if [ -t 1 ]; then delta; else cat; fi"
+
+        which `shlex.split` turns into `['if', '[', '-t', ...]`; exec'ing `if`
+        raised `OSError`, the fallback printed the diff plain, and the user saw
+        exactly what an unconfigured machine shows.
+
+        Driven with the real shape -- a conditional, a redirection and a pipe --
+        rather than with a bare name, because a bare name works either way and
+        is what made the original spelling look right.
+        """
+        self.configure(
+            f'if [ -n "$HOME" ]; then {sys.executable} {self.fake}; else cat; fi',
+            key="pager.diff",
+        )
+        self.diff()
+        self.assertIn("--- .bashrc", self.paged())
+
+    def test_a_shell_pager_that_is_not_installed_still_shows_the_diff(self) -> None:
+        """The guarantee had to move with the mechanism. Run directly, a missing
+        pager raised `OSError`; through a shell it is exit 127 and
+        `check=False` reads that as a run that happened -- so the user would
+        get an empty screen, which is the one thing `show` promises never to
+        do. The `if` wrapper is what makes this a *shell* 127 rather than the
+        bare-name case the test above it covers.
+        """
+        self.configure("if true; then no-such-pager-anywhere; fi", key="pager.diff")
+        printed = self.diff()
+        self.assertIn("--- .bashrc", printed)
+        self.assertIn("could not show the diff", printed)
+
+    def test_a_pager_that_stops_early_does_not_print_the_diff_twice(self) -> None:
+        """The line the 126/127 test is drawn at. `q` in `less`, or a `head`
+        that has seen enough, exits non-zero having *shown* the diff -- so
+        falling back on any non-zero status would print it again underneath.
+        Only the two codes the shell reserves for "could not run it" count.
+        """
+        self.configure(f"{sys.executable} {self.fake} && exit 3", key="pager.diff")
+        printed = self.diff()
+        self.assertIn("--- .bashrc", self.paged())
+        self.assertNotIn("--- .bashrc", printed, "the diff was printed as well as paged")
+        self.assertNotIn("could not show the diff", printed)
+
+    def test_a_false_pager_diff_pages_with_nothing_at_all(self) -> None:
+        """`pager.<cmd>` may be a boolean, and then it is not a command.
+
+        Measured against git 2.43: a false one means *do not page*, and neither
+        `core.pager` nor `$PAGER` is consulted. Read as a command instead it
+        would be **spawned** -- `false` exits 1, which is not one of the two
+        codes `show` falls back on, so the user would get an empty screen and no
+        diff at all, and nobody would connect that to a setting meaning "do not
+        page". Both other sources are set here, because the claim is that they
+        are skipped and not merely that this one is.
+        """
+        self.configure(f"{sys.executable} {self.fake}")
+        self.first.env["PAGER"] = f"{sys.executable} {self.fake}"
+        self.configure("false", key="pager.diff")
+        self.assertIn("--- .bashrc", self.diff())
+        self.assertFalse(self.seen.exists(), "something was paged despite pager.diff = false")
+
+    def test_off_is_false_too_and_git_is_asked_which(self) -> None:
+        """Six spellings are false and six are true; git is asked rather than
+        the list being copied here, where it would go stale in silence. `off` is
+        the one a hand-rolled `== "false"` would miss."""
+        self.configure(f"{sys.executable} {self.fake}")
+        self.configure("off", key="pager.diff")
+        self.assertIn("--- .bashrc", self.diff())
+        self.assertFalse(self.seen.exists(), "something was paged despite pager.diff = off")
+
+    def test_a_true_pager_diff_says_page_but_not_how(self) -> None:
+        """The other half of the boolean rule, and a different answer from
+        `false`: it falls through to `core.pager`. Without this, returning "do
+        not page" for *any* boolean passes the two tests above."""
+        self.configure(f"{sys.executable} {self.fake}")
+        self.configure("true", key="pager.diff")
+        self.diff()
+        self.assertIn("--- .bashrc", self.paged())
 
     def test_cat_is_gits_spelling_of_no_pager(self) -> None:
         """git treats it as "do not page", and forking a process to do what a
