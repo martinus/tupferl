@@ -1041,3 +1041,64 @@ read this file:
   verdicts, no counter on the hit rate, just a slower sweep — which reads as
   "mutation testing is slow", a conclusion already reached here once for a
   different reason.
+
+- **Four cleverer mutation dispatches, all of them losing to the plain stride**
+  (#49 follow-on). A `ThreadPoolExecutor` fed the whole table hands rows out
+  first-come, so with N lanes each lane walks a *stride* of N and no lane ever
+  gets two consecutive rows. `Learned` is move-to-front over adjacency, so that
+  dispatch is structurally the round-robin ordering the entry above measures at
+  a 27.3% hit rate. Four attempts to fix it, each built behind an environment
+  switch **in one binary** so the arms could be attributed:
+
+  | dispatch | `--only tupferl/` (1309 rows) | `tools/mutants.py` (dense) |
+  |---|---|---|
+  | stride — what `main` does | 357s | **236s** |
+  | equal segments + steal the widest half | **318s** | 288s |
+  | segments + suspect a survivor's next 4 | — | 242s |
+  | segments + suspect a survivor's next 8 | — | 239s |
+  | segments + suspect anything past 15s | 364s | 237s |
+
+  Contiguity does exactly what it was predicted to do — replayed at `keep=8`
+  over 2811 caught rows, 32 lanes: stride+shared front 37.2%, contiguous+per-lane
+  **70.7%**, against a 72.9% sequential ideal — and winning that proxy was worth
+  **11% at most, on one of the two tables, and −22% on the other.**
+
+  The two tables disagree because they differ in the one thing that decides what
+  a move-to-front hit is *worth*: `tools/mutants.py` has **1 distinct test
+  selection** for every row, so the front has nothing to discriminate and a hit
+  saves almost nothing; `tupferl/` has 11, one of them spanning 21 modules over
+  133 rows, where a hit means running one test instead of walking all 21. **A
+  benchmark table was chosen wrongly twice here, in opposite directions**, and
+  each time the conclusion reversed. Any future claim about dispatch has to name
+  its table's selection count.
+
+  Three further things measured along the way, each worth more than the
+  scheduling was:
+
+  - **A survivor is ~71s against ~7.3s for a caught row**, so survivors are
+    ~12% of a whole-tree table's rows and **~49% of its lane-seconds**. That is
+    the tail, and no dispatch can fix it: by the time a row is *known* to be a
+    survivor it has already cost its 71s, and under a stride every neighbour it
+    might have warned has long since been claimed. Both suspect variants fired
+    `0 early` on the table they were written for.
+  - **An absolute "slow" threshold is the wrong shape.** At 15s it fired on
+    ~22% of `tupferl/`'s rows — 287 flags for 30 real survivors — shredding
+    contiguity for nothing and costing 46s. The measured move-to-front rate
+    fell 63.9% → 55.0% while the tail was *identical*, which is how it was
+    settled. A threshold that must self-calibrate wants a multiple of a running
+    median, not a percentile: the *fraction* of dear rows differs between tables
+    (2.3% and 11%) while the *ratio* dear-to-typical is ~10x on both.
+  - **The handout is not the cost.** `Work.take` measured 209ns uncontended and
+    265ns with 32 lanes on it — 0.85ms across a 3199-row sweep.
+
+  **What would justify re-opening it**: nothing about the *scheduler*. Every one
+  of the four was an attempt to infer during a run something a previous run
+  already knew, so the thing to try instead is recording it — which is what
+  `Killers.seconds` and `slowest_first` do. **That replacement is not yet
+  measured**: one interleaved pair at 16 lanes gave 306.8s against 286.9s, and
+  one pair is not a number. Re-open the scheduler only with a table whose
+  selection count is stated and a mechanism that is not a within-run guess.
+
+  Kept from the branch, because they were measured free (236s in the new binary
+  against `main`'s 232s and 234s): streaming per-row output with a `[n/total]`
+  counter and a lane tag, and the closing statistics block.
