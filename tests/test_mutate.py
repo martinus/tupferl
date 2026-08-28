@@ -2301,6 +2301,31 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         self.assertEqual(2, len(listed), f"both files should be listed\n{said}")
         self.assertEqual(sorted(listed), listed, f"the skip lines are not in order\n{said}")
 
+    def test_a_batch_sweep_without_a_report_runs_and_writes_nothing(self) -> None:
+        """`if args.json:` around the per-row write, which every other test here
+        satisfies by always passing `--json`.
+
+        Found by the sweep: the guard becoming `if True:` survived, because no
+        test drives a batch run without one -- and there it would call
+        `_persist(..., None)` and die in `with_name` on a `NoneType`. The rows
+        still have to run and the verdicts still have to be reported; the only
+        thing absent is the file.
+        """
+        box = self.repository()
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with support.quiet() as spill:
+                code = mutate.main(
+                    ["--base", "HEAD", "--batch", "--no-baseline", "--workers", "1", "--no-killers"]
+                )
+        finally:
+            os.chdir(here)
+        said = spill.getvalue()
+        self.assertEqual(0, code, said)
+        self.assertIn("caught", said, f"no row was reported\n{said}")
+        self.assertEqual([], sorted(box.glob("*.json")), "a run with no --json wrote one anyway")
+
     def test_a_crash_during_a_write_leaves_the_previous_report(self) -> None:
         """`_persist` renames into place, so the report is never half-written.
 

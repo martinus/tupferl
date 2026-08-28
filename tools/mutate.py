@@ -2211,6 +2211,17 @@ def _resume_key(mutation: Mutation) -> tuple[str, int, int, str] | None:
     `None` for a row with no span -- a hand-written one -- and `sweep` reads
     that as "not recorded", so it runs again. Re-running a row is a cost;
     skipping one that never ran is a wrong answer.
+
+    **Both coordinates, and the mutants that swap them are equivalent.** A sweep
+    reports `span[0]` becoming `span[1]` and the reverse as survivors, and they
+    are: `generate` dedupes on `(span, new)`, so telling them apart needs two
+    rows sharing a start (or an end) and a `new` while differing in the other
+    coordinate -- an outer and an inner node beginning at the same offset and
+    rewritten to the same text. Nothing in this tree is that, and a fixture
+    built to be it would be testing the tuple rather than the resume. Written
+    here rather than as a row in `known-survivors.json` because that record
+    keys on `(path, operator, old, new)` and these three collide with unrelated
+    `0`/`1` literals elsewhere in this file -- absorbed, not read.
     """
     if mutation.span is None:
         return None
