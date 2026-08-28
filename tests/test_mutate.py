@@ -2173,6 +2173,28 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         self.assertFalse(self.kept(where), f"a whole-tree run kept a stale reason\n{said}")
         self.assertEqual(0, code, said)
 
+    def test_a_filtered_whole_tree_run_may_not_drop_one_either(self) -> None:
+        """`--all` narrowed by `--only` is a subset again, and the same loss.
+
+        Found by the sweep, which left `or` becoming `and` alive on the line:
+        with all three filters empty the two spellings agree, so the two tests
+        above cannot tell them apart -- and under the mutant `--all --only x
+        --accept` prunes the record on the evidence of one file. A third
+        direction rather than a fourth: `--operator` and `--skip-operator` sit
+        in the same `or` and are narrowing for the same reason.
+        """
+        box = self.repository()
+        where = self.bogus(box)
+        code, said = self.sweep(
+            box,
+            box / "r.json",
+            extra=["--accept", "--only", "tupferl/other.py"],
+            scope=["--all"],
+        )
+        self.assertTrue(self.kept(where), f"a filtered run deleted a reviewed reason\n{said}")
+        self.assertNotIn("match nothing", said, "and claimed the evidence for it")
+        self.assertEqual(0, code, said)
+
     def test_a_second_run_skips_the_file_already_recorded(self) -> None:
         """Resume, which is the reason any of this records per file.
 
