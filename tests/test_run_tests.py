@@ -298,6 +298,9 @@ class TestWhatABatchReports(unittest.TestCase):
         return self.run_it(body, *names)[1]
 
     def run_it(self, body: str, *names: str) -> tuple[dict[str, Any], int]:
+        return self.everything(body, *names)[:2]
+
+    def everything(self, body: str, *names: str) -> tuple[dict[str, Any], int, str]:
         box = Path(tempfile.mkdtemp(prefix="tupferl-batch-"))
         self.addCleanup(shutil.rmtree, box, True)
         (box / "tests_batch").mkdir()
@@ -306,13 +309,37 @@ class TestWhatABatchReports(unittest.TestCase):
         out = box / "report.json"
         sys.path.insert(0, str(box))
         try:
-            with support.quiet():
+            with support.quiet() as said:
                 code = run_tests.run_batch([f"tests_batch.test_it.{name}" for name in names], out)
         finally:
             sys.path.remove(str(box))
             for name in [m for m in sys.modules if m.startswith("tests_batch")]:
                 del sys.modules[name]
-        return dict(json.loads(out.read_text(encoding="utf-8"))), code
+        return dict(json.loads(out.read_text(encoding="utf-8"))), code, said.getvalue()
+
+    def spoken(self, body: str, *names: str) -> str:
+        """What the worker wrote to its own stderr, where a human reads it.
+
+        Only ids travel back to the parent in the JSON, on purpose -- shipping
+        the traceback too would print every failure twice -- so this stream is
+        the *only* place a batch's tracebacks and its own count exist. Nothing
+        read it, which is why three mutations that emptied it survived.
+        """
+        return self.everything(body, *names)[2]
+
+    def test_the_worker_says_how_many_tests_it_ran(self) -> None:
+        """`_Recorder.startTest` calls `super()` for this line and nothing else:
+        the parent counts from the `ran` list in the JSON, so dropping the
+        `super()` call leaves every other assertion in this class intact and
+        turns the worker's own log into "Ran 0 tests"."""
+        self.assertIn("Ran 2 tests", self.spoken(self.PASSES, "Green"))
+
+    def test_a_traceback_reaches_the_workers_own_stderr(self) -> None:
+        """Where it interleaves with the tests' output and a human reads it in
+        context. The summary carries only the first line."""
+        said = self.spoken(self.PASSES, "Red")
+        self.assertIn("RuntimeError: boom", said)
+        self.assertIn("test_fails", said)
 
     def test_a_batch_where_everything_passed_exits_zero(self) -> None:
         """The precondition for every status below: a worker that always
@@ -342,7 +369,7 @@ class TestWhatABatchReports(unittest.TestCase):
         out = box / "report.json"
         sys.path.insert(0, str(box))
         try:
-            with support.quiet():
+            with support.quiet() as spoken:
                 code = run_tests.run_batch(["tests_batch.test_it"], out)
         finally:
             sys.path.remove(str(box))
@@ -352,6 +379,12 @@ class TestWhatABatchReports(unittest.TestCase):
         self.assertTrue(written["unloadable"], "the fixture imported after all")
         self.assertEqual([], written["failures"], "nothing *failed*; the module never loaded")
         self.assertEqual(1, code)
+        # The *whole* traceback, once, where a human reads it in context -- the
+        # summary carries only its first line. This is a different print from
+        # the one a failing test's traceback comes out of, on the branch that
+        # runs only when something would not import.
+        self.assertIn("ModuleNotFoundError", spoken.getvalue())
+        self.assertIn("nothing_by_this_name", spoken.getvalue())
 
     PASSES = (
         "import unittest\n"
