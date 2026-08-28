@@ -79,6 +79,17 @@ SKIP = "s"
 #: something the prompt *does*, after which it asks again.
 ANSWERS = (LOCAL, REMOTE, BOTH, EDIT, SKIP)
 
+#: The three the per-file review ends on. It is the conflict prompt without
+#: `[b]` and `[e]`, which have nothing to offer where only one side moved:
+#: there is no second version to keep and nothing to merge. `[d]` behaves the
+#: same -- it shows and asks again.
+REVIEWS = (LOCAL, REMOTE, SKIP)
+
+#: How many lines of a one-sided diff the review prints before it stops and
+#: says how many are left. Same argument as `SHOWN_HUNKS`: the question has to
+#: stay on the screen. `[d]` prints the whole thing for the file that needs it.
+SHOWN_DIFF = 24
+
 #: How many conflicting hunks are shown before the display stops and says how
 #: many are left. A file with forty of them would otherwise scroll the question
 #: off the screen, which is the one line the user has to be able to see.
@@ -670,6 +681,122 @@ def ask(sides: Sides, source: TextIO, out: TextIO, repo: Path | None = None) -> 
 def always(choice: str) -> Settler:
     """The settler a flag is: this answer, for every conflict, without asking."""
     return lambda sides: Answer(choice)
+
+
+#: What one file's review is asked about, and what it answers with. `sync`
+#: builds the diff and names the direction, because it is what knows both; this
+#: module knows how to ask. The return is one of `REVIEWS`.
+Reviewer = Callable[["Change"], str]
+
+
+class Change(NamedTuple):
+    """One file the next sync would move, and which way it would move it.
+
+    Built by `sync`, which has the outcome, and handed here so that the prompt
+    depends on the *question* rather than on the sync engine -- the same
+    boundary `Sides` draws, and what keeps this module out of an import cycle
+    with `sync`.
+    """
+
+    name: PurePosixPath
+    #: The diff, oriented by `sync.pushes` before it gets here: the repository's
+    #: copy on `-`, this computer's on `+`. Same orientation `status --diff`
+    #: gives the same file, from the same rule, so the preview and the prompt
+    #: cannot describe one file differently.
+    diff: str
+
+
+def happening(change: Change, colour: bool) -> str:
+    """The sentence above the keys: what the sync is about to do to this file.
+
+    Said in words rather than left to the diff's `---`/`+++`, because the whole
+    complaint that produced this prompt was that a diff's direction is not
+    obvious enough to bet a dotfile on.
+    """
+    said = f"{change.name}: you changed this here; the repository has the older copy."
+    return paint(said, BOLD, colour)
+
+
+def offers(change: Change, colour: bool) -> str:
+    """The keys, worded for the direction.
+
+    The same two letters mean the same two *sides* in both directions -- `[l]`
+    is always this computer, `[r]` is always the repository, exactly as in the
+    conflict prompt -- and only the consequence differs. Spelling the
+    consequence out is what stops `[r]` reading as "reject": on an outbound file
+    it throws away the edit you just made, which is the one keypress here that
+    cannot be undone from inside tupferl.
+    """
+    keep = f"[{LOCAL}] store your version   [{REMOTE}] discard it, take the repository's"
+    return paint(f"  {keep}\n  [{DIFF}] show the whole diff   [{SKIP}] skip", BOLD, colour)
+
+
+def shown(change: Change) -> str:
+    """The diff, capped, with a line saying what was left out.
+
+    Capped rather than paged: a pager here would take over the terminal the
+    prompt is about to read a keypress from. `[d]` is the way to see all of it,
+    which is the same answer the conflict prompt gives for the same reason.
+    """
+    lines = change.diff.split("\n")
+    if len(lines) <= SHOWN_DIFF:
+        return change.diff
+    left = len(lines) - SHOWN_DIFF
+    return "\n".join([*lines[:SHOWN_DIFF], f"... and {left} more line(s); [{DIFF}] shows them"])
+
+
+def review(change: Change, source: TextIO, out: TextIO) -> str:
+    """Show one file's change and settle it with one keypress.
+
+    `ask`'s shape, and deliberately so: the two prompts are the same loop with
+    a different key set, and a user who has learned one has learned the other.
+    Anything not on offer re-asks; `[d]` prints the whole diff and re-asks; end
+    of input is `[s]`, the only answer that cannot lose something.
+    """
+    colour = coloured(out)
+    question = happening(change, colour)
+    keys = offers(change, colour)
+    while True:
+        print(f"\n{question}\n", file=out)
+        print(shown(change), file=out)
+        print(keys, file=out)
+        out.flush()
+
+        key = one_key(source)
+        if key == "":
+            print(f"{SKIP}   (end of input)", file=out)
+            return SKIP
+        if len(key) != 1:
+            print(f"{key!r} is not a key.", file=out)
+            continue
+        print(key, file=out)
+        if key in REVIEWS:
+            return key
+        if key == DIFF:
+            print(change.diff, file=out)
+            continue
+        print(f"{key!r} is not one of the keys.", file=out)
+
+
+def reviewing(auto: bool, ours: bool, theirs: bool, no_input: bool) -> Reviewer | None:
+    """The reviewer this run uses, or `None` for a run that asks about nothing.
+
+    **`None` rather than a reviewer that answers automatically**, so `settle`
+    keeps the outcome `resolve` produced instead of routing it through a table
+    that would have to name the same action back. A one-sided change already
+    has a right answer; the prompt exists to let a person disagree with it, and
+    a run with nobody there should not be re-deciding it through a second path.
+
+    Every flag that already means "do not ask me" turns it off, and so does a
+    stdin that is not a terminal -- `answering`'s reasoning, for the same
+    reason: `init` runs a sync, so does CI, and neither has anyone to press a
+    key. `--ours` and `--theirs` are included because a run that has answered
+    every conflict in advance has said what it wants; stopping it on a
+    one-sided change would make those flags mean less than they say.
+    """
+    if auto or ours or theirs or no_input or not sys.stdin.isatty():
+        return None
+    return lambda change: review(change, sys.stdin, sys.stdout)
 
 
 def answering(no_input: bool, ours: bool, theirs: bool, repo: Path | None = None) -> Settler:

@@ -504,14 +504,11 @@ def rendered(name: PurePosixPath, found: Blob, stored: Blob, action: str) -> str
     # There is no single direction to show, so the order is left alone and the
     # absence is *said* rather than implied by an arrow that would be a guess.
     two_sided = rule.to_repo == rule.to_home
-    # `and not rule.to_home`, not `rule.to_repo` alone. A clean merge writes
-    # *both* sides, so `to_repo` is true for it -- and reversing there would put
-    # the repository on `-` for a merge while a conflict, which writes neither,
-    # kept `$HOME` there. Two displays for the one case that has no direction,
-    # differing by which of two two-sided outcomes it happened to be.
-    text = merge.unified(
-        str(name), found.data, stored.data, reverse=rule.to_repo and not rule.to_home
-    )
+    # `sync.pushes`, not the condition written out here. The per-file review
+    # asks the same question of the same action to say which way the file is
+    # travelling, and a diff and a prompt that disagree about one file is the
+    # worst of the bugs available, because each looks right alone.
+    text = merge.unified(str(name), found.data, stored.data, reverse=sync.pushes(action))
     if two_sided and text:
         text = f"{name}: both sides changed, so this is the difference, not a direction.\n{text}"
     if found.executable == stored.executable:
