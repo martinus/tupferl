@@ -225,7 +225,7 @@ def relative(wanted: str | Path, home: Path) -> PurePosixPath:
 
     raise TupferlError(
         f"{path} is outside {home}, so it was never managed; name a file under it, "
-        f"or a name `tupferl list` prints."
+        f"or a name `tupferl status --all` prints."
     )
 
 

@@ -517,7 +517,7 @@ class TestTurningWhatWasTypedIntoAName(unittest.TestCase):
             self.standing("/tmp", "/etc/hostname")
         said = str(caught.exception)
         self.assertIn("name a file under it", said)
-        self.assertIn("tupferl list", said)
+        self.assertIn("tupferl status --all", said)
 
 
 class TestWhatMayBeMerged(unittest.TestCase):

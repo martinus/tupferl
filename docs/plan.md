@@ -167,9 +167,7 @@ Keep the command set this small:
 | `tupferl add <path>...` | Start managing files. `--host` puts them in the host overlay. |
 | `tupferl remove <path>` | Stop managing a file. Keeps the file in `$HOME`. |
 | `tupferl sync` | Pull, merge both directions, resolve, commit, push. The main command. |
-| `tupferl status` | Show what changed locally and remotely. Never modifies anything. |
-| `tupferl diff [path]` | Show diffs between `$HOME` and the repository. |
-| `tupferl list` | List managed files. Mark host-overlay files. |
+| `tupferl status [path] [--all] [--diff]` | What the next sync would do. Never modifies anything. `--all` shows every managed file rather than only the changed ones, marking host-overlay ones; `--diff` shows the lines that differ. Was three verbs — `status`, `list` and `diff` — until they were folded: all three read the same walk. |
 | `tupferl doctor` | Check git presence, remote access, permissions, dangling state. |
 
 No other commands in version 1.
@@ -349,7 +347,7 @@ next starts.
    `tools/mutate.py` ported from woswoar and proven against a
    deliberate one-line bug, Hypothesis profiles, and the CI gate
    job. The test infrastructure exists before the first feature.
-2. **Repo management:** `init`, `add`, `remove`, `list`; git calls
+2. **Repo management:** `init`, `add`, `remove`, listing; git calls
    through subprocess.
 3. **Sync engine, no conflicts:** snapshots, change detection,
    auto-resolution for one-sided changes, commit + push + pull.

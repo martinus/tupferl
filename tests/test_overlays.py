@@ -329,15 +329,21 @@ class TestTwoHostsOverrideTheSameFile(support.TwoMachines):
         # untouched either way -- the same bytes for opposite reasons.
         self.assertEqual(0, self.second.call("sync"))
         self.assertEqual(0, self.first.call("sync"))
-        done = self.first.run("list")
+        done = self.first.run("status", "--all")
         self.assertIn("host  .bashrc", done.stdout)
-        self.assertIn("1 managed, 1 from this host's overlay", done.stdout)
+        self.assertIn(
+            "1 file managed, 0 to change, 0 in conflict, 1 from this host's overlay",
+            done.stdout,
+        )
 
     def test_neither_overlay_is_offered_to_the_other_machine_as_managed(self) -> None:
         """`machine-a`'s repository holds `machine-b`'s overlay after the sync.
         `manifest.managed` must not return it, or `machine-a` would write
         `machine-b`'s file into its own `$HOME` under the same name."""
         self.assertEqual(0, self.first.call("sync"))
-        done = self.first.run("list")
+        done = self.first.run("status", "--all")
         self.assertEqual(1, done.stdout.count(".bashrc"), done.stdout)
-        self.assertIn("1 managed, 1 from this host's overlay", done.stdout)
+        self.assertIn(
+            "1 file managed, 0 to change, 0 in conflict, 1 from this host's overlay",
+            done.stdout,
+        )

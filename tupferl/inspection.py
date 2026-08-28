@@ -57,8 +57,15 @@ SAYS: dict[str, str] = {
 }
 
 
-def status() -> int:
+def status(everything: bool = False, diffs: bool = False, wanted: str | None = None) -> int:
     """Print what changed on each side, and how far the remote has moved.
+
+    **One verb for the three questions that only look**, because they are one
+    walk. `--diff` shows the lines rather than a summary of them, and `--all`
+    stops hiding the files with nothing to report -- neither is a different
+    question from "what would the next sync do", which is why they were folded
+    in: `status`, `diff` and `list` all read `sync.examine`, and three verbs
+    over one walk is three things to learn instead of one.
 
     Always 0. `status` reports; it does not judge -- a conflict is a fact about
     the machine rather than a failure of this command, and the exit status that
@@ -66,6 +73,8 @@ def status() -> int:
     command a script would use for that. A status that exited 1 on a conflict
     would also exit 1 on a shell prompt that runs it every time.
     """
+    if diffs:
+        return difference(wanted)
     repo, config = manage.open_repo()
     host = paths.hostname(config.hostname)
     home = paths.home()
@@ -91,7 +100,9 @@ def status() -> int:
         lines.append(manage.NOTHING_MANAGED)
         print("\n".join(lines))
         return 0
-    per_file = sides(readings)
+    readings = narrowed(readings, wanted, home)
+    marked = overlays(repo, host) if everything else None
+    per_file = sides(readings, marked)
     lines.extend(per_file)
     if per_file:
         # A blank line only when there is something above it to separate from.
@@ -99,17 +110,55 @@ def status() -> int:
         # with an empty line, which reads as output having gone missing.
         lines.append("")
     lines.extend(remotely(repo))
-    lines.append(summary(readings))
+    lines.append(summary(readings, marked))
     print("\n".join(lines))
     return 0
 
 
-def sides(readings: list[sync.Reading]) -> list[str]:
-    """One line per managed file that has something to report, aligned.
+def narrowed(readings: list[sync.Reading], wanted: str | None, home: Path) -> list[sync.Reading]:
+    """`readings`, limited to one file when the caller named one.
 
-    Silent about the unchanged ones, which are most of them on most machines --
-    `sync.report` is silent for the same reason, and a status that printed forty
-    lines saying nothing happened would bury the one that mattered.
+    One definition for both shapes of `status`. Written twice first -- once in
+    the summary path and once in `difference` -- and the mutation table said so
+    before a reader did: a row anchored on the filter matched in two places,
+    which is the tool reporting duplication as an ambiguity.
+
+    The name goes through `manifest.relative`, so `.bashrc`, `~/.bashrc` and an
+    absolute path all arrive as the same thing -- see its docstring for why a
+    tool that prints `.bashrc` has to take `.bashrc` back.
+    """
+    if wanted is None:
+        return readings
+    named = manifest.relative(wanted, home)
+    found = [reading for reading in readings if reading.name == named]
+    if not found:
+        raise TupferlError(f"{named} is not managed; `tupferl status --all` lists what is.")
+    return found
+
+
+def overlays(repo: Path, host: str) -> set[PurePosixPath]:
+    """The names this host overrides, asked of the code that decides it.
+
+    `Reading.where` points at the overlay when there is one, so the answer is
+    derivable from a path comparison -- and derived that way it is a second
+    place that knows the repository's layout. `manifest.managed` already
+    resolves shared against overlay and says which won.
+    """
+    return {item.name for item in manifest.managed(repo, host) if item.host}
+
+
+def sides(readings: list[sync.Reading], marked: set[PurePosixPath] | None) -> list[str]:
+    """One line per managed file, aligned. `marked` is `--all`.
+
+    `None` means "only what has something to report", which is `status` on its
+    own: silent about the unchanged ones, which are most of them on most
+    machines -- `sync.report` is silent for the same reason, and a status that
+    printed forty lines saying nothing happened would bury the one that
+    mattered.
+
+    A set of overridden names means "show everything, and mark those" -- the
+    inventory `list` used to print, with each file's state beside it, which is
+    the half `list` could not say.
 
     The column is measured over the names it will actually print, not over every
     managed name: a padding computed from a file with nothing to say leaves a
@@ -117,15 +166,30 @@ def sides(readings: list[sync.Reading]) -> list[str]:
     still -- it is wrong for `.bashrc` and wrong for
     `.config/nvim/lua/plugins/telescope.lua`.
     """
-    shown = [reading for reading in readings if reading.outcome.action != sync.UNCHANGED]
+    shown = (
+        list(readings)
+        if marked is not None
+        else [reading for reading in readings if reading.outcome.action != sync.UNCHANGED]
+    )
     if not shown:
         return []
     width = max(len(str(reading.name)) for reading in shown)
-    return [f"{reading.name!s:<{width}}  {tells(reading.outcome)}" for reading in shown]
+    if marked is None:
+        return [f"{reading.name!s:<{width}}  {tells(reading.outcome)}" for reading in shown]
+    return [
+        f"{'host' if reading.name in marked else '    '}  "
+        f"{reading.name!s:<{width}}  {tells(reading.outcome)}"
+        for reading in shown
+    ]
 
 
 def tells(outcome: sync.Outcome) -> str:
-    """What one file's outcome says, as the second column of a status line."""
+    """What one file's outcome says, as the last column of a status line."""
+    if outcome.action == sync.UNCHANGED:
+        # Only reachable under `--all`; the plain status filters these out
+        # before it gets here. A blank would leave the column ragged and read
+        # as output that went missing.
+        return "unchanged"
     if outcome.action == sync.REFUSED:
         return f"skipped: {outcome.why}"
     if outcome.sides is not None:
@@ -137,16 +201,26 @@ def tells(outcome: sync.Outcome) -> str:
     return SAYS[outcome.action]
 
 
-def summary(readings: list[sync.Reading]) -> str:
+def summary(readings: list[sync.Reading], marked: set[PurePosixPath] | None = None) -> str:
     """The tail line, counted the way `sync.report`'s is.
 
     Through `sync.changed` rather than by listing which actions count as a
     change here, so "how many files would this sync touch?" has one definition
     -- the one whose `RULES` row also decides whether anything is written.
+
+    Under `--all` it also counts the overlay, which is the one thing the old
+    `list` said that nothing else does: how many of these files this machine
+    has its own version of. Only there, because the plain status shows the
+    files that are *changing* and an overlay count over that subset answers a
+    question nobody asked.
     """
     unsettled = sum(1 for reading in readings if reading.outcome.sides is not None)
     moving = sum(1 for reading in readings if sync.changed(reading.outcome))
-    return f"{manage.count(len(readings))} managed, {moving} to change, {unsettled} in conflict"
+    line = f"{manage.count(len(readings))} managed, {moving} to change, {unsettled} in conflict"
+    if marked is None:
+        return line
+    overridden = sum(1 for reading in readings if reading.name in marked)
+    return f"{line}, {overridden} from this host's overlay"
 
 
 def remotely(repo: Path) -> list[str]:
@@ -234,10 +308,7 @@ def difference(wanted: str | None) -> int:
         return 0
 
     named = None if wanted is None else manifest.relative(wanted, home)
-    if named is not None:
-        readings = [reading for reading in readings if reading.name == named]
-        if not readings:
-            raise TupferlError(f"{named} is not managed; `tupferl list` shows what is.")
+    readings = narrowed(readings, wanted, home)
 
     # A list rather than a counter. `shown` was an `int` that nothing read the
     # value of -- only its truthiness -- so `+= 1` could become `-= 1` or `+= 2`

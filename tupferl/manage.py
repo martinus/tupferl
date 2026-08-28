@@ -365,9 +365,9 @@ def remove(wanted: str, from_host: bool) -> int:
     gone = [where / name for where in searched if (where / name).is_file()]
     if not gone:
         raise TupferlError(
-            f"{name} is not in {host}'s overlay; `tupferl list` marks the files that are."
+            f"{name} is not in {host}'s overlay; `tupferl status --all` marks the files that are."
             if from_host
-            else f"{name} is not managed; `tupferl list` shows what is."
+            else f"{name} is not managed; `tupferl status --all` lists what is."
         )
     for where in gone:
         where.unlink()
@@ -461,17 +461,3 @@ def prune(where: Path, repo: Path) -> None:
     while where != repo and repo in where.parents and not any(where.iterdir()):
         where.rmdir()
         where = where.parent
-
-
-def listing() -> int:
-    """Print what is managed, marking the files this host overrides."""
-    repo, config = open_repo()
-    found = manifest.managed(repo, paths.hostname(config.hostname))
-    if not found:
-        print(NOTHING_MANAGED)
-        return 0
-    for item in found:
-        print(f"{'host' if item.host else '    '}  {item.name}")
-    hosts = sum(1 for item in found if item.host)
-    print(f"\n{len(found)} managed, {hosts} from this host's overlay")
-    return 0

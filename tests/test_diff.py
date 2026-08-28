@@ -60,7 +60,7 @@ class Machine(support.TwoMachines):
         because plan §4 does not ask for one: the status of a command whose job
         is to show something should say whether it could, not what it found.
         """
-        status, said = self.second.say("diff", *args)
+        status, said = self.second.say("status", "--diff", *args)
         self.assertEqual(0, status, said)
         return said
 
@@ -315,7 +315,7 @@ class TestNamingOneFile(Machine):
         that already worked. The real one is below.
         """
         self.apart()
-        status, said = self.second.say("diff", "~/.bashrc")
+        status, said = self.second.say("status", "--diff", "~/.bashrc")
         self.assertEqual(0, status, said)
         self.assertIn("-edited on this computer", said)
 
@@ -328,25 +328,31 @@ class TestNamingOneFile(Machine):
         bug survived a suite that drives everything from a sandbox.
         """
         self.apart()
+        # The *name* column, which is no longer the last one: a row under
+        # `--all` is `[host]  name  state`, and the state is several words for
+        # anything that is changing. Taking the first field that is not the
+        # overlay marker is what "the name this listing prints" means now.
         listed = [
-            row.split()[-1] for row in self.second.say("list")[1].splitlines() if ".bashrc" in row
+            next(field for field in row.split() if field != "host")
+            for row in self.second.say("status", "--all")[1].splitlines()
+            if ".bashrc" in row
         ]
         self.assertEqual([".bashrc"], listed, "the fixture no longer prints the name under test")
 
         with mock.patch.object(Path, "cwd", return_value=self.tmp):
-            status, said = self.second.say("diff", ".bashrc")
+            status, said = self.second.say("status", "--diff", ".bashrc")
         self.assertEqual(0, status, said)
         self.assertIn("-edited on this computer", said)
 
     def test_an_unmanaged_file_is_an_error_that_names_the_way_out(self) -> None:
         self.second.write(".zshrc", "setopt nomatch\n")
-        status, said = self.second.say("diff", str(self.second.home / ".zshrc"))
+        status, said = self.second.say("status", "--diff", str(self.second.home / ".zshrc"))
         self.assertEqual(2, status, said)
         self.assertIn("is not managed", said)
-        self.assertIn("tupferl list", said)
+        self.assertIn("tupferl status --all", said)
 
     def test_a_path_outside_home_is_refused_before_anything_is_read(self) -> None:
-        status, said = self.second.say("diff", "/etc/hostname")
+        status, said = self.second.say("status", "--diff", "/etc/hostname")
         self.assertEqual(2, status, said)
         self.assertIn("is outside", said)
 
@@ -392,5 +398,5 @@ class TestAMachineWithNothingManaged(support.SandboxCase):
         with support.quiet():
             self.assertEqual(0, main(["init", str(remote)]))
         with support.quiet() as said:
-            self.assertEqual(0, main(["diff"]))
+            self.assertEqual(0, main(["status", "--diff"]))
         self.assertIn("nothing is managed yet", said.getvalue())

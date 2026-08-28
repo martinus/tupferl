@@ -497,7 +497,7 @@ class TestList(Machine):
         self.init()
 
     def test_an_empty_repository_says_so(self) -> None:
-        done = self.run_cli("list")
+        done = self.run_cli("status", "--all")
         self.assertEqual(0, done.returncode)
         self.assertIn("nothing is managed", done.stdout)
 
@@ -505,21 +505,21 @@ class TestList(Machine):
         self.write(self.home / ".bashrc", "x")
         self.write(self.home / ".config" / "nvim" / "init.lua", "x")
         self.run_cli("add", str(self.home / ".bashrc"), str(self.home / ".config"))
-        done = self.run_cli("list")
+        done = self.run_cli("status", "--all")
         self.assertIn(".bashrc", done.stdout)
         self.assertIn(".config/nvim/init.lua", done.stdout)
-        self.assertIn("2 managed", done.stdout)
+        self.assertIn("2 files managed", done.stdout)
 
     def test_the_settings_file_is_not_listed_as_managed(self) -> None:
         """`init` committed `.tupferl/config.toml`. It is tupferl's, not a
         dotfile, and listing it would also make it removable by name."""
-        done = self.run_cli("list")
+        done = self.run_cli("status", "--all")
         self.assertNotIn("config.toml", done.stdout)
 
     def test_an_overlay_file_is_marked(self) -> None:
         self.write(self.home / ".gitconfig", "[user]\n")
         self.run_cli("add", "--host", str(self.home / ".gitconfig"))
-        done = self.run_cli("list")
+        done = self.run_cli("status", "--all")
         self.assertIn("host  .gitconfig", done.stdout)
         self.assertIn("1 from this host's overlay", done.stdout)
 
@@ -577,7 +577,7 @@ class TestTwoMachines(support.SandboxCase):
         theirs.parent.mkdir(parents=True, exist_ok=True)
         theirs.write_text(support.gitconfig("desktop"), encoding="utf-8")
 
-        done = support.run_cli(["list"], self.envs["laptop"])
+        done = support.run_cli(["status", "--all"], self.envs["laptop"])
         self.assertIn("nothing is managed", done.stdout)
 
     def test_an_overlay_replaces_the_shared_file_for_that_host(self) -> None:
@@ -588,7 +588,7 @@ class TestTwoMachines(support.SandboxCase):
         mine.parent.mkdir(parents=True, exist_ok=True)
         mine.write_text(support.gitconfig("laptop"), encoding="utf-8")
 
-        done = support.run_cli(["list"], self.envs["laptop"])
+        done = support.run_cli(["status", "--all"], self.envs["laptop"])
         self.assertEqual(1, done.stdout.count(".gitconfig"), done.stdout)
         self.assertIn("host  .gitconfig", done.stdout)
 
@@ -628,16 +628,6 @@ class TestTheExitStatusEachCommandReturns(Machine):
         self.quietly(lambda: manage.init(str(self.remote)))
         self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False))
         self.assertEqual(0, self.quietly(lambda: manage.remove(str(self.home / ".bashrc"), False)))
-
-    def test_list_when_empty(self) -> None:
-        self.quietly(lambda: manage.init(str(self.remote)))
-        self.assertEqual(0, self.quietly(manage.listing))
-
-    def test_list_with_files(self) -> None:
-        """The other branch of `listing`, and the one that counts the overlay."""
-        self.quietly(lambda: manage.init(str(self.remote)))
-        self.quietly(lambda: manage.add([str(self.home / ".bashrc")], False))
-        self.assertEqual(0, self.quietly(manage.listing))
 
 
 class TestWhatEachCommandPrints(Machine):
@@ -740,8 +730,11 @@ class TestWhatEachCommandPrints(Machine):
 
     def test_list_counts_what_it_showed(self) -> None:
         self.run_cli("add", str(self.home / ".bashrc"))
-        done = self.run_cli("list")
-        self.assertIn("1 managed, 0 from this host's overlay", done.stdout)
+        done = self.run_cli("status", "--all")
+        self.assertIn(
+            "1 file managed, 0 to change, 0 in conflict, 0 from this host's overlay",
+            done.stdout,
+        )
 
     def test_list_counts_the_overlay_separately(self) -> None:
         """0 and 1 rather than 1 and 1: with equal counts a swapped pair still
@@ -749,8 +742,11 @@ class TestWhatEachCommandPrints(Machine):
         self.write(self.home / ".gitconfig-extra", "x")
         self.run_cli("add", str(self.home / ".bashrc"))
         self.run_cli("add", "--host", str(self.home / ".gitconfig-extra"))
-        done = self.run_cli("list")
-        self.assertIn("2 managed, 1 from this host's overlay", done.stdout)
+        done = self.run_cli("status", "--all")
+        self.assertIn(
+            "2 files managed, 0 to change, 0 in conflict, 1 from this host's overlay",
+            done.stdout,
+        )
 
 
 class TestCommitMessages(unittest.TestCase):
@@ -1158,7 +1154,7 @@ class TestRemoveTakesTheNameListPrints(support.TwoMachines):
         """The working directory is set away from `$HOME` deliberately: from
         `$HOME` the old cwd-relative reading happened to be right, which is why
         a suite that drives everything from a sandbox never saw this."""
-        listed = self.first.say("list")[1]
+        listed = self.first.say("status", "--all")[1]
         self.assertIn(".bashrc", listed)
 
         with mock.patch.object(Path, "cwd", return_value=self.tmp):

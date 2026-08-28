@@ -29,8 +29,15 @@ No template language. No `dot_` prefix or name mangling. No hooks, no scripts,
 no secrets managers. `~/.bashrc` is stored as `.bashrc`, and that is the whole
 mapping.
 
-Eight commands: `init`, `add`, `remove`, `list`, `sync`, `status`, `diff`,
-`doctor`.
+Six commands. Four act — `init`, `add`, `remove`, `sync`. `doctor` checks that
+this machine is set up. And `status` answers every question that only looks,
+because they are one walk of your files:
+
+```sh
+tupferl status              # what would change
+tupferl status --all        # every managed file, with its state
+tupferl status --diff       # the lines that differ
+```
 
 **Copies, not symlinks.** The repository holds a copy of each file. Symlinks
 break with programs that rewrite their config, and a copy is what makes a real
