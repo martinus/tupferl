@@ -1624,6 +1624,103 @@ class TestWhichFileASweepReachesFirst(unittest.TestCase):
         self.assertEqual(2, len(reached), "a file's rows were split rather than kept together")
 
 
+class TestWhatTheGeneratedTableSaysBeforeItRuns(TestWhichFileASweepReachesFirst):
+    """`generated`'s filtering and its four printed lines.
+
+    It reuses the repository above, and inherits nothing else: everything here
+    is about what `--only`, `--limit` and a file nothing imports *say*, which
+    the ordering test does not read. Twenty-two mutations of this function
+    survived a sweep, and the printed lines were most of them -- a table built
+    from the wrong files still has rows in it, and a cap applied silently reads
+    as "everything was covered".
+    """
+
+    def table(self, box: Path, **over: Any) -> tuple[list[Mutation], str]:
+        args = argparse.Namespace(
+            **{
+                "all": False,
+                "base": "HEAD",
+                "only": [],
+                "limit": 0,
+                "operator": [],
+                "skip_operator": [],
+                **over,
+            }
+        )
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with support.quiet() as said:
+                return mutate.generated(args), said.getvalue()
+        finally:
+            os.chdir(here)
+
+    def test_only_keeps_every_pattern_that_matches_rather_than_the_overlap(self) -> None:
+        """**Two patterns, and that is the fixture.** With one, `any` and `all`
+        agree -- so a filter that required a path to match *every* pattern
+        passed, and `--only a --only b` (which the tool's own help offers as
+        repeatable) would have produced an empty table and the refusal below.
+        """
+        box = self.repository()
+        table, _ = self.table(box, only=["wee", "many"])
+        self.assertEqual({"tupferl/many.py", "tupferl/wee.py"}, {row.path for row in table})
+
+    def test_only_drops_what_it_does_not_name(self) -> None:
+        """The other half: a filter that kept everything passes the test above."""
+        box = self.repository()
+        table, _ = self.table(box, only=["wee"])
+        self.assertEqual({"tupferl/wee.py"}, {row.path for row in table})
+
+    def test_a_selection_matching_nothing_refuses_rather_than_runs_empty(self) -> None:
+        """An empty table is a sweep that reports every row caught, because
+        there are none -- the green run of nothing again, one tool along."""
+        box = self.repository()
+        with self.assertRaises(SystemExit) as raised:
+            self.table(box, only=["no-such-file"])
+        self.assertIn("nothing mutable changed", str(raised.exception))
+
+    def test_it_says_how_many_files_lines_and_mutants(self) -> None:
+        """The header a reader uses to tell a table of three rows from one of
+        three hundred before waiting for either."""
+        box = self.repository()
+        table, said = self.table(box)
+        self.assertIn("2 file(s)", said)
+        self.assertIn(f"-> {len(table)} mutants", said)
+
+    def test_a_file_nothing_imports_says_its_rows_run_the_whole_suite(self) -> None:
+        """`targets_for` finds no importer, so the rows fall back to the whole
+        suite -- which is much slower and is a fact about the *tree*, not about
+        the change. Silence here reads as a normal table.
+
+        The fixture is the repository as it stands: nothing imports either
+        module, so both rows take the fallback.
+        """
+        box = self.repository()
+        table, said = self.table(box)
+        self.assertIn("nothing imports tupferl/wee.py", said)
+        self.assertTrue(
+            all(row.tests == mutate.WHOLE_SUITE for row in table),
+            "the fixture no longer takes the fallback, so the notice proves nothing",
+        )
+
+    def test_a_capped_table_says_what_it_dropped_and_from_where(self) -> None:
+        """A silent cap reads as "everything was covered", and the count looks
+        right either way. Per file, because which file lost its rows is what
+        decides whether the cap mattered."""
+        box = self.repository()
+        table, said = self.table(box, limit=2)
+        self.assertEqual(2, len(table))
+        self.assertIn("--limit 2", said)
+        self.assertIn("not run", said)
+        self.assertIn("tupferl/many.py", said)
+
+    def test_an_uncapped_table_says_nothing_about_a_cap(self) -> None:
+        """The other half. A line that always appears is one nobody reads."""
+        box = self.repository()
+        _, said = self.table(box)
+        self.assertNotIn("not run", said)
+
+
 class TestABatchSweepEndToEnd(unittest.TestCase):
     """`--batch` driven all the way through `main`, in a repository of its own.
 
@@ -2921,6 +3018,270 @@ class TestWhenARecordedSweepGoesRed(unittest.TestCase):
         report = self.report("caught")
         stale = mutate.Survivors([], [], ["deadbeefdeadbeef"])
         self.assertEqual(0, mutate._status(report, stale))
+
+
+class TestReadingBackAReportToResumeFrom(unittest.TestCase):
+    """`_recorded`: the rows a resumed sweep must not re-run or lose.
+
+    Everything about it is a *reconstruction* -- a `Mutation` and a `Verdict`
+    rebuilt from JSON -- and the rebuilt rows go on to `_summarise` and the exit
+    status. A field dropped here is a survivor that goes unmentioned in a run
+    that exits 0; a span rebuilt wrong is a row re-applied at the wrong offset.
+
+    Reached only through a real resumed batch before this, which is why six of
+    its mutations survived: that path asserts the *count* of rows carried over,
+    and every one of them is wrong in the same way.
+    """
+
+    def saved(self, payload: object) -> Path:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-resume-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        where = box / "report.json"
+        where.write_text(json.dumps(payload), encoding="utf-8")
+        return where
+
+    ROW: typing.ClassVar[dict[str, Any]] = {
+        "label": "a branch",
+        "path": "tupferl/sync.py",
+        "old": "if a:",
+        "new": "if True:",
+        "tests": "tests.test_sync",
+        "span": [40, 45],
+        "operator": "branch",
+        "outcome": "survived",
+        "detail": "nothing noticed",
+        "killer": "",
+    }
+
+    def test_every_field_comes_back_the_way_it_went_in(self) -> None:
+        """Asserted field by field rather than by count. The resume path counts
+        rows, and a row rebuilt with the wrong span, the wrong operator or the
+        wrong outcome is still one row."""
+        (found,) = mutate._recorded(self.saved({"results": [self.ROW]}))
+        self.assertEqual("a branch", found.mutation.label)
+        self.assertEqual("tupferl/sync.py", found.mutation.path)
+        self.assertEqual("if a:", found.mutation.old)
+        self.assertEqual("if True:", found.mutation.new)
+        self.assertEqual("tests.test_sync", found.mutation.tests)
+        self.assertEqual("branch", found.mutation.operator)
+        self.assertEqual("survived", found.verdict.outcome)
+        self.assertEqual("nothing noticed", found.verdict.detail)
+
+    def test_the_span_comes_back_as_the_pair_it_was(self) -> None:
+        """Both ends, and in order. `_applied` splices `new` at exactly these
+        offsets, so a pair rebuilt as `(start, start)` or reversed edits the
+        wrong bytes of the file -- and the row still looks like the row it
+        claims to be."""
+        (found,) = mutate._recorded(self.saved({"results": [self.ROW]}))
+        self.assertEqual((40, 45), found.mutation.span)
+
+    def test_a_row_with_no_span_keeps_none(self) -> None:
+        """A hand-written row carries no span and is applied by `replace`
+        instead. Rebuilt as `(0, 0)` it would splice at the top of the file."""
+        row = {**self.ROW}
+        del row["span"]
+        (found,) = mutate._recorded(self.saved({"results": [row]}))
+        self.assertIsNone(found.mutation.span)
+
+    def test_no_file_and_no_path_are_both_nothing_to_resume_from(self) -> None:
+        """`None` is "resume was not asked for"; a missing file is "the run that
+        would have written one never got there". Both mean the same thing to the
+        caller, and neither may raise -- this runs before the sweep starts."""
+        self.assertEqual([], mutate._recorded(None))
+        self.assertEqual([], mutate._recorded(Path("/nonexistent/report.json")))
+
+    def test_a_half_written_report_resumes_as_nothing(self) -> None:
+        """Re-running everything is the safe reading of a crash mid-write. The
+        dangerous one is a partial list read as complete, which drops whatever
+        the crash cut off -- silently, and in the direction that flatters."""
+        box = Path(tempfile.mkdtemp(prefix="tupferl-resume-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        broken = box / "report.json"
+        broken.write_text('{"results": [{"label": "cut off"', encoding="utf-8")
+        self.assertEqual([], mutate._recorded(broken))
+
+    def test_a_row_missing_a_field_takes_the_whole_file_with_it(self) -> None:
+        """`KeyError` is caught, so a report from an older shape resumes as
+        nothing rather than as a partial list nobody can tell is partial."""
+        self.assertEqual([], mutate._recorded(self.saved({"results": [{"label": "only this"}]})))
+
+
+class TestWhatTheKillersCacheWritesDown(unittest.TestCase):
+    """`Killers.save`. The cache is read back by `Killers.__init__`, and every
+    test of it went through a round trip -- which passes against a `save` that
+    wrote nothing at all if the same process still holds the dict."""
+
+    def cache(self, where: Path | None) -> mutate.Killers:
+        made = mutate.Killers(where)
+        made.learn(
+            mutate.Report(
+                [
+                    mutate.Result(
+                        Mutation("a row", "tupferl/sync.py", "a", "b", "tests.test_sync"),
+                        mutate.Verdict("caught", "", "tests.test_sync.T.test_it"),
+                    )
+                ]
+            )
+        )
+        return made
+
+    def test_it_writes_a_file_a_later_run_can_read(self) -> None:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-killers-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        # A directory that does not exist yet: `sweeps/` is gitignored, so the
+        # first run on a fresh clone is always this case.
+        where = box / "sweeps" / "killers.json"
+        self.cache(where).save()
+        self.assertTrue(where.is_file(), "nothing was written")
+        written = json.loads(where.read_text(encoding="utf-8"))
+        self.assertEqual(["tests.test_sync.T.test_it"], list(written["killers"].values()))
+
+    def test_saving_a_second_time_over_an_existing_directory_is_fine(self) -> None:
+        """`exist_ok=True`. Every run after the first is this case, and without
+        it the second sweep on a machine dies at the end having done all the
+        work."""
+        box = Path(tempfile.mkdtemp(prefix="tupferl-killers-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        where = box / "sweeps" / "killers.json"
+        self.cache(where).save()
+        self.cache(where).save()
+        self.assertTrue(where.is_file())
+
+    def test_no_path_writes_nothing_and_does_not_raise(self) -> None:
+        """`--no-killers` and every spec-file run. A `save` that tried anyway
+        would take down a sweep that had already finished its work."""
+        self.cache(None).save()
+
+
+class TestWhatAcceptWritesDown(unittest.TestCase):
+    """`_accept` and `_report_known`, which had ten hand-written mutants between
+    them and passed all of them.
+
+    The hand table asked what `sort_survivors` *answers*. Nothing asked what
+    `--accept` **writes** or what a run **says**, and a generated sweep of the
+    same change found twenty-six mutations no test could see -- the file never
+    being written at all among them. That is the argument for the generated
+    sweep in one paragraph: a table written by the person who wrote the code
+    tests the part they were thinking about.
+    """
+
+    def setUp(self) -> None:
+        self.box = Path(tempfile.mkdtemp(prefix="tupferl-accept-"))
+        self.addCleanup(shutil.rmtree, self.box, True)
+        self.where = self.box / "known-survivors.json"
+        patch = mock.patch.object(mutate, "KNOWN", self.where)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def survivor(self, label: str, old: str = "a", new: str = "b") -> mutate.Result:
+        return mutate.Result(
+            Mutation(label, "tupferl/sync.py", old, new, "tests.test_sync", operator="branch"),
+            mutate.Verdict("survived", ""),
+        )
+
+    def accept(self, results: list[mutate.Result], accepted: dict[str, mutate.Accepted]) -> str:
+        sorted_out = mutate.sort_survivors(results, accepted)
+        with support.quiet() as said:
+            mutate._accept(sorted_out, accepted)
+        return said.getvalue()
+
+    def written(self) -> dict[str, dict[str, object]]:
+        return dict(json.loads(self.where.read_text(encoding="utf-8")))
+
+    def test_a_new_survivor_is_written_with_a_todo_and_a_count_of_one(self) -> None:
+        """The file is the whole product of the flag, and nothing read it: the
+        `write_text` call could be deleted outright and every other test here
+        still passed."""
+        row = self.survivor("a branch nobody checks")
+        self.accept([row], {})
+        found = self.written()
+        self.assertEqual([mutate._key(row.mutation)], list(found))
+        self.assertEqual(1, found[mutate._key(row.mutation)]["seen"])
+        why = found[mutate._key(row.mutation)]["why"]
+        assert isinstance(why, str)
+        self.assertTrue(why.startswith("TODO"), why)
+        self.assertIn("a branch nobody checks", why, "the row does not say which mutation it is")
+
+    def test_a_second_row_of_a_known_shape_raises_the_count_and_keeps_the_reason(self) -> None:
+        """The 125-row case, on the writing side. The count rises by exactly one
+        and the reason is *not* rewritten: what changed is how many there are,
+        not what anybody decided about them."""
+        row = self.survivor("the same edit twice")
+        key = mutate._key(row.mutation)
+        self.accept([row, row], {key: mutate.Accepted("read once", 1)})
+        self.assertEqual({key: {"why": "read once", "seen": 2}}, self.written())
+
+    def test_a_stale_row_is_dropped_rather_than_carried(self) -> None:
+        """It describes code that has gone. Kept, it goes on matching nothing
+        for ever, and the row it used to cover may have been replaced by one
+        nobody has read."""
+        row = self.survivor("still here")
+        self.accept([row], {"deadbeefdeadbeef": mutate.Accepted("long gone", 1)})
+        self.assertNotIn("deadbeefdeadbeef", self.written())
+
+    def test_the_file_is_one_row_per_line_and_reads_back(self) -> None:
+        """`indent` and `sort_keys` are what make this reviewable: a row added
+        in a pull request has to show up as a line somebody can read, and two
+        runs of the same tree have to produce the same bytes."""
+        rows = [self.survivor(f"row {n}", old=f"o{n}", new=f"n{n}") for n in range(3)]
+        self.accept(rows, {})
+        text = self.where.read_text(encoding="utf-8")
+        self.assertEqual(sorted(self.written()), list(self.written()), "the keys are not sorted")
+        self.assertTrue(text.endswith("\n"), "no trailing newline; every append would conflict")
+        self.assertGreater(len(text.splitlines()), len(rows), "the file is not laid out in lines")
+        self.assertEqual(3, len(mutate.known_survivors(self.where)), "it does not read back")
+
+    def test_it_says_how_many_it_recorded_and_how_many_it_dropped(self) -> None:
+        """Both numbers, and both spellings of the size. 557 survivors shared
+        432 keys on the first whole-tree sweep, so a line naming one of those
+        reads as the other."""
+        said = self.accept([self.survivor("new")], {"deadbeefdeadbeef": mutate.Accepted("gone", 1)})
+        self.assertIn("recorded 1 new", said)
+        self.assertIn("dropped 1 stale", said)
+        self.assertIn("key(s)", said)
+        self.assertIn("survivor(s)", said)
+
+    def counts(self, accepted: int, stale: int) -> str:
+        rows = [self.survivor(f"row {n}", old=f"o{n}", new=f"n{n}") for n in range(accepted)]
+        record = {mutate._key(r.mutation): mutate.Accepted("read", 1) for r in rows}
+        record.update({f"{n:016x}": mutate.Accepted("gone", 1) for n in range(stale)})
+        with support.quiet() as said:
+            mutate._report_known(mutate.sort_survivors(rows, record))
+        return said.getvalue()
+
+    def test_a_baseline_that_exists_is_counted_out_loud(self) -> None:
+        """A baseline whose size is invisible is one nobody re-reads, and the
+        number going up unnoticed is how a record stops meaning "understood"."""
+        self.assertIn("2 survivor(s) already recorded", self.counts(accepted=2, stale=0))
+
+    def test_a_run_with_no_baseline_says_nothing_about_one(self) -> None:
+        """Every hand-written spec file is this case. A line on each of those
+        runs is noise that trains the eye past the line that matters."""
+        self.assertEqual("", self.counts(accepted=0, stale=0))
+
+    def test_a_stale_entry_is_reported(self) -> None:
+        self.assertIn("match nothing this run generated", self.counts(accepted=1, stale=2))
+
+    def test_nothing_stale_is_not_reported(self) -> None:
+        """The other half: a `_report_known` that always warned would pass the
+        test above and mean nothing."""
+        self.assertNotIn("match nothing", self.counts(accepted=1, stale=0))
+
+    def test_stale_keys_come_back_in_a_settled_order(self) -> None:
+        """Two, because one cannot show an ordering -- and this list is printed
+        in a pull request, where a moving order reads as a changed answer."""
+        found = mutate.sort_survivors(
+            [],
+            {"ffff": mutate.Accepted("gone", 1), "0000": mutate.Accepted("gone", 1)},
+        )
+        self.assertEqual(["0000", "ffff"], found.stale)
+
+    def test_a_row_read_once_is_a_row_read(self) -> None:
+        """`seen > 0`, not `> 1`. Every row `--accept` writes starts at 1, so a
+        bound that rejected it would drop the whole file on the next run and
+        report all 557 as new."""
+        self.where.write_text(json.dumps({"abc": {"why": "read", "seen": 1}}), encoding="utf-8")
+        self.assertEqual({"abc": mutate.Accepted("read", 1)}, mutate.known_survivors(self.where))
 
 
 class TestWhatBaselineOnlyAnswers(unittest.TestCase):
