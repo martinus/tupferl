@@ -29,7 +29,13 @@ on; only `sync`, which is about to write, treats an unreachable remote as fatal.
 not against the snapshot. The snapshot is a merge base -- machinery -- and a
 user asking "what is different?" is asking about the two copies they can point
 at. `merge.unified` renders it, the same function the conflict prompt's `[d]`
-uses, so the two cannot disagree about which side is `---`.
+uses, so the two cannot disagree about what the sides are *called*.
+
+**They do differ about which is `---`, on purpose.** This one answers "what
+will the next sync do", so the side being replaced goes on `-` and that depends
+on the file's direction -- see `rendered`. The prompt's `[d]` is only ever
+shown for a conflict, where both sides changed and there is no direction, so it
+keeps the canonical order. One set of names, two questions.
 """
 
 from __future__ import annotations
@@ -498,7 +504,14 @@ def rendered(name: PurePosixPath, found: Blob, stored: Blob, action: str) -> str
     # There is no single direction to show, so the order is left alone and the
     # absence is *said* rather than implied by an arrow that would be a guess.
     two_sided = rule.to_repo == rule.to_home
-    text = merge.unified(str(name), found.data, stored.data, reverse=rule.to_repo)
+    # `and not rule.to_home`, not `rule.to_repo` alone. A clean merge writes
+    # *both* sides, so `to_repo` is true for it -- and reversing there would put
+    # the repository on `-` for a merge while a conflict, which writes neither,
+    # kept `$HOME` there. Two displays for the one case that has no direction,
+    # differing by which of two two-sided outcomes it happened to be.
+    text = merge.unified(
+        str(name), found.data, stored.data, reverse=rule.to_repo and not rule.to_home
+    )
     if two_sided and text:
         text = f"{name}: both sides changed, so this is the difference, not a direction.\n{text}"
     if found.executable == stored.executable:

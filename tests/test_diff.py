@@ -344,6 +344,13 @@ class TestWhichSideTheDiffPutsOnTheMinus(unittest.TestCase):
         for action in (sync.CONFLICT, sync.MERGED):
             with self.subTest(action=action):
                 self.assertIn("both sides changed", self.shown(action))
+        # **And they agree with each other.** A clean merge writes both sides,
+        # so `to_repo` is true for it: orienting on that alone reversed a merge
+        # and not a conflict, giving the one case with no direction two
+        # displays depending on which two-sided outcome it happened to be. The
+        # note above is printed either way, so only this sees it.
+        self.assertEqual(self.sides(sync.CONFLICT), self.sides(sync.MERGED))
+        self.assertIn("this computer", self.sides(sync.MERGED)[0])
 
     def test_a_one_sided_change_does_not_say_it(self) -> None:
         """The precondition. Without it the assertion above is satisfied by a
