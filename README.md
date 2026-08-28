@@ -39,6 +39,9 @@ tupferl status --all        # every managed file, with its state
 tupferl status --diff       # the lines that differ
 ```
 
+`--diff` writes a plain unified diff and adds no colour of its own, so it pipes
+into whatever you already read diffs with — `tupferl status --diff | delta`.
+
 **Copies, not symlinks.** The repository holds a copy of each file. Symlinks
 break with programs that rewrite their config, and a copy is what makes a real
 3-way merge possible.
