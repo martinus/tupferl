@@ -540,6 +540,18 @@ Five things are not where a newcomer would guess, all on purpose:
   CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
   ```
 
+- **`skipUnless` turns the `macos` leg red.** That job runs `--no-skips`, which
+  is exactly what the flag is for -- a leg with every optional tool installed,
+  where a skip means something is missing rather than absent by design -- so a
+  platform-gated test is a failure there rather than a skip. Measured: one
+  `skipUnless(hasattr(os, "sched_getaffinity"))` added in this repository's own
+  review pass took that leg from green to red on the next push.
+
+  A test whose *stronger* half is platform-specific should assert the part that
+  holds everywhere and add the rest under a plain `if`, labelled at the
+  assertion. §2 asks for the label either way; this is the spelling that keeps
+  the leg green.
+
 - **A test that makes `git commit` fail must not do it by removing the git
   identity.** git falls back to `user@hostname`, and whether that *works*
   depends on the machine: in a Linux container the hostname is `(none)` and git

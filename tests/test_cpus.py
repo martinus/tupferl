@@ -29,8 +29,7 @@ from tools import cpus
 
 
 class TestHowManyCpusAreUsable(unittest.TestCase):
-    @unittest.skipUnless(hasattr(os, "sched_getaffinity"), "no affinity mask on this platform")
-    def test_on_this_machine_it_agrees_with_the_affinity_mask(self) -> None:
+    def test_on_this_machine_it_answers_a_share_of_the_host(self) -> None:
         """**Independently derived, and the first version of this was not.**
 
         It read `getattr(os, "process_cpu_count", os.cpu_count)` and compared
@@ -39,15 +38,24 @@ class TestHowManyCpusAreUsable(unittest.TestCase):
         line did. §2's "a test containing a copy of the code it checks cannot
         fail", written into the file whose whole point was to close a gap.
 
-        `sched_getaffinity` is a different question put to the kernel, and the
-        number `process_cpu_count` exists to agree with: both answer "how many
-        CPUs may *this process* use", which is the reason this module does not
-        call `os.cpu_count()`. Linux-only and labelled as such; the three tests
-        below carry the guarantee on every platform, and it is
-        `test_it_prefers_the_count_that_knows_about_affinity` that actually
-        kills the `or` becoming `and`.
+        The claim that holds everywhere: this process may use at least one CPU
+        and no more than the host has. `os.cpu_count()` is the *host* number --
+        the one this module exists not to answer -- so bounding against it is a
+        relation between two different questions rather than a restatement of
+        one.
+
+        Where the kernel will say, the stronger claim: `sched_getaffinity` is
+        the number `process_cpu_count` exists to agree with, both answering "how
+        many CPUs may *this process* use". **Asserted conditionally rather than
+        behind `skipUnless`**, because the `macos` leg runs `--no-skips` and a
+        skip there is a failure -- which is how the first version of this test
+        turned that leg red. The half that can only run on Linux is labelled
+        here, as §2 asks, rather than being made to look like a skip.
         """
-        self.assertEqual(len(os.sched_getaffinity(0)), cpus.usable_cpus())
+        self.assertGreaterEqual(cpus.usable_cpus(), 1)
+        self.assertLessEqual(cpus.usable_cpus(), os.cpu_count() or 1)
+        if hasattr(os, "sched_getaffinity"):  # Linux; macOS has no such call
+            self.assertEqual(len(os.sched_getaffinity(0)), cpus.usable_cpus())
 
     def test_an_interpreter_that_will_not_say_falls_back(self) -> None:
         """The other half, and the branch the `or` exists for. Deliberately not
