@@ -522,6 +522,24 @@ class TestBeingAskedBeforeAChangeIsStored(support.TwoMachines):
         self.assertEqual("alpha\nbeta\n", self.first.read(MANAGED))
         self.assertEqual("alpha\nbeta\n", self.first.stored(MANAGED).read_text())
 
+    def test_r_backs_up_the_edit_it_is_about_to_destroy(self) -> None:
+        """**What makes `[r]` safe to offer at all.** It is the one answer here
+        that throws work away, and plan §5's backup is the net under it -- so
+        the net is asserted rather than assumed to still be reachable from a
+        code path that did not exist when it was written.
+
+        `apply` takes one when `to_home` and the bytes differ, which `REVERTED`
+        satisfies; nothing in `looked_at` had to arrange it. That is the point:
+        the new action gets the guarantee by having the right `RULES` row, and
+        this is what would notice if it were given the wrong one.
+        """
+        self.assertEqual(0, self.synced("r")[0])
+        # `self.first.backups`, not `paths.backup_dir()`: the machine computed
+        # it inside its own sandbox environment, and calling it here would read
+        # the developer's real `XDG_STATE_HOME`.
+        kept = [saved.read_text() for saved in self.first.backups.rglob(MANAGED) if saved.is_file()]
+        self.assertEqual(["alpha EDITED\nbeta\n"], kept, "the discarded edit was not backed up")
+
     def test_s_leaves_both_copies_and_says_the_run_is_unfinished(self) -> None:
         """A skipped file is neither changed nor in conflict, so the summary
         said "0 changed, 0 in conflict" over an exit status of 1 -- a line that
