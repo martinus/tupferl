@@ -29,7 +29,13 @@ on; only `sync`, which is about to write, treats an unreachable remote as fatal.
 not against the snapshot. The snapshot is a merge base -- machinery -- and a
 user asking "what is different?" is asking about the two copies they can point
 at. `merge.unified` renders it, the same function the conflict prompt's `[d]`
-uses, so the two cannot disagree about which side is `---`.
+uses, so the two cannot disagree about what the sides are *called*.
+
+**They do differ about which is `---`, on purpose.** This one answers "what
+will the next sync do", so the side being replaced goes on `-` and that depends
+on the file's direction -- see `rendered`. The prompt's `[d]` is only ever
+shown for a conflict, where both sides changed and there is no direction, so it
+keeps the canonical order. One set of names, two questions.
 """
 
 from __future__ import annotations
@@ -468,17 +474,46 @@ def shows(reading: sync.Reading) -> str | None:
             f"({len(reading.found.data)} bytes here, {len(stored.data)} in the "
             f"repository), so there are no lines to show."
         )
-    return rendered(reading.name, reading.found, stored)
+    return rendered(reading.name, reading.found, stored, reading.outcome.action)
 
 
-def rendered(name: PurePosixPath, found: Blob, stored: Blob) -> str:
+def rendered(name: PurePosixPath, found: Blob, stored: Blob, action: str) -> str:
     """The unified diff, plus the executable bit when only that differs.
 
     The bit travels (plan §5) and `copies.Blob` compares it, so `chmod +x` with
     no edit is a real difference that a diff of the *lines* renders as nothing
     at all -- an empty answer to "why does status say this changed?".
+
+    **Oriented by what sync will write, which is per file.** `status --diff`
+    answers "what will the next sync do", and a unified diff answers it with
+    `-` for what goes and `+` for what arrives -- so the side being *replaced*
+    has to be the one on `-`. It was `$HOME` on `-` always, which is right when
+    the repository's copy is about to be written into `$HOME` and exactly
+    backwards when a local edit is about to be pushed: there the `-` lines were
+    the ones being kept, and the diff read as "here is what discarding your edit
+    would do".
+
+    Derived from `sync.RULES` rather than from a list of actions spelled again
+    here. That table already decides which side gets written, and it is the
+    reason a sixth action cannot be forgotten in a second place -- see its
+    comment. `to_repo and not to_home` is "the repository is what changes",
+    which is the whole condition.
     """
-    text = merge.unified(str(name), found.data, stored.data)
+    rule = sync.RULES[action]
+    # Both sides change (a clean merge), or neither (a conflict, a refusal).
+    # There is no single direction to show, so the order is left alone and the
+    # absence is *said* rather than implied by an arrow that would be a guess.
+    two_sided = rule.to_repo == rule.to_home
+    # `and not rule.to_home`, not `rule.to_repo` alone. A clean merge writes
+    # *both* sides, so `to_repo` is true for it -- and reversing there would put
+    # the repository on `-` for a merge while a conflict, which writes neither,
+    # kept `$HOME` there. Two displays for the one case that has no direction,
+    # differing by which of two two-sided outcomes it happened to be.
+    text = merge.unified(
+        str(name), found.data, stored.data, reverse=rule.to_repo and not rule.to_home
+    )
+    if two_sided and text:
+        text = f"{name}: both sides changed, so this is the difference, not a direction.\n{text}"
     if found.executable == stored.executable:
         return text
     said = (

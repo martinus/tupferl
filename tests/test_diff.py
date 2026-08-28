@@ -282,6 +282,103 @@ class TestWhichSideIsWhich(Machine):
         self.assertEqual(prompt, merge.unified(".bashrc", MINE.encode(), THEIRS.encode()))
 
 
+class TestWhichSideTheDiffPutsOnTheMinus(unittest.TestCase):
+    """`status --diff` answers "what will the next sync do", and a unified diff
+    answers it with `-` for what goes and `+` for what arrives.
+
+    So the side being *replaced* has to be on `-`, and which side that is
+    depends on the file: sync's direction is per file, and the orientation was
+    fixed at `$HOME` on `-`. That is right for a file being pulled and exactly
+    backwards for one being pushed, where the `-` lines were the ones being
+    kept -- the diff read as "here is what discarding your edit would do".
+
+    **Both directions, always.** A test of either alone passes for an
+    implementation that is backwards in the other, which is precisely how this
+    survived: the two tests that did exist asserted the pushed case and had the
+    bug written into them.
+    """
+
+    HERE = Blob(b"mine\n", executable=False)
+    THERE = Blob(b"theirs\n", executable=False)
+
+    def shown(self, action: str) -> str:
+        return inspection.rendered(PurePosixPath(".bashrc"), self.HERE, self.THERE, action)
+
+    def sides(self, action: str) -> tuple[str, str]:
+        """The two header lines, as `(minus, plus)`."""
+        lines = [row for row in self.shown(action).split("\n") if row[:3] in ("---", "+++")]
+        self.assertEqual(2, len(lines), f"no diff header for {action}:\n{self.shown(action)}")
+        return lines[0], lines[1]
+
+    def test_a_push_puts_the_repository_on_the_minus_side(self) -> None:
+        """The bug. Only `$HOME` changed, so sync writes `$HOME`'s bytes into
+        the repository: the repository's copy is what disappears."""
+        minus, plus = self.sides(sync.TO_REPO)
+        self.assertIn("the repository", minus)
+        self.assertIn("this computer", plus)
+        self.assertIn("-theirs", self.shown(sync.TO_REPO))
+        self.assertIn("+mine", self.shown(sync.TO_REPO))
+
+    def test_a_pull_puts_this_computer_on_the_minus_side(self) -> None:
+        """The half that was already right, and the reason the fix could not be
+        "swap the arguments": that would correct the case above and break this
+        one."""
+        minus, plus = self.sides(sync.TO_HOME)
+        self.assertIn("this computer", minus)
+        self.assertIn("the repository", plus)
+        self.assertIn("-mine", self.shown(sync.TO_HOME))
+        self.assertIn("+theirs", self.shown(sync.TO_HOME))
+
+    def test_a_restore_reads_as_a_pull(self) -> None:
+        """`RESTORED` writes `$HOME` and not the repository, so it is a pull by
+        the only definition that matters here. Asserted rather than assumed,
+        because it is the action a reader is least likely to think about."""
+        minus, _ = self.sides(sync.RESTORED)
+        self.assertIn("this computer", minus)
+
+    def test_a_two_sided_change_says_so_instead_of_implying_a_direction(self) -> None:
+        """A conflict writes neither side and a clean merge writes both, so
+        there is no side being replaced. Said in words rather than shown as an
+        arrow that would be a guess -- the diff is still the difference, and a
+        reader told that will not read the `-` lines as doomed."""
+        for action in (sync.CONFLICT, sync.MERGED):
+            with self.subTest(action=action):
+                self.assertIn("both sides changed", self.shown(action))
+        # **And they agree with each other.** A clean merge writes both sides,
+        # so `to_repo` is true for it: orienting on that alone reversed a merge
+        # and not a conflict, giving the one case with no direction two
+        # displays depending on which two-sided outcome it happened to be. The
+        # note above is printed either way, so only this sees it.
+        self.assertEqual(self.sides(sync.CONFLICT), self.sides(sync.MERGED))
+        self.assertIn("this computer", self.sides(sync.MERGED)[0])
+
+    def test_a_one_sided_change_does_not_say_it(self) -> None:
+        """The precondition. Without it the assertion above is satisfied by a
+        note printed on every diff, which would make it noise rather than the
+        thing that distinguishes the two-sided case."""
+        for action in (sync.TO_REPO, sync.TO_HOME):
+            with self.subTest(action=action):
+                self.assertNotIn("both sides changed", self.shown(action))
+
+    def test_every_action_sync_knows_about_is_oriented(self) -> None:
+        """Read out of `sync.RULES` rather than listed again here, so an action
+        added there cannot be missed. It is the same table `rendered` derives
+        the orientation from, which is the point: a sixth action gets an
+        orientation by existing, and this asserts the orientation it gets is
+        the one its own row implies."""
+        self.assertGreaterEqual(len(sync.RULES), 8, "the table shrank; this test reads it")
+        for action, rule in sync.RULES.items():
+            with self.subTest(action=action):
+                minus, plus = self.sides(action)
+                if rule.to_repo and not rule.to_home:
+                    self.assertIn("the repository", minus, f"{action} is a push")
+                elif rule.to_home and not rule.to_repo:
+                    self.assertIn("this computer", minus, f"{action} is a pull")
+                else:
+                    self.assertIn("both sides changed", self.shown(action))
+                self.assertNotEqual(minus[4:], plus[4:], "both headers name the same side")
+
+
 class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
     """`core.pager`, honoured so that a machine already set up for `delta` needs
     nothing here.
@@ -337,7 +434,10 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         self.configure(f"{sys.executable} {self.fake}")
         printed = self.diff()
         self.assertIn("--- .bashrc", self.paged())
-        self.assertIn("-ONE", self.paged())
+        # `+ONE`: only `$HOME` changed, so the repository is the side replaced.
+        # This test is about the *pager*; the orientation itself is asserted by
+        # `TestWhichSideTheDiffPutsOnTheMinus`.
+        self.assertIn("+ONE", self.paged())
         self.assertNotIn("--- .bashrc", printed, "it was printed as well as paged")
 
     def test_with_no_pager_configured_it_prints(self) -> None:

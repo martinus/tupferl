@@ -96,8 +96,23 @@ def labels_for(name: str) -> tuple[str, str, str]:
     return (f"{name} (this computer)", f"{name} (last sync)", f"{name} (the repository)")
 
 
-def unified(name: str, mine: bytes, theirs: bytes) -> str:
+def unified(name: str, mine: bytes, theirs: bytes, reverse: bool = False) -> str:
     """A unified diff of the two sides, labelled the way the markers are.
+
+    `reverse` puts the repository on the `-` side and `$HOME` on the `+` side.
+    **It swaps the bytes and the labels in one expression each**, so the two
+    cannot come apart -- a diff whose header says "this computer" over the
+    repository's lines is worse than no diff, because it is read rather than
+    doubted. Passing `theirs` and `mine` the other way round at a call site
+    would do exactly that, which is why this is a flag here rather than an
+    argument order there.
+
+    Why it exists: `tupferl status --diff` shows what the *next sync* will do,
+    and sync's direction is per file. For a file whose local edit is about to be
+    pushed, the repository is the side being replaced, so it belongs on `-`.
+    Without this the diff read as "here is what discarding your edit would do" --
+    the exact opposite of what was about to happen. The conflict prompt's `[d]`
+    keeps the default, where there is no direction to show: both sides changed.
 
     Here rather than in `conflicts`, for `markers_for`'s reason: the prompt's
     `[d]`, the conflict markers and `tupferl diff` all name the same two sides,
@@ -124,12 +139,14 @@ def unified(name: str, mine: bytes, theirs: bytes) -> str:
     from what was actually diffed.
     """
     mine_at, _, theirs_at = labels_for(name)
+    before, after = (theirs, mine) if reverse else (mine, theirs)
+    before_at, after_at = (theirs_at, mine_at) if reverse else (mine_at, theirs_at)
     rows = difflib.diff_bytes(
         difflib.unified_diff,
-        mine.split(b"\n"),
-        theirs.split(b"\n"),
-        mine_at.encode(),
-        theirs_at.encode(),
+        before.split(b"\n"),
+        after.split(b"\n"),
+        before_at.encode(),
+        after_at.encode(),
         lineterm=b"",
     )
     return "\n".join(row.decode("utf-8", "replace") for row in rows)

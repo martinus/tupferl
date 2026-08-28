@@ -37,7 +37,7 @@ because they are one walk of your files:
 ```sh
 tupferl status              # what would change
 tupferl status --all        # every managed file, with its state
-tupferl status --diff       # the lines that differ
+tupferl status --diff       # the lines the next sync will change
 ```
 
 `--diff` goes through the pager git is already configured with, in git's own
