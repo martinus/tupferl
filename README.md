@@ -39,8 +39,11 @@ tupferl status --all        # every managed file, with its state
 tupferl status --diff       # the lines that differ
 ```
 
-`--diff` writes a plain unified diff and adds no colour of its own, so it pipes
-into whatever you already read diffs with — `tupferl status --diff | delta`.
+`--diff` goes through the pager git is already configured with, in git's own
+order — `GIT_PAGER`, `core.pager`, `$PAGER` — so a machine set up for
+[delta](https://github.com/dandavison/delta) needs nothing here. Only when
+there is a terminal to page: redirected, it is a plain unified diff with no
+colour of its own, so `tupferl status --diff | delta` works too.
 
 **Copies, not symlinks.** The repository holds a copy of each file. Symlinks
 break with programs that rewrite their config, and a copy is what makes a real

@@ -34,7 +34,12 @@ uses, so the two cannot disagree about which side is `---`.
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 from pathlib import Path, PurePosixPath
+from typing import TextIO
 
 from tupferl import gitrepo, manage, manifest, merge, paths, sync
 from tupferl.copies import Blob
@@ -113,6 +118,62 @@ def status(everything: bool = False, diffs: bool = False, wanted: str | None = N
     lines.append(summary(readings, marked))
     print("\n".join(lines))
     return 0
+
+
+def pager(repo: Path) -> str:
+    """What to show a diff through, answered the way git answers it.
+
+    `GIT_PAGER`, then `core.pager`, then `PAGER` -- git's own order, so a
+    machine already set up for `delta` needs nothing here. **Not** git's final
+    fallback to `less`: paging output that never paged before is a change to
+    every user's day for the sake of the few who wanted it, and the ones who
+    want it have said so in one of these three places.
+
+    Checked with `in` rather than `or`, because a variable set to the empty
+    string is git's way of saying *no pager* -- an `or` chain reads that as
+    "unset" and falls through to the next source, which is the opposite.
+    """
+    for name in ("GIT_PAGER",):
+        if name in os.environ:
+            return os.environ[name]
+    if found := gitrepo.configured_pager(repo):
+        return found
+    return os.environ.get("PAGER", "")
+
+
+def show(text: str, repo: Path, out: TextIO) -> None:
+    """Print `text`, through the user's pager when there is a terminal to page.
+
+    **Only when `out` is a terminal**, which is what keeps `tupferl status
+    --diff | delta` and every test working exactly as before: a redirected diff
+    is something a program is about to read, and handing it to `less` would be
+    the tool deciding it knew better.
+
+    Failure never costs the user the diff. A pager that is not installed, or one
+    that exits before reading it all -- `q` in `less` is that, every time -- is
+    caught and the text printed plainly, because this function's job is to show
+    the diff and the pager is only how.
+    """
+    command = pager(repo) if out.isatty() else ""
+    if not command or shlex.split(command)[:1] == ["cat"]:
+        # `cat` is git's spelling of "no pager", and running it would fork a
+        # process to do what the line below does.
+        print(text, file=out)
+        return
+    try:
+        subprocess.run(
+            shlex.split(command),
+            input=text,
+            text=True,
+            check=False,
+            # What git exports before it spawns one: quit if the diff fits on a
+            # screen, keep colour, and do not clear it away on exit. Only when
+            # the user has not said otherwise.
+            env={"LESS": "FRX", "LV": "-c", **os.environ},
+        )
+    except (OSError, BrokenPipeError, ValueError) as unusable:
+        print(f"{command} could not show the diff ({unusable}); here it is plain.", file=out)
+        print(text, file=out)
 
 
 def narrowed(readings: list[sync.Reading], wanted: str | None, home: Path) -> list[sync.Reading]:
@@ -283,7 +344,7 @@ def remotely(repo: Path) -> list[str]:
     return said
 
 
-def difference(wanted: str | None) -> int:
+def difference(wanted: str | None, out: TextIO | None = None) -> int:
     """Print the diff between `$HOME` and the repository, for one file or all.
 
     Always 0, including when files differ -- `git diff` answers the same way,
@@ -298,13 +359,18 @@ def difference(wanted: str | None) -> int:
     walk of the managed files, which is the duplication `examine` exists to
     remove.
     """
+    # Resolved here, not as a default argument: `out: TextIO = sys.stdout` binds
+    # whatever `sys.stdout` was when this module was imported, so every test
+    # that captures by patching `sys.stdout` -- which is all of them -- would
+    # write past the capture. Measured: it took fifteen of them red.
+    out = sys.stdout if out is None else out
     repo, config = manage.open_repo()
     host = paths.hostname(config.hostname)
     home = paths.home()
 
     readings = list(sync.examine(repo, home, host))
     if not readings and wanted is None:
-        print(manage.NOTHING_MANAGED)
+        print(manage.NOTHING_MANAGED, file=out)
         return 0
 
     named = None if wanted is None else manifest.relative(wanted, home)
@@ -315,17 +381,22 @@ def difference(wanted: str | None) -> int:
     # with no observable difference, which is exactly what the mutation sweep
     # reported: three survivors on one line carrying more state than it needed.
     shown = [said for reading in readings if (said := shows(reading)) is not None]
-    for said in shown:
-        print(said)
-    if not shown:
-        # Two sentences, because one with the name substituted into it says the
-        # opposite of what it means: "`.bashrc` differs between $HOME and the
-        # repository" is exactly the report this branch exists to *deny*.
-        print(
-            "nothing differs between $HOME and the repository."
-            if named is None
-            else f"{named} is the same in $HOME as in the repository."
-        )
+    if shown:
+        # One call with everything in it, not one per file: a pager shown the
+        # files one at a time is one the user has to quit once per file, and
+        # `delta` would draw its header for each.
+        show("\n".join(shown), repo, out)
+        return 0
+    # Not through the pager. Two sentences, because one with the name
+    # substituted into it says the opposite of what it means: "`.bashrc` differs
+    # between $HOME and the repository" is exactly the report this branch exists
+    # to *deny* -- and a single line is not something anybody wants paged.
+    print(
+        "nothing differs between $HOME and the repository."
+        if named is None
+        else f"{named} is the same in $HOME as in the repository.",
+        file=out,
+    )
     return 0
 
 

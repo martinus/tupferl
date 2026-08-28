@@ -18,6 +18,7 @@ to make, and `TestWhichSideIsWhich` is where it is written down.
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from pathlib import Path, PurePosixPath
 from unittest import mock
@@ -279,6 +280,134 @@ class TestWhichSideIsWhich(Machine):
         self.assertIn(prompt, self.diff())
         self.assertIn("--- .bashrc (this computer)", prompt)
         self.assertEqual(prompt, merge.unified(".bashrc", MINE.encode(), THEIRS.encode()))
+
+
+class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
+    """`core.pager`, honoured so that a machine already set up for `delta` needs
+    nothing here.
+
+    A user who wrote `core.pager = delta` configured how they read a diff, not
+    how they read a *git* diff -- and asking git for it rather than parsing
+    `~/.gitconfig` gets the include directives, the system file and the
+    per-repository override for free.
+
+    Every test uses a stand-in pager that is a Python script writing a marker,
+    so what is asserted is that the diff reached it: `delta` itself is not
+    installed on every machine that runs this suite, and a test that skipped
+    where it was missing would turn the `macos` leg red under `--no-skips`.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.first.write(".bashrc", "one\ntwo\n")
+        self.assertEqual(0, self.first.call("add", str(self.first.home / ".bashrc")))
+        self.first.write(".bashrc", "ONE\ntwo\n")
+        self.seen = self.tmp / "seen.txt"
+        self.fake = self.tmp / "pager.py"
+        self.fake.write_text(
+            "import sys, pathlib\n"
+            f"pathlib.Path({str(self.seen)!r}).write_text('PAGED\\n' + sys.stdin.read())\n",
+            encoding="utf-8",
+        )
+
+    def configure(self, command: str) -> None:
+        support.git(["config", "core.pager", command], self.first.repo, self.first.env)
+
+    def diff(self, terminal: bool = True) -> str:
+        """`difference` with a stream that claims to be a terminal, or not.
+
+        `support.Screen` for the terminal case -- the pager only runs when there
+        is one to page, and a `StringIO` says it is not.
+        """
+        out = support.Screen() if terminal else support.Spill()
+        here = Path.cwd()
+        os.chdir(self.first.home)
+        try:
+            with mock.patch.dict(os.environ, self.first.env, clear=True):
+                self.assertEqual(0, inspection.difference(None, out))
+        finally:
+            os.chdir(here)
+        return out.getvalue()
+
+    def paged(self) -> str:
+        self.assertTrue(self.seen.is_file(), "the pager never ran")
+        return self.seen.read_text(encoding="utf-8")
+
+    def test_the_diff_goes_to_the_pager_git_is_configured_with(self) -> None:
+        self.configure(f"{sys.executable} {self.fake}")
+        printed = self.diff()
+        self.assertIn("--- .bashrc", self.paged())
+        self.assertIn("-ONE", self.paged())
+        self.assertNotIn("--- .bashrc", printed, "it was printed as well as paged")
+
+    def test_with_no_pager_configured_it_prints(self) -> None:
+        """The other half, and the one every machine without a `core.pager`
+        gets. Without it, a `show` that never printed at all would pass the test
+        above."""
+        self.assertIn("--- .bashrc", self.diff())
+        self.assertFalse(self.seen.exists())
+
+    def test_a_redirected_diff_is_never_paged(self) -> None:
+        """What keeps `tupferl status --diff | delta` working, and every test in
+        this file: a redirected diff is something a program is about to read,
+        and handing it to a pager would be the tool deciding it knew better."""
+        self.configure(f"{sys.executable} {self.fake}")
+        self.assertIn("--- .bashrc", self.diff(terminal=False))
+        self.assertFalse(self.seen.exists(), "a redirected diff was paged")
+
+    def test_a_pager_that_is_not_installed_costs_the_user_nothing(self) -> None:
+        """The diff is the point and the pager is only how. A machine that lost
+        its pager -- a shared `.gitconfig` naming one this host has not
+        installed, which is exactly what tupferl makes easy -- must still show
+        the diff."""
+        self.configure("no-such-pager-anywhere")
+        printed = self.diff()
+        self.assertIn("--- .bashrc", printed)
+        self.assertIn("could not show the diff", printed)
+
+    def test_git_pager_wins_over_the_configured_one(self) -> None:
+        """git's own order is `GIT_PAGER`, then `core.pager`, then `PAGER`, and
+        the point of reading git's config is that its answer matches git's. A
+        variable set for one command has to beat a file set for all of them, or
+        the escape hatch every git user reaches for does not work here."""
+        self.configure(f"{sys.executable} {self.tmp / 'never.py'}")
+        elsewhere = self.tmp / "chosen.txt"
+        picked = self.tmp / "picked.py"
+        picked.write_text(
+            f"import sys, pathlib\npathlib.Path({str(elsewhere)!r}).write_text(sys.stdin.read())\n",
+            encoding="utf-8",
+        )
+        self.first.env["GIT_PAGER"] = f"{sys.executable} {picked}"
+        self.diff()
+        self.assertIn("--- .bashrc", elsewhere.read_text(encoding="utf-8"))
+        self.assertFalse(self.seen.exists(), "core.pager ran despite GIT_PAGER")
+
+    def test_pager_is_the_last_resort(self) -> None:
+        """The other end of the same order: `$PAGER` is honoured, but only when
+        git has been told nothing more specific."""
+        self.first.env["PAGER"] = f"{sys.executable} {self.fake}"
+        self.diff()
+        self.assertIn("--- .bashrc", self.paged())
+
+    def test_an_empty_git_pager_means_no_pager_rather_than_unset(self) -> None:
+        """`GIT_PAGER=` is how a git user turns paging off for one command, and
+        it has to beat `core.pager` the same way a non-empty one does.
+
+        This is why `pager` tests membership with `in` rather than chaining
+        `or`: an `or` reads the empty string as "not set" and falls through to
+        the file, which is the opposite of what was asked.
+        """
+        self.configure(f"{sys.executable} {self.fake}")
+        self.first.env["GIT_PAGER"] = ""
+        self.assertIn("--- .bashrc", self.diff())
+        self.assertFalse(self.seen.exists(), "core.pager ran despite an empty GIT_PAGER")
+
+    def test_cat_is_gits_spelling_of_no_pager(self) -> None:
+        """git treats it as "do not page", and forking a process to do what a
+        print already does is worth avoiding."""
+        self.configure("cat")
+        self.assertIn("--- .bashrc", self.diff())
+        self.assertFalse(self.seen.exists())
 
 
 class TestNamingOneFile(Machine):
