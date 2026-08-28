@@ -2242,6 +2242,46 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             f"the skip lines do not account for every recorded row\n{said}",
         )
 
+    def test_a_crash_during_a_write_leaves_the_previous_report(self) -> None:
+        """`_persist` renames into place, so the report is never half-written.
+
+        Optional before #46 and required after it: at one write a row rather
+        than one a file, the sweep spends about 1.4% of its life mid-write
+        instead of 0.01%, and `_recorded` reads a truncated report as *nothing*.
+        A recovery mechanism whose own recovery file is the likeliest casualty
+        is not one.
+
+        The write is killed **part-way through**, which is the only failure the
+        two spellings answer differently. The first version of this raised from
+        `json.dumps` instead -- so nothing was written at all, in place or
+        aside, and the mutation putting the write back in place *survived* it.
+        Here the file is opened, half the text lands, and then it raises: what a
+        full disk or an OOM kill leaves behind.
+        """
+        box = self.repository()
+        report = box / "r.json"
+        self.sweep(box, report)
+        before = report.read_text(encoding="utf-8")
+
+        real = Path.write_text
+        opened: list[Path] = []
+
+        def half(target: Path, data: str, encoding: str | None = None, **rest: Any) -> int:
+            opened.append(target)
+            real(target, data[: len(data) // 2], encoding=encoding)
+            raise MemoryError("killed part-way through the write")
+
+        with mock.patch.object(Path, "write_text", half), self.assertRaises(MemoryError):
+            mutate._persist(mutate.Report([], widened=True), report, announce=False)
+        self.assertEqual(before, report.read_text(encoding="utf-8"), "the report was damaged")
+        self.assertNotIn(report, opened, "the report itself was opened for writing")
+        self.assertEqual(real, Path.write_text, "the patch leaked")
+
+        # And the precondition: a write that *completes* still replaces it, or
+        # the assertion above is satisfied by a `_persist` that never writes.
+        mutate._persist(mutate.Report([], widened=True), report, announce=False)
+        self.assertEqual([], json.loads(report.read_text(encoding="utf-8"))["results"])
+
     def bogus(self, box: Path) -> Path:
         """A record holding one key for a file this fixture has never had.
 

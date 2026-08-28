@@ -2217,20 +2217,6 @@ def _resume_key(mutation: Mutation) -> tuple[str, int, int, str] | None:
     return (mutation.path, mutation.span[0], mutation.span[1], mutation.new)
 
 
-def _skipped(table: Sequence[Mutation], done: set[tuple[str, int, int, str]]) -> dict[str, int]:
-    """How many rows of each file this run will not have to do again.
-
-    Counted from the table rather than from the report, so a report holding rows
-    for a file the table no longer has -- a `--json` reused across an edit --
-    says nothing here rather than naming a file the run is not doing anyway.
-    """
-    found: dict[str, int] = {}
-    for row in table:
-        if _resume_key(row) in done:
-            found[row.path] = found.get(row.path, 0) + 1
-    return found
-
-
 def _key(mutation: Mutation) -> str:
     """What identifies a mutation across runs.
 
@@ -2653,13 +2639,25 @@ def _persist(report: Report, where: Path, announce: bool = True) -> None:
                 "span": list(result.mutation.span) if result.mutation.span else None,
             }
         )
-    where.write_text(
+    # **Written aside and renamed, never in place.** `os.replace` is atomic on
+    # POSIX, so a crash during a write leaves the previous complete report
+    # rather than a truncated one -- and `_recorded` reads a truncated report as
+    # *nothing*, which costs the whole run.
+    #
+    # Optional before #46 and required after it. At 19 writes over a 2.4-hour
+    # sweep the process spent about 0.01% of its life mid-write; at one write a
+    # row that is 3124 x 37.6 ms, **1.4%**. A recovery mechanism whose own
+    # recovery file has a 1-in-70 chance of being the casualty is not one, and
+    # the failure is silent: the next run simply starts over.
+    beside = where.with_name(where.name + ".tmp")
+    beside.write_text(
         json.dumps(
             {"baseline_red": report.baseline_red, "widened": report.widened, "results": rows},
             indent=1,
         ),
         encoding="utf-8",
     )
+    os.replace(beside, where)
     if announce:
         # Silent for the per-row writes `sweep` makes, which since #46 happen
         # 3103 times in a whole-tree run. The line is worth reading once, at the
@@ -2819,8 +2817,20 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     # here) and neither is `_key` (556 rows share one). See its docstring.
     done = {key for result in collected if (key := _resume_key(result.mutation)) is not None}
 
-    by_file = by_size([row for row in table if _resume_key(row) not in done])
-    for path, count in sorted(_skipped(table, done).items()):
+    # One walk deciding both, so the "skip" predicate cannot drift from the
+    # "run" one. Counted from the table rather than from the report, so a
+    # `--json` reused across an edit says nothing about a file the table no
+    # longer has rather than naming one the run is not doing anyway.
+    todo: list[Mutation] = []
+    skipped: dict[str, int] = {}
+    for row in table:
+        if _resume_key(row) in done:
+            skipped[row.path] = skipped.get(row.path, 0) + 1
+        else:
+            todo.append(row)
+
+    by_file = by_size(todo)
+    for path, count in sorted(skipped.items()):
         # The count, not just the name. A file is no longer all-or-nothing, so
         # "skipping" without a number cannot distinguish a file fully recorded
         # from one that got three rows in before the crash -- and the whole
