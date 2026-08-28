@@ -95,17 +95,17 @@ class TestTheSettingsCheck(DoctorCase):
     def setUp(self) -> None:
         super().setUp()
         support.make_repo(self.repo, self.env)
-        self.where = paths.config_file(self.repo)
+        self.where = paths.config_file()
         self.where.parent.mkdir(parents=True, exist_ok=True)
 
     def test_no_file_is_not_applicable_rather_than_a_pass(self) -> None:
-        found, config = doctor.settings(self.repo)
+        found, config = doctor.settings()
         self.assertIs(None, found.ok)
         self.assertEqual(Config(), config)
 
     def test_a_broken_file_fails_with_the_parser_s_sentence(self) -> None:
         self.where.write_text("ignroe = []\n", encoding="utf-8")
-        found, _ = doctor.settings(self.repo)
+        found, _ = doctor.settings()
         self.assertIs(False, found.ok)
         self.assertIn("ignroe", found.detail)
 
@@ -113,7 +113,7 @@ class TestTheSettingsCheck(DoctorCase):
         """The settings are returned as well as checked, so the checks below
         read the same parse rather than a second one."""
         self.where.write_text("max_file_size = 4096\n", encoding="utf-8")
-        found, config = doctor.settings(self.repo)
+        found, config = doctor.settings()
         self.assertIs(True, found.ok)
         self.assertEqual(4096, config.max_file_size)
 
@@ -399,7 +399,7 @@ class TestTheExitStatus(DoctorCase):
         `doctor` useless in an install script."""
         support.make_remote(self.remote, self.env)
         support.make_repo(self.repo, self.env, remote=self.remote)
-        self.assertFalse(paths.config_file(self.repo).exists())
+        self.assertFalse(paths.config_file().exists())
         found = doctor.checks()
         self.assertIn(None, [check.ok for check in found])
         self.assertEqual(0, self.quietly())

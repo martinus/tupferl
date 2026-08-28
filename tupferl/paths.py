@@ -41,6 +41,7 @@ ENV_KEYS = (
     "PAGER",
     "TUPFERL_DIR",
     "TUPFERL_HOSTNAME",
+    "XDG_CONFIG_HOME",
     "VISUAL",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
@@ -123,14 +124,25 @@ def backup_dir() -> Path:
     return state_dir() / "backup"
 
 
-def config_file(repo: Path) -> Path:
-    """The settings file, inside the repository and therefore shared.
+def config_file() -> Path:
+    """tupferl's own settings: a dotfile like any other, in `$HOME`.
 
-    Shared is the point for `ignore` and `max_file_size` -- every machine should
-    agree about those -- and is exactly why `hostname` is *not* only read from
-    here. See `hostname`.
+    **It used to live in the repository**, at `.tupferl/config.toml`, which plan
+    §5 asked for -- and that made it a file the repository imposed on every
+    machine that cloned it. Two of its four keys were per-machine facts and had
+    to be overridden from the environment, each with a paragraph explaining why
+    the override existed.
+
+    Here instead, which answers the question the other way round: the settings
+    are this machine's, and sharing them is `tupferl add
+    ~/.config/tupferl/config.toml` like anything else -- with `--host` if one
+    machine should differ. tupferl manages its own dotfile the way it manages
+    yours, so "is this shared?" has one mechanism rather than a special rule.
+
+    No repository argument, which is the other half: settings no longer depend
+    on finding a repository first.
     """
-    return repo / META / "config.toml"
+    return _base("XDG_CONFIG_HOME", ".config") / "tupferl" / "config.toml"
 
 
 def check_hostname(name: str) -> str:

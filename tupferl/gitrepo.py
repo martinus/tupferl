@@ -352,15 +352,21 @@ def stage(repo: Path, paths: list[Path]) -> Result:
     )
 
 
-def commit(repo: Path, message: str) -> Result:
+def commit(repo: Path, message: str, empty: bool = False) -> Result:
     """Commit what is staged. Returns git's own answer, unexamined.
 
     Deliberately *not* checking "is anything staged" first: that is a race, and
     git already answers it. A caller that cares looks at `changed` before
     staging, which is a question about the working tree rather than about a
     moment in the middle of this function.
+
+    `empty` is for the one caller that has nothing to commit and needs a commit
+    anyway: a clone of an empty remote sits on an unborn branch, the one state
+    where `HEAD` does not resolve and half of git answers oddly. `init` used to
+    normalise that by writing a settings file into the repository; the settings
+    left, and an empty commit says the same thing without inventing a file.
     """
-    return git(["commit", "-m", message], cwd=repo)
+    return git(["commit", *(["--allow-empty"] if empty else []), "-m", message], cwd=repo)
 
 
 def first_remote(repo: Path) -> str | None:

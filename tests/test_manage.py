@@ -23,7 +23,6 @@ from unittest import mock
 from tests import support
 from tupferl import __main__ as cli
 from tupferl import copies, gitrepo, manage, paths
-from tupferl.config import Config, load
 from tupferl.errors import TupferlError
 
 #: The one-machine fixture, now in `tests/support.py` because `test_sync.py`
@@ -41,13 +40,16 @@ class TestInit(Machine):
         self.assertIn("cloned", done.stdout)
         self.assertTrue(gitrepo.is_repository(self.repo))
         self.assertTrue(gitrepo.has_commits(self.repo))
-        self.assertTrue(paths.config_file(self.repo).is_file())
 
-    def test_the_settings_it_writes_parse_to_the_defaults(self) -> None:
-        """Comments only. A template that shipped real values would make every
-        repository disagree with the documented defaults the day one changed."""
+    def test_the_first_commit_is_empty_and_writes_no_file(self) -> None:
+        """It used to write `.tupferl/config.toml` and commit that, because git
+        needed *something*. The settings are a dotfile in `$HOME` now, and
+        inventing a file for git's benefit is how a repository grows one nobody
+        asked for -- so the commit is empty and the tree is too."""
         self.init()
-        self.assertEqual(Config(), load(paths.config_file(self.repo)))
+        self.assertFalse(paths.config_file().exists(), "init wrote settings into $HOME")
+        listed = support.git(["ls-files"], self.repo, self.env)
+        self.assertEqual("", listed, "the first commit carries a file")
 
     def test_a_remote_with_content_is_cloned_and_then_synced(self) -> None:
         """The second-machine path, and the README's one-line promise.
@@ -69,7 +71,7 @@ class TestInit(Machine):
         self.assertEqual("export EDITOR=nvim\n", stored)
         self.assertEqual("export EDITOR=nvim\n", (self.home / ".bashrc").read_text())
         self.assertEqual([f"sync from {self.host}: .bashrc", "seeded", "initial"], self.log())
-        self.assertFalse(paths.config_file(self.repo).is_file())
+        self.assertFalse(paths.config_file().is_file())
 
     def test_a_url_that_cannot_be_cloned_is_reported(self) -> None:
         """And nothing is created. The alternative — falling back to a local
@@ -139,7 +141,7 @@ class TestInit(Machine):
         support.break_commits(self.home)
         done = self.run_cli("init", str(self.remote))
         self.assertEqual(2, done.returncode)
-        self.assertIn("could not commit the settings file", done.stderr)
+        self.assertIn("could not make the first commit", done.stderr)
 
     def test_a_file_where_the_repository_belongs_is_refused(self) -> None:
         """One stray `touch` produces this, and `iterdir` raises
@@ -437,7 +439,6 @@ class TestRemove(Machine):
         self.assertFalse((self.repo / ".config").exists())
         self.assertTrue(self.repo.is_dir(), "it pruned the repository itself")
         self.assertTrue(self.home.is_dir(), "it climbed out of the repository")
-        self.assertTrue(paths.config_file(self.repo).is_file(), "it pruned .tupferl/")
 
     def test_pruning_stops_at_a_directory_that_still_holds_something(self) -> None:
         """The ordinary case, and the one that tells `and` from `or` in a loop
@@ -811,7 +812,7 @@ class TestOpenRepo(support.SandboxCase):
         """So a command reads the config once, rather than each of them
         deciding for itself where it lives."""
         support.make_repo(paths.repo_dir(), self.env)
-        settings = paths.config_file(paths.repo_dir())
+        settings = paths.config_file()
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text("max_file_size = 4096\n", encoding="utf-8")
         _, config = manage.open_repo()

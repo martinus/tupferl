@@ -170,8 +170,11 @@ def mergeable(name: PurePosixPath, repo: Path, host: str) -> bool:
     where = repo / name
     if not where.is_relative_to(repo / paths.META):
         return True
-    if where == paths.config_file(repo):
-        return True
+    # No case for the settings file any more. It used to live at
+    # `.tupferl/config.toml` -- inside `META`, which is otherwise tupferl's own
+    # and not mergeable -- so it needed an exception to be syncable at all. It
+    # is a dotfile in `$HOME` now, so it arrives here like `.bashrc` does, on
+    # the first branch above, and `META` holds only machinery again.
     return where.is_relative_to(paths.host_overlay(repo, host))
 
 

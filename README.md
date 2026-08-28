@@ -54,6 +54,15 @@ on purpose.
 break with programs that rewrite their config, and a copy is what makes a real
 3-way merge possible.
 
+**tupferl's own settings are a dotfile like any other.**
+`~/.config/tupferl/config.toml` holds two optional keys — `ignore` and
+`max_file_size` — and it is this machine's until you say otherwise:
+
+```sh
+tupferl add ~/.config/tupferl/config.toml          # share it
+tupferl add --host ~/.config/tupferl/config.toml   # …except on this machine
+```
+
 **Per-machine differences without templates.** A file under
 `.tupferl/hosts/<hostname>/` replaces the shared one on that machine. Whole
 files, no variables:
