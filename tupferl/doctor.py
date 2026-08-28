@@ -137,7 +137,7 @@ def settings(repo: Path) -> tuple[Check, Config]:
 def host(config: Config) -> Check:
     """Does this machine have a name that can key a host overlay?"""
     try:
-        return Check(True, "hostname", paths.hostname(config.hostname))
+        return Check(True, "hostname", paths.hostname())
     except TupferlError as wrong:
         return Check(False, "hostname", str(wrong))
 

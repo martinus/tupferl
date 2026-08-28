@@ -76,15 +76,14 @@ class TestWhereTheBackupsGo(Environment):
 
 
 class TestTheHostname(Environment):
-    def test_the_environment_beats_the_config_file(self) -> None:
-        """Both given, and different: `config.toml` is committed and therefore
-        shared, so a value in it cannot be this machine's own name."""
+    def test_the_environment_beats_the_system(self) -> None:
+        """The only override there is. `.tupferl/config.toml` had a `hostname`
+        above the system's answer and below this one; it was removed, because
+        that file is committed and therefore shared, so a value in it cannot be
+        *this* machine's own name."""
         self.only(HOME="/home/someone", TUPFERL_HOSTNAME="from-env")
-        self.assertEqual("from-env", paths.hostname("from-config"))
-
-    def test_the_config_file_beats_the_system(self) -> None:
-        self.only(HOME="/home/someone")
-        self.assertEqual("from-config", paths.hostname("from-config"))
+        with mock.patch("socket.gethostname", return_value="the-system-name"):
+            self.assertEqual("from-env", paths.hostname())
 
     def test_the_system_name_loses_its_domain(self) -> None:
         self.only(HOME="/home/someone")

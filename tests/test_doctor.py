@@ -110,12 +110,12 @@ class TestTheSettingsCheck(DoctorCase):
         self.assertIn("ignroe", found.detail)
 
     def test_a_good_file_passes_and_its_values_come_back(self) -> None:
-        """The settings are returned as well as checked, so the hostname check
-        below reads the same parse rather than a second one."""
-        self.where.write_text('hostname = "from-config"\n', encoding="utf-8")
+        """The settings are returned as well as checked, so the checks below
+        read the same parse rather than a second one."""
+        self.where.write_text("max_file_size = 4096\n", encoding="utf-8")
         found, config = doctor.settings(self.repo)
         self.assertIs(True, found.ok)
-        self.assertEqual("from-config", config.hostname)
+        self.assertEqual(4096, config.max_file_size)
 
 
 class TestTheHostnameCheck(DoctorCase):

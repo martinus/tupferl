@@ -156,16 +156,17 @@ def check_hostname(name: str) -> str:
     return name
 
 
-def hostname(configured: str | None = None) -> str:
+def hostname() -> str:
     """This machine's name, as host overlays and snapshots are keyed by.
 
-    Precedence is environment, then config, then the system -- and the
-    environment being *above* the config file is the part worth explaining.
-    `config.toml` lives in the repository and is committed, so a `hostname` set
-    there applies to every machine that clones it, which is the opposite of what
-    "this host is called work-laptop" means. The config key is honoured because
-    plan §5 asks for it and it is the right answer for a single-machine
-    installation; `TUPFERL_HOSTNAME` is what a *second* machine uses to disagree.
+    `TUPFERL_HOSTNAME`, then the system's own answer. **There is no config key**,
+    and there was one: plan §5 asked for a `hostname` in `.tupferl/config.toml`,
+    and that file lives in the repository and is committed -- so a name set there
+    applies to *every* machine that clones it, which is the opposite of what
+    "this host is called work-laptop" means. It was honoured with the
+    environment above it and documented as a divergence, which is two rungs and
+    a paragraph to explain a setting that is wrong wherever it is used by more
+    than one machine. Removed rather than explained again.
 
     The system name is cut at the first dot: `laptop.local` and `laptop` are the
     same machine, and a DNS suffix that appears on one network and not another
@@ -174,8 +175,6 @@ def hostname(configured: str | None = None) -> str:
     said = os.environ.get("TUPFERL_HOSTNAME")
     if said:
         return check_hostname(said)
-    if configured:
-        return check_hostname(configured)
     # Imported here rather than at the top: `socket` costs 4.1ms of a 63.7ms
     # `tupferl --version`, and this is the only line that needs it -- a machine
     # that has said its own name in the environment or the settings never asks

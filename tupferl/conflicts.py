@@ -62,7 +62,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, TextIO
 
 from tupferl import gitrepo, merge
-from tupferl.config import Config
 from tupferl.copies import Blob
 from tupferl.errors import TupferlError
 
@@ -369,30 +368,31 @@ def unified(sides: Sides) -> str:
     return merge.unified(str(sides.name), sides.home.data, sides.stored.data)
 
 
-def editor(config: Config, repo: Path | None = None) -> str:
-    """The command `[e]` runs, from the config, git, or the environment.
+def editor(repo: Path | None = None) -> str:
+    """The command `[e]` runs: git's answer, in git's order.
 
-    `.tupferl/config.toml` first, because plan §5 gives it an `editor` setting
-    and a setting that loses to an environment variable is one the user cannot
-    make stick. Then **git's own answer**, in git's own order -- `GIT_EDITOR`,
-    then `core.editor` -- because someone who configured an editor for git
-    configured how they edit text, not how they edit a commit message. Then
-    `$VISUAL` and `$EDITOR`, which every other tool ends with.
+    `GIT_EDITOR`, then `core.editor`, then `$VISUAL`, then `$EDITOR` -- because
+    someone who configured an editor for git configured how they edit text, not
+    how they edit a commit message.
 
-    git's sources go *between* rather than first: `config.editor` is the one a
-    person set for tupferl on purpose, and losing it to a setting they made for
-    something else is the surprise this order avoids. `repo` is optional so the
-    resolution is still answerable without one -- the tests that only ask about
-    precedence have no repository, and inventing one for them would make the
-    question harder to ask than it is.
+    **There was an `editor` in `.tupferl/config.toml` above all of these**, and
+    plan §5 asked for it. It went when git's sources arrived: that file is
+    committed and shared, so an editor set there is one machine's choice landing
+    on every other, and the four sources below it are all per-machine. Someone
+    who wants a different editor for a three-way conflict than for a commit
+    message says so per run -- `GIT_EDITOR=meld tupferl sync` -- which is a
+    sentence rather than a setting.
+
+    `repo` is optional so the resolution is answerable without one: the tests
+    that only ask about precedence have no repository, and inventing one for
+    them would make the question harder to ask than it is.
 
     No fallback to `vi`. Guessing an editor that may not be installed turns "you
     have not told me which editor to use" into whatever `vi` does on a machine
     without it, and plan §5 asks every error to say what the user can do next.
     """
     said = (
-        config.editor
-        or os.environ.get("GIT_EDITOR")
+        os.environ.get("GIT_EDITOR")
         or (gitrepo.configured_editor(repo) if repo is not None else "")
         or os.environ.get("VISUAL")
         or os.environ.get("EDITOR")
@@ -400,7 +400,7 @@ def editor(config: Config, repo: Path | None = None) -> str:
     if not said:
         raise TupferlError(
             "no editor is set, so there is nothing to open the merged file with; "
-            "set $EDITOR or git's `core.editor`, or `editor` in .tupferl/config.toml."
+            "set $EDITOR, or git's `core.editor`."
         )
     return said
 
@@ -435,9 +435,7 @@ def workspace(name: PurePosixPath) -> Iterator[Path]:
         yield Path(box) / name.name
 
 
-def edit(
-    sides: Sides, buffer: bytes, config: Config, out: TextIO, repo: Path | None = None
-) -> bytes | None:
+def edit(sides: Sides, buffer: bytes, out: TextIO, repo: Path | None = None) -> bytes | None:
     """Open `buffer` in the user's editor and return what came back.
 
     `None` means the editor never gave an answer -- it exited non-zero, or it
@@ -469,7 +467,7 @@ def edit(
     here captures its output.
     """
     try:
-        command = editor(config, repo)
+        command = editor(repo)
     except TupferlError as unset:
         print(f"{unset}", file=out)
         return None
@@ -594,9 +592,7 @@ def one_key(source: TextIO) -> str:
         termios.tcsetattr(fd, termios.TCSANOW, before)
 
 
-def ask(
-    sides: Sides, config: Config, source: TextIO, out: TextIO, repo: Path | None = None
-) -> Answer:
+def ask(sides: Sides, source: TextIO, out: TextIO, repo: Path | None = None) -> Answer:
     """Plan §3.4 step 4: show the conflict and settle it with one keypress.
 
     `[d]` and a key that is not on offer both re-ask, which is why this is a
@@ -655,7 +651,7 @@ def ask(
             # `buffer` is bytes here: `sides.binary` was checked above, so
             # `marked` is not `None`, and every reassignment below is bytes.
             assert buffer is not None
-            typed = edit(sides, buffer, config, out, repo)
+            typed = edit(sides, buffer, out, repo)
             if typed is None:
                 continue
             buffer = typed
@@ -676,9 +672,7 @@ def always(choice: str) -> Settler:
     return lambda sides: Answer(choice)
 
 
-def answering(
-    config: Config, no_input: bool, ours: bool, theirs: bool, repo: Path | None = None
-) -> Settler:
+def answering(no_input: bool, ours: bool, theirs: bool, repo: Path | None = None) -> Settler:
     """Which settler this run uses, from plan §3.4's flag set.
 
     `--ours` and `--theirs` are `[l]` and `[r]` given once for every file, and
@@ -696,4 +690,4 @@ def answering(
         return always(REMOTE)
     if no_input or not sys.stdin.isatty():
         return always(SKIP)
-    return lambda sides: ask(sides, config, sys.stdin, sys.stdout, repo)
+    return lambda sides: ask(sides, sys.stdin, sys.stdout, repo)

@@ -813,9 +813,9 @@ class TestOpenRepo(support.SandboxCase):
         support.make_repo(paths.repo_dir(), self.env)
         settings = paths.config_file(paths.repo_dir())
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('editor = "helix"\n', encoding="utf-8")
+        settings.write_text("max_file_size = 4096\n", encoding="utf-8")
         _, config = manage.open_repo()
-        self.assertEqual("helix", config.editor)
+        self.assertEqual(4096, config.max_file_size)
 
 
 class TestCounting(unittest.TestCase):

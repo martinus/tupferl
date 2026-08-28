@@ -44,13 +44,16 @@ from tupferl.errors import TupferlError
 #: the one state where `HEAD` does not resolve and half of git answers oddly;
 #: normalising it once here is cheaper than every later command asking.
 TEMPLATE = """\
-# tupferl settings. Every key is optional; these are the defaults.
+# tupferl settings, shared by every machine that clones this repository.
+# Both keys are optional; these are the defaults.
 #
-# hostname = "this-machine"     # overridden by TUPFERL_HOSTNAME, which is what a
-#                               # second machine must use -- this file is shared.
-# editor = "vim"                # for the conflict prompt
 # ignore = ["*.log", ".cache"]  # a pattern also hides everything under it
 # max_file_size = 1048576       # bytes
+#
+# Nothing about *this* machine belongs here, because this file is not this
+# machine's: the hostname comes from the system or $TUPFERL_HOSTNAME, and the
+# editor for the conflict prompt from git -- $GIT_EDITOR, core.editor, $VISUAL,
+# $EDITOR.
 """
 
 #: How many names a generated commit message lists before it summarises. Long
@@ -211,7 +214,7 @@ def add(wanted: list[str], to_host: bool, anyway: bool = False) -> int:
     """
     repo, config = open_repo()
     home = paths.home()
-    host = paths.hostname(config.hostname)
+    host = paths.hostname()
     root = manifest.location(repo, host, to_host)
 
     # A dict used as an ordered set: keys only, because the source is always
@@ -348,9 +351,9 @@ def remove(wanted: str, from_host: bool) -> int:
     exist either, the file simply stops being managed and `sync.stale` prunes
     the snapshot on its own.
     """
-    repo, config = open_repo()
+    repo, _ = open_repo()
     home = paths.home()
-    host = paths.hostname(config.hostname)
+    host = paths.hostname()
 
     name = manifest.relative(wanted, home)
 

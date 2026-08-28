@@ -136,7 +136,7 @@ class Prompted(unittest.TestCase):
         """
         self.terminal.type(keys + support.FALLBACK)
         with support.deadline(support.PATIENCE, f"the prompt never settled on {keys!r}"):
-            return conflicts.ask(sides, self.config, self.terminal.source, self.out)
+            return conflicts.ask(sides, self.terminal.source, self.out)
 
     def scratch(self) -> Path:
         """A throwaway directory that lives as long as the test.
@@ -551,7 +551,7 @@ class TestTheKeys(Prompted):
         exists for was guarded by nothing a sweep could see.
         """
         with support.deadline(support.PATIENCE, "ask never settled at end of input"):
-            got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
+            got = conflicts.ask(one_conflict(), io.StringIO(""), self.out)
         self.assertEqual(conflicts.Answer(conflicts.SKIP), got)
 
     def test_b_keeps_both_sides_in_turn(self) -> None:
@@ -698,34 +698,32 @@ class TestWhichEditor(unittest.TestCase):
     def only(self, **environment: str) -> dict[str, str]:
         return environment
 
-    def test_the_config_wins(self) -> None:
-        """A setting that loses to an environment variable is one the user
-        cannot make stick -- and that includes the ones git reads."""
-        with mock.patch.dict(os.environ, self.only(GIT_EDITOR="git", VISUAL="vis"), clear=True):
-            self.assertEqual("cfg", conflicts.editor(Config(editor="cfg")))
-
     def test_git_editor_beats_the_shells_variables(self) -> None:
         """git's own first source, and it outranks `$VISUAL` for the reason the
         whole chain exists: an editor configured for git is an editor."""
         with mock.patch.dict(
             os.environ, self.only(GIT_EDITOR="git", VISUAL="vis", EDITOR="ed"), clear=True
         ):
-            self.assertEqual("git", conflicts.editor(Config()))
+            self.assertEqual("git", conflicts.editor())
 
     def test_visual_beats_editor(self) -> None:
         with mock.patch.dict(os.environ, self.only(VISUAL="vis", EDITOR="ed"), clear=True):
-            self.assertEqual("vis", conflicts.editor(Config()))
+            self.assertEqual("vis", conflicts.editor())
 
     def test_editor_is_the_last_answer(self) -> None:
         with mock.patch.dict(os.environ, self.only(EDITOR="ed"), clear=True):
-            self.assertEqual("ed", conflicts.editor(Config()))
+            self.assertEqual("ed", conflicts.editor())
 
-    def test_nothing_set_is_an_error_that_names_all_three_ways_in(self) -> None:
+    def test_nothing_set_is_an_error_that_names_both_ways_in(self) -> None:
+        """Two ways now, not three: `.tupferl/config.toml` had an `editor` and
+        it was removed, because that file is shared and an editor is not. The
+        message must not go on offering a setting that no longer exists."""
         with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(TupferlError) as raised:
-            conflicts.editor(Config())
+            conflicts.editor()
         said = str(raised.exception)
-        self.assertIn("config.toml", said)
+        self.assertIn("$EDITOR", said)
         self.assertIn("core.editor", said)
+        self.assertNotIn("config.toml", said)
 
 
 class TestReadingGitsConfiguredEditor(support.SandboxCase):
@@ -748,20 +746,13 @@ class TestReadingGitsConfiguredEditor(support.SandboxCase):
     def test_core_editor_is_used_when_nothing_more_specific_is_set(self) -> None:
         self.configured("nvim -f")
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual("nvim -f", conflicts.editor(Config(), self.repo))
-
-    def test_the_tupferl_setting_still_wins(self) -> None:
-        """The one a person set for tupferl on purpose, which is the reason
-        git's sources go after it rather than first."""
-        self.configured("nvim")
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual("cfg", conflicts.editor(Config(editor="cfg"), self.repo))
+            self.assertEqual("nvim -f", conflicts.editor(self.repo))
 
     def test_git_editor_still_wins_over_the_file(self) -> None:
         """git's own order among its own sources."""
         self.configured("nvim")
         with mock.patch.dict(os.environ, {"GIT_EDITOR": "git"}, clear=True):
-            self.assertEqual("git", conflicts.editor(Config(), self.repo))
+            self.assertEqual("git", conflicts.editor(self.repo))
 
     def test_core_editor_beats_the_shells_variables(self) -> None:
         """The other half of the placement: without it, a machine that set
@@ -770,7 +761,7 @@ class TestReadingGitsConfiguredEditor(support.SandboxCase):
         exists to remove."""
         self.configured("nvim")
         with mock.patch.dict(os.environ, {"VISUAL": "vis", "EDITOR": "ed"}, clear=True):
-            self.assertEqual("nvim", conflicts.editor(Config(), self.repo))
+            self.assertEqual("nvim", conflicts.editor(self.repo))
 
     def test_without_a_repository_git_is_not_asked_at_all(self) -> None:
         """`repo=None` must not mean "ask git about wherever we are standing".
@@ -789,7 +780,7 @@ class TestReadingGitsConfiguredEditor(support.SandboxCase):
         os.chdir(self.repo)
         try:
             with mock.patch.dict(os.environ, {"EDITOR": "ed"}, clear=True):
-                self.assertEqual("ed", conflicts.editor(Config()))
+                self.assertEqual("ed", conflicts.editor())
         finally:
             os.chdir(here)
 
@@ -801,22 +792,22 @@ class TestWhichSettler(unittest.TestCase):
         return one_conflict()
 
     def test_ours_answers_keep_local_without_asking(self) -> None:
-        settler = conflicts.answering(Config(), no_input=False, ours=True, theirs=False)
+        settler = conflicts.answering(no_input=False, ours=True, theirs=False)
         self.assertEqual(conflicts.Answer(conflicts.LOCAL), settler(self.sides()))
 
     def test_theirs_answers_keep_remote_without_asking(self) -> None:
-        settler = conflicts.answering(Config(), no_input=False, ours=False, theirs=True)
+        settler = conflicts.answering(no_input=False, ours=False, theirs=True)
         self.assertEqual(conflicts.Answer(conflicts.REMOTE), settler(self.sides()))
 
     def test_no_input_answers_skip(self) -> None:
-        settler = conflicts.answering(Config(), no_input=True, ours=False, theirs=False)
+        settler = conflicts.answering(no_input=True, ours=False, theirs=False)
         self.assertEqual(conflicts.Answer(conflicts.SKIP), settler(self.sides()))
 
     def test_a_stdin_that_is_not_a_terminal_is_no_input(self) -> None:
         """Nobody is there to press a key. Blocking for ever and reading EOF as
         a decision are both worse than reporting the conflict."""
         with mock.patch("sys.stdin", io.StringIO("l\n")):
-            settler = conflicts.answering(Config(), no_input=False, ours=False, theirs=False)
+            settler = conflicts.answering(no_input=False, ours=False, theirs=False)
             self.assertEqual(conflicts.Answer(conflicts.SKIP), settler(self.sides()))
 
     def test_with_a_terminal_it_is_the_prompt(self) -> None:
@@ -828,7 +819,7 @@ class TestWhichSettler(unittest.TestCase):
         spill = support.Spill()
         patched = mock.patch("sys.stdin", terminal.source), mock.patch("sys.stdout", spill)
         with patched[0], patched[1], support.deadline(support.PATIENCE, "the prompt never settled"):
-            settler = conflicts.answering(Config(), no_input=False, ours=False, theirs=False)
+            settler = conflicts.answering(no_input=False, ours=False, theirs=False)
             self.assertEqual(conflicts.Answer(conflicts.REMOTE), settler(self.sides()))
         self.assertIn("1 conflict to settle", spill.getvalue())
 
@@ -1196,6 +1187,6 @@ class TestWhatTheWeakFixturesMissed(Prompted):
         """Not just that it skips -- that it tells the user why. A sync that
         exits 1 having silently skipped every conflict is one nobody can debug."""
         with support.deadline(support.PATIENCE, "ask never settled at end of input"):
-            got = conflicts.ask(one_conflict(), self.config, io.StringIO(""), self.out)
+            got = conflicts.ask(one_conflict(), io.StringIO(""), self.out)
         self.assertEqual(conflicts.SKIP, got.choice)
         self.assertIn("end of input", self.out.getvalue())

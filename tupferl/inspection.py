@@ -80,8 +80,8 @@ def status(everything: bool = False, diffs: bool = False, wanted: str | None = N
     """
     if diffs:
         return difference(wanted)
-    repo, config = manage.open_repo()
-    host = paths.hostname(config.hostname)
+    repo, _ = manage.open_repo()
+    host = paths.hostname()
     home = paths.home()
 
     lines = []
@@ -364,8 +364,8 @@ def difference(wanted: str | None, out: TextIO | None = None) -> int:
     # that captures by patching `sys.stdout` -- which is all of them -- would
     # write past the capture. Measured: it took fifteen of them red.
     out = sys.stdout if out is None else out
-    repo, config = manage.open_repo()
-    host = paths.hostname(config.hostname)
+    repo, _ = manage.open_repo()
+    host = paths.hostname()
     home = paths.home()
 
     readings = list(sync.examine(repo, home, host))
