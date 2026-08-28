@@ -32,7 +32,7 @@ import tempfile
 import time
 import typing
 import unittest
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -1503,6 +1503,28 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         self.assertIn("1 survived", said)
         self.assertIn("1 asked nothing", said)
 
+    def test_a_recorded_row_that_asked_nothing_is_counted_not_listed(self) -> None:
+        """The same terms a recorded survivor gets, and the reason the record
+        widened: a `broke` row somebody wrote a reason for should stop being one
+        of the rows the sweep asks them to read. Listed, it is noise; counted,
+        the number going up is still visible.
+        """
+        broke = mutate.Result(row(label="c.py:3 in h()"), mutate.Verdict("broke", "a fork bomb"))
+        key = mutate._key(broke.mutation)
+        with support.quiet() as said:
+            mutate._summarise([broke], {key: mutate.Accepted("cannot be answered", 1)})
+        self.assertNotIn("asked nothing", said.getvalue())
+        self.assertIn("1 survivor(s) already recorded", said.getvalue())
+
+    def test_an_unrecorded_row_that_asked_nothing_is_still_listed(self) -> None:
+        """The precondition. Without it the assertion above is satisfied by a
+        `_summarise` that prints nothing at all once a record is passed."""
+        broke = mutate.Result(row(label="c.py:3 in h()"), mutate.Verdict("broke", "a fork bomb"))
+        with support.quiet() as said:
+            mutate._summarise([broke], {})
+        self.assertIn("1 asked nothing", said.getvalue())
+        self.assertIn("c.py:3 in h()", said.getvalue())
+
 
 class GeneratedTable(unittest.TestCase):
     """A repository with a real diff in it, and one way to build a table from it.
@@ -1858,7 +1880,14 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         return box
 
     def sweep(
-        self, box: Path, report: Path, terminal: bool = False, extra: Sequence[str] = ()
+        self,
+        box: Path,
+        report: Path,
+        terminal: bool = False,
+        extra: Sequence[str] = (),
+        # `--all` and `--base` are mutually exclusive by `parser.error`, so a
+        # whole-tree run replaces this rather than adding to `extra`.
+        scope: Sequence[str] = ("--base", "HEAD"),
     ) -> tuple[int, str]:
         """One real `--batch` run, from `argparse` to the done marker.
 
@@ -1880,8 +1909,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             with mock.patch.object(mutate, "_persist", watched), support.quiet(terminal) as spill:
                 code = mutate.main(
                     [
-                        "--base",
-                        "HEAD",
+                        *scope,
                         "--batch",
                         "--json",
                         str(report),
@@ -2094,6 +2122,78 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             row["outcome"] for row in json.loads(report.read_text(encoding="utf-8"))["results"]
         ]
         self.assertEqual(["caught"] * len(outcomes), outcomes, "the ordering changed an answer")
+
+    def bogus(self, box: Path) -> Path:
+        """A record holding one key for a file this fixture has never had.
+
+        Bogus on purpose: a real key would be *reached* under `--all` and the
+        paired test below could not tell the two runs apart.
+        """
+        where = box / "known-survivors.json"
+        where.write_text(
+            json.dumps({"deadbeefdeadbeef": {"why": "read, in a file far away", "seen": 1}}),
+            encoding="utf-8",
+        )
+        return where
+
+    def kept(self, where: Path) -> bool:
+        return "deadbeefdeadbeef" in json.loads(where.read_text(encoding="utf-8"))
+
+    def test_a_diff_run_may_not_drop_a_record_entry(self) -> None:
+        """The defect, driven through `main` rather than through the predicate.
+
+        `--base` generates rows for the changed lines alone, so it "fails to
+        generate" every key in an untouched file -- and `_accept` **drops** what
+        `stale` names. Measured before the fix on this repository's own record:
+        `python -m tools.mutate --base main --accept`, the command CLAUDE.md
+        gives, reported 206 of 210 entries stale and would have deleted them,
+        with nothing in the output saying so.
+
+        Driving the real `main` because the thing under test is which flags it
+        reads: a test of the predicate alone passes just as well when `main`
+        computes it and then hands `sort_survivors` a hard-coded `True`.
+        """
+        box = self.repository()
+        where = self.bogus(box)
+        code, said = self.sweep(box, box / "r.json", extra=["--accept"])
+        self.assertTrue(self.kept(where), f"a diff run deleted a reviewed reason\n{said}")
+        self.assertNotIn("match nothing", said, "and claimed the evidence for it")
+        self.assertEqual(0, code, said)
+
+    def test_a_whole_tree_run_still_drops_one(self) -> None:
+        """The other half, and the precondition for the test above: with the
+        evidence in hand the record must still be prunable, or the fix would
+        have bought safety by making `stale` unreachable -- an entry nobody
+        notices going stale is a reason still standing for code that has gone.
+        """
+        box = self.repository()
+        where = self.bogus(box)
+        code, said = self.sweep(box, box / "r.json", extra=["--accept"], scope=["--all"])
+        self.assertIn("match nothing", said)
+        self.assertFalse(self.kept(where), f"a whole-tree run kept a stale reason\n{said}")
+        self.assertEqual(0, code, said)
+
+    def test_a_filtered_whole_tree_run_may_not_drop_one_either(self) -> None:
+        """`--all` narrowed by `--only` is a subset again, and the same loss.
+
+        Found by the sweep, which left `or` becoming `and` alive on the line:
+        with all three filters empty the two spellings agree, so the two tests
+        above cannot tell them apart -- and under the mutant `--all --only x
+        --accept` prunes the record on the evidence of one file. A third
+        direction rather than a fourth: `--operator` and `--skip-operator` sit
+        in the same `or` and are narrowing for the same reason.
+        """
+        box = self.repository()
+        where = self.bogus(box)
+        code, said = self.sweep(
+            box,
+            box / "r.json",
+            extra=["--accept", "--only", "tupferl/other.py"],
+            scope=["--all"],
+        )
+        self.assertTrue(self.kept(where), f"a filtered run deleted a reviewed reason\n{said}")
+        self.assertNotIn("match nothing", said, "and claimed the evidence for it")
+        self.assertEqual(0, code, said)
 
     def test_a_second_run_skips_the_file_already_recorded(self) -> None:
         """Resume, which is the reason any of this records per file.
@@ -2887,7 +2987,7 @@ class TestSurvivorsSomebodyHasAlreadyRead(unittest.TestCase):
     `TODO` rather than a reason it invented.
     """
 
-    def rows(self, *labels: str) -> list[mutate.Result]:
+    def rows(self, *labels: str, outcome: mutate.Outcome = "survived") -> list[mutate.Result]:
         return [
             mutate.Result(
                 Mutation(
@@ -2898,10 +2998,90 @@ class TestSurvivorsSomebodyHasAlreadyRead(unittest.TestCase):
                     "tests.test_sync",
                     operator="branch",
                 ),
-                mutate.Verdict("survived", ""),
+                mutate.Verdict(outcome, ""),
             )
             for n, label in enumerate(labels)
         ]
+
+    def test_a_row_that_asked_nothing_is_recorded_too(self) -> None:
+        """**Not caught, rather than `survived`.** `broke` and `timeout` were
+        the one category with nowhere to be written down: 33 of them came back
+        every whole-tree run with nothing to say which had been read, and three
+        of them cannot be answered at all -- two run the whole suite nested
+        inside a memory-capped sandbox, one is a fork bomb. Those want a written
+        reason exactly as an equivalent mutant does.
+        """
+        outcomes: tuple[mutate.Outcome, ...] = ("broke", "timeout")
+        for outcome in outcomes:
+            with self.subTest(outcome=outcome):
+                results = self.rows("a", outcome=outcome)
+                self.assertEqual(1, len(mutate.sort_survivors(results, {}).fresh))
+
+                key = mutate._key(results[0].mutation)
+                found = mutate.sort_survivors(results, {key: mutate.Accepted("a fork bomb", 1)})
+                self.assertEqual([], found.fresh)
+                self.assertEqual([(results[0], "a fork bomb")], found.accepted)
+
+    def test_a_caught_row_is_never_recorded(self) -> None:
+        """The precondition for the test above, and the line the widening had to
+        stop at: a record that absorbed caught rows would be the whole table,
+        and `--accept` would write a `TODO` for every mutation in the tree.
+        """
+        results = self.rows("a", outcome="caught")
+        found = mutate.sort_survivors(results, {})
+        self.assertEqual([], found.fresh)
+        self.assertEqual([], found.accepted)
+
+    def test_a_partial_run_reports_nothing_stale(self) -> None:
+        """A `--base` run generates rows for the changed lines alone, so every
+        key belonging to an untouched file "matches nothing it generated".
+
+        Not a cosmetic complaint. `_accept` **drops** what `stale` names, so
+        `--base main --accept` -- the command CLAUDE.md gives -- deleted 206 of
+        this record's 210 reviewed reasons, silently: the count simply came back
+        smaller. Measured on the sweep for this very change.
+        """
+        results = self.rows("a")
+        record = {"deadbeefdeadbeef": mutate.Accepted("read, in a file this run never touched", 1)}
+        self.assertEqual([], mutate.sort_survivors(results, record, complete=False).stale)
+
+    def test_a_complete_run_still_reports_it(self) -> None:
+        """The precondition, and the half the record needs: a whole-tree sweep
+        does have the evidence, and an entry nobody notices going stale is a
+        reason still standing for code that has gone."""
+        results = self.rows("a")
+        record = {"deadbeefdeadbeef": mutate.Accepted("read, in a file that has gone", 1)}
+        found = mutate.sort_survivors(results, record, complete=True)
+        self.assertEqual(["deadbeefdeadbeef"], found.stale)
+
+    def test_a_partial_run_still_matches_what_it_did_generate(self) -> None:
+        """`complete` bounds `stale` and nothing else. A row this run produced is
+        sorted on its record entry exactly as before -- otherwise the fix would
+        have bought a safe `stale` by making every `--base` run report every
+        survivor as new."""
+        results = self.rows("a")
+        key = mutate._key(results[0].mutation)
+        found = mutate.sort_survivors(results, {key: mutate.Accepted("read", 1)}, complete=False)
+        self.assertEqual([], found.fresh)
+        self.assertEqual([(results[0], "read")], found.accepted)
+
+    def test_a_row_now_caught_keeps_its_entry_rather_than_going_stale(self) -> None:
+        """`stale` asks whether this run *generated* the key, not whether it
+        sorted it -- so a mutation the suite has since learned to kill keeps its
+        entry, silently, rather than being reported.
+
+        Deliberate, and the alternative is worse. `stale` is loud because it
+        means "the code this describes has moved or gone", and here the code is
+        still there. An outcome, unlike a line of source, is not stable between
+        runs: `Killers` reorders the selection each time, so a row near the
+        alarm can be `caught` one Sunday and `timeout` the next, and a record
+        that dropped the reason on the first would demand it be written again on
+        the second. The cost is one dead row; the cost of the other reading is a
+        record that churns exactly where it is least trustworthy.
+        """
+        results = self.rows("a", outcome="caught")
+        key = mutate._key(results[0].mutation)
+        self.assertEqual([], mutate.sort_survivors(results, {key: mutate.Accepted("r", 1)}).stale)
 
     def record(self, rows: dict[str, object] | str) -> Path:
         box = Path(tempfile.mkdtemp(prefix="tupferl-known-"))
@@ -3021,16 +3201,19 @@ class TestSurvivorsSomebodyHasAlreadyRead(unittest.TestCase):
 class TestWhenARecordedSweepGoesRed(unittest.TestCase):
     """`_status`: the one thing the record is allowed to change about CI.
 
-    Excusing a read survivor is the point; excusing anything else would make the
-    weekly sweep a job that cannot fail, which is worse than not having it. So
-    every other reason a run is not clean has a row here.
+    Excusing a row somebody read is the point; excusing anything else would make
+    the weekly sweep a job that cannot fail, which is worse than not having it.
+    So every other reason a run is not clean has a row here.
     """
 
     def report(self, *outcomes: mutate.Outcome, baseline_red: bool = False) -> mutate.Report:
+        # A distinct `new` per row. `_key` is content, so rows identical but for
+        # their outcome would share one key and no test below could accept the
+        # `broke` one without also accepting the `survived` one beside it.
         return mutate.Report(
             [
                 mutate.Result(
-                    Mutation(f"row {n}", "tupferl/sync.py", "a", "b", "t", operator="branch"),
+                    Mutation(f"row {n}", "tupferl/sync.py", "a", f"b{n}", "t", operator="branch"),
                     mutate.Verdict(outcome, ""),
                 )
                 for n, outcome in enumerate(outcomes)
@@ -3038,27 +3221,48 @@ class TestWhenARecordedSweepGoesRed(unittest.TestCase):
             baseline_red=baseline_red,
         )
 
-    def status(self, report: mutate.Report, fresh: int = 0) -> int:
-        survivors = [r for r in report.results if r.verdict.outcome == "survived"]
-        sorted_out = mutate.Survivors(
-            survivors[:fresh], [(r, "read") for r in survivors[fresh:]], []
-        )
-        return mutate._status(report, sorted_out)
+    def status(self, report: mutate.Report, unread: Container[int] = ()) -> int:
+        """Every row that is not `caught` is recorded, except those in `unread`.
+
+        Driving `sort_survivors` rather than building a `Survivors` by hand: the
+        split is as much under test here as `_status` is, and the hand-rolled
+        version of it went stale the moment the record widened -- it sorted only
+        `survived`, so a `broke` row reached `_status` in neither list and the
+        two assertions about it were really about a second arm that no longer
+        exists.
+        """
+        accepted = {
+            mutate._key(result.mutation): mutate.Accepted("read", 1)
+            for n, result in enumerate(report.results)
+            if not mutate.MEANING[result.verdict.outcome].clean and n not in unread
+        }
+        return mutate._status(report, mutate.sort_survivors(report.results, accepted))
 
     def test_a_sweep_whose_every_survivor_was_read_is_green(self) -> None:
         self.assertEqual(0, self.status(self.report("caught", "survived", "survived")))
 
     def test_one_survivor_nobody_read_is_red(self) -> None:
-        self.assertEqual(1, self.status(self.report("caught", "survived", "survived"), fresh=1))
+        self.assertEqual(1, self.status(self.report("caught", "survived", "survived"), {1}))
 
-    def test_a_row_that_broke_is_red_however_the_survivors_stand(self) -> None:
-        """A question the run failed to put is not a question answered. If the
-        record could excuse this, a sweep where every mutant crashed would
-        report success."""
-        self.assertEqual(1, self.status(self.report("caught", "broke", "survived")))
+    def test_a_row_that_broke_and_nobody_read_is_red(self) -> None:
+        """A question the run failed to put is not a question answered, and it
+        is worth less than a survivor: a `broke` row is never `caught`, so the
+        line it appeared to guard is guarded by nothing."""
+        self.assertEqual(1, self.status(self.report("caught", "broke", "survived"), {1}))
 
-    def test_a_row_that_timed_out_is_red(self) -> None:
-        self.assertEqual(1, self.status(self.report("caught", "timeout")))
+    def test_a_row_that_broke_and_somebody_read_is_green(self) -> None:
+        """The widening, and the assertion that would catch it being reverted.
+
+        Three mutations in this tree cannot be answered at all -- two run the
+        whole suite nested inside a memory-capped sandbox, one is a fork bomb --
+        and a reason written for them was previously ignored, because `_status`
+        tested `broke` a second time after the record had already excused it.
+        A written reason that changes nothing is how a record stops being read.
+        """
+        self.assertEqual(0, self.status(self.report("caught", "broke", "survived")))
+
+    def test_a_row_that_timed_out_and_nobody_read_is_red(self) -> None:
+        self.assertEqual(1, self.status(self.report("caught", "timeout"), {1}))
 
     def test_a_red_baseline_is_red_even_with_nothing_else_wrong(self) -> None:
         """Its verdicts are meaningless, so "no fresh survivors" says nothing."""

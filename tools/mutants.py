@@ -607,6 +607,38 @@ _ARITH: dict[type[ast.operator], type[ast.operator]] = {
 _ARITH_SPELLING = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.FloorDiv: "//"}
 
 
+def _concatenation(node: ast.AST) -> bool:
+    """Is this `+` provably joining strings, from the expression alone?
+
+    A string operand settles it: `str + int` is a `TypeError` in any case, so a
+    well-formed `+` with a string literal on either side is concatenation --
+    and `-` on it can only raise. Such a row is `BROKE` by construction, never
+    `caught` or `SURVIVED`, so the line it appeared to guard is guarded by
+    nothing and no verdict says so.
+
+    **Literals only, and that is the whole of what is sound here.** #57 proposed
+    this check and cited `paint.GOOD + paint.HEAD` in `tools/watch.py` as the
+    case to remove -- and those are *attributes*, which this cannot judge:
+    proving them string-valued means resolving a name across a module boundary,
+    which is a type checker rather than a guard. Measured on this tree: 9 `+`
+    expressions have a provable string operand and 37 do not, the three in
+    `watch.py` among the 37. So this removes a real class and not the one the
+    issue was looking at, which is worth knowing before anyone reads that issue
+    as done.
+
+    Erring permissive costs a `BROKE` row. Erring strict silently stops mutating
+    real arithmetic, which is a loss of coverage no output would report -- so
+    when in doubt, mutate.
+    """
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
+        return False
+    return any(
+        isinstance(side, ast.JoinedStr)
+        or (isinstance(side, ast.Constant) and isinstance(side.value, str))
+        for side in (node.left, node.right)
+    )
+
+
 def arith(node: ast.AST) -> Iterator[Edit]:
     """`+` <-> `-`, `*` <-> `//`, and the same on an augmented assignment.
 
@@ -615,6 +647,8 @@ def arith(node: ast.AST) -> Iterator[Edit]:
     is parenthesised, and `_rewritten` decides the second from the node.
     """
     if not isinstance(node, (ast.BinOp, ast.AugAssign)):
+        return
+    if _concatenation(node):
         return
     becomes = _ARITH.get(type(node.op))
     if becomes is None:
