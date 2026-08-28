@@ -472,9 +472,16 @@ Five things are not where a newcomer would guess, all on purpose:
     557 survivors collapse to **432 keys**, so a record shaped as a set would
     absorb 125 rows nobody read, and would go on absorbing every future one of
     those shapes. `Accepted.seen` is how the 126th is still new.
-  - **A stale entry is reported loudly.** It is a claim about code that has
-    gone, and the row it used to cover may have been replaced by one nobody has
-    read. A row the suite has since learned to *kill* is the one exception and
+  - **A stale entry is reported loudly -- but only a whole-tree sweep may
+    judge one.** "This key matches nothing the run generated" is evidence the
+    code has gone only if the run generated everything, and `--base` generates
+    rows for the changed lines alone. `_accept` *drops* what it calls stale, so
+    the command two lines up would have deleted 206 of the record's 210
+    reasons, silently: the count simply came back smaller. Fixed in #57;
+    `--base ... --accept` now adds and never removes. A record whose documented
+    use destroys it is worse than no record.
+
+    A row the suite has since learned to *kill* is the other exception and
     is kept silently: `stale` means the code has moved or gone, and an outcome
     is not stable between runs the way a line of source is -- a row near the
     alarm can be `caught` one Sunday and `timeout` the next, and churning the

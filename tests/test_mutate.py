@@ -2954,6 +2954,39 @@ class TestSurvivorsSomebodyHasAlreadyRead(unittest.TestCase):
         self.assertEqual([], found.fresh)
         self.assertEqual([], found.accepted)
 
+    def test_a_partial_run_reports_nothing_stale(self) -> None:
+        """A `--base` run generates rows for the changed lines alone, so every
+        key belonging to an untouched file "matches nothing it generated".
+
+        Not a cosmetic complaint. `_accept` **drops** what `stale` names, so
+        `--base main --accept` -- the command CLAUDE.md gives -- deleted 206 of
+        this record's 210 reviewed reasons, silently: the count simply came back
+        smaller. Measured on the sweep for this very change.
+        """
+        results = self.rows("a")
+        record = {"deadbeefdeadbeef": mutate.Accepted("read, in a file this run never touched", 1)}
+        self.assertEqual([], mutate.sort_survivors(results, record, complete=False).stale)
+
+    def test_a_complete_run_still_reports_it(self) -> None:
+        """The precondition, and the half the record needs: a whole-tree sweep
+        does have the evidence, and an entry nobody notices going stale is a
+        reason still standing for code that has gone."""
+        results = self.rows("a")
+        record = {"deadbeefdeadbeef": mutate.Accepted("read, in a file that has gone", 1)}
+        found = mutate.sort_survivors(results, record, complete=True)
+        self.assertEqual(["deadbeefdeadbeef"], found.stale)
+
+    def test_a_partial_run_still_matches_what_it_did_generate(self) -> None:
+        """`complete` bounds `stale` and nothing else. A row this run produced is
+        sorted on its record entry exactly as before -- otherwise the fix would
+        have bought a safe `stale` by making every `--base` run report every
+        survivor as new."""
+        results = self.rows("a")
+        key = mutate._key(results[0].mutation)
+        found = mutate.sort_survivors(results, {key: mutate.Accepted("read", 1)}, complete=False)
+        self.assertEqual([], found.fresh)
+        self.assertEqual([(results[0], "read")], found.accepted)
+
     def test_a_row_now_caught_keeps_its_entry_rather_than_going_stale(self) -> None:
         """`stale` asks whether this run *generated* the key, not whether it
         sorted it -- so a mutation the suite has since learned to kill keeps its

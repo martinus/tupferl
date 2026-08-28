@@ -1790,7 +1790,11 @@ def _report_headroom(ceiling: int) -> None:
     print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
 
 
-def _summarise(results: Sequence[Result], accepted: dict[str, Accepted] | None = None) -> None:
+def _summarise(
+    results: Sequence[Result],
+    accepted: dict[str, Accepted] | None = None,
+    complete: bool = True,
+) -> None:
     """The part a pull request quotes when the news is bad.
 
     ``accepted`` splits the survivors into ones somebody has already read and
@@ -1798,7 +1802,7 @@ def _summarise(results: Sequence[Result], accepted: dict[str, Accepted] | None =
     is what stops the file becoming a way to hide them, and the list is what
     would bury the rows that are new.
     """
-    sorted_out = sort_survivors(results, accepted or {})
+    sorted_out = sort_survivors(results, accepted or {}, complete)
     if accepted is not None:
         _report_known(sorted_out)
     # One list of rows-to-read, then split by whether the row answered anything.
@@ -2125,7 +2129,9 @@ class Survivors(NamedTuple):
     stale: list[str]
 
 
-def sort_survivors(results: Sequence[Result], accepted: dict[str, Accepted]) -> Survivors:
+def sort_survivors(
+    results: Sequence[Result], accepted: dict[str, Accepted], complete: bool = True
+) -> Survivors:
     """Split every row that is not `caught` into read and unread.
 
     **Not caught, rather than `survived`.** `MEANING` spends "survived" narrowly,
@@ -2148,6 +2154,23 @@ def sort_survivors(results: Sequence[Result], accepted: dict[str, Accepted]) -> 
     **Counted, not merely matched.** A key covers as many rows as were read, and
     the next one of that shape is fresh -- see `Accepted.seen` for the 125 rows
     that would otherwise have been absorbed by a sibling.
+
+    **`complete` is what makes `stale` mean anything.** "This key matches nothing
+    the run generated" is evidence the code has gone only if the run generated
+    everything -- and a `--base` run generates rows for the changed lines alone,
+    so it "fails to generate" every key belonging to a file the diff did not
+    touch. Measured on this change's own sweep: 206 of the record's 210 entries
+    were reported stale by a two-file diff.
+
+    That was not merely a misleading line. `_accept` **drops** what `stale`
+    names, so `python -m tools.mutate --base main --accept` -- the command
+    CLAUDE.md gives for recording a run's survivors -- would have deleted 206
+    reviewed reasons and left the file claiming four. A record whose documented
+    use destroys it is worse than no record, and nothing in the output said so:
+    the count simply came back smaller.
+
+    With no evidence, say nothing. An entry kept one sweep too long is a line in
+    a file; an entry dropped is an argument somebody has to make again.
     """
     fresh: list[Result] = []
     seen: list[tuple[Result, str]] = []
@@ -2162,7 +2185,8 @@ def sort_survivors(results: Sequence[Result], accepted: dict[str, Accepted]) -> 
         else:
             fresh.append(result)
     reached = {_key(result.mutation) for result in results}
-    return Survivors(fresh, seen, sorted(set(accepted) - reached))
+    stale = sorted(set(accepted) - reached) if complete else []
+    return Survivors(fresh, seen, stale)
 
 
 def _key(mutation: Mutation) -> str:
@@ -2924,7 +2948,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--accept",
         action="store_true",
-        help=f"record this run's survivors in {KNOWN} so later runs report only new ones",
+        help=(
+            f"record this run's survivors in {KNOWN} so later runs report only new ones "
+            "(only a whole-tree --all run may also drop entries)"
+        ),
     )
     parser.add_argument(
         "--prefix",
@@ -2999,8 +3026,14 @@ def main(argv: list[str] | None = None) -> int:
             _marker(args.json).unlink(missing_ok=True)
         report = sweep(table, args) if args.all or args.batch else _run_generated(table, args)
         accepted = known_survivors()
-        _summarise(report.results, accepted)
-        sorted_out = sort_survivors(report.results, accepted)
+        # Each term is a way the table can be a subset of what the record covers,
+        # and `stale` is only evidence when it is not: `--all` is the whole tree
+        # where `--base` is a diff, and the three filters narrow even that. A
+        # `--limit` that bites is the one case this does not see; it caps per
+        # file under `--all`, so it would have to be reached deliberately.
+        complete = args.all and not (args.only or args.operator or args.skip_operator)
+        _summarise(report.results, accepted, complete)
+        sorted_out = sort_survivors(report.results, accepted, complete)
         if args.accept:
             _accept(sorted_out, accepted)
         if report.baseline_red:
