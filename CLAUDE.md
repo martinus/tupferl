@@ -521,6 +521,20 @@ Five things are not where a newcomer would guess, all on purpose:
   execute is a weak fixture or an equivalent mutant. The two halves mean
   opposite things.
 
+### The dependency surface is a claim with a test behind it
+
+On 3.11+ the package imports nothing outside the standard library; on 3.10 it
+imports `tomli`, and only inside `config.toml`'s shim. `tests/test_packaging.py`
+asserts both, and asserts `pyproject.toml` agrees in both directions — an import
+that is not declared crashes only on a machine that does not already have the
+package, and a declaration nothing imports is what `rich` would be if it were
+listed.
+
+A dependency arrives as one import in one commit, and nothing else in the suite
+notices: the code works, the tests pass, and the supply chain grew. If a new
+dependency is genuinely wanted, that test is the place the argument for it gets
+written down.
+
 ### Gotchas
 
 - **`AssertionError: Cannot find component 'X' for 'tupferl.old_module.X'` from

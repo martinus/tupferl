@@ -107,6 +107,18 @@ overrides it. `tupferl add ~/.ssh` stores `config`, `known_hosts` and `id_*.pub`
 and skips the private keys (`*.pub` is the half of a key pair meant to be
 shared).
 
+## No dependencies
+
+On Python 3.11 and newer tupferl imports **nothing outside the standard
+library**. On 3.10 it installs exactly one thing — `tomli`, the library
+`tomllib` was taken from — so the single dependency is a backport of a stdlib
+module, and it disappears on the interpreters that ship it.
+
+That is a supply chain of one package that goes to zero, and it is asserted
+rather than intended: `tests/test_packaging.py` reads every import in the
+package and every requirement in `pyproject.toml` and refuses to let the two
+disagree in either direction.
+
 ## Requirements
 
 - Python 3.10+ (3.10 gets the `tomli` backport installed for you).
