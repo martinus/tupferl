@@ -3499,13 +3499,23 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
         self.assertNotIn("match nothing", self.counts(accepted=1, stale=0))
 
     def test_stale_keys_come_back_in_a_settled_order(self) -> None:
-        """Two, because one cannot show an ordering -- and this list is printed
-        in a pull request, where a moving order reads as a changed answer."""
+        """**Eight keys, not two, and the count is the test.**
+
+        The stale list is `sorted(set(accepted) - reached)`, and a *set* iterates
+        in hash order -- which Python randomises per run. With two keys an
+        unsorted list matches the sorted one about half the time, so the guard
+        would hold or not depending on `PYTHONHASHSEED`: not a flaky test, but a
+        guard that only sometimes guards. Measured: with two it survived the
+        sweep; with eight the chance of the hash order being sorted is 1 in
+        40320.
+
+        Inserted in reverse, so insertion order is not sorted order either.
+        """
+        keys = [f"{n:016x}" for n in range(8)]
         found = mutate.sort_survivors(
-            [],
-            {"ffff": mutate.Accepted("gone", 1), "0000": mutate.Accepted("gone", 1)},
+            [], {key: mutate.Accepted("gone", 1) for key in reversed(keys)}
         )
-        self.assertEqual(["0000", "ffff"], found.stale)
+        self.assertEqual(keys, found.stale)
 
     def test_a_row_read_once_is_a_row_read(self) -> None:
         """`seen > 0`, not `> 1`. Every row `--accept` writes starts at 1, so a

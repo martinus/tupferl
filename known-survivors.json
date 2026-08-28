@@ -1,12 +1,4 @@
 {
- "00c3252f7759211c": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1487 in _share() -- `min` becomes `max`. Triaged from the whole-tree sweep; unread."
- },
- "016eb144c85aa118": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2440 in _recorded() -- returns `None` instead of `[]`."
- },
  "01b8158a62d9beb8": {
   "seen": 1,
   "why": "equivalent observably: this decides how finely the classes are split across batches. Every class is still placed exactly once -- `test_every_class_is_placed_exactly_once` -- and every test still runs."
@@ -23,22 +15,6 @@
   "seen": 1,
   "why": "equivalent: the guard is an early-out for the common case, and `any([])` is `False` -- the same answer the body computes from an empty pattern list."
  },
- "05e60ed19b01ac0e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1819 in verify() -- `==` becomes `!=`. Triaged from the whole-tree sweep; unread."
- },
- "067c7f39343180ce": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1228 in _visible_memory() -- the call to `limits.append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "069728d1f5036c7c": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2776 in main() -- `all` becomes `any`."
- },
- "073a7270edbe3202": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:779 in _Lanes._sample() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
  "084032cd80a4d9c4": {
   "seen": 1,
   "why": "equivalent, measured: with the guard skipped, an empty `run` still returns `True` from the comprehension -- `whole[0:0] == []` holds and the range is never empty. The guard says the answer plainly rather than deriving it."
@@ -46,10 +22,6 @@
  "0866a80e13e71a90": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:207 in _trimmed() -- `1` becomes `2`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "090759898b849fe8": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1188 in _attempt() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
  },
  "090b0ec0a68c945c": {
   "seen": 1,
@@ -59,37 +31,17 @@
   "seen": 1,
   "why": "equivalent observably: batch granularity only."
  },
- "0a57020e0a9ce5e2": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2673 in main() -- `==` becomes `!=`."
- },
- "0bcd8ed317369efe": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:670 in _lane() -- `in` becomes `not in`. Triaged from the whole-tree sweep; unread."
- },
  "0bd657cae368eac8": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:425 in collect() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "0d60e4817b1d2c06": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:430 in Report.clean() -- `all` becomes `any`. Triaged from the whole-tree sweep; unread."
  },
  "0d9ceebbe4fd38ad": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2686 in main() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "0e4024439ee55f2f": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1535 in run() -- returns `None` instead of `Report([])`."
- },
  "0fc3c0e98da7c9b6": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2529 in sweep() -- the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "10d55f6840d2c043": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1234 in _visible_memory() -- `>` becomes `>=`. Triaged from the whole-tree sweep; unread."
  },
  "10eafe703e8d0fca": {
   "seen": 1,
@@ -99,29 +51,9 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:848 in _chosen() -- the ordering is reversed. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "115220559f229692": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2669 in main() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "11c434e976afe373": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1237 in _visible_memory() -- `*` becomes `//`. Triaged from the whole-tree sweep; unread."
- },
- "11c6ea3445fc4a18": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:670 in _lane() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "12fe64507254d159": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2673 in main() -- the `if` is always taken."
- },
  "13f833bc49ae31f2": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2095 in Killers.save() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "15a8e8aec9c2834e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2667 in main() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
  "1648c547658110d4": {
   "seen": 1,
@@ -131,17 +63,9 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1614 in run() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "16d0c04e9becd895": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1622 in run() -- the call to `timings.update(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "1721e18900fa572c": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:249 in Verdicts.stopTest() -- the call to `super().stopTest(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "187e037ba223462f": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2668 in main() -- the call to `parser.error(...)` never happens."
  },
  "18e3565d84896f9b": {
   "seen": 1,
@@ -155,25 +79,13 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1194 in importers() -- the ordering is reversed. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "1963e8cfdefdf538": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1482 in _share() -- returns `None` instead of `Share(max(1, wanted), memory)`. Triaged from the whole-tree sweep; unread."
- },
  "1b9e22f48fdb3009": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2250 in _bytes() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "1c49f9ecaa74ac79": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1235 in _visible_memory() -- the call to `limits.append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "1dcd83b13d10b4c5": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:207 in _trimmed() -- the slice takes everything. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "1ded514ce291eb4b": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:772 in _Lanes.release() -- returns `None` instead of `held`. Triaged from the whole-tree sweep; unread."
  },
  "1e8debb72e32ffc2": {
   "seen": 1,
@@ -187,6 +99,10 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2693 in main() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
+ "1fe7a4f1c3fab87f": {
+  "seen": 1,
+  "why": "equivalent: the mutation is on `left.get(key, 0)`'s *default*, and a default of -1 is still not `> 0`, so a key that was never accepted is still fresh."
+ },
  "201bcb2b2675f2e2": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutants.py:1015 in _git() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
@@ -198,10 +114,6 @@
  "21fc9f6cce96abe4": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/watch.py:273 in Watch.stalling() -- `<` becomes `<=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "22b0c2175387476b": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1668 in run() -- the call to `print(...)` never happens."
  },
  "22ca917a9b621dff": {
   "seen": 1,
@@ -219,21 +131,13 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1059 in changed_lines() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "23a1193cf4bde7db": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2770 in main() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "23b83e69d2bf2888": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2134 in generated() -- `in` becomes `not in`."
- },
  "240e88ea259ae2b4": {
   "seen": 2,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1281 in _unclaimed() -- returns `None` instead of `0`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
  "2508e6a527f0195e": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:837 in _end() -- the call to `probe.kill(...)` never happens. Triaged from the whole-tree sweep; unread."
+  "why": "the belt to `_end_lane`'s braces: if the session is somehow gone, at least reap the probe. Both halves aim SIGKILL at real processes, so neither is drivable from a test in this suite."
  },
  "256abcf3296477b2": {
   "seen": 1,
@@ -241,15 +145,11 @@
  },
  "2591b9194f78e633": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1141 in Learned.ahead() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent: with nothing remembered the comprehension below iterates an empty list and `' '.join([])` is the same empty string the guard returns. The guard says it plainly rather than deriving it."
  },
  "25ecdd5a4618c41b": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2500 in sweep() -- the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "26c68bffd8fa9786": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1652 in run() -- the call to `print(...)` never happens."
  },
  "283e958f0d68da78": {
   "seen": 1,
@@ -259,25 +159,9 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1714 in run() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "297e83ab249a8016": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1672 in run() -- `+` becomes `-`."
- },
- "2a2b59ee65f85509": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:769 in _Lanes.release() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "2a360b80ec3d6a44": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1861 in baseline_shards() -- the call to `shards.append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "2a58a3fd129e77cf": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1022 in _unquote() -- the `.startswith(...)` filter accepts everything. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "2aecac134203f0f2": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1819 in verify() -- returns `None` instead of `sum((1 for result in report.r\u2026`. Triaged from the whole-tree sweep; unread."
  },
  "2b5311929c8c2044": {
   "seen": 1,
@@ -299,10 +183,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1146 in _imported() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "2f53bda273400f04": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1818 in verify() -- returns `None` instead of `len(report.results)`. Triaged from the whole-tree sweep; unread."
- },
  "2f7b0b9ed4a70b1c": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:958 in _near_miss() -- `<` becomes `<=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -310,22 +190,6 @@
  "2f9bd64e30ba3441": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:207 in _trimmed() -- `-` becomes `+`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "30b134b8f0f91edf": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1482 in _share() -- `max` becomes `min`. Triaged from the whole-tree sweep; unread."
- },
- "30da384f13a96be1": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1238 in _visible_memory() -- `min` becomes `max`. Triaged from the whole-tree sweep; unread."
- },
- "32b42d03c7a2f203": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1860 in baseline_shards() -- `sorted` becomes `list`. Triaged from the whole-tree sweep; unread."
- },
- "32ca37c4e71303e4": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:670 in _lane() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
  },
  "334b50321a2d87d8": {
   "seen": 1,
@@ -343,14 +207,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/watch.py:273 in Watch.stalling() -- `<` becomes `<=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "375a1bca2297fe11": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2702 in main() -- the call to `print(...)` never happens."
- },
- "3776900e31a1c676": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1234 in _visible_memory() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "38181b00621d37d1": {
   "seen": 1,
   "why": "named in the code: `distance`'s own comment calls this an equivalent mutant and says why -- a git that would not compare produces output the parse below rejects anyway, reaching the same `None`."
@@ -358,10 +214,6 @@
  "394911e732a4546e": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2179 in generated() -- `share[row.path]` is never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "395fbab562b4a09d": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2743 in main() -- the call to `killers.learn(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
  "399c871815fa8102": {
   "seen": 1,
@@ -374,10 +226,6 @@
  "3b0941e0cfdee309": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/reached.py:289 in main() -- returns `None` instead of `0`. Triaged from the whole-tree sweep; unread."
- },
- "3cd5c5b32f393eae": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2776 in main() -- returns `None` instead of `0 if all((report.clean for re\u2026`."
  },
  "3d6022b33bc47dc3": {
   "seen": 1,
@@ -399,33 +247,17 @@
   "seen": 1,
   "why": "equivalent: `default=0` is used only when `found` is empty, and an empty `found` produces no lines for the width to pad. Measured: `'ab'.ljust(-1)` and `'ab'.ljust(0)` are both `'ab'`."
  },
- "428c5f2f03bd5e61": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1860 in baseline_shards() -- the ordering is reversed. Triaged from the whole-tree sweep; unread."
- },
  "42c58bfaa283b1ec": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:429 in collect() -- returns `None` instead of `_unloadable(head)`. Triaged from the whole-tree sweep; unread."
- },
- "42f3ac480fea10b8": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2700 in main() -- returns `None` instead of `0 if _baseline_is_green(table\u2026`. Triaged from the whole-tree sweep; unread."
  },
  "4310c1dd349bcf5c": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1546 in run() -- `2` becomes `3`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "4320a32731bf524e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:952 in _run() -- returns `None` instead of `Verdict('broke', f\"this lane'\u2026`. Triaged from the whole-tree sweep; unread."
- },
  "436665c725ad08fe": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1063 in changed_lines() -- the call to `_git(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "43f1bad21d0b6e0d": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1188 in _attempt() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
  },
  "442c917f859b75fa": {
   "seen": 1,
@@ -434,10 +266,6 @@
  "45a3cb6536a359ba": {
   "seen": 1,
   "why": "equivalent observably: batch granularity only."
- },
- "463dca82ff41ab80": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:769 in _Lanes.release() -- the `not` is dropped. Triaged from the whole-tree sweep; unread."
  },
  "46fd982d27654b8a": {
   "seen": 1,
@@ -449,7 +277,7 @@
  },
  "4b428357058183dc": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2146 in generated() -- the ordering is reversed. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "same as the `sorted` mutation on this line: `by_size` re-orders the table afterwards."
  },
  "4bf66940ed0b3189": {
   "seen": 4,
@@ -475,14 +303,6 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:296 in Verdicts.addSubTest() -- the call to `super().addSubTest(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
- "50eb9af12efa3804": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1481 in _share() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "5230131864a8a946": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1974 in Killers.__init__() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
- },
  "52ec3930250ffa26": {
   "seen": 1,
   "why": "a real gap, and a narrow one: forcing the branch sends a *file* to `manifest.collect`, which walks it and yields nothing, so `add` on a single file would admit nothing at all. Nothing distinguishes it because every add test that passes a file also passes through `check`, which already recorded the name. Worth a test; it needs `collect`'s behaviour on a non-directory pinned first, which is a change to `manifest` rather than to a fixture."
@@ -495,10 +315,6 @@
   "seen": 1,
   "why": "same as `run_tests.py:424` -- the line only runs when a test id was reported twice, which `pack` makes impossible today."
  },
- "54ea0bb6ff927a3e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:767 in _Lanes.release() -- the call to `self._ceilings.pop(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "55bd999b89cdcc77": {
   "seen": 1,
   "why": "same as `doctor.py:187` -- the line only runs for an unwritable directory, which root does not have. Its test exists and skips."
@@ -507,21 +323,9 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:898 in generate() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "56a26fc50e065301": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2711 in main() -- the call to `print(...)` never happens."
- },
- "56f0a5d6b5974355": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2565 in _baseline_is_green() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
  "5729e34124198089": {
   "seen": 1,
   "why": "equivalent for anything anyone reads: `TextTestRunner`'s verbosity controls the per-test detail on stderr, and the `Ran N tests` line that `test_the_worker_says_how_many_tests_it_ran` asserts is printed at every level."
- },
- "57e86eaa0f9dccfb": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:807 in _Lanes._sample() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
  "57f944faa307b9c2": {
   "seen": 1,
@@ -535,41 +339,17 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2041 in Killers.ahead_of() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "5a936703d049d577": {
-  "seen": 3,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1817 in verify() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
- "5b00772c6f9e593f": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:769 in _Lanes.release() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
- "5ca42c2e0f99531c": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2679 in main() -- `args.limit` is never assigned."
- },
  "5cd26e2cd1fcbc95": {
   "seen": 1,
   "why": "equivalent: the split yields two parts, where index 1 and index -1 are the same element."
  },
- "5d025d688c60921f": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:988 in _run() -- `or` becomes `and`. Triaged from the whole-tree sweep; unread."
- },
  "5f10e5366ea11a6b": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2146 in generated() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+  "why": "equivalent through the caller: the table this builds is re-ordered by `by_size` before anything runs it, so the order files are visited in here does not survive. `test_the_generated_table_itself_comes_back_smallest_first` asserts the order that does."
  },
  "5fa2b4870b70b1ea": {
   "seen": 5,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:794 in _spanned() -- `0` becomes `1`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "6045af9d17b461c0": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:992 in _run() -- returns `None` instead of `Verdict('broke', 'the targets\u2026`. Triaged from the whole-tree sweep; unread."
- },
- "60bda784fbcddf38": {
-  "seen": 2,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2554 in _baseline_is_green() -- `is not` becomes `is`. Triaged from the whole-tree sweep; unread."
  },
  "6159c53f3e81f0e1": {
   "seen": 1,
@@ -591,6 +371,10 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1106 in every_line() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
+ "65808a2ac70ba16f": {
+  "seen": 1,
+  "why": "cosmetic, same as the `0` mutation on this line."
+ },
  "66149fff98eb7a7e": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2721 in main() -- the call to `_pidfile(args.json).write_text(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -602,10 +386,6 @@
  "67472e44bc956363": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2158 in generated() -- `==` becomes `!=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "674a23a95dfeb65a": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2566 in _baseline_is_green() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
  "68e120dc2434922e": {
   "seen": 1,
@@ -623,10 +403,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1176 in _statements() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "6b644917729a8e86": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:739 in _Lanes.watch() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
  "6e2bcb45c8839a7d": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutants.py:1263 in targets_for() -- the ordering is reversed. Triaged from the whole-tree sweep; unread."
@@ -641,7 +417,7 @@
  },
  "712a7c8c0d56650c": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:690 in _end_lane() -- the call to `os.kill(...)` never happens. Triaged from the whole-tree sweep; unread."
+  "why": "same as `mutate.py:702`: the escapee pass, sending SIGKILL to processes outside the group. Untestable for the same reason and covered by `_lane`'s tests, which decide the list."
  },
  "714a5e2faddfb392": {
   "seen": 1,
@@ -655,21 +431,9 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:945 in _run() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "7837025a2af08ea9": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1488 in _share() -- `//` becomes `*`. Triaged from the whole-tree sweep; unread."
- },
- "78cb0950e970c68e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2578 in _baseline_is_green() -- returns `None` instead of `green`. Triaged from the whole-tree sweep; unread."
- },
  "794f6f304ef0788f": {
   "seen": 9,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:283 in _compare() -- `0` becomes `-1`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "7a02c5b6d670a733": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1434 in _affordable() -- `//` becomes `*`. Triaged from the whole-tree sweep; unread."
  },
  "7a9871083e93952a": {
   "seen": 1,
@@ -695,25 +459,9 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:428 in collect() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
- "7e844de604d54e59": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1234 in _visible_memory() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
- },
  "7fce2e3d1befea71": {
   "seen": 6,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:121 in cap() -- `0` becomes `1`. Triaged from the whole-tree sweep; unread."
- },
- "80abad915ab1ddce": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1547 in run() -- `is not` becomes `is`. Triaged from the whole-tree sweep; unread."
- },
- "82f9cf4151f49db2": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:934 in _run() -- the call to `_WATCHED.watch(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "853bef650810563a": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:938 in _run() -- the call to `_end(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
  "85c6fb65e7105fb9": {
   "seen": 1,
@@ -739,17 +487,9 @@
   "seen": 1,
   "why": "measured and named in the suite: `TestWhenOneSideReplacedTheFileWithASymlink`'s docstring records that git splits a type change into two paths of one stage each (`{'.config/thing': {3: 0o120000}, '.config/thing~HEAD': {2: 0o100644}}`), so a file with *mixed* stage kinds cannot be built and the two spellings cannot be told apart."
  },
- "88566d60e7e20fee": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1489 in _share() -- `min` becomes `max`. Triaged from the whole-tree sweep; unread."
- },
  "896416326f77945e": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2746 in main() -- the call to `_persist(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "8985c74f3a210191": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:809 in _Lanes._sample() -- `self._killed[leader]` is never assigned. Triaged from the whole-tree sweep; unread."
  },
  "8a470f92576749fd": {
   "seen": 2,
@@ -759,45 +499,17 @@
   "seen": 1,
   "why": "equivalent, measured: `sys.version_info` on a real 3.11.0 is `(3, 11, 0, 'final', 0)`, which is already `> (3, 11)`. The two spellings can only differ for a version tuple of exactly `(3, 11)`, which no interpreter reports."
  },
- "8af2663a656ae6cb": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1859 in baseline_shards() -- the ordering is reversed. Triaged from the whole-tree sweep; unread."
- },
  "8b52b775bfd2d5f6": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2130 in generated() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "8bf929acac03092e": {
+ "8bbc30689a5e975c": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2569 in _baseline_is_green() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "8c2ee029d1d0aa34": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1637 in run() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "8d147a4b388b87d4": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1488 in _share() -- `min` becomes `max`. Triaged from the whole-tree sweep; unread."
- },
- "8eb2adf0174ef941": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2672 in main() -- `args.base` is never assigned."
- },
- "9027a788afb43ce3": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1926 in _key() -- the slice takes everything. Triaged from the whole-tree sweep; unread."
- },
- "909e0fa748760fc8": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:807 in _Lanes._sample() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
+  "why": "cosmetic: the cache's indent. It is read back by `json.loads`, and `test_it_writes_a_file_a_later_run_can_read` asserts that round trip."
  },
  "91685883a672cb30": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2038 in Killers.ahead_of() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "9194ac19053c40fb": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:673 in _lane() -- the call to `stack.extend(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
  "92381fafce5cf356": {
   "seen": 1,
@@ -819,25 +531,13 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1139 in _imported() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "937cb90ba6a15447": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:665 in _lane() -- the call to `kids.setdefault(row.parent, []).append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "9476ceeca43ea8cc": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1111 in every_line() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "9514859389d8392b": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2134 in generated() -- `any` becomes `all`."
- },
  "95d4f3ffe0229d8e": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:687 in _end_lane() -- the call to `os.killpg(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "963c9efe6662945f": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2565 in _baseline_is_green() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
+  "why": "the teardown, and no test may drive it: it sends SIGKILL to a real process group, and a fixture that got the group wrong would kill the suite running it. Guarded instead by `_lane`, whose membership walk is what decides *which* group -- that is where the defect found in #58 was, and it has tests."
  },
  "96b7cd757a67efc0": {
   "seen": 1,
@@ -847,26 +547,6 @@
   "seen": 1,
   "why": "equivalent, same argument as the `2` mutation on this line."
  },
- "98f2464b2fceb9d7": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1637 in run() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
- "99e0b14f215dd204": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2688 in main() -- the call to `print(...)` never happens."
- },
- "9c82d4991d7419af": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2572 in _baseline_is_green() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "9cff2d07cfaaee1c": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2097 in Killers.save() -- the call to `self.where.parent.mkdir(...)` never happens."
- },
- "9d7b9127438bde3f": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2564 in _baseline_is_green() -- `<` becomes `<=`. Triaged from the whole-tree sweep; unread."
- },
  "9e43f2186e3a5952": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1714 in run() -- the `not` is dropped. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -875,18 +555,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2512 in sweep.finished() -- the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "a040af8f125b5c46": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2097 in Killers.save() -- `exist_ok=True` is dropped."
- },
- "a0f329dc5b908ed8": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2766 in main() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
- },
- "a1c66b681b6a5160": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2728 in main() -- the call to `_marker(args.json).unlink(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "a29b7b497dcb4316": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:573 in _from_proc() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -894,10 +562,6 @@
  "a53382cc782c2f44": {
   "seen": 1,
   "why": "equivalent: one extra starting offset, whose slice is one element short and so cannot match. Same argument as the `-`/`+` mutant on this line."
- },
- "a588c4f72bffc645": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:801 in _Lanes._sample() -- `<=` becomes `<`. Triaged from the whole-tree sweep; unread."
  },
  "a66f87eb42164554": {
   "seen": 1,
@@ -911,25 +575,13 @@
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutants.py:1253 in targets_for() -- `==` becomes `!=`. Triaged from the whole-tree sweep; unread."
  },
- "a7b320f64775612e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1061 in _applied() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "a9efda6de2c726e7": {
   "seen": 1,
   "why": "equivalent: as above -- the default is reached only with nothing to pad, and `ljust` treats every width below the string's length alike."
  },
- "ab2cb4b86b7bc889": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2571 in _baseline_is_green() -- the call to `print(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "ab538f035ef97115": {
   "seen": 1,
   "why": "equivalent given git's contract: the two operands disagree only for a row that is non-empty *and* malformed, and `ls-files -u -z` always emits three fields. The trailing empty field after the final NUL satisfies both spellings. The guard is there so a future git cannot turn a merge into a `ValueError`, which is a claim about git rather than about this code."
- },
- "ab61e36965934dd5": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:743 in _Lanes.watch() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
  },
  "acbadc189ce2fff8": {
   "seen": 1,
@@ -941,15 +593,11 @@
  },
  "ada56a3acd458f19": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2154 in generated() -- `or` becomes `and`. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent: `args.operator or None` passes `None` when the list is empty, and `[] and None` is `[]` -- which `mutants.generate` treats identically, since it tests the argument for truth rather than for `None`."
  },
  "add7706de5b64979": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1889 in _unbaselined() -- the ordering is reversed. Triaged from the whole-tree sweep; unread."
- },
- "ae4e72d5a8309e5b": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2570 in _baseline_is_green() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
+  "why": "same set, same argument as the `sorted` mutation on this line -- and reversal is equally invisible to a caller that only needs the names."
  },
  "aeebfa9078f9a8a4": {
   "seen": 1,
@@ -965,27 +613,11 @@
  },
  "b2dbd4344abf5ac4": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2086 in Killers.learn() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
- },
- "b35be42b9174de91": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2527 in sweep() -- the call to `_persist(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "b440889229abbbfd": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:973 in _run() -- `or` becomes `and`."
- },
- "b4a1ebee1d4486a5": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:769 in _Lanes.release() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
+  "why": "unreachable through the harness: a `caught` verdict always carries a killer -- `verdict.py` records the test that noticed it in the same step that decides the outcome -- so the two operands cannot disagree. The guard is there for a hand-built `Result`, which is a test's shape rather than a run's."
  },
  "b4a4e7d8abb4aae6": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2158 in generated() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "b579c83f097b74fe": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:672 in _lane() -- the call to `found.add(...)` never happens. Triaged from the whole-tree sweep; unread."
  },
  "b57e8f3bad31f051": {
   "seen": 1,
@@ -995,10 +627,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2159 in generated() -- the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "b62cd0a83216aab2": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:730 in _Lanes.__init__() -- `self._stop` is never assigned. Triaged from the whole-tree sweep; unread."
- },
  "b65863cfef898578": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2166 in generated() -- the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -1007,13 +635,9 @@
   "seen": 2,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2526 in sweep() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "b6ea291005928027": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:973 in _run() -- returns `None` instead of `Verdict('broke', str(written.\u2026`. Triaged from the whole-tree sweep; unread."
- },
  "b6fe5577cb2aed90": {
   "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2155 in generated() -- `or` becomes `and`."
+  "why": "equivalent, same argument as `mutate.py:2387` for `--skip-operator`."
  },
  "b70f9c717613cca9": {
   "seen": 1,
@@ -1023,37 +647,17 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2136 in generated() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "b7fe4b53c15548d5": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1227 in _visible_memory() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "b8b4c604f9487a37": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1175 in _statements() -- the call to `stack.append(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "bb5f4da581c096de": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:976 in _run() -- returns `None` instead of `Verdict('broke', str(written[\u2026`. Triaged from the whole-tree sweep; unread."
  },
  "bb6a762363762b38": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:404 in return_constant() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "bc0664f36f506b56": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:801 in _Lanes._sample() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "bdb6ec52c393c0f3": {
   "seen": 1,
   "why": "equivalent through every caller: `integrate` truth-tests the result (`if not left`) and puts it in a message only when it is non-empty, so `None` and `[]` are the same answer. A type violation with no reader -- worth a note, not a fixture."
- },
- "bde69398cb075bb9": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:939 in _run() -- returns `None` instead of `Verdict('timeout', f'no answe\u2026`. Triaged from the whole-tree sweep; unread."
- },
- "be824ed936eb89ee": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:670 in _lane() -- `and` becomes `or`. Triaged from the whole-tree sweep; unread."
  },
  "c10a95c7433ae145": {
   "seen": 1,
@@ -1063,14 +667,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1589 in run() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "c2df147b5e5a2cfe": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:666 in _lane() -- `==` becomes `!=`. Triaged from the whole-tree sweep; unread."
- },
- "c2f5ac544759151d": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1481 in _share() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "c317fb21fc279d9f": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2709 in main() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -1078,14 +674,6 @@
  "c39e4c578e3bfa77": {
   "seen": 1,
   "why": "equivalent, same invariant as `sync.py:792`: the blob is always the side the other one is missing, so the extra write changes no bytes and takes no backup."
- },
- "c3e5e95b97bd570b": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2565 in _baseline_is_green() -- `==` becomes `!=`. Triaged from the whole-tree sweep; unread."
- },
- "c4832ef5a40d2b9a": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1489 in _share() -- `max` becomes `min`. Triaged from the whole-tree sweep; unread."
  },
  "c4cf4891d7002536": {
   "seen": 1,
@@ -1095,13 +683,9 @@
   "seen": 1,
   "why": "equivalent: after a concluded merge git has cleared `MERGE_HEAD`, so the extra `git merge --abort` fails and its `Result` is discarded. The guard stops a *successful* merge being undone by its own `finally`, which is a claim about a git that behaved differently."
  },
- "c5b2f387e307620f": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2766 in main() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
- },
  "c61404f06050ed83": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:839 in _end() -- the call to `probe.wait(...)` never happens. Triaged from the whole-tree sweep; unread."
+  "why": "the reap after the kill. Dropping it leaves a zombie rather than changing an answer, so nothing a verdict can see is different."
  },
  "c7d9c88ef63c2752": {
   "seen": 1,
@@ -1109,7 +693,7 @@
  },
  "c83d589af7e9932e": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:839 in _end() -- `*` becomes `//`. Triaged from the whole-tree sweep; unread."
+  "why": "a timeout on the reap: `_SAMPLE * 5` is 5 seconds, `_SAMPLE // 5` is 0. Both return promptly for a process that has just been SIGKILLed, and the difference is only visible for one that ignores it -- which SIGKILL cannot be."
  },
  "c8535c69832956cb": {
   "seen": 2,
@@ -1117,11 +701,7 @@
  },
  "c88cebd305e6305d": {
   "seen": 1,
-  "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2180 in generated() -- `sorted` becomes `list`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "c8da555e6201f968": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:670 in _lane() -- `!=` becomes `==`. Triaged from the whole-tree sweep; unread."
+  "why": "the per-file counts come from a dict built in drop order, which for this tree already happens to be alphabetical -- so `list` and `sorted` agree. `test_a_capped_table_says_what_it_dropped_and_from_where` asserts the order, and would catch it on a tree where the two differed."
  },
  "c96d30b744843f4f": {
   "seen": 4,
@@ -1131,25 +711,9 @@
   "seen": 1,
   "why": "equivalent: with `base` `None` the two comparisons inside are `Blob == None`, which is `False` (measured), so the forced branch falls through to exactly the merge the unforced code reaches."
  },
- "ccf3c0e1eb774513": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2775 in main() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "cdd53c44940953ac": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2766 in main() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "cea5d83169a2f9ee": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:807 in _Lanes._sample() -- `not in` becomes `in`. Triaged from the whole-tree sweep; unread."
- },
  "ced7b751cbd406b2": {
   "seen": 1,
   "why": "equivalent: this sorts the *packages* the walk visits, and the function ends `return sorted(set(found))` -- so the order the names are appended in is not observable. The sort on line 346 *is* guarded, by `test_what_it_returns_is_sorted`."
- },
- "cf21dde548b00f2a": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:739 in _Lanes.watch() -- `<=` becomes `<`. Triaged from the whole-tree sweep; unread."
  },
  "d02dec918447cea4": {
   "seen": 1,
@@ -1183,22 +747,6 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:1216 in importers() -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "d61137e21ef23da8": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:967 in _run() -- returns `None` instead of `Verdict('broke', _tail(noise)\u2026`. Triaged from the whole-tree sweep; unread."
- },
- "d877f8828e29031d": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:476 in _clear_bytecode() -- the call to `shutil.rmtree(...)` never happens."
- },
- "d9debc78d86896ca": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1434 in _affordable() -- `max` becomes `min`. Triaged from the whole-tree sweep; unread."
- },
- "da9844a91dabf4ce": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1237 in _visible_memory() -- the call to `limits.append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "db06fb0f844c123d": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1304 in _confined() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -1206,14 +754,6 @@
  "db25bce2f34d37cd": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2158 in generated() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "db378ec337268c3c": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:1644 in run() -- the call to `pending.cancel(...)` never happens."
- },
- "db4bff910bc0a509": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:991 in _run() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
  "dbc04bb253f7ad88": {
   "seen": 1,
@@ -1227,37 +767,13 @@
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1614 in run() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "dd887623fd9f16c5": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2098 in Killers.save() -- the call to `self.where.write_text(...)` never happens."
- },
- "ddf95ca14fe43d12": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1489 in _share() -- `//` becomes `*`. Triaged from the whole-tree sweep; unread."
- },
  "df14f08837d1a8b7": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2701 in main() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
- "e00839c3d6221201": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1488 in _share() -- `max` becomes `min`. Triaged from the whole-tree sweep; unread."
- },
- "e1178f3a54d7826e": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1227 in _visible_memory() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "e1c3a917e02cc5a5": {
-  "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2681 in main() -- the call to `parser.error(...)` never happens."
- },
  "e1d0b9e386ded0db": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:247 in Verdicts.stopTest() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "e250250b3d493b63": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1860 in baseline_shards() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
  "e29be57aa394755c": {
   "seen": 1,
@@ -1275,17 +791,9 @@
   "seen": 1,
   "why": "equivalent, same argument as the `1` mutation on this line: a uniform offset to every bin's starting weight."
  },
- "e5cb40688ea04081": {
+ "e68d36f8b8262855": {
   "seen": 1,
-  "why": "TODO: no test executes this line -- tools/mutate.py:2673 in main() -- the `if` is never taken."
- },
- "e6ff316da77295a3": {
-  "seen": 3,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1817 in verify() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
- "e9878bcea6fc5e37": {
-  "seen": 2,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:209 -- `2` becomes `1`. Triaged from the whole-tree sweep; unread."
+  "why": "equivalent in practice: `memory <= 0` becoming `<= 1` differs only for a cap of exactly one byte."
  },
  "ea734e1bb10b5e56": {
   "seen": 1,
@@ -1294,10 +802,6 @@
  "eacbe9005c394278": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:956 in _near_miss() -- `>` becomes `>=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "ead597328c14dbd4": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1234 in _visible_memory() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
  },
  "ebb49eb4e05dcb9d": {
   "seen": 1,
@@ -1311,17 +815,13 @@
   "seen": 1,
   "why": "equivalent: with nothing unloadable the loop over `loader.errors` prints nothing and `_loaded(suite, {})` filters nothing out, so the forced branch produces the same suite and the same output."
  },
- "ecd6749df09f1279": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:810 in _Lanes._sample() -- the call to `_end_lane(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
  "ed76cb6b26830509": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:1661 in run() -- the call to `timings.update(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
  },
  "edc8761750cbdb95": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:835 in _end() -- the call to `_end_lane(...)` never happens. Triaged from the whole-tree sweep; unread."
+  "why": "the teardown path again -- see `mutate.py:702`. Reached only when a probe has to be killed, and a test that produced one would be killing processes beside the suite."
  },
  "ee222cf5945f59b6": {
   "seen": 1,
@@ -1329,23 +829,15 @@
  },
  "ee93a88107751c87": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1238 in _visible_memory() -- `*` becomes `//`. Triaged from the whole-tree sweep; unread."
+  "why": "unreachable: this is the fallback for a machine that reports *no* limit at all -- no cgroup file, no inherited budget, and `sysconf` unavailable. On any POSIX machine the `sysconf` arm always appends, so `limits` is never empty. The `limits.append` on the line above it *is* guarded, by `test_the_host_total_is_one_of_the_limits`."
  },
  "eee0444987dd14a3": {
   "seen": 2,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:239 in Verdicts.startTest() -- the `if` is always taken. Triaged from the whole-tree sweep; unread."
  },
- "ef837988f15817ec": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2570 in _baseline_is_green() -- the `if` is never taken. Triaged from the whole-tree sweep; unread."
- },
  "f00e66f25ab06dbd": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2730 in main() -- the call to `_summarise(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "f0bf61e39bbc5fe5": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:769 in _Lanes.release() -- `is not` becomes `is`. Triaged from the whole-tree sweep; unread."
  },
  "f0c3c7b1af77a72f": {
   "seen": 1,
@@ -1362,10 +854,6 @@
  "f2ee24b28075cb95": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutate.py:2420 in _recorded() -- `or` becomes `and`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "f323ed0113f22b68": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1859 in baseline_shards() -- `sorted` becomes `list`. Triaged from the whole-tree sweep; unread."
  },
  "f3ca8786fa13ae9d": {
   "seen": 1,
@@ -1385,11 +873,7 @@
  },
  "f559e7996a7d12dd": {
   "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1889 in _unbaselined() -- `sorted` becomes `list`. Triaged from the whole-tree sweep; unread."
- },
- "f7ca6650e86323b1": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:967 in _run() -- `or` becomes `and`. Triaged from the whole-tree sweep; unread."
+  "why": "the values come from a set comprehension, so `list` gives hash order -- which Python randomises per run. Caught only when that order happens to differ from sorted, which makes it a coin flip rather than a guard. Left rather than pinned: the caller feeds the names to a shard selection, where order changes nothing."
  },
  "f8dc4f4f23d4a6ff": {
   "seen": 1,
@@ -1398,10 +882,6 @@
  "f90788e320e05988": {
   "seen": 1,
   "why": "TODO: decides a verdict, a limit or an exit status -- tools/verdict.py:427 in collect() -- the call to `ready.append(...)` never happens. Triaged from the whole-tree sweep; unread."
- },
- "fa1fe41c553cf2dc": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:1481 in _share() -- `<=` becomes `<`. Triaged from the whole-tree sweep; unread."
  },
  "faf2e1f470d95e57": {
   "seen": 1,
@@ -1422,10 +902,6 @@
  "fe295f336186c1ea": {
   "seen": 1,
   "why": "a test reaches this line and asserts nothing about it -- tools/mutants.py:207 in _trimmed() -- `<=` becomes `<`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
- },
- "fe92ca7042f17fa5": {
-  "seen": 1,
-  "why": "TODO: decides a verdict, a limit or an exit status -- tools/mutate.py:2575 in _baseline_is_green() -- `+` becomes `-`. Triaged from the whole-tree sweep; unread."
  },
  "fedc0c99326e1ab8": {
   "seen": 1,
