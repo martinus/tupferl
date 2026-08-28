@@ -391,7 +391,12 @@ next starts.
 5. **Host overlays.**
 6. **Safety and polish:** backups, error messages, and the quality of
    what `status` prints in each of its three shapes.
-7. **Packaging:** PyPI metadata, README, `pipx` verification.
+7. **Packaging:** PyPI metadata, README, `pipx` verification. Done in
+   1.0.0. `.github/workflows/release.yml` publishes on a `v*` tag over
+   PyPI Trusted Publishing, and checks the tag against
+   `tupferl/__init__.py`, that the commit is on `main`, and the whole
+   preflight before it builds -- an upload is the one thing here that
+   cannot be taken back.
 
 ## 9. Open questions for the agent
 

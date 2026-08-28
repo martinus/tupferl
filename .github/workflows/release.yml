@@ -1,0 +1,236 @@
+name: Release
+
+# Tag, and this does the rest. `git tag -a v1.0.0 -m 'tupferl 1.0.0' && git push
+# origin v1.0.0` builds, publishes to PyPI and writes the GitHub release.
+#
+# What it will not do is publish something nobody checked. Uploading to PyPI is
+# the one irreversible act in this repository -- a version number, once taken,
+# can never be reused, and a bad 1.0.0 is 1.0.1 for ever -- so every guard here
+# runs *before* the upload and none of them is optional:
+#
+# - the tag must match `tupferl/__init__.py`, or the wheel says one version and
+#   the source says another;
+# - the tagged commit must be on `main`, or a tag pushed from a branch publishes
+#   code that was never reviewed;
+# - the full preflight runs again on the tagged tree, because a tag is not
+#   evidence that CI ever saw this commit.
+#
+# `tests/test_release.py` asserts those three exist, for the same reason
+# `tests/test_ci.py` exists: a release workflow that silently stopped checking
+# would look exactly like one that checked and was satisfied.
+
+on:
+  push:
+    tags: ["v*"]
+  # A dry run: builds and checks everything, publishes nothing. `github.ref` is
+  # a branch here rather than a tag, which is what the two publishing jobs test.
+  workflow_dispatch:
+
+# Nothing by default; each job below asks for exactly what it needs. The two
+# that publish are the only ones with any write at all.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never `cancel-in-progress` here, unlike CI. A cancelled release can be one
+  # that uploaded to PyPI and did not write the GitHub release, and the halves
+  # are not equally undoable.
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: the tag, the branch, and the preflight
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # On this job only, not on the workflow. ci.yml sets both globally because
+      # every job there runs the suite; here `build` runs `python -m build` and
+      # `twine`, and a `DeprecationWarning` raised inside somebody else's
+      # packaging code would fail a release over something the tree cannot fix.
+      PYTHONWARNINGS: error::DeprecationWarning
+      TUPFERL_HYPOTHESIS_PROFILE: ci
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The ancestry check below needs history, and a checkout is shallow by
+          # default: at depth 1 there is nothing to walk and the guard fails on
+          # every correct release -- at which point the fix somebody reaches for
+          # is deleting the guard.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: read the version out of the source
+        id: version
+        # The same `sed` the `install` job in ci.yml uses, on the same line of
+        # the same file. `pyproject.toml` takes the version from there too --
+        # see its `dynamic = ["version"]` comment -- so this is the one
+        # declaration, read rather than repeated.
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' tupferl/__init__.py)
+          test -n "$version" || { echo "::error::no __version__ in tupferl/__init__.py"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source says $version"
+
+      - name: the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        # Not a formality. Tagging v1.0.0 on a tree that still says 0.9.0 builds
+        # a 0.9.0 wheel and uploads it under a release called 1.0.0, and PyPI
+        # keeps whichever number the *wheel* carries -- so the mistake is only
+        # visible to someone who reads the file list.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          want="${{ steps.version.outputs.version }}"
+          test "$tag" = "$want" || {
+            echo "::error::tag $GITHUB_REF_NAME says $tag, tupferl/__init__.py says $want"
+            echo "::error::bump __version__ on main first, then move the tag"
+            exit 1
+          }
+
+      - name: the tagged commit is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        # A tag can be pushed from anywhere. Without this, a release can be cut
+        # from a branch that never opened a pull request -- which is the one
+        # path around the rule that every change reaches main through a green
+        # PR, and it would be invisible afterwards because a tag records no
+        # branch.
+        #
+        # `merge-base --is-ancestor`, not `branch --contains`: the second asks
+        # what remote-tracking refs the checkout happens to have left behind,
+        # which is a property of the action rather than of the repository, and
+        # guessing it wrong fails every correct release. The fetch is explicit
+        # for the same reason -- the ref is put there rather than hoped for.
+        run: |
+          git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
+            echo "::error::$GITHUB_SHA is not on origin/main; releases are cut from main"
+            exit 1
+          }
+
+      - run: pip install -e '.[dev]'
+
+      # The preflight from CLAUDE.md §7, in order, exactly as ci.yml runs it. A
+      # tag proves somebody typed a command, not that anything passed on this
+      # tree: the commit may predate a merge that broke it, and a red main is
+      # exactly when someone reaches for a release of "the last good one".
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy tupferl tests tools
+      - run: python -m tools.run_tests
+
+  build:
+    name: sdist and wheel
+    needs: check
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install build twine
+      - run: python -m build
+
+      - name: the artifacts carry the version the source claims
+        # `python -m build` cannot fail for this, it just names the file after
+        # whatever `hatchling` read -- so without this the only place the two
+        # could disagree is a filename nobody looks at until it is on PyPI.
+        run: |
+          ls -l dist/
+          version="${{ needs.check.outputs.version }}"
+          test -f "dist/tupferl-$version.tar.gz" || {
+            echo "::error::no dist/tupferl-$version.tar.gz"; exit 1; }
+          test -f "dist/tupferl-$version-py3-none-any.whl" || {
+            echo "::error::no dist/tupferl-$version-py3-none-any.whl"; exit 1; }
+          test "$(ls dist | wc -l)" -eq 2 || {
+            echo "::error::expected exactly two artifacts"; exit 1; }
+
+      - name: the metadata is what PyPI will accept
+        # Before the upload rather than after, because the upload is the part
+        # that cannot be taken back. `twine check` reads the long description
+        # the README becomes, which is the usual thing to be malformed.
+        run: twine check --strict dist/*
+
+      - name: the wheel installs and reports the right version
+        # The same claim ci.yml's `install` job makes, asked of the *built
+        # artifact* rather than of the source tree. This is the last chance to
+        # notice a wheel that is missing the package or the entry point, and it
+        # is the exact file that is about to be published.
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install --quiet "dist/tupferl-${{ needs.check.outputs.version }}-py3-none-any.whl"
+          got=$(/tmp/fresh/bin/tupferl --version)
+          want="tupferl ${{ needs.check.outputs.version }}"
+          test "$got" = "$want" || { echo "::error::got '$got', wanted '$want'"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    name: publish to PyPI
+    needs: [check, build]
+    # Only a tag publishes. A `workflow_dispatch` run reaches here with
+    # `github.ref` on a branch and stops, which is what makes the dry run safe
+    # to reach for.
+    if: startsWith(github.ref, 'refs/tags/')
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    # Named on PyPI's trusted-publisher entry, and the place to put a manual
+    # approval if a release should ever wait for a person.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tupferl
+    permissions:
+      # Trusted Publishing: PyPI verifies this workflow's OIDC token, so there
+      # is no API token in the repository to leak or to rotate.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        # No `skip-existing`. Re-running a release whose upload already
+        # succeeded should be an error somebody reads, not a green tick over a
+        # no-op -- the second run would otherwise "publish" nothing and say so
+        # in a way that looks identical to a first one that worked.
+
+  github:
+    name: the GitHub release
+    needs: [check, build, pypi]
+    if: startsWith(github.ref, 'refs/tags/')
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: create the release with the artifacts
+        # After PyPI, not before. Both orders leave a partial state if the
+        # second half fails; this one leaves the installable half done and the
+        # announcement missing, which is a re-run away. The other leaves a
+        # release announcing a version nobody can install.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
