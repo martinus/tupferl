@@ -440,12 +440,13 @@ Five things are not where a newcomer would guess, all on purpose:
   message legitimately cannot take that shape, argue it in the PR and change
   the check; do not add an exception list, which is how the rule stops meaning
   anything.
-- **Every survivor has a disposition, and it lives in `known-survivors.json`.**
-  A whole-tree sweep found 557 survivors. Triaging them in prose does not
-  survive to the following Sunday: the next sweep produces the same 557 rows
-  with nothing to say which were already understood, so either somebody reads
-  all of them again or nobody reads any. Both have happened here. The record
-  holds one row per survivor, so a sweep reports only what is *new*:
+- **Every row that is not `caught` has a disposition, and it lives in
+  `known-survivors.json`.** A whole-tree sweep found 557 survivors. Triaging
+  them in prose does not survive to the following Sunday: the next sweep
+  produces the same 557 rows with nothing to say which were already understood,
+  so either somebody reads all of them again or nobody reads any. Both have
+  happened here. The record holds one row per row, so a sweep reports only what
+  is *new*:
 
   ```sh
   python -m tools.mutate --base main --accept   # record this run's survivors
@@ -473,10 +474,36 @@ Five things are not where a newcomer would guess, all on purpose:
     those shapes. `Accepted.seen` is how the 126th is still new.
   - **A stale entry is reported loudly.** It is a claim about code that has
     gone, and the row it used to cover may have been replaced by one nobody has
-    read.
+    read. A row the suite has since learned to *kill* is the one exception and
+    is kept silently: `stale` means the code has moved or gone, and an outcome
+    is not stable between runs the way a line of source is -- a row near the
+    alarm can be `caught` one Sunday and `timeout` the next, and churning the
+    reason each time is worse than one dead row.
 
   An unreadable file reads as *empty*, so a lost comma reports every survivor
   rather than none. The failure to guard against is always the flattering one.
+
+  **`BROKE` and `TIMEOUT` are in the record too, and are excused on the same
+  terms** (#57). They were the one category a sweep could not settle: 33 came
+  back every whole-tree run with nothing to say which had been read, and worse
+  than a survivor's version of it, because such a row is never `caught` -- so
+  the line it appears to guard is guarded by nothing while the summary shows it
+  in neither of the two numbers a reader looks at. Three of them cannot be
+  answered at all and never will be: two force `verdict.collect` down
+  `loader.discover(".")`, running the whole suite nested inside a memory-capped
+  sandbox, and `run_tests`'s `if args.worker:` becomes a fork bomb. Those want a
+  written reason exactly as an equivalent mutant does. `verify()` is unchanged
+  and still counts `survived` alone -- a hand-written table has no record to
+  consult, and a row it cannot answer is a mistake in the table.
+
+  What the widening *cannot* do is stop the row happening. `"a" + "b"` becoming
+  `"a" - "b"` is a `TypeError` every time, so `tools/mutants.py` refuses to
+  generate it when either operand is a string literal -- 9 of this tree's 45
+  `arith` rows. The other 36 include `paint.GOOD + paint.HEAD`, which is two
+  *attributes*: proving those string-valued means resolving a name across a
+  module boundary, which is a type checker rather than a guard. Getting the
+  check wrong permissively costs one `BROKE` row; getting it wrong strictly
+  stops mutating real arithmetic, and nothing would report that.
 
 - **A red baseline reports every row as `caught`, and that reads like a perfect
   sweep.** The failing test notices every mutation, so the harness credits it.

@@ -1801,12 +1801,17 @@ def _summarise(results: Sequence[Result], accepted: dict[str, Accepted] | None =
     sorted_out = sort_survivors(results, accepted or {})
     if accepted is not None:
         _report_known(sorted_out)
-    survivors = (
+    # One list of rows-to-read, then split by whether the row answered anything.
+    # Both paragraphs below are about the *unread* rows once there is a record,
+    # so taking them from one place is what keeps an accepted `BROKE` out of the
+    # list as reliably as an accepted survivor.
+    fresh = (
         sorted_out.fresh
         if accepted is not None
-        else [result for result in results if result.verdict.outcome == "survived"]
+        else [result for result in results if not MEANING[result.verdict.outcome].clean]
     )
-    unanswered = [result for result in results if not result.verdict.answered]
+    survivors = [result for result in fresh if result.verdict.answered]
+    unanswered = [result for result in fresh if not result.verdict.answered]
     if survivors:
         # `MEANING["survived"].colour`, not `paint.BAD`: this paragraph is about
         # an outcome, and the table owns what an outcome looks like. A literal
@@ -1905,16 +1910,15 @@ def _status(report: Report, sorted_out: Survivors) -> int:
     still uses it for hand-written tables, where a survivor is never expected
     and there is no record to consult.
 
-    The "is it bad" question goes to `MEANING` rather than being spelled out
-    here, so this stays `clean` with the accepted survivors excused rather than
-    becoming a second copy of the table that agrees today.
+    There is no second test for `BROKE` and `TIMEOUT` here any more. There was
+    one, from when the record held answered survivors only and an unanswered row
+    had nowhere to be written down; now `sort_survivors` sorts every row that is
+    not `caught`, so an unread one is in `fresh` and a read one is excused, on
+    the same terms and through the same table. Keeping the old arm as well would
+    have meant a recorded `BROKE` row still turning the run red -- a reason
+    written and then ignored, which is how a record stops being read.
     """
-    troubled = any(
-        not MEANING[result.verdict.outcome].clean
-        for result in report.results
-        if result.verdict.outcome != "survived"
-    )
-    return 1 if sorted_out.fresh or troubled or report.baseline_red else 0
+    return 1 if sorted_out.fresh or report.baseline_red else 0
 
 
 def _report_known(sorted_out: Survivors) -> None:
@@ -2122,7 +2126,24 @@ class Survivors(NamedTuple):
 
 
 def sort_survivors(results: Sequence[Result], accepted: dict[str, Accepted]) -> Survivors:
-    """Split survivors into ones somebody has read and ones nobody has.
+    """Split every row that is not `caught` into read and unread.
+
+    **Not caught, rather than `survived`.** `MEANING` spends "survived" narrowly,
+    on the rows that were *answered* and not noticed; `BROKE` and `TIMEOUT` are
+    unanswered, and for a long time they had nowhere to be recorded. That made
+    them the one category a sweep could not settle: 33 of them came back every
+    run with nothing to say which had been read, which is precisely the problem
+    this record was built for -- and worse than the survivors' version of it,
+    because a `BROKE` row is never `caught`, so the line it appears to guard is
+    guarded by nothing while the summary shows it in neither of the two numbers
+    a reader looks at.
+
+    A few of them cannot be answered at all and never will be: two mutations
+    force `verdict.collect` down `loader.discover(".")` and run the whole suite
+    inside a memory-capped sandbox, and `run_tests`'s `if args.worker:` becomes
+    a fork bomb. Those want a written reason exactly as an equivalent mutant
+    does. In the field's own vocabulary all of these *are* survivors -- the
+    mutant was not killed -- which is why the file keeps its name.
 
     **Counted, not merely matched.** A key covers as many rows as were read, and
     the next one of that shape is fresh -- see `Accepted.seen` for the 125 rows
@@ -2132,7 +2153,7 @@ def sort_survivors(results: Sequence[Result], accepted: dict[str, Accepted]) -> 
     seen: list[tuple[Result, str]] = []
     left = {key: row.seen for key, row in accepted.items()}
     for result in results:
-        if result.verdict.outcome != "survived":
+        if MEANING[result.verdict.outcome].clean:
             continue
         key = _key(result.mutation)
         if left.get(key, 0) > 0:

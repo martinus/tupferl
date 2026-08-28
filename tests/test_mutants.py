@@ -271,6 +271,61 @@ _QUIET: dict[str, str] = {
 }
 
 
+class TestStringConcatenationIsNotArithmetic(unittest.TestCase):
+    """`"a" + "b"` becoming `"a" - "b"` is a `TypeError`, never a verdict.
+
+    A row like that comes back `BROKE`, which is never `caught` -- so the line it
+    appeared to guard is guarded by nothing, and the summary counts it in neither
+    number a reader looks at. #57 measured 20 such rows in a whole-tree sweep.
+
+    **Literals only.** The check is about what the expression proves on its own,
+    not about what an identifier looks like: getting it wrong permissively costs
+    one `BROKE` row, and getting it wrong strictly silently stops mutating real
+    arithmetic, which is a loss of coverage no output would report.
+    """
+
+    def additions(self, source: str) -> list[str]:
+        return [row.label for row in mutate(source, operators=["arith"])]
+
+    def test_two_string_literals_are_not_mutated(self) -> None:
+        self.assertEqual([], self.additions('x = "a" + "b"\n'))
+
+    def test_one_string_literal_is_enough(self) -> None:
+        """`str + int` raises whichever way round it is written, so a string on
+        either side settles that the `+` is concatenation."""
+        self.assertEqual([], self.additions('x = name + ".done"\n'))
+        self.assertEqual([], self.additions('x = ".done" + name\n'))
+
+    def test_an_f_string_counts_as_one(self) -> None:
+        self.assertEqual([], self.additions('x = f"{a}" + b\n'))
+
+    def test_ordinary_arithmetic_is_still_mutated(self) -> None:
+        """The half that matters more. A guard that swallowed real `+` would
+        remove coverage silently, which is the failure this whole module is
+        against -- so this is the assertion that would catch it."""
+        self.assertEqual(1, len(self.additions("x = a + b\n")))
+        self.assertEqual(1, len(self.additions("x = 1 + 2\n")))
+        self.assertEqual(1, len(self.additions("count += 1\n")))
+
+    def test_a_number_beside_a_name_is_still_mutated(self) -> None:
+        """The shape closest to the one being refused, and the reason the check
+        asks about *strings* rather than about literals in general."""
+        self.assertEqual(1, len(self.additions("x = at + 1\n")))
+
+    def test_an_attribute_is_not_something_this_can_judge(self) -> None:
+        """**#57's own example, and this does not fix it.** `paint.GOOD +
+        paint.HEAD` in `tools/watch.py` is two attributes; proving them
+        string-valued means resolving a name across a module boundary, which is
+        a type checker rather than a guard. Measured on this tree: 9 `+`
+        expressions have a provable string operand and 37 do not, the three in
+        `watch.py` among the 37.
+
+        Asserted rather than left implicit, so that reading the issue as done
+        does not hide the part that is not.
+        """
+        self.assertEqual(1, len(self.additions("x = paint.GOOD + paint.HEAD\n")))
+
+
 class TestWhatIsNeverMutated(unittest.TestCase):
     def test_a_docstring_is_left_alone(self) -> None:
         self.assertEqual(mutate('def f():\n    """Words."""\n'), [])
