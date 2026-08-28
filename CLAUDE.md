@@ -460,6 +460,11 @@ Five things are not where a newcomer would guess, all on purpose:
   - **A new row says `TODO`, and that is the point.** The tool writes a
     placeholder naming the file and function, because a reason nobody wrote is
     not a reason. Seeing `TODO` in a diff is the review.
+  - **A row names its own mutation.** `--accept` writes the label in, and a
+    reason edited by hand has to keep it: 163 of 210 rows lost theirs when they
+    were rewritten in bulk, leaving a file of arguments with nothing to say what
+    each was about. The key is content-addressed and unreadable on purpose, so
+    the label is the only thing a reviewer can navigate by.
   - **A row is counted, not merely matched.** `_key` is content and not
     position — that is what lets a disposition survive the code moving — and it
     is also why two identical mutations in one file share a key. Measured: the
@@ -472,6 +477,43 @@ Five things are not where a newcomer would guess, all on purpose:
 
   An unreadable file reads as *empty*, so a lost comma reports every survivor
   rather than none. The failure to guard against is always the flattering one.
+
+- **A red baseline reports every row as `caught`, and that reads like a perfect
+  sweep.** The failing test notices every mutation, so the harness credits it.
+  `BASELINE NOT GREEN` is printed, once, above rows that all say `caught` --
+  and a table of 51 rows came back 51 for 51 twice before anyone read the line
+  rather than the rows. The truth was 39.
+
+  What made it invisible for so long is that `tools/verdict.py` could not be
+  measured at all: a shard runs as `python -c <the source of verdict.py>`,
+  where `sys.path[0]` is `''` -- resolved against the *current* directory at
+  each import, where `python -m` fixes it at startup -- and
+  `test_a_flat_selection_looks_beside_itself` imported `tools` from inside an
+  `os.chdir` block. Green under the suite, red under any shard that selected
+  only that module. **Never issue an import from inside a chdir**, and read the
+  baseline line before the verdicts.
+
+- **`verify()` is the strict wrapper; a generated table needs `run(...,
+  strict=False)`.** `run`'s own docstring draws the line: stopping at an
+  unanswerable row is right for a table somebody wrote by hand, and wrong for a
+  generated one, where "a single non-viable mutant out of two hundred would
+  throw away every answer already paid for." Three of this repository's own
+  mutations cannot be answered at all -- two force `verdict.collect` down
+  `loader.discover(".")`, running the whole suite nested inside a memory-capped
+  sandbox, and `run_tests`'s `if args.worker:` becomes a fork bomb -- so a
+  generated table over `tools/` stops dead under `verify`.
+
+  And **a spec's `if __name__ == "__main__":` block never fires**: `mutate.main`
+  loads the file with `runpy.run_path`, where `__name__` is not `"__main__"`,
+  then runs the module-level `MUTATIONS` under its own rule. To choose your own
+  arguments, call `run` at module level and name the list something else.
+
+- **`sorted` over a *set* is only probabilistically guarded.** A set iterates in
+  hash order, which Python randomises per run, so `sorted` becoming `list` is
+  caught only when that order happens to differ from sorted. With two elements
+  that is a coin flip -- a guard that sometimes guards, and it reads exactly
+  like one that always does. Size such a fixture for the odds you want: eight
+  keys is 1 in 40320.
 
 - **Never read a raw survivor list as a bug count.** Cross it with coverage
   (`python -m tools.reached results.json coverage.json --list`): a survivor on a
@@ -497,6 +539,18 @@ Five things are not where a newcomer would guess, all on purpose:
   ```sh
   CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
   ```
+
+- **`skipUnless` turns the `macos` leg red.** That job runs `--no-skips`, which
+  is exactly what the flag is for -- a leg with every optional tool installed,
+  where a skip means something is missing rather than absent by design -- so a
+  platform-gated test is a failure there rather than a skip. Measured: one
+  `skipUnless(hasattr(os, "sched_getaffinity"))` added in this repository's own
+  review pass took that leg from green to red on the next push.
+
+  A test whose *stronger* half is platform-specific should assert the part that
+  holds everywhere and add the rest under a plain `if`, labelled at the
+  assertion. §2 asks for the label either way; this is the spelling that keeps
+  the leg green.
 
 - **A test that makes `git commit` fail must not do it by removing the git
   identity.** git falls back to `user@hostname`, and whether that *works*

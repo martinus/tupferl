@@ -91,6 +91,21 @@ def sides_for(base: bytes | None, mine: bytes, theirs: bytes) -> conflicts.Sides
     )
 
 
+def blank_before(case: unittest.TestCase, text: str, marker: str) -> None:
+    """Assert the line carrying `marker` has an empty line above it.
+
+    Module-level rather than a method, because the two classes that need it are
+    on different bases -- and the copy written inline on the second one omitted
+    the `at > 0` guard, which makes it pass vacuously when the marker lands on
+    the first line: `lines[-1]` is then the last line of the render, which is
+    `""` for anything ending in a newline.
+    """
+    lines = text.split("\n")
+    at = next(n for n, line in enumerate(lines) if marker in line)
+    case.assertGreater(at, 0, f"{marker!r} is the first line, so nothing precedes it")
+    case.assertEqual("", lines[at - 1], f"no blank line before {marker!r}:\n{text}")
+
+
 def one_conflict() -> conflicts.Sides:
     return sides_for(BASE, MINE, THEIRS)
 
@@ -222,6 +237,23 @@ class TestWhatTheUserSees(unittest.TestCase):
         self.assertIn("2 more", text)
         self.assertNotIn(f"mine{count - 1}", text)
 
+    def test_each_part_of_the_prompt_is_separated_by_a_blank_line(self) -> None:
+        """Three separators, and none of them is decoration.
+
+        This is the display the user reads before pressing a key that discards
+        one side for good, and the sections it runs together are "this computer"
+        and "the repository". `=======` already has no label to match on, so the
+        prompt's only structure is where the blank lines are -- and dropping
+        them turns the header, both sides of every hunk and the "more" line into
+        one wall of text that reads as if the last section owned the lines above
+        it. Every `assertIn` in this class passes against that wall, which is
+        why none of them could see it.
+        """
+        count = conflicts.SHOWN_HUNKS + 2
+        text = conflicts.describe(sides_for(*many(count)), colour=False)
+        for marker in ("1 of", "2 of", "2 more"):
+            blank_before(self, text, marker)
+
     def test_a_binary_file_says_there_are_no_lines(self) -> None:
         text = conflicts.describe(binary(), colour=False)
         self.assertIn("not a text file", text)
@@ -342,6 +374,87 @@ class TestOneKeypress(unittest.TestCase):
         with mock.patch("os.read", peek):
             self.key()
         self.assertEqual([0], seen, "one_key did not clear ICANON and ECHO while reading")
+
+    def blocking(self) -> tuple[int, int]:
+        """`VMIN` and `VTIME`, which are what "one keypress" means to the driver.
+
+        `VMIN = 1, VTIME = 0` is "return as soon as one byte has arrived, and
+        wait for ever until it does". Every other pair is a different promise:
+        `VMIN = 0` makes the read return empty when nothing has been typed yet,
+        and a non-zero `VTIME` puts a deadline on it. Either turns a prompt that
+        waits for the user into one that answers for them.
+        """
+        mode = termios.tcgetattr(self.terminal.source.fileno())
+        # `tcgetattr` hands the control-character array back as `bytes` even for
+        # the two entries that are counts rather than characters, though
+        # `tcsetattr` takes an `int` there -- which is why `one_key` assigns one
+        # and this reads the other way round.
+        return tuple(  # type: ignore[return-value]
+            value[0] if isinstance(value, bytes) else int(value)
+            for value in (mode[6][termios.VMIN], mode[6][termios.VTIME])
+        )
+
+    def test_the_read_asks_for_one_byte_and_waits_for_it(self) -> None:
+        """**The pty is set to the opposite pair first**, and that is the test.
+
+        A fresh pty already comes up at `(1, 0)`, so asserting that from the
+        outside is satisfied by a `one_key` that sets nothing at all -- the
+        fixture-too-weak-to-tell-the-answers-apart shape, and invisible in the
+        assertion's own text. Starting at `(0, 5)` means only an assignment can
+        produce `(1, 0)`, and the read is where it has to have happened.
+        """
+        fd = self.terminal.source.fileno()
+        mode = termios.tcgetattr(fd)
+        mode[6][termios.VMIN], mode[6][termios.VTIME] = 0, 5
+        termios.tcsetattr(fd, termios.TCSANOW, mode)
+        self.assertEqual((0, 5), self.blocking(), "the fixture did not take")
+
+        seen: list[tuple[int, int]] = []
+        self.terminal.type("l")
+        real = os.read
+
+        def peek(fd: int, size: int) -> bytes:
+            seen.append(self.blocking())
+            return real(fd, size)
+
+        with mock.patch("os.read", peek):
+            self.key()
+        self.assertEqual([(1, 0)], seen)
+
+    def test_reading_the_rest_of_an_escape_stops_waiting_after_a_tenth_of_a_second(self) -> None:
+        """The pair `rest_of_escape` needs, which is the opposite of `one_key`'s.
+
+        `VMIN = 0, VTIME = 1` is "give me whatever has arrived, and wait up to a
+        tenth of a second for it" -- the only thing that lets a *lone* Escape
+        come back at all. `VMIN = 1` there would block for ever on the byte that
+        is never coming, and `VTIME = 0` would make the read return before the
+        terminal had delivered the `[B` of a Down arrow, splitting one keypress
+        into three answers, the last of which is `b` -- *keep both*.
+
+        The fixture types the whole sequence at once, so both bytes are already
+        buffered and every one of those pairs produces the same answer from the
+        outside. Reading the driver from inside the second read is the only
+        place the difference exists.
+        """
+        seen: list[tuple[int, int]] = []
+        self.terminal.type("\x1b[B")
+        real = os.read
+
+        def peek(fd: int, size: int) -> bytes:
+            seen.append(self.blocking())
+            return real(fd, size)
+
+        with mock.patch("os.read", peek):
+            self.key()
+        # The count first. Without it `seen[1:]` and `[(0, 1)] * 0` are both
+        # empty, so a `one_key` that never reached `rest_of_escape` at all would
+        # satisfy the assertion below -- which is the half of this the escape
+        # sequence exists to reach.
+        self.assertEqual(
+            3, len(seen), f"the whole sequence was not read one byte at a time: {seen}"
+        )
+        self.assertEqual((1, 0), seen[0], "the first byte is one blocking read")
+        self.assertEqual([(0, 1), (0, 1)], seen[1:], "the rest is a timed read")
 
     def test_it_is_restored_even_when_the_read_raises(self) -> None:
         """The case the `finally` exists for, and the one the test above cannot
@@ -703,6 +816,13 @@ class TestALineThatLooksLikeASeparator(Prompted):
         self.assertIn("cannot show the two sides", text)
         self.assertIn("[d]", text)
         self.assertNotIn("MY SECTION", text)
+
+    def test_the_refusal_is_separated_from_the_heading(self) -> None:
+        """This branch returns early, so the separator test over the hunk loop
+        cannot reach this `append("")`. Run together, the refusal reads as a
+        continuation of the "N conflicts to settle" line rather than as the
+        reason nothing follows it."""
+        blank_before(self, conflicts.describe(self.sides(), colour=False), "cannot show")
 
     def test_an_ordinary_conflict_is_still_shown(self) -> None:
         """The other half: a check that refused everything would pass the test

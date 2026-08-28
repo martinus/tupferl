@@ -61,6 +61,24 @@ BROKEN_IMPORT = """
 import nothing_by_this_name  # noqa: F401
 """
 
+#: A module with one skipped test in it. **Nothing in this file had one**, so
+#: `if skipped:`, the line that prints each skip, `--no-skips` and the argument
+#: that defines it were four branches no fixture reached -- and dropping the
+#: `--no-skips` argument entirely was invisible, because `args.no_skips` is read
+#: only inside the branch nothing entered.
+SKIPPING = """
+import unittest
+
+
+class TestSkips(unittest.TestCase):
+    @unittest.skip("age is not installed")
+    def test_needs_an_optional_tool(self):
+        pass
+
+    def test_runs_normally(self):
+        self.assertTrue(True)
+"""
+
 #: One test that fails on its own assertion, which is different from every other
 #: fixture here: `SUICIDE` kills its process and `BROKEN_IMPORT` never loads, so
 #: neither reaches the line that *names a failing test*. Nothing in this file
@@ -146,6 +164,69 @@ class TestTheAccountingCheck(Tree):
         self.assertIn("could not import tests.test_broken", done.stdout)
 
 
+class TestTheOrderTheSummaryNamesThings(Tree):
+    """Two broken modules and two tests that never ran, so ordering is visible.
+
+    Both lists are `sorted`, and with one entry every ordering is the same
+    ordering -- the fixture-too-weak shape CLAUDE.md names. A CI log read across
+    two runs of the same tree has to be diffable, and a `set`-ordered list moves
+    between runs for reasons that have nothing to do with the code.
+    """
+
+    def test_broken_modules_are_named_in_a_settled_order(self) -> None:
+        self.add("test_zzz_broken.py", BROKEN_IMPORT)
+        self.add("test_aaa_broken.py", BROKEN_IMPORT)
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        named = [
+            line.split("could not import ", 1)[1].split(":", 1)[0]
+            for line in done.stdout.splitlines()
+            if "could not import" in line
+        ]
+        self.assertEqual(["tests.test_aaa_broken", "tests.test_zzz_broken"], named)
+
+    #: One class whose last test kills the process, so **every** test in it is
+    #: unaccounted for. `SUICIDE` cannot do this job: its two tests are two
+    #: classes, `pack` puts them in different batches, and only the one that
+    #: dies goes missing -- one name, which cannot show an ordering at all.
+    #: Five, because `missing` is a *set* difference and Python hashes strings
+    #: with a per-run seed: with two names an unsorted list matches the sorted
+    #: one about half the time, which is a test that passes at random.
+    LOSES_FIVE = (
+        "import os\n"
+        "import unittest\n"
+        "class TestFive(unittest.TestCase):\n"
+        "    def test_a(self): pass\n"
+        "    def test_b(self): pass\n"
+        "    def test_c(self): pass\n"
+        "    def test_d(self): pass\n"
+        "    def test_e_takes_the_process_with_it(self): os._exit(0)\n"
+    )
+
+    def test_tests_that_never_ran_are_named_in_a_settled_order(self) -> None:
+        """The count line above them is asserted too -- it is the only place the
+        *number* appears, and nothing read it before."""
+        self.add("test_lost.py", self.LOSES_FIVE)
+        done = self.run_it("--jobs", "1")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("5 discovered tests never ran", done.stdout)
+        missing = [
+            line.split("never ran: ", 1)[1].strip()
+            for line in done.stdout.splitlines()
+            if "never ran: " in line
+        ]
+        self.assertEqual(5, len(missing), done.stdout)
+        self.assertEqual(sorted(missing), missing, "the names are not in a settled order")
+
+    def test_a_batch_that_died_says_so_before_the_accounting(self) -> None:
+        """The `::error::` naming the *cause*. Without it the log carries only
+        the consequence -- tests that never ran -- and a reader has to guess
+        whether the batch crashed or was never started."""
+        self.add("test_lost.py", self.LOSES_FIVE)
+        done = self.run_it("--jobs", "1")
+        self.assertIn("batch died without reporting", done.stdout)
+
+
 class TestWhatTheRunSaysAboutItself(Tree):
     """The last line, and the line naming a failing test.
 
@@ -208,6 +289,15 @@ class TestWhatABatchReports(unittest.TestCase):
     """
 
     def batch(self, body: str, *names: str) -> dict[str, Any]:
+        return self.everything(body, *names)[0]
+
+    def status(self, body: str, *names: str) -> int:
+        """What the worker process exits with, which is the other half of what
+        it reports. The parent reads the file; `mutate` and a shell read this.
+        """
+        return self.everything(body, *names)[1]
+
+    def everything(self, body: str, *names: str) -> tuple[dict[str, Any], int, str]:
         box = Path(tempfile.mkdtemp(prefix="tupferl-batch-"))
         self.addCleanup(shutil.rmtree, box, True)
         (box / "tests_batch").mkdir()
@@ -216,13 +306,68 @@ class TestWhatABatchReports(unittest.TestCase):
         out = box / "report.json"
         sys.path.insert(0, str(box))
         try:
-            with support.quiet():
-                run_tests.run_batch([f"tests_batch.test_it.{name}" for name in names], out)
+            with support.quiet() as said:
+                code = run_tests.run_batch([f"tests_batch.test_it.{name}" for name in names], out)
         finally:
             sys.path.remove(str(box))
             for name in [m for m in sys.modules if m.startswith("tests_batch")]:
                 del sys.modules[name]
-        return dict(json.loads(out.read_text(encoding="utf-8")))
+        return dict(json.loads(out.read_text(encoding="utf-8"))), code, said.getvalue()
+
+    def spoken(self, body: str, *names: str) -> str:
+        """What the worker wrote to its own stderr, where a human reads it.
+
+        Only ids travel back to the parent in the JSON, on purpose -- shipping
+        the traceback too would print every failure twice -- so this stream is
+        the *only* place a batch's tracebacks and its own count exist. Nothing
+        read it, which is why three mutations that emptied it survived.
+        """
+        return self.everything(body, *names)[2]
+
+    def test_the_worker_says_how_many_tests_it_ran(self) -> None:
+        """`_Recorder.startTest` calls `super()` for this line and nothing else:
+        the parent counts from the `ran` list in the JSON, so dropping the
+        `super()` call leaves every other assertion in this class intact and
+        turns the worker's own log into "Ran 0 tests"."""
+        self.assertIn("Ran 2 tests", self.spoken(self.PASSES, "Green"))
+
+    def test_a_traceback_reaches_the_workers_own_stderr(self) -> None:
+        """Where it interleaves with the tests' output and a human reads it in
+        context. The summary carries only the first line."""
+        said = self.spoken(self.PASSES, "Red")
+        self.assertIn("RuntimeError: boom", said)
+        self.assertIn("test_fails", said)
+
+    def test_a_batch_where_everything_passed_exits_zero(self) -> None:
+        """The precondition for every status below: a worker that always
+        reported failure would satisfy all of them."""
+        self.assertEqual(0, self.status(self.PASSES, "Green"))
+
+    def test_a_batch_with_a_failing_test_does_not_exit_zero(self) -> None:
+        self.assertEqual(1, self.status(self.PASSES, "Red"))
+
+    def test_a_skip_is_not_a_failure_here(self) -> None:
+        """`--no-skips` is the parent's decision and it needs the ids to make
+        it, so a worker that called a skip red would take that choice away."""
+        self.assertEqual(0, self.status(self.PASSES, "Skipped"))
+
+    def test_a_module_that_will_not_import_makes_the_batch_red(self) -> None:
+        """**The `and not unloadable` half, and it cannot be seen from
+        `wasSuccessful()`.** The suite that actually runs has had the unloadable
+        module's tests taken out of it, so it passes -- and a batch reporting
+        success for a module that never loaded is the green run of nothing this
+        script exists to refuse, one level down.
+        """
+        written, code, spoken = self.everything(BROKEN_IMPORT, "Anything")
+        self.assertTrue(written["unloadable"], "the fixture imported after all")
+        self.assertEqual([], written["failures"], "nothing *failed*; the module never loaded")
+        self.assertEqual(1, code)
+        # The *whole* traceback, once, where a human reads it in context -- the
+        # summary carries only its first line. This is a different print from
+        # the one a failing test's traceback comes out of, on the branch that
+        # runs only when something would not import.
+        self.assertIn("ModuleNotFoundError", spoken)
+        self.assertIn("nothing_by_this_name", spoken)
 
     PASSES = (
         "import unittest\n"
@@ -283,6 +428,246 @@ class TestWhatABatchReports(unittest.TestCase):
         self.assertEqual({}, said["unloadable"])
 
 
+class TestTheWaysARunIsRefusedRatherThanRunEmpty(Tree):
+    """Every filter that could select nothing, and the refusal it earns instead.
+
+    These are the guards §8 is about. A selector that matches nothing reports
+    "Ran 0 tests" and exits 0 -- indistinguishable in a CI log from a suite that
+    passed -- and each of them is reachable from a typo in a workflow file that
+    nobody would ever see fail. `main` refuses instead, and until now nothing
+    asserted that: the *exit status* of the happy path was covered and none of
+    these branches was.
+
+    Each refusal has its accepting twin in the same class, because a `main` that
+    refused every selector would satisfy the refusals on their own and make the
+    tool unusable in exactly the jobs these flags exist for.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.add("test_healthy.py", HEALTHY)
+
+    def test_only_that_matches_nothing_is_refused(self) -> None:
+        done = self.run_it("--only", "tests.test_nothing_like_this")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("no test class matches", done.stdout)
+
+    def test_only_that_matches_still_runs(self) -> None:
+        done = self.run_it("--only", "tests.test_healthy")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 2 tests", done.stdout)
+
+    def test_exclude_that_matches_nothing_is_refused(self) -> None:
+        """One pattern at a time, and each has to match something. Checking only
+        that the set shrank would let a renamed class stop being excluded as
+        long as some *other* pattern still matched -- and the job that needs
+        this passes two, so that is the likely case rather than the exotic one.
+        """
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy", "--exclude", "TestGone")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("TestGone", done.stdout)
+
+    def test_exclude_that_matches_takes_the_class_out(self) -> None:
+        """The twin, and it names what it kept: a run that excluded nothing also
+        exits 0, so the status alone says nothing here."""
+        self.add("test_second.py", HEALTHY.replace("TestHealthy", "TestSecond"))
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 2 tests", done.stdout)
+
+    def test_excluding_the_last_class_is_refused_rather_than_run_empty(self) -> None:
+        """**Found by writing the tests above, and fixed in this change.**
+
+        Every pattern matched, so the loop above is satisfied -- and the run then
+        packed one *empty* batch, spawned a worker with no names, watched
+        argparse refuse it, printed `::error::batch died without reporting` and
+        **exited 0**. An annotated error on a green job, which is the exact
+        failure this whole script exists to refuse.
+        """
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("nothing would run", done.stdout)
+        self.assertNotIn("died without reporting", done.stdout)
+
+    def test_a_selection_matching_only_a_broken_module_still_reports_it(self) -> None:
+        """The `not unloadable` half of that guard, which nothing else reaches.
+
+        A module that will not import has no classes, so "nothing would run" is
+        *true* of it -- and saying that instead sends the reader looking for a
+        filter that is wrong when what is wrong is the module. The run is red
+        either way, which is why the assertion is on the words: without this,
+        dropping `and not unloadable` passes every other test here.
+        """
+        self.add("test_broken.py", BROKEN_IMPORT)
+        done = self.run_it("--only", "tests.test_broken")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("could not import tests.test_broken", done.stdout)
+        self.assertNotIn("nothing would run", done.stdout)
+
+    def test_a_malformed_shard_is_refused(self) -> None:
+        """**One spec, not four.** What only the CLI can show is the wiring --
+        `shard_of` raising, `main` catching it, `::error::` printed, exit 1 --
+        and one spec shows all of it. The parse table itself belongs where it
+        costs nothing: `TestShardSpecs` runs six specs in-process, and each
+        subprocess here is a fresh interpreter discovering a tree (measured:
+        ~64 ms) to re-prove what a function call already proved."""
+        done = self.run_it("--shard", "one/two")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("--shard wants I/N", done.stdout)
+
+    def test_an_empty_selection_is_blamed_on_the_filter_that_emptied_it(self) -> None:
+        """The refusal has to come *before* the shard check, or the shard check
+        answers first about a selection it did not empty.
+
+        Measured before the guard moved: `--exclude` removing the last class
+        together with `--shard 1/2` reported "`--shard 1/2` wants more shards
+        than there are classes" -- true, and it sends the reader to the matrix
+        when the exclude list is what did it. The whole point of hoisting the
+        check out of the individual filters is that the answer must not depend
+        on which one ran.
+        """
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy", "--shard", "1/2")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("nothing would run", done.stdout)
+        self.assertNotIn("more shards than there are classes", done.stdout)
+
+    def test_more_shards_than_classes_is_refused(self) -> None:
+        """The one that would otherwise be silent. An empty shard reports "Ran 0
+        tests" and exits 0 -- the partial run that is green because nothing
+        happened -- and it can only come from a matrix that outgrew the suite,
+        so every shard would go on being green as classes were removed."""
+        done = self.run_it("--shard", "1/9")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("more shards than there are classes", done.stdout)
+
+    def test_a_shard_that_fits_runs_its_share(self) -> None:
+        """Without this the class is satisfied by a `main` that refuses every
+        `--shard`, which is the flag CI splits the suite with."""
+        self.add("test_second.py", HEALTHY.replace("TestHealthy", "TestSecond"))
+        done = self.run_it("--shard", "1/2")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 2 tests", done.stdout)
+
+
+class TestReadingUnittestsImportFailure(unittest.TestCase):
+    """`_unloadable` and `_loaded`, the surgery on `TestLoader.errors`.
+
+    `unittest` hands back a formatted traceback per module whose first line is
+    "Failed to import test module: tests.test_x". The module name is the tail of
+    that line and the line itself is what a reader needs, so both are cut from
+    it -- and every assertion elsewhere in this file matches a *substring* of
+    what gets printed, which holds against several wrong cuts.
+    """
+
+    def loader(self) -> unittest.TestLoader:
+        box = self.box = Path(tempfile.mkdtemp(prefix="tupferl-load-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tests_load").mkdir()
+        (box / "tests_load" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "tests_load" / "test_broken.py").write_text(BROKEN_IMPORT, encoding="utf-8")
+        (box / "tests_load" / "test_fine.py").write_text(HEALTHY, encoding="utf-8")
+        loader = unittest.TestLoader()
+        sys.path.insert(0, str(box))
+        self.addCleanup(sys.path.remove, str(box))
+        self.addCleanup(
+            lambda: [sys.modules.pop(m) for m in list(sys.modules) if m.startswith("tests_load")]
+        )
+        self.suite = loader.loadTestsFromNames(["tests_load.test_broken", "tests_load.test_fine"])
+        return loader
+
+    def test_the_key_is_the_module_and_the_value_is_the_first_line(self) -> None:
+        """Asserted exactly, not by `assertIn`. The key is what the parent
+        prints as "could not import <name>" and what `_loaded` matches ids
+        against, so a cut that left the whole traceback in the key would name a
+        module nobody can act on -- and every `assertIn` elsewhere in this file
+        still passes, because the printed line contains the right text
+        somewhere inside the wrong one."""
+        found = run_tests._unloadable(self.loader())
+        self.assertEqual(["test_broken"], list(found))
+        self.assertEqual("Failed to import test module: test_broken", found["test_broken"])
+
+    def test_the_two_loaders_name_the_same_module_differently(self) -> None:
+        """**Measured, and it is why the assertion above looks wrong.**
+        `loadTestsFromNames` -- what `run_batch` uses -- reports the bare module
+        name; `discover` -- what `main` uses -- reports the dotted one:
+
+            loadTestsFromNames   'Failed to import test module: test_broken'
+            discover             'Failed to import test module: tests_load.test_broken'
+
+        Both spellings therefore flow into `main`'s one `unloadable` dict. They
+        do not collide in practice, because `discover` drops a module it could
+        not import from `classes` as well, so no batch is ever asked to load it
+        -- which is separately why `unloadable.update(report["unloadable"])` is
+        all but unreachable. Recorded here because a future `discover` that kept
+        such a module would print the same failure twice under two names, and
+        nothing else in this file would notice.
+
+        Same family as `test_verdict`'s `TestABrokenModuleTakesTwoDifferentPaths`:
+        two loaders, two classifications, and a fixture written for one proves
+        nothing about the other.
+        """
+        loader = self.loader()
+        bare = run_tests._unloadable(loader)
+        found = unittest.TestLoader()
+        found.discover(str(self.box / "tests_load"), top_level_dir=str(self.box))
+        dotted = run_tests._unloadable(found)
+        self.assertEqual(["test_broken"], list(bare))
+        self.assertEqual(["tests_load.test_broken"], list(dotted))
+
+    def test_the_placeholder_tests_of_a_broken_module_are_taken_out(self) -> None:
+        """`unittest` puts a synthetic failing test in place of a module it
+        could not import. Left in the suite it is reported as a test that
+        *failed*, which sends a reader looking for an assertion -- and it is
+        counted as having run, so the accounting check is satisfied by it.
+
+        The healthy module beside it is the other half: a filter that dropped
+        everything would pass the first assertion on its own.
+        """
+        loader = self.loader()
+        kept = run_tests._loaded(self.suite, run_tests._unloadable(loader))
+        ids = [test.id() for test in kept]
+        self.assertTrue(any("tests_load.test_fine" in tid for tid in ids), ids)
+        self.assertFalse(any("test_broken" in tid for tid in ids), ids)
+
+
+class TestWhatASkipCosts(Tree):
+    """A skipped test is green by default and red under `--no-skips`.
+
+    The flag exists for the CI legs that install every optional tool: there, a
+    skip means the tool is missing rather than absent by design, and a run that
+    quietly skipped half the suite is the partial green run this script refuses
+    everywhere else.
+
+    Nothing here had a skipped test before, so the branch, both its prints, and
+    the argument that defines the flag were unreachable together -- and the last
+    of those is only readable *from inside* the branch, which is why deleting
+    the `add_argument` call survived.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.add("test_skipping.py", SKIPPING)
+
+    def test_a_skip_is_green_by_default_and_says_so(self) -> None:
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("skipped: ", done.stdout)
+        self.assertIn("age is not installed", done.stdout)
+
+    def test_the_same_run_is_red_under_no_skips(self) -> None:
+        done = self.run_it("--jobs", "2", "--no-skips")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("an optional tool is missing", done.stdout)
+
+    def test_a_suite_with_no_skips_is_green_under_the_flag(self) -> None:
+        """The other half. Without it the class is satisfied by a `--no-skips`
+        that fails every run, which is the flag CI's fullest leg uses."""
+        self.add("test_skipping.py", HEALTHY)
+        done = self.run_it("--jobs", "2", "--no-skips")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertNotIn("skipped: ", done.stdout)
+
+
 class TestPacking(unittest.TestCase):
     """`pack` decides both splits -- classes over processes, and shards over
     machines -- so it is worth its own tests without a suite to run."""
@@ -290,10 +675,25 @@ class TestPacking(unittest.TestCase):
     def test_the_heaviest_class_is_scheduled_first(self) -> None:
         """Largest-first onto the lightest batch. The weights are 5, 3 and 2 so
         that a wrong rule produces a visibly different answer: two batches, and
-        the only balanced split is [5] and [3, 2]."""
-        classes = {"a": ["x"] * 5, "b": ["x"] * 3, "c": ["x"] * 2}
+        the only balanced split is [5] and [3, 2].
+
+        **Inserted lightest-first, and that is the fixture.** Written `a, b, c`
+        -- which is already the order the sort produces -- dropping the `sorted`
+        entirely gives the same answer, so the test passed against a `pack` that
+        did not sort at all. Measured: that mutant survived until this line was
+        reordered.
+        """
+        classes = {"c": ["x"] * 2, "b": ["x"] * 3, "a": ["x"] * 5}
         batches = run_tests.pack(classes, 2)
         self.assertEqual([["a"], ["b", "c"]], [sorted(batch) for batch in batches])
+
+    def test_nothing_to_pack_is_still_one_batch(self) -> None:
+        """The `max(1, ...)` floor, and the only input for which `pack` returns
+        a batch with nothing in it. `main` refuses an empty selection before it
+        gets here -- see `test_excluding_the_last_class_is_refused_rather_than_
+        run_empty` for what happens when it does not -- so this pins the shape
+        the caller is entitled to rather than a case it should ever produce."""
+        self.assertEqual([[]], run_tests.pack({}, 3))
 
     def test_no_batch_is_empty(self) -> None:
         """An empty batch starts an interpreter to run nothing."""
@@ -312,10 +712,38 @@ class TestShardSpecs(unittest.TestCase):
         self.assertEqual((0, 3), run_tests.shard_of("1/3"))
         self.assertEqual((2, 3), run_tests.shard_of("3/3"))
 
+    def test_one_shard_of_one_is_the_ordinary_case_and_is_valid(self) -> None:
+        """`--shard 1/1` is what a matrix of one leg passes, and every other
+        test here uses N=3 -- so a bound that rejected N=1 passed all of them.
+        Both `count < 1` becoming `count < 2` and `<` becoming `<=` refuse
+        exactly this spec and nothing else in the file."""
+        self.assertEqual((0, 1), run_tests.shard_of("1/1"))
+
     def test_out_of_range_and_malformed_specs_are_refused(self) -> None:
         for spec in ("0/3", "4/3", "1/0", "one/three", "3", ""):
             with self.subTest(spec=spec), self.assertRaises(ValueError):
                 run_tests.shard_of(spec)
+
+    def test_a_malformed_spec_is_refused_in_words_a_caller_can_print(self) -> None:
+        """**The type is not the assertion.** Without the shape guard,
+        `int("one")` raises `ValueError` too -- so `assertRaises(ValueError)`
+        above holds with the guard deleted, and what reaches the user changes
+        from "--shard wants I/N" to "invalid literal for int() with base 10".
+        `main` prints this text straight out, so the words are the contract.
+        """
+        for spec in ("one/three", "3", "", "/", "1/"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError) as raised:
+                    run_tests.shard_of(spec)
+                self.assertIn("--shard wants I/N", str(raised.exception))
+
+    def test_an_out_of_range_spec_says_what_the_range_is(self) -> None:
+        """The other message, and the other branch. A caller told only that
+        something is wrong with `4/3` has to read this file to find out what."""
+        with self.assertRaises(ValueError) as raised:
+            run_tests.shard_of("4/3")
+        self.assertIn("out of range", str(raised.exception))
+        self.assertIn("1..N", str(raised.exception))
 
 
 class TestSelection(unittest.TestCase):

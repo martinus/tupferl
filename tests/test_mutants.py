@@ -591,6 +591,36 @@ class TestEveryLine(unittest.TestCase):
         self.assertFalse(any(p.startswith("tests/") for p in mutants.every_line(REPO_ROOT)))
 
 
+class TestWhatTheWholeTreeWalkTakesIn(unittest.TestCase):
+    """`every_line`'s two filters, neither reachable from the tree as it is."""
+
+    def tree(self) -> Path:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-walk-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tupferl").mkdir()
+        (box / "tupferl" / "real.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+        (box / "tupferl" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "tupferl" / "skipped.py").write_text("c = 3\n", encoding="utf-8")
+        return box
+
+    def test_an_empty_module_contributes_no_lines(self) -> None:
+        """`if body:`. An empty `__init__.py` has nothing to mutate, and an
+        entry with an empty line set reads downstream as a file that was
+        covered -- it appears in the count of files and contributes no rows."""
+        found = mutants.every_line(self.tree())
+        self.assertEqual({1, 2}, found["tupferl/real.py"])
+        self.assertNotIn("tupferl/__init__.py", found)
+
+    def test_an_unmutable_path_is_skipped(self) -> None:
+        """The guard whose own comment says it was once thought unreachable.
+        `UNMUTABLE` is empty in this repository, so filling it is the only way
+        to drive the clause rather than the tuple above it."""
+        with mock.patch.object(mutants, "UNMUTABLE", ("tupferl/skipped.py",)):
+            found = mutants.every_line(self.tree())
+        self.assertIn("tupferl/real.py", found)
+        self.assertNotIn("tupferl/skipped.py", found)
+
+
 class TestChoosingOperators(unittest.TestCase):
     """A run that asked nothing must not read as a run that found nothing."""
 
@@ -791,6 +821,47 @@ class TestThePackageInitIsIndexedAsThePackage(unittest.TestCase):
         self.assertEqual(index.get("tupferl.copies"), {"tests.test_a"})
 
 
+class TestFollowingAHelperOneLevel(unittest.TestCase):
+    """`importers` links a helper under `tests/` back to the tests that import
+    it -- `tests/support.py` imports `paths`, so every module importing
+    `support` reaches `paths` too.
+
+    The filter that decides what counts as a helper -- `module == "tests" or
+    module.startswith("tests.")` -- is *not* asserted here, and the reason is
+    worth stating rather than hiding: a first attempt did assert it, and the
+    assertion was vacuous. `uses_helper` is only ever read against `helpers`,
+    which holds the non-`test_` files under `tests/`, so an entry keyed by a
+    product module is looked up and never found. Both mutations of that line
+    are recorded as equivalent instead, with that argument.
+    """
+
+    def tree(self) -> Path:
+        box = Path(tempfile.mkdtemp(prefix="tupferl-importers-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tupferl").mkdir()
+        (box / "tests").mkdir()
+        (box / "tupferl" / "widget.py").write_text("x = 1\n", encoding="utf-8")
+        (box / "tests" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "tests" / "support.py").write_text(
+            "from tupferl import widget  # noqa: F401\n", encoding="utf-8"
+        )
+        (box / "tests" / "test_through_helper.py").write_text(
+            "from tests import support  # noqa: F401\n", encoding="utf-8"
+        )
+        (box / "tests" / "test_direct.py").write_text(
+            "from tupferl import widget  # noqa: F401\n", encoding="utf-8"
+        )
+        return box
+
+    def test_a_test_reaches_what_its_helper_imports(self) -> None:
+        """The closure, and the reason the index exists at all: a mutation in
+        `widget` has to run the test that only reaches it through `support`."""
+        box = self.tree()
+        found = mutants.targets_for("tupferl/widget.py", box, mutants.importers(box)).split()
+        self.assertIn("tests.test_through_helper", found)
+        self.assertIn("tests.test_direct", found)
+
+
 class TestChoosingTheTests(unittest.TestCase):
     """Driven against the real repository, because that is the map it describes."""
 
@@ -946,6 +1017,32 @@ class TestReadingARealDiff(unittest.TestCase):
         self.assertEqual(found, {"tupferl/thing.py": {2, 3}})
         self.assertNotIn("tupferl/later.py", found)
 
+    def test_a_base_that_does_not_exist_is_refused(self) -> None:
+        """**A typo'd `--base` must not read as "nothing changed".**
+
+        `_git` raises on a non-zero status, and without that check a failed
+        `git diff` hands back its empty stdout -- so `--base mian` produces an
+        empty table, the header says "0 file(s), 0 changed lines -> 0 mutants",
+        and the sweep reports every row caught because there are none. That is
+        this repository's flagship failure shape, reached by one keystroke.
+
+        `rev-parse --verify` fires first so the message names the ref rather
+        than the diff invocation it would otherwise fail inside.
+        """
+        with self.assertRaises(SystemExit) as raised:
+            mutants.changed_lines("no-such-ref", self.root)
+        self.assertIn("no-such-ref", str(raised.exception))
+
+    def test_it_refuses_to_run_from_below_the_repository_root(self) -> None:
+        """Paths in a diff are relative to the top level, so a run from a
+        subdirectory reads every one of them against the wrong place -- and
+        `mutable()` then rejects the lot, giving an empty table rather than an
+        error."""
+        below = self.root / "tupferl"
+        with self.assertRaises(SystemExit) as raised:
+            mutants.changed_lines("main", below)
+        self.assertIn("repository root", str(raised.exception))
+
     def test_an_untracked_file_counts_entirely(self) -> None:
         """`git diff` cannot see it, and "no mutants for the new module" reads
         exactly like "the new module is covered"."""
@@ -956,6 +1053,36 @@ class TestReadingARealDiff(unittest.TestCase):
         self.write("tests/test_thing.py", "x = 1\n")
         self.write("docs/notes.md", "words\n")
         self.assertEqual(mutants.changed_lines("main", self.root), {})
+
+    def test_a_file_that_is_not_python_under_a_mutable_path_is_ignored(self) -> None:
+        """The test above cannot reach the `mutable(name)` guard: git's own
+        pathspec already drops `tests/` and `docs/`, so the walk never sees
+        those names. A `.md` *inside* `tupferl/` passes the pathspec and is
+        stopped only here -- and without the guard the walk reads it and
+        generates mutants for prose.
+        """
+        self.write("tupferl/NOTES.md", "words\n")
+        self.assertEqual({}, mutants.changed_lines("main", self.root))
+
+    def test_a_path_named_unmutable_is_skipped_even_though_it_qualifies(self) -> None:
+        """`UNMUTABLE` is empty today, so nothing in the tree can exercise it --
+        and the comment beside `every_line`'s copy of this guard records what
+        that cost: it argued the check could never be false, which was true
+        while `mutable` had two clauses and false the moment it grew a third.
+        The excluded directory stayed in `--all` after being excluded, and
+        nobody visited the line.
+
+        Filling it here is the only way to drive the third clause. What it
+        protects against is real: a script under `tools/` that built a sandbox
+        and wrote a store into it, where one broken line sent the write to the
+        developer's live installation (woswoar#245).
+        """
+        self.write("tupferl/keep.py", "a = 1\n")
+        self.write("tupferl/danger.py", "b = 2\n")
+        with mock.patch.object(mutants, "UNMUTABLE", ("tupferl/danger.py",)):
+            found = mutants.changed_lines("main", self.root)
+        self.assertIn("tupferl/keep.py", found)
+        self.assertNotIn("tupferl/danger.py", found)
 
 
 class TestABoundedCallStillReturns(unittest.TestCase):
@@ -1119,6 +1246,19 @@ class TestCappingTheTable(unittest.TestCase):
                 kept, dropped = mutants.cap(rows, limit)
                 self.assertEqual(rows, kept)
                 self.assertEqual([], dropped)
+
+    def test_a_limit_of_one_keeps_one(self) -> None:
+        """`limit <= 0` is "no limit", and 1 is the smallest real one. Read as
+        `<= 1`, a `--limit 1` returns the whole table -- so the run the flag was
+        meant to keep short is the longest one there is, and the printed header
+        says the honest number while the sweep ignores it.
+
+        Every other test here uses 0, -1, 4 or 5, so the boundary sat between
+        two cases and was covered by neither.
+        """
+        kept, dropped = mutants.cap(self.rows("tupferl/a.py", 5), 1)
+        self.assertEqual(1, len(kept))
+        self.assertEqual(4, len(dropped))
 
     def test_a_table_under_the_limit_is_untouched(self) -> None:
         """`len(mutations) <= limit`, where `<=` becoming `<` sends an
