@@ -41,6 +41,20 @@ ROOT = Path(__file__).resolve().parent.parent
 BACKPORT = "tomli"
 BACKPORT_UNTIL = (3, 11)
 
+#: Standard library on *some* interpreter this project supports, which is not
+#: the same set as `sys.stdlib_module_names` on the one running the test.
+#:
+#: The walk below reads source rather than importing, so it sees both arms of
+#: `config.toml`'s version shim whichever interpreter it runs on -- and on 3.10
+#: `tomllib` is not in `stdlib_module_names`, so the stdlib module tupferl
+#: imports on 3.11 looks third-party there. Measured: this test passed on 3.11
+#: and 3.12 and took the `test (3.10)` leg red on its first push.
+#:
+#: Named here rather than by widening the assertion, because the expectation
+#: must not depend on which leg is running: a test whose answer changes with the
+#: interpreter is one whose green means something different on each machine.
+ALSO_STDLIB = frozenset({"tomllib"})
+
 
 def imported(where: Path) -> dict[str, set[str]]:
     """Every top-level module name `where`'s Python files import, by name.
@@ -74,7 +88,7 @@ class TestNothingButTheStandardLibrary(unittest.TestCase):
         outside = {
             name: sorted(files)
             for name, files in self.imports.items()
-            if name not in sys.stdlib_module_names and name != "tupferl"
+            if name not in sys.stdlib_module_names and name not in ALSO_STDLIB and name != "tupferl"
         }
         self.assertEqual({BACKPORT: ["config.py"]}, outside)
 
