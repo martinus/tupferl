@@ -2189,6 +2189,48 @@ def sort_survivors(
     return Survivors(fresh, seen, stale)
 
 
+def _resume_key(mutation: Mutation) -> tuple[str, int, int, str] | None:
+    """What identifies a row *within one table*, for deciding whether it ran.
+
+    **Not `_key`, and the difference is the whole of #46.** That issue proposed
+    keying resume on `_key` -- content, no position -- because it already exists
+    and `Killers` uses it. Measured on this tree's `--all` table before writing
+    the fix: `_key` gives 2547 distinct values for 3103 rows, so **556 rows
+    share a key with another**. Resume keyed on it would read those as already
+    answered when they had never run, and the report would claim verdicts it
+    never had -- which is the failure the issue itself calls strictly worse than
+    losing them.
+
+    Position is right here for the same reason it is wrong in `Killers`. A
+    resume compares a table against a report of *that same table*, minutes or
+    hours old, from a tree nobody edited in between -- so a line number is
+    stable, and it is the only thing that separates two rows spelled
+    identically. `generate` dedupes on `(span, new)`, which is what makes
+    `(path, span, new)` unique: measured, 3103 distinct for 3103 rows.
+
+    `None` for a row with no span -- a hand-written one -- and `sweep` reads
+    that as "not recorded", so it runs again. Re-running a row is a cost;
+    skipping one that never ran is a wrong answer.
+    """
+    if mutation.span is None:
+        return None
+    return (mutation.path, mutation.span[0], mutation.span[1], mutation.new)
+
+
+def _skipped(table: Sequence[Mutation], done: set[tuple[str, int, int, str]]) -> dict[str, int]:
+    """How many rows of each file this run will not have to do again.
+
+    Counted from the table rather than from the report, so a report holding rows
+    for a file the table no longer has -- a `--json` reused across an edit --
+    says nothing here rather than naming a file the run is not doing anyway.
+    """
+    found: dict[str, int] = {}
+    for row in table:
+        if _resume_key(row) in done:
+            found[row.path] = found.get(row.path, 0) + 1
+    return found
+
+
 def _key(mutation: Mutation) -> str:
     """What identifies a mutation across runs.
 
@@ -2578,7 +2620,7 @@ def _pidfile(where: Path) -> Path:
     return where.parent / (where.name + ".pid")
 
 
-def _persist(report: Report, where: Path) -> None:
+def _persist(report: Report, where: Path, announce: bool = True) -> None:
     """The run's answers, as `tools/reached.py` reads them.
 
     Written because a survivor list is not the end of the analysis. Crossing
@@ -2618,7 +2660,12 @@ def _persist(report: Report, where: Path) -> None:
         ),
         encoding="utf-8",
     )
-    print(paint.paint(f"\nwrote {len(rows)} row(s) to {where}", paint.QUIET))
+    if announce:
+        # Silent for the per-row writes `sweep` makes, which since #46 happen
+        # 3103 times in a whole-tree run. The line is worth reading once, at the
+        # end; printed after every row it is the loudest thing in the log and
+        # says the same thing each time.
+        print(paint.paint(f"\nwrote {len(rows)} row(s) to {where}", paint.QUIET))
 
 
 def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
@@ -2759,15 +2806,26 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     it still has to do.
     """
     collected = _recorded(args.json)
-    # Keyed by file, not by row: a file is recorded entirely or not at all, and
-    # a label is not unique anyway -- 7 are duplicated in the `--all` table,
-    # because `generate` dedupes on `(span, new)` and two rows touching the same
-    # line with the same operator are spelled identically.
-    done = {result.mutation.path for result in collected}
+    # Keyed by row, not by file, and paired with the per-row write below -- the
+    # two halves of #46 have to move together. Recorded per *file*, a crash
+    # inside one lost every row of it however many had been answered: 673 of the
+    # 3103-row table for `tools/mutate.py`, 23%, about half an hour at the 2.76s
+    # a row that sweep measures. Written per row but resumed per file, the next
+    # run would call a partly-recorded file complete and silently drop the rows
+    # that never ran -- a report claiming answers it never had, which is worse
+    # than losing them.
+    #
+    # `_resume_key`, never `_key`: a label is not unique (78 are duplicated
+    # here) and neither is `_key` (556 rows share one). See its docstring.
+    done = {key for result in collected if (key := _resume_key(result.mutation)) is not None}
 
-    by_file = by_size([row for row in table if row.path not in done])
-    for path in sorted(done & {row.path for row in table}):
-        print(paint.paint(f"{path}: already recorded, skipping", paint.QUIET))
+    by_file = by_size([row for row in table if _resume_key(row) not in done])
+    for path, count in sorted(_skipped(table, done).items()):
+        # The count, not just the name. A file is no longer all-or-nothing, so
+        # "skipping" without a number cannot distinguish a file fully recorded
+        # from one that got three rows in before the crash -- and the whole
+        # point of the change is that those are now different.
+        print(paint.paint(f"{path}: {count} row(s) already recorded, skipping", paint.QUIET))
     if not by_file:
         # `widened=True` on every report this function builds, recorded rows
         # included. `sweep` is only ever reached from `main`, which always walks;
@@ -2797,6 +2855,27 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         fresh.append(result)
         path = result.mutation.path
         left[path] -= 1
+        if args.json:
+            # Every row, not every file. #46 asked for this measured before the
+            # change landed, and offered a write-every-N fallback if it showed.
+            # Measured on a full-size report -- 3124 rows, 1.45 MB -- the median
+            # of 11 writes is 37.6 ms, against the 2.76 s a row the issue took
+            # from a real sweep: 117 s over a 2.4-hour run, **1.36%**. Below the
+            # >10% a machine drifts by over minutes, so there is no throttle
+            # here and no window of loss to size.
+            #
+            # It is 4.5 GB of writes to keep 1.45 MB of state, because each
+            # write is the whole report: O(rows^2) in table size. At 3124 rows
+            # that buys a crash costing one row instead of 673 for 1.36%; at ten
+            # thousand it would be ~4%, and somewhere past that the fallback the
+            # issue offered starts to earn its knob. Nothing to do today, but it
+            # is the term that grows.
+            #
+            # `True`, not `report.widened`: this runs *during* `_run_generated`
+            # below, so that name is not bound yet and reading it here is a
+            # `NameError` on every `--batch` sweep that persists mid-run. `main`
+            # is the only caller and always walks.
+            _persist(Report([*collected, *fresh], widened=True), args.json, announce=False)
         if left[path]:
             return
         print(
@@ -2804,12 +2883,6 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
                 f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded", paint.QUIET
             )
         )
-        if args.json:
-            # `True`, not `report.widened`: this runs *during* `_run_generated`
-            # below, so that name is not bound yet and reading it here is a
-            # `NameError` on every `--batch` sweep that persists mid-run. `main`
-            # is the only caller and always walks.
-            _persist(Report([*collected, *fresh], widened=True), args.json)
 
     report = _run_generated(rows, args, landed=finished)
     collected.extend(report.results)
