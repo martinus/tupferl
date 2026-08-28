@@ -1880,7 +1880,14 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         return box
 
     def sweep(
-        self, box: Path, report: Path, terminal: bool = False, extra: Sequence[str] = ()
+        self,
+        box: Path,
+        report: Path,
+        terminal: bool = False,
+        extra: Sequence[str] = (),
+        # `--all` and `--base` are mutually exclusive by `parser.error`, so a
+        # whole-tree run replaces this rather than adding to `extra`.
+        scope: Sequence[str] = ("--base", "HEAD"),
     ) -> tuple[int, str]:
         """One real `--batch` run, from `argparse` to the done marker.
 
@@ -1902,8 +1909,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             with mock.patch.object(mutate, "_persist", watched), support.quiet(terminal) as spill:
                 code = mutate.main(
                     [
-                        "--base",
-                        "HEAD",
+                        *scope,
                         "--batch",
                         "--json",
                         str(report),
@@ -2116,6 +2122,56 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
             row["outcome"] for row in json.loads(report.read_text(encoding="utf-8"))["results"]
         ]
         self.assertEqual(["caught"] * len(outcomes), outcomes, "the ordering changed an answer")
+
+    def bogus(self, box: Path) -> Path:
+        """A record holding one key for a file this fixture has never had.
+
+        Bogus on purpose: a real key would be *reached* under `--all` and the
+        paired test below could not tell the two runs apart.
+        """
+        where = box / "known-survivors.json"
+        where.write_text(
+            json.dumps({"deadbeefdeadbeef": {"why": "read, in a file far away", "seen": 1}}),
+            encoding="utf-8",
+        )
+        return where
+
+    def kept(self, where: Path) -> bool:
+        return "deadbeefdeadbeef" in json.loads(where.read_text(encoding="utf-8"))
+
+    def test_a_diff_run_may_not_drop_a_record_entry(self) -> None:
+        """The defect, driven through `main` rather than through the predicate.
+
+        `--base` generates rows for the changed lines alone, so it "fails to
+        generate" every key in an untouched file -- and `_accept` **drops** what
+        `stale` names. Measured before the fix on this repository's own record:
+        `python -m tools.mutate --base main --accept`, the command CLAUDE.md
+        gives, reported 206 of 210 entries stale and would have deleted them,
+        with nothing in the output saying so.
+
+        Driving the real `main` because the thing under test is which flags it
+        reads: a test of the predicate alone passes just as well when `main`
+        computes it and then hands `sort_survivors` a hard-coded `True`.
+        """
+        box = self.repository()
+        where = self.bogus(box)
+        code, said = self.sweep(box, box / "r.json", extra=["--accept"])
+        self.assertTrue(self.kept(where), f"a diff run deleted a reviewed reason\n{said}")
+        self.assertNotIn("match nothing", said, "and claimed the evidence for it")
+        self.assertEqual(0, code, said)
+
+    def test_a_whole_tree_run_still_drops_one(self) -> None:
+        """The other half, and the precondition for the test above: with the
+        evidence in hand the record must still be prunable, or the fix would
+        have bought safety by making `stale` unreachable -- an entry nobody
+        notices going stale is a reason still standing for code that has gone.
+        """
+        box = self.repository()
+        where = self.bogus(box)
+        code, said = self.sweep(box, box / "r.json", extra=["--accept"], scope=["--all"])
+        self.assertIn("match nothing", said)
+        self.assertFalse(self.kept(where), f"a whole-tree run kept a stale reason\n{said}")
+        self.assertEqual(0, code, said)
 
     def test_a_second_run_skips_the_file_already_recorded(self) -> None:
         """Resume, which is the reason any of this records per file.
