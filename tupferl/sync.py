@@ -877,7 +877,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
             f"abort it with git, then sync again."
         )
 
-    settler = conflicts.answering(config, no_input, ours, theirs)
+    settler = conflicts.answering(config, no_input, ours, theirs, repo)
     remote = gitrepo.first_remote(repo)
     branch = gitrepo.branch(repo)
     if remote is None:

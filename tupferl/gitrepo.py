@@ -557,6 +557,19 @@ def configured_pager(repo: Path) -> str:
     return found.out if found.ok else ""
 
 
+def configured_editor(repo: Path) -> str:
+    """`core.editor`, or `""` when git has none.
+
+    Beside `configured_pager` and for the same reason: someone who wrote
+    `core.editor = nvim` said how they edit text, not how they edit a commit
+    message. Asking git rather than reading `~/.gitconfig` gets the includes,
+    the system file and the per-repository override, which a hand-rolled reader
+    gets wrong exactly on the machine that used them.
+    """
+    found = git(["config", "--get", "core.editor"], cwd=repo)
+    return found.out if found.ok else ""
+
+
 def unfinished(repo: Path) -> str | None:
     """The name of the marker file for an operation left half-done, if any.
 

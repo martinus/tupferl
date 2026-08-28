@@ -148,9 +148,23 @@ class Prompted(unittest.TestCase):
         return self.stack.enter_context(support.tempdir())
 
     def editor_that(self, body: str) -> None:
-        """Install a real `$EDITOR`: a shell script whose body is `body`."""
+        """Install a real `$EDITOR`: a shell script whose body is `body`.
+
+        **Every one of `paths.ENV_KEYS`'s editor variables is cleared first**,
+        not just set. `conflicts.editor` reads `GIT_EDITOR` before `$EDITOR` --
+        git's order, and the point of reading git's config at all -- and this
+        container happens to export `GIT_EDITOR=true`. Left in place it wins,
+        so five tests here ran `true`, which exits 0 and edits nothing, and the
+        suite reported the prompt accepting a file nobody had touched. Setting
+        one variable is not the same as controlling the answer.
+        """
         where = support.fake_editor(self.scratch() / "fake-editor", body)
-        self.stack.enter_context(mock.patch.dict(os.environ, {"EDITOR": str(where)}))
+        self.stack.enter_context(
+            mock.patch.dict(
+                os.environ,
+                {"EDITOR": str(where), "GIT_EDITOR": "", "VISUAL": ""},
+            )
+        )
 
 
 class TestParsingTheMarkers(unittest.TestCase):
@@ -672,24 +686,112 @@ class TestTheEditorHandoff(Prompted):
 
 
 class TestWhichEditor(unittest.TestCase):
+    """The order, which is now the config, then git's, then the shell's.
+
+    **`clear=True` on every one of these**, not just the two that had it. A
+    precedence test has to control *every* source or it is only testing the ones
+    it happens to name: this container exports `GIT_EDITOR=true`, and the two
+    tests written without it went on passing until `GIT_EDITOR` became a source
+    -- at which point they asserted the ambient value, not the fixture's.
+    """
+
+    def only(self, **environment: str) -> dict[str, str]:
+        return environment
+
     def test_the_config_wins(self) -> None:
         """A setting that loses to an environment variable is one the user
-        cannot make stick."""
-        with mock.patch.dict(os.environ, {"VISUAL": "vis", "EDITOR": "ed"}):
+        cannot make stick -- and that includes the ones git reads."""
+        with mock.patch.dict(os.environ, self.only(GIT_EDITOR="git", VISUAL="vis"), clear=True):
             self.assertEqual("cfg", conflicts.editor(Config(editor="cfg")))
 
+    def test_git_editor_beats_the_shells_variables(self) -> None:
+        """git's own first source, and it outranks `$VISUAL` for the reason the
+        whole chain exists: an editor configured for git is an editor."""
+        with mock.patch.dict(
+            os.environ, self.only(GIT_EDITOR="git", VISUAL="vis", EDITOR="ed"), clear=True
+        ):
+            self.assertEqual("git", conflicts.editor(Config()))
+
     def test_visual_beats_editor(self) -> None:
-        with mock.patch.dict(os.environ, {"VISUAL": "vis", "EDITOR": "ed"}):
+        with mock.patch.dict(os.environ, self.only(VISUAL="vis", EDITOR="ed"), clear=True):
             self.assertEqual("vis", conflicts.editor(Config()))
 
     def test_editor_is_the_last_answer(self) -> None:
-        with mock.patch.dict(os.environ, {"EDITOR": "ed"}, clear=True):
+        with mock.patch.dict(os.environ, self.only(EDITOR="ed"), clear=True):
             self.assertEqual("ed", conflicts.editor(Config()))
 
-    def test_nothing_set_is_an_error_that_says_what_to_do(self) -> None:
+    def test_nothing_set_is_an_error_that_names_all_three_ways_in(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(TupferlError) as raised:
             conflicts.editor(Config())
-        self.assertIn("config.toml", str(raised.exception))
+        said = str(raised.exception)
+        self.assertIn("config.toml", said)
+        self.assertIn("core.editor", said)
+
+
+class TestReadingGitsConfiguredEditor(support.SandboxCase):
+    """`core.editor`, which needs a real repository to be set in.
+
+    Separate from `TestWhichEditor` above, which is about the *order* and needs
+    no repository -- and that is why `editor` takes the repository as an
+    optional argument. Driven through a real `git config`, per plan §7.1: the
+    value has to come back through the same reader a user's `~/.gitconfig` goes
+    through, or this asserts a parser nobody uses.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = support.make_repo(self.home / "r", self.env)
+
+    def configured(self, command: str) -> None:
+        support.git(["config", "core.editor", command], self.repo, self.env)
+
+    def test_core_editor_is_used_when_nothing_more_specific_is_set(self) -> None:
+        self.configured("nvim -f")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("nvim -f", conflicts.editor(Config(), self.repo))
+
+    def test_the_tupferl_setting_still_wins(self) -> None:
+        """The one a person set for tupferl on purpose, which is the reason
+        git's sources go after it rather than first."""
+        self.configured("nvim")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("cfg", conflicts.editor(Config(editor="cfg"), self.repo))
+
+    def test_git_editor_still_wins_over_the_file(self) -> None:
+        """git's own order among its own sources."""
+        self.configured("nvim")
+        with mock.patch.dict(os.environ, {"GIT_EDITOR": "git"}, clear=True):
+            self.assertEqual("git", conflicts.editor(Config(), self.repo))
+
+    def test_core_editor_beats_the_shells_variables(self) -> None:
+        """The other half of the placement: without it, a machine that set
+        `core.editor` and has an ancient `$EDITOR` exported by its shell profile
+        would get the ancient one, which is the surprise this whole change
+        exists to remove."""
+        self.configured("nvim")
+        with mock.patch.dict(os.environ, {"VISUAL": "vis", "EDITOR": "ed"}, clear=True):
+            self.assertEqual("nvim", conflicts.editor(Config(), self.repo))
+
+    def test_without_a_repository_git_is_not_asked_at_all(self) -> None:
+        """`repo=None` must not mean "ask git about wherever we are standing".
+
+        The fixture is the whole test: the process is *inside* a repository that
+        sets `core.editor`, and the call passes no repository. Without the
+        guard, `git config` runs with `cwd=None` -- the current directory -- and
+        answers from a repository the caller never named, so where the user
+        happened to run tupferl from would decide their editor.
+
+        A bare `repo=None` call in a directory with no git config passes either
+        way, which is what the first version of this test did.
+        """
+        self.configured("from-the-cwd")
+        here = Path.cwd()
+        os.chdir(self.repo)
+        try:
+            with mock.patch.dict(os.environ, {"EDITOR": "ed"}, clear=True):
+                self.assertEqual("ed", conflicts.editor(Config()))
+        finally:
+            os.chdir(here)
 
 
 class TestWhichSettler(unittest.TestCase):

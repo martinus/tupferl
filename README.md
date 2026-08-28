@@ -45,6 +45,11 @@ order — `GIT_PAGER`, `core.pager`, `$PAGER` — so a machine set up for
 there is a terminal to page: redirected, it is a plain unified diff with no
 colour of its own, so `tupferl status --diff | delta` works too.
 
+The conflict prompt's `[e]` reads git's editor the same way: `GIT_EDITOR`, then
+`core.editor`, then `$VISUAL` and `$EDITOR`. An `editor` in
+`.tupferl/config.toml` still wins, because that is the one you set for tupferl
+on purpose.
+
 **Copies, not symlinks.** The repository holds a copy of each file. Symlinks
 break with programs that rewrite their config, and a copy is what makes a real
 3-way merge possible.
