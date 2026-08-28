@@ -471,3 +471,151 @@ class TestWhatAnAnswerMeansOnDisk(unittest.TestCase):
         )
         for means in sync.MEANS.values():
             self.assertIn(means.action, sync.RULES)
+
+
+MANAGED = ".bashrc"
+
+
+class TestBeingAskedBeforeAChangeIsStored(support.TwoMachines):
+    """The per-file review: `sync` shows what this computer changed and asks.
+
+    Only what *this* computer changed. An incoming change is applied without
+    asking -- see the guard in `sync.settle` for why, and `status --diff` for
+    where to look at one before it arrives.
+
+    Every test here drives the real prompt through a pty, because the thing
+    under test is a keypress reaching a decision. `support.FALLBACK` is appended
+    to whatever is typed, so a prompt that asks one more question than the test
+    answers is answered `[s]` and fails on an assertion rather than hanging.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.first.write(MANAGED, "alpha\nbeta\n")
+        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
+        self.assertEqual(0, self.first.call("sync", "--auto"))
+        self.first.write(MANAGED, "alpha EDITED\nbeta\n")
+
+    def synced(self, keys: str | None = None, *args: str) -> tuple[int, str]:
+        return self.first.say("sync", *args, keys=keys)
+
+    def test_l_stores_this_computers_version(self) -> None:
+        status, said = self.synced("l")
+        self.assertEqual(0, status, said)
+        self.assertIn("stored", said)
+        self.assertEqual("alpha EDITED\nbeta\n", self.first.stored(MANAGED).read_text())
+
+    def test_r_puts_the_repositorys_copy_back_and_the_edit_is_gone(self) -> None:
+        """The undo tupferl had no command for, and the one answer here that
+        destroys something.
+
+        **Both sides asserted.** `[r]` reported `reverted` while writing `$HOME`
+        back over itself for as long as it took to press the key once: `resolve`
+        had set the blob to what `[l]` would write, so replacing the action
+        alone changed nothing. Asserting the report alone would still pass for
+        that, which is why the file's bytes are the assertion and the word is
+        only the second half.
+        """
+        status, said = self.synced("r")
+        self.assertEqual(0, status, said)
+        self.assertIn("reverted", said)
+        self.assertEqual("alpha\nbeta\n", self.first.read(MANAGED))
+        self.assertEqual("alpha\nbeta\n", self.first.stored(MANAGED).read_text())
+
+    def test_s_leaves_both_copies_and_says_the_run_is_unfinished(self) -> None:
+        """A skipped file is neither changed nor in conflict, so the summary
+        said "0 changed, 0 in conflict" over an exit status of 1 -- a line that
+        reads as "nothing outstanding" under a status meaning the opposite."""
+        status, said = self.synced("s")
+        self.assertEqual(1, status, said)
+        self.assertIn("left alone", said)
+        self.assertIn("1 left alone", said, "the summary does not mention it")
+        self.assertEqual("alpha EDITED\nbeta\n", self.first.read(MANAGED))
+        self.assertEqual("alpha\nbeta\n", self.first.stored(MANAGED).read_text())
+
+    def test_the_diff_is_shown_before_the_keys_and_is_oriented_outward(self) -> None:
+        """The complaint that produced this prompt was that a diff's direction
+        is not obvious enough to bet a dotfile on. The repository's copy is what
+        is about to be replaced, so it is on `-`."""
+        _, said = self.synced("l")
+        self.assertIn(f"--- {MANAGED} (the repository)", said)
+        self.assertIn(f"+++ {MANAGED} (this computer)", said)
+        self.assertIn("+alpha EDITED", said)
+        self.assertLess(said.index("--- "), said.index("[l] store"), "the keys came first")
+
+    def test_a_key_that_is_not_offered_asks_again(self) -> None:
+        """`[b]` and `[e]` are the conflict prompt's and mean nothing here.
+        Typing one has to re-ask rather than be taken for something."""
+        status, said = self.synced("bl")
+        self.assertEqual(0, status, said)
+        self.assertIn("not one of the keys", said)
+        self.assertIn("stored", said)
+
+    def test_d_shows_the_whole_diff_and_asks_again(self) -> None:
+        self.first.write(MANAGED, "alpha EDITED\n" + "".join(f"line {n}\n" for n in range(60)))
+        status, said = self.synced("dl")
+        self.assertEqual(0, status, said)
+        self.assertIn("more line(s)", said, "the first display was not capped")
+        self.assertIn("line 59", said, "[d] did not show the rest")
+
+
+class TestWhenTheReviewDoesNotHappen(support.TwoMachines):
+    """Every way a run says "do not ask me", and the one that says it by being
+    a pipe.
+
+    This is the half that keeps `init`, CI and a timer-driven sync working:
+    each of them runs `sync` with nobody there, and a prompt would block for
+    ever or read EOF and call that a decision.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.first.write(MANAGED, "alpha\nbeta\n")
+        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
+        self.assertEqual(0, self.first.call("sync", "--auto"))
+        self.first.write(MANAGED, "alpha EDITED\nbeta\n")
+
+    def stored_it(self, *args: str, keys: str | None = None) -> str:
+        status, said = self.first.say("sync", *args, keys=keys)
+        self.assertEqual(0, status, said)
+        self.assertEqual("alpha EDITED\nbeta\n", self.first.stored(MANAGED).read_text(), said)
+        return said
+
+    def test_auto_stores_without_asking(self) -> None:
+        said = self.stored_it("--auto")
+        self.assertNotIn("[l] store", said, "it asked anyway")
+
+    def test_no_input_does_not_ask_either(self) -> None:
+        """It already meant "never prompt"; that has to cover the new prompt as
+        well, or the flag stops meaning what it says."""
+        self.assertNotIn("[l] store", self.stored_it("--no-input"))
+
+    def test_ours_and_theirs_answer_in_advance(self) -> None:
+        """A run that has answered every *conflict* in advance has said what it
+        wants. Stopping it on a one-sided change would make those flags mean
+        less than they say -- and `--theirs` on a scripted sync would then hang
+        on the first file this computer edited."""
+        for flag in ("--ours", "--theirs"):
+            with self.subTest(flag=flag):
+                self.first.write(MANAGED, "alpha EDITED\nbeta\n")
+                self.assertNotIn("[l] store", self.stored_it(flag))
+
+    def test_a_stdin_that_is_not_a_terminal_does_not_ask(self) -> None:
+        """No flag at all: `keys=None` leaves stdin a pipe, which is what a cron
+        job and a CI step have. Without this the default became a hang."""
+        self.assertNotIn("[l] store", self.stored_it())
+
+    def test_an_incoming_change_is_never_asked_about(self) -> None:
+        """The deliberate omission. The repository's copy moves and `$HOME` does
+        not, so a review would have something to show -- and the run must apply
+        it silently anyway. A pty is given here so that a prompt *could* happen:
+        without one this passes for the reason above rather than for its own.
+        """
+        self.assertEqual(0, self.first.call("sync", "--auto"))
+        self.first.stored(MANAGED).write_text("alpha FROM ELSEWHERE\nbeta\n", encoding="utf-8")
+        support.git(["commit", "-am", "elsewhere"], self.first.repo, self.first.env)
+
+        status, said = self.first.say("sync", keys="")
+        self.assertEqual(0, status, said)
+        self.assertNotIn("[l] store", said, "an incoming change was put to the user")
+        self.assertEqual("alpha FROM ELSEWHERE\nbeta\n", self.first.read(MANAGED))
