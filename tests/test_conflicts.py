@@ -91,6 +91,21 @@ def sides_for(base: bytes | None, mine: bytes, theirs: bytes) -> conflicts.Sides
     )
 
 
+def blank_before(case: unittest.TestCase, text: str, marker: str) -> None:
+    """Assert the line carrying `marker` has an empty line above it.
+
+    Module-level rather than a method, because the two classes that need it are
+    on different bases -- and the copy written inline on the second one omitted
+    the `at > 0` guard, which makes it pass vacuously when the marker lands on
+    the first line: `lines[-1]` is then the last line of the render, which is
+    `""` for anything ending in a newline.
+    """
+    lines = text.split("\n")
+    at = next(n for n, line in enumerate(lines) if marker in line)
+    case.assertGreater(at, 0, f"{marker!r} is the first line, so nothing precedes it")
+    case.assertEqual("", lines[at - 1], f"no blank line before {marker!r}:\n{text}")
+
+
 def one_conflict() -> conflicts.Sides:
     return sides_for(BASE, MINE, THEIRS)
 
@@ -222,13 +237,6 @@ class TestWhatTheUserSees(unittest.TestCase):
         self.assertIn("2 more", text)
         self.assertNotIn(f"mine{count - 1}", text)
 
-    def blank_before(self, text: str, marker: str) -> None:
-        """Assert the line carrying `marker` has an empty line above it."""
-        lines = text.split("\n")
-        at = next(n for n, line in enumerate(lines) if marker in line)
-        self.assertGreater(at, 0, f"{marker!r} is the first line, so nothing precedes it")
-        self.assertEqual("", lines[at - 1], f"no blank line before {marker!r}:\n{text}")
-
     def test_each_part_of_the_prompt_is_separated_by_a_blank_line(self) -> None:
         """Three separators, and none of them is decoration.
 
@@ -243,9 +251,8 @@ class TestWhatTheUserSees(unittest.TestCase):
         """
         count = conflicts.SHOWN_HUNKS + 2
         text = conflicts.describe(sides_for(*many(count)), colour=False)
-        self.blank_before(text, "1 of")
-        self.blank_before(text, "2 of")
-        self.blank_before(text, "2 more")
+        for marker in ("1 of", "2 of", "2 more"):
+            blank_before(self, text, marker)
 
     def test_a_binary_file_says_there_are_no_lines(self) -> None:
         text = conflicts.describe(binary(), colour=False)
@@ -815,10 +822,7 @@ class TestALineThatLooksLikeASeparator(Prompted):
         cannot reach this `append("")`. Run together, the refusal reads as a
         continuation of the "N conflicts to settle" line rather than as the
         reason nothing follows it."""
-        text = conflicts.describe(self.sides(), colour=False)
-        lines = text.split("\n")
-        at = next(n for n, line in enumerate(lines) if "cannot show the two sides" in line)
-        self.assertEqual("", lines[at - 1], f"no blank line before the refusal:\n{text}")
+        blank_before(self, conflicts.describe(self.sides(), colour=False), "cannot show")
 
     def test_an_ordinary_conflict_is_still_shown(self) -> None:
         """The other half: a check that refused everything would pass the test

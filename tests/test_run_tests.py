@@ -289,16 +289,13 @@ class TestWhatABatchReports(unittest.TestCase):
     """
 
     def batch(self, body: str, *names: str) -> dict[str, Any]:
-        return self.run_it(body, *names)[0]
+        return self.everything(body, *names)[0]
 
     def status(self, body: str, *names: str) -> int:
         """What the worker process exits with, which is the other half of what
         it reports. The parent reads the file; `mutate` and a shell read this.
         """
-        return self.run_it(body, *names)[1]
-
-    def run_it(self, body: str, *names: str) -> tuple[dict[str, Any], int]:
-        return self.everything(body, *names)[:2]
+        return self.everything(body, *names)[1]
 
     def everything(self, body: str, *names: str) -> tuple[dict[str, Any], int, str]:
         box = Path(tempfile.mkdtemp(prefix="tupferl-batch-"))
@@ -361,21 +358,7 @@ class TestWhatABatchReports(unittest.TestCase):
         success for a module that never loaded is the green run of nothing this
         script exists to refuse, one level down.
         """
-        box = Path(tempfile.mkdtemp(prefix="tupferl-batch-"))
-        self.addCleanup(shutil.rmtree, box, True)
-        (box / "tests_batch").mkdir()
-        (box / "tests_batch" / "__init__.py").write_text("", encoding="utf-8")
-        (box / "tests_batch" / "test_it.py").write_text(BROKEN_IMPORT, encoding="utf-8")
-        out = box / "report.json"
-        sys.path.insert(0, str(box))
-        try:
-            with support.quiet() as spoken:
-                code = run_tests.run_batch(["tests_batch.test_it"], out)
-        finally:
-            sys.path.remove(str(box))
-            for name in [m for m in sys.modules if m.startswith("tests_batch")]:
-                del sys.modules[name]
-        written = json.loads(out.read_text(encoding="utf-8"))
+        written, code, spoken = self.everything(BROKEN_IMPORT, "Anything")
         self.assertTrue(written["unloadable"], "the fixture imported after all")
         self.assertEqual([], written["failures"], "nothing *failed*; the module never loaded")
         self.assertEqual(1, code)
@@ -383,8 +366,8 @@ class TestWhatABatchReports(unittest.TestCase):
         # summary carries only its first line. This is a different print from
         # the one a failing test's traceback comes out of, on the branch that
         # runs only when something would not import.
-        self.assertIn("ModuleNotFoundError", spoken.getvalue())
-        self.assertIn("nothing_by_this_name", spoken.getvalue())
+        self.assertIn("ModuleNotFoundError", spoken)
+        self.assertIn("nothing_by_this_name", spoken)
 
     PASSES = (
         "import unittest\n"
@@ -522,13 +505,31 @@ class TestTheWaysARunIsRefusedRatherThanRunEmpty(Tree):
         self.assertNotIn("nothing would run", done.stdout)
 
     def test_a_malformed_shard_is_refused(self) -> None:
-        """`--shard` is one-based: `I` is `1..N`. `0/2` is out of range, and so
-        is `3/2`."""
-        for spec in ("0/2", "3/2", "one/two", "2"):
-            with self.subTest(spec=spec):
-                done = self.run_it("--shard", spec)
-                self.assertEqual(1, done.returncode, done.stdout + done.stderr)
-                self.assertIn("::error::", done.stdout)
+        """**One spec, not four.** What only the CLI can show is the wiring --
+        `shard_of` raising, `main` catching it, `::error::` printed, exit 1 --
+        and one spec shows all of it. The parse table itself belongs where it
+        costs nothing: `TestShardSpecs` runs six specs in-process, and each
+        subprocess here is a fresh interpreter discovering a tree (measured:
+        ~64 ms) to re-prove what a function call already proved."""
+        done = self.run_it("--shard", "one/two")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("--shard wants I/N", done.stdout)
+
+    def test_an_empty_selection_is_blamed_on_the_filter_that_emptied_it(self) -> None:
+        """The refusal has to come *before* the shard check, or the shard check
+        answers first about a selection it did not empty.
+
+        Measured before the guard moved: `--exclude` removing the last class
+        together with `--shard 1/2` reported "`--shard 1/2` wants more shards
+        than there are classes" -- true, and it sends the reader to the matrix
+        when the exclude list is what did it. The whole point of hoisting the
+        check out of the individual filters is that the answer must not depend
+        on which one ran.
+        """
+        done = self.run_it("--exclude", "tests.test_healthy.TestHealthy", "--shard", "1/2")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("nothing would run", done.stdout)
+        self.assertNotIn("more shards than there are classes", done.stdout)
 
     def test_more_shards_than_classes_is_refused(self) -> None:
         """The one that would otherwise be silent. An empty shard reports "Ran 0

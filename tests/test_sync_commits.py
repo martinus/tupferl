@@ -27,7 +27,7 @@ import unittest
 from unittest import mock
 
 from tests import support
-from tupferl import conflicts, errors, gitrepo, paths, sync
+from tupferl import conflicts, gitrepo, paths, sync
 from tupferl.errors import TupferlError
 
 #: What each machine commits. Distinct, and neither a prefix of the other, so no
@@ -730,7 +730,7 @@ class TestUndoneUndoesTheMergeItself(support.SandboxCase):
         self.assertIsNotNone(gitrepo.unfinished(self.repo))
 
     def test_it_raises_and_leaves_no_merge_behind(self) -> None:
-        with self.assertRaises(errors.TupferlError) as raised:
+        with self.assertRaises(TupferlError) as raised:
             sync.undone(self.repo, "something went wrong")
         self.assertIn("the merge was undone", str(raised.exception))
         self.assertIsNone(gitrepo.unfinished(self.repo))

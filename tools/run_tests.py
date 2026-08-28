@@ -322,6 +322,30 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::error::no test class matches --exclude {pattern!r}")
             return 1
         classes = kept
+    if not classes and not unloadable:
+        # **Every filter above can end here, and only `--only` said so.** An
+        # `--exclude` list that removes the last class is not a typo -- each
+        # pattern matched something, which is all that loop checks -- and the
+        # run then packs one *empty* batch, spawns a worker with no names,
+        # watches argparse refuse it, prints `::error::batch died without
+        # reporting` and **exits 0**: the error is annotated in the log and the
+        # job is green. Found by a test written for the refusals above.
+        #
+        # `unloadable` is what keeps this from refusing the case that matters
+        # most: a selection that matches only a module which will not import
+        # has no classes to run and a real answer to give.
+        #
+        # **Before the `--shard` block, not after.** Placed after it,
+        # `count > len(classes)` fires first on an already-empty selection
+        # and reports `--shard 1/2 wants more shards than there are
+        # classes` -- true, and it names the matrix when the exclude list
+        # is what emptied it. The whole argument for hoisting this check
+        # out of the individual filters is that the answer should not
+        # depend on which one ran; after the shard block it still did, for
+        # that one combination. The shard check then only ever sees
+        # `0 < len(classes) < count`, which is the case it was written for.
+        print("::error::every test class was filtered out; nothing would run")
+        return 1
     if args.shard:
         try:
             index, count = shard_of(args.shard)
@@ -343,20 +367,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         chosen = pack(classes, count)[index]
         classes = {name: classes[name] for name in chosen}
-    if not classes and not unloadable:
-        # **Every filter above can end here, and only `--only` said so.** An
-        # `--exclude` list that removes the last class is not a typo -- each
-        # pattern matched something, which is all that loop checks -- and the
-        # run then packs one *empty* batch, spawns a worker with no names,
-        # watches argparse refuse it, prints `::error::batch died without
-        # reporting` and **exits 0**: the error is annotated in the log and the
-        # job is green. Found by a test written for the refusals above.
-        #
-        # `unloadable` is what keeps this from refusing the case that matters
-        # most: a selection that matches only a module which will not import
-        # has no classes to run and a real answer to give.
-        print("::error::every test class was filtered out; nothing would run")
-        return 1
     expected = {tid for ids in classes.values() for tid in ids}
 
     # Twice the CPUs, because the work is subprocess wait rather than CPU:

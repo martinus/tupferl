@@ -29,14 +29,25 @@ from tools import cpus
 
 
 class TestHowManyCpusAreUsable(unittest.TestCase):
-    def test_it_answers_what_the_interpreter_says(self) -> None:
-        """`counter() or 4`, and the `or` is what makes the fallback a
-        *fallback*. Read as `and`, a truthy count is discarded and every machine
-        answers 4 -- a two-core container oversubscribes, a sixty-four-core build
-        box runs at a sixteenth of its width, and neither says anything.
+    @unittest.skipUnless(hasattr(os, "sched_getaffinity"), "no affinity mask on this platform")
+    def test_on_this_machine_it_agrees_with_the_affinity_mask(self) -> None:
+        """**Independently derived, and the first version of this was not.**
+
+        It read `getattr(os, "process_cpu_count", os.cpu_count)` and compared
+        the result against `usable_cpus()` -- which is `tools/cpus.py`'s own
+        line transcribed and compared with itself, so it held whatever that
+        line did. §2's "a test containing a copy of the code it checks cannot
+        fail", written into the file whose whole point was to close a gap.
+
+        `sched_getaffinity` is a different question put to the kernel, and the
+        number `process_cpu_count` exists to agree with: both answer "how many
+        CPUs may *this process* use", which is the reason this module does not
+        call `os.cpu_count()`. Linux-only and labelled as such; the three tests
+        below carry the guarantee on every platform, and it is
+        `test_it_prefers_the_count_that_knows_about_affinity` that actually
+        kills the `or` becoming `and`.
         """
-        counter = getattr(os, "process_cpu_count", os.cpu_count)
-        self.assertEqual(counter(), cpus.usable_cpus())
+        self.assertEqual(len(os.sched_getaffinity(0)), cpus.usable_cpus())
 
     def test_an_interpreter_that_will_not_say_falls_back(self) -> None:
         """The other half, and the branch the `or` exists for. Deliberately not

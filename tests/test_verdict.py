@@ -1246,7 +1246,10 @@ class TestWhereTheWalkLooks(unittest.TestCase):
         self.assertEqual(8, len(found))
 
     def test_a_flat_selection_looks_beside_itself(self) -> None:
-        # **Imported before the chdir, and that is load-bearing.** The harness
+        # **Imported before the chdir, and that is load-bearing.** Directly,
+        # rather than by calling `every` for its side effect: the return value
+        # was thrown away and a reader had to follow the helper to find that
+        # out. The harness
         # runs a shard as `python -c <the source of verdict.py>`, where
         # `sys.path[0]` is `''` -- resolved against the *current* directory at
         # each import rather than fixed at startup, as `python -m` fixes it. So
@@ -1258,7 +1261,8 @@ class TestWhereTheWalkLooks(unittest.TestCase):
         # selecting *only this module* was not: `mutate` could not measure
         # `tools/verdict.py` against its own tests at all, and reported
         # `BASELINE NOT GREEN` for every table that tried.
-        self.every(["tests.test_verdict"])
+        from tools import verdict  # noqa: F401
+
         with tempfile.TemporaryDirectory(prefix="tupferl-walk-") as name:
             box = Path(name)
             (box / "test_one.py").write_text("", encoding="utf-8")

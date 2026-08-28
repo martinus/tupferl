@@ -1504,7 +1504,76 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         self.assertIn("1 asked nothing", said)
 
 
-class TestWhichFileASweepReachesFirst(unittest.TestCase):
+class GeneratedTable(unittest.TestCase):
+    """A repository with a real diff in it, and one way to build a table from it.
+
+    **Not a `Test...` class and holding no tests of its own.** Subclassing one
+    that *does* makes every test in it run again under the subclass's name --
+    `tests/test_gitrepo.py`'s `ConflictedIndex` says the same thing, and this
+    file did it anyway: the class below inherited six tests, one of them a
+    `git init` with two commits and a full `generated()` run, and its docstring
+    said it "inherits nothing else".
+    """
+
+    def repository(self) -> Path:
+        """Two mutable files whose changed lines differ in number, committed and
+        then changed, so `generated` has a real diff to read.
+
+        `wee.py` sorts *after* `many.py`, so path order and size order disagree
+        -- without that the fixture cannot tell a sorted table from an
+        unsorted one, which is the shape that made an earlier attempt here
+        useless (`--limit 40` gave every file two rows, so every ordering
+        looked identical).
+        """
+        box = Path(tempfile.mkdtemp(prefix="tupferl-order-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "tupferl").mkdir()
+        (box / "tupferl" / "__init__.py").write_text("", encoding="utf-8")
+        many = "\n".join(f"def f{n}(x):\n    return x + {n}\n" for n in range(6))
+        (box / "tupferl" / "many.py").write_text(many, encoding="utf-8")
+        (box / "tupferl" / "wee.py").write_text("def g(x):\n    return x + 1\n", encoding="utf-8")
+
+        def git(*argv: str) -> None:
+            subprocess.run(("git", *argv), cwd=box, check=True, capture_output=True)
+
+        git("init", "-q")
+        git("config", "user.email", "order@example.invalid")
+        git("config", "user.name", "order")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        (box / "tupferl" / "many.py").write_text(many.replace("+", "-"), encoding="utf-8")
+        (box / "tupferl" / "wee.py").write_text("def g(x):\n    return x - 1\n", encoding="utf-8")
+        return box
+
+    def table(self, box: Path, **over: Any) -> tuple[list[Mutation], str]:
+        """`generated` over `box`, with what it printed.
+
+        `os.chdir` because `generated` reads `Path.cwd()` -- it is a tool that
+        runs from the repository root and says so -- and the `finally` because
+        a test that left the process somewhere else would break every test
+        after it in ways that look like their own fault.
+        """
+        args = argparse.Namespace(
+            **{
+                "all": False,
+                "base": "HEAD",
+                "only": [],
+                "limit": 0,
+                "operator": [],
+                "skip_operator": [],
+                **over,
+            }
+        )
+        here = Path.cwd()
+        os.chdir(box)
+        try:
+            with support.quiet() as said:
+                return mutate.generated(args), said.getvalue()
+        finally:
+            os.chdir(here)
+
+
+class TestWhichFileASweepReachesFirst(GeneratedTable):
     """`by_size`: smallest file first, and every file's rows kept together.
 
     Two paths built their table differently. `sweep` sorted by size; the plain
@@ -1565,36 +1634,6 @@ class TestWhichFileASweepReachesFirst(unittest.TestCase):
         passes whatever it has."""
         self.assertEqual({}, mutate.by_size([]))
 
-    def repository(self) -> Path:
-        """Two mutable files whose changed lines differ in number, committed and
-        then changed, so `generated` has a real diff to read.
-
-        `wee.py` sorts *after* `many.py`, so path order and size order disagree
-        -- without that the fixture cannot tell a sorted table from an
-        unsorted one, which is the shape that made an earlier attempt here
-        useless (`--limit 40` gave every file two rows, so every ordering
-        looked identical).
-        """
-        box = Path(tempfile.mkdtemp(prefix="tupferl-order-"))
-        self.addCleanup(shutil.rmtree, box, True)
-        (box / "tupferl").mkdir()
-        (box / "tupferl" / "__init__.py").write_text("", encoding="utf-8")
-        many = "\n".join(f"def f{n}(x):\n    return x + {n}\n" for n in range(6))
-        (box / "tupferl" / "many.py").write_text(many, encoding="utf-8")
-        (box / "tupferl" / "wee.py").write_text("def g(x):\n    return x + 1\n", encoding="utf-8")
-
-        def git(*argv: str) -> None:
-            subprocess.run(("git", *argv), cwd=box, check=True, capture_output=True)
-
-        git("init", "-q")
-        git("config", "user.email", "order@example.invalid")
-        git("config", "user.name", "order")
-        git("add", "-A")
-        git("commit", "-qm", "base")
-        (box / "tupferl" / "many.py").write_text(many.replace("+", "-"), encoding="utf-8")
-        (box / "tupferl" / "wee.py").write_text("def g(x):\n    return x - 1\n", encoding="utf-8")
-        return box
-
     def test_the_generated_table_itself_comes_back_smallest_first(self) -> None:
         """The fix, rather than the rule it uses.
 
@@ -1603,18 +1642,7 @@ class TestWhichFileASweepReachesFirst(unittest.TestCase):
         state this issue describes: the rule existed in `sweep` and the plain
         path did not use it.
         """
-        box = self.repository()
-        args = argparse.Namespace(
-            all=False, base="HEAD", only=[], limit=0, operator=[], skip_operator=[]
-        )
-        here = Path.cwd()
-        os.chdir(box)
-        try:
-            with support.quiet():
-                table = mutate.generated(args)
-        finally:
-            os.chdir(here)
-
+        table, _ = self.table(self.repository())
         reached = [path for path, _ in itertools.groupby(row.path for row in table)]
         self.assertEqual(
             ["tupferl/wee.py", "tupferl/many.py"],
@@ -1624,36 +1652,17 @@ class TestWhichFileASweepReachesFirst(unittest.TestCase):
         self.assertEqual(2, len(reached), "a file's rows were split rather than kept together")
 
 
-class TestWhatTheGeneratedTableSaysBeforeItRuns(TestWhichFileASweepReachesFirst):
+class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
     """`generated`'s filtering and its four printed lines.
 
-    It reuses the repository above, and inherits nothing else: everything here
-    is about what `--only`, `--limit` and a file nothing imports *say*, which
-    the ordering test does not read. Twenty-two mutations of this function
-    survived a sweep, and the printed lines were most of them -- a table built
-    from the wrong files still has rows in it, and a cap applied silently reads
-    as "everything was covered".
-    """
+    It shares the repository fixture with the ordering test above through
+    `GeneratedTable`, which holds no tests of its own -- see that class for what
+    went wrong when this one subclassed the test class instead.
 
-    def table(self, box: Path, **over: Any) -> tuple[list[Mutation], str]:
-        args = argparse.Namespace(
-            **{
-                "all": False,
-                "base": "HEAD",
-                "only": [],
-                "limit": 0,
-                "operator": [],
-                "skip_operator": [],
-                **over,
-            }
-        )
-        here = Path.cwd()
-        os.chdir(box)
-        try:
-            with support.quiet() as said:
-                return mutate.generated(args), said.getvalue()
-        finally:
-            os.chdir(here)
+    Twenty-two mutations of this function survived a sweep, and the printed
+    lines were most of them -- a table built from the wrong files still has rows
+    in it, and a cap applied silently reads as "everything was covered".
+    """
 
     def test_only_keeps_every_pattern_that_matches_rather_than_the_overlap(self) -> None:
         """**Two patterns, and that is the fixture.** With one, `any` and `all`
