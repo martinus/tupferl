@@ -107,12 +107,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-input", action="store_true", help="never prompt; report conflicts and skip them"
     )
 
-    verbs.add_parser("status", help="show what changed locally and remotely; modifies nothing")
+    # One verb for the three questions that only look. They were `status`,
+    # `diff` and `list`, and all three read the same `sync.examine` walk -- so
+    # they were three things to learn about one answer. `--diff` shows the lines
+    # instead of a summary of them; `--all` stops hiding what has nothing to
+    # report, which is the inventory `list` printed.
+    look = verbs.add_parser("status", help="what the next sync would do; modifies nothing")
+    look.add_argument("path", nargs="?", help="limit to one managed file")
+    look.add_argument("--all", action="store_true", help="every managed file, not just changed")
+    look.add_argument("--diff", action="store_true", help="show the lines that differ")
 
-    diff = verbs.add_parser("diff", help="show diffs between $HOME and the repository")
-    diff.add_argument("path", nargs="?", help="limit to one managed file")
-
-    verbs.add_parser("list", help="list managed files, marking host-overlay ones")
     verbs.add_parser("doctor", help="check git, the remote, permissions and dangling state")
     return parser
 
@@ -136,14 +140,13 @@ def main(argv: list[str] | None = None) -> int:
             return manage.add(args.paths, to_host=args.host, anyway=args.anyway)
         if args.command == "remove":
             return manage.remove(args.path, from_host=args.host)
-        if args.command == "list":
-            return manage.listing()
         if args.command == "sync":
             return sync.main(no_input=args.no_input, ours=args.ours, theirs=args.theirs)
         if args.command == "status":
-            return inspection.status()
-        if args.command == "diff":
-            return inspection.difference(args.path)
+            # `getattr` for neither: argparse always sets both, and a default
+            # reached through `getattr` is one that hides a parser that stopped
+            # defining the flag.
+            return inspection.status(everything=args.all, diffs=args.diff, wanted=args.path)
         raise TupferlError(
             f"`tupferl {args.command}` {NOT_WIRED}, which is a bug in tupferl rather "
             f"than anything you did; please report it."

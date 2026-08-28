@@ -277,14 +277,30 @@ def add(wanted: list[str], to_host: bool, anyway: bool = False) -> int:
     for line in stored(done, to_host):
         print(line)
 
-    if not record(repo, written, added(touched, len(admitted), host), "the copies"):
+    if record(repo, written, added(touched, len(admitted), host), "the copies"):
+        print(NOT_SHARED)
+    else:
         # Every file was already stored, byte for byte and bit for bit, and its
         # snapshot was already there. Not an error: `add` is how someone
         # re-stores a file they have since edited, and this is what it does when
         # they had not. git decides, rather than a second comparison of our own.
+        #
+        # No `NOT_SHARED` on this arm: nothing was committed, so there is
+        # nothing waiting to be sent, and saying otherwise sends the user to run
+        # a sync with no work in it.
         print(f"no change: the repository already held {count(len(admitted))}")
     return 0
 
+
+#: What `add` and `remove` say after committing, because neither pushes.
+#:
+#: Both leave the work in the local repository, so until a sync runs the change
+#: exists on this machine and nowhere else -- and a command that reports success
+#: is exactly what makes that easy to miss. Issue #60 asked whether they should
+#: sync by themselves; they should not, because `sync` can stop at a conflict
+#: prompt and run `$EDITOR`, and `tupferl add .bashrc` must not pause to ask
+#: about an unrelated file. Saying so costs a line and takes nothing away.
+NOT_SHARED = "not shared yet -- run `tupferl sync` to send this to your other computers"
 
 #: What `list`, `status` and `diff` all say on a repository nothing has been
 #: added to yet. One sentence rather than three, because it names the command
@@ -349,9 +365,9 @@ def remove(wanted: str, from_host: bool) -> int:
     gone = [where / name for where in searched if (where / name).is_file()]
     if not gone:
         raise TupferlError(
-            f"{name} is not in {host}'s overlay; `tupferl list` marks the files that are."
+            f"{name} is not in {host}'s overlay; `tupferl status --all` marks the files that are."
             if from_host
-            else f"{name} is not managed; `tupferl list` shows what is."
+            else f"{name} is not managed; `tupferl status --all` lists what is."
         )
     for where in gone:
         where.unlink()
@@ -360,6 +376,7 @@ def remove(wanted: str, from_host: bool) -> int:
     what = "remove overlay" if from_host else "remove"
     record(repo, gone, describe(what, [name], host), "the removal")
     print(said(name, home, host, from_host, shared))
+    print(NOT_SHARED)
     return 0
 
 
@@ -444,17 +461,3 @@ def prune(where: Path, repo: Path) -> None:
     while where != repo and repo in where.parents and not any(where.iterdir()):
         where.rmdir()
         where = where.parent
-
-
-def listing() -> int:
-    """Print what is managed, marking the files this host overrides."""
-    repo, config = open_repo()
-    found = manifest.managed(repo, paths.hostname(config.hostname))
-    if not found:
-        print(NOTHING_MANAGED)
-        return 0
-    for item in found:
-        print(f"{'host' if item.host else '    '}  {item.name}")
-    hosts = sum(1 for item in found if item.host)
-    print(f"\n{len(found)} managed, {hosts} from this host's overlay")
-    return 0

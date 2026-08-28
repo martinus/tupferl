@@ -1,56 +1,80 @@
 # tupferl
 
 *Tupferl* is Austrian for "little dot" — as in *das i-Tüpferl*, the finishing
-touch. It keeps your dotfiles in one git repository and shares them between
-computers.
+touch.
 
-It is a simpler alternative to [chezmoi](https://www.chezmoi.io/): no template
-language, no name mangling, no hooks. One command does the daily work, and the
-one thing it does better is what happens when two computers changed the same
-file.
-
-Every *command* in those lines works today. The install does not yet —
-publishing to PyPI is milestone 7, so for now it is
-`pipx install git+https://github.com/martinus/tupferl`. See **Status**.
+**Your dotfiles in one git repository, shared between computers.** Edit them on
+whichever machine you are sitting at, run `tupferl sync`, and it merges — asking
+only about what it genuinely cannot decide.
 
 ```sh
 pipx install tupferl
 tupferl init git@github.com:me/dotfiles.git
 tupferl add ~/.bashrc ~/.gitconfig ~/.config/nvim
 tupferl sync
-# on the second computer:
-pipx install tupferl
-tupferl init git@github.com:me/dotfiles.git   # pulls everything
 ```
 
-**What tupferl stores, it stores in plaintext and pushes to your remote.**
-There is no encryption and none is planned — that is
-[the plan's](docs/plan.md) decision, not an omission. So `add` refuses a
-short list of names whose only job is to hold a credential —
-`.ssh/id_*`, `.aws/credentials`, `.netrc`, `.pgpass`, `.gnupg/*`, `*.pem`,
-`*.key` — and says so:
+On the next computer, one line — `init` runs the first sync itself:
 
-```
-$ tupferl add ~/.ssh/id_ed25519
-tupferl: /home/me/.ssh/id_ed25519 matches .ssh/id_*, and tupferl stores what
-it manages in plaintext and pushes it to your remote; add it with `--anyway`
-if that is what you want, or leave it unmanaged.
+```sh
+tupferl init git@github.com:me/dotfiles.git
 ```
 
-`tupferl add ~/.ssh` stores `config`, `known_hosts` and `id_*.pub` and skips
-the key. **That list is seven filenames, not a secret scanner** — it will not
-notice a token in `~/.config/some-app/settings.json`, and nothing here reads
-the contents of your files. If you need secrets in the repository, put
-something like `git-crypt` or `age` under it and use `--anyway`.
+> Every command above works today. The `pipx install` does not yet — PyPI is the
+> last milestone. For now: `pipx install git+https://github.com/martinus/tupferl`.
 
-## Status: milestone 6 of 7
+## Simple on purpose
 
-**All eight commands work.** Two computers can share dotfiles today:
-`tupferl sync` pulls, merges in both directions, commits and pushes, resolves
-everything it can without asking — and asks about the rest.
+No template language. No `dot_` prefix or name mangling. No hooks, no scripts,
+no secrets managers. `~/.bashrc` is stored as `.bashrc`, and that is the whole
+mapping.
 
-**When both computers changed the same lines, it asks.** One question per file,
-one keypress per answer:
+Six commands. Four act — `init`, `add`, `remove`, `sync`. `doctor` checks that
+this machine is set up. And `status` answers every question that only looks,
+because they are one walk of your files:
+
+```sh
+tupferl status              # what would change
+tupferl status --all        # every managed file, with its state
+tupferl status --diff       # the lines that differ
+```
+
+`--diff` goes through the pager git is already configured with, in git's own
+order — `GIT_PAGER`, `core.pager`, `$PAGER` — so a machine set up for
+[delta](https://github.com/dandavison/delta) needs nothing here. Only when
+there is a terminal to page: redirected, it is a plain unified diff with no
+colour of its own, so `tupferl status --diff | delta` works too.
+
+The conflict prompt's `[e]` reads git's editor the same way: `GIT_EDITOR`, then
+`core.editor`, then `$VISUAL` and `$EDITOR`. An `editor` in
+`.tupferl/config.toml` still wins, because that is the one you set for tupferl
+on purpose.
+
+**Copies, not symlinks.** The repository holds a copy of each file. Symlinks
+break with programs that rewrite their config, and a copy is what makes a real
+3-way merge possible.
+
+**Per-machine differences without templates.** A file under
+`.tupferl/hosts/<hostname>/` replaces the shared one on that machine. Whole
+files, no variables:
+
+```sh
+tupferl add --host ~/.gitconfig      # this machine gets its own version
+tupferl remove --host ~/.gitconfig   # …and stops having one
+```
+
+The override is committed and pushed like everything else, so a reinstall gets
+it back — but only the machine it is named for reads it.
+
+## Two-way, not generated
+
+Most dotfile managers build `$HOME` from a source directory: you edit the
+source, then apply. tupferl goes both ways, because it remembers — per machine —
+what that machine last agreed with the repository.
+
+That merge base is why `sync` can tell *you changed it* from *the other computer
+changed it* from *both did*, per file, without being told. Only the last case is
+a question:
 
 ```
 $ tupferl sync
@@ -67,212 +91,52 @@ $ tupferl sync
   [e] edit merged file   [d] show full diff   [s] skip
 ```
 
-`[b]` keeps both versions in turn, with no markers left behind. `[e]` opens the
-merged file — conflict markers and all — in whatever `editor` in
-`.tupferl/config.toml` names, else `$VISUAL`, else `$EDITOR`, and refuses a save
-that still has the markers in it. (The config first, because that file is the
-one you can commit; a setting that loses to an environment variable is one you
-cannot make stick.) `[s]` leaves both copies exactly as they were and reports the
-file at the end, which is also what a `sync` with nobody at the keyboard does:
+One question per file, one keypress per answer. `[b]` keeps both versions with
+no markers left behind; `[e]` opens `$EDITOR` on the merged file. `--ours`,
+`--theirs` and `--no-input` answer for you.
 
-```
-$ tupferl sync < /dev/null
-origin/main: already up to date
-conflict in .bashrc (1 to settle); both copies left as they are
+`tupferl status` says what the next sync would do, without doing it.
 
-1 file managed, 0 changed, 1 in conflict
-```
+## Plaintext, by decision
 
-**Every sync says what it did to the remote**, above the per-file list,
-because "is it on the other computer now?" is the question the command
-exists to answer: `origin/main: pushed`, `origin/main: took in 2 commits,
-and pushed`, or `origin/main: already up to date` on a quiet run.
+**What tupferl stores, it stores in plaintext and pushes to your remote.** There
+is no encryption and none is planned. So `add` refuses a short list of names
+whose only job is to hold a credential — `.ssh/id_*`, `.aws/credentials`,
+`.netrc`, `.pgpass`, `.gnupg/*`, `*.pem`, `*.key` — and says why. `--anyway`
+overrides it. `tupferl add ~/.ssh` stores `config`, `known_hosts` and `id_*.pub`
+and skips the private keys (`*.pub` is the half of a key pair meant to be
+shared).
 
-That exit status is 1, so a script notices. For scripts that want an answer
-rather than a report, `--ours` keeps this computer's version and `--theirs` the
-repository's, for every conflict, and both exit 0; `--no-input` is the skipping
-behaviour above, asked for explicitly. A stdin that is not a terminal is
-`--no-input` whether or not you said so — a sync on a timer must not block on a
-question nobody will see.
+## No dependencies
 
-**A conflict between two *commits* reaches the same prompt.** That happens when a
-computer has committed without pushing — `tupferl add` does exactly that — and
-the other pushes to the same lines meanwhile. Three shapes are still handed back
-to you rather than settled, because none of them is a disagreement about lines:
-a file one side deleted and the other edited, a path that is not a regular file
-on both sides, and whatever you skipped. Those say so, and `git -C <repo> pull`
-is the way out.
+On Python 3.11 and newer tupferl imports **nothing outside the standard
+library**. On 3.10 it installs exactly one thing — `tomli`, the library
+`tomllib` was taken from — so the single dependency is a backport of a stdlib
+module, and it disappears on the interpreters that ship it.
 
-**`tupferl status` says what the next sync will do, and changes nothing:**
-
-```
-$ tupferl status
-.aliases  changed on both, and they do not merge: 1 conflict to settle
-.bashrc   changed here; the next sync stores it
-.vimrc    changed in the repository; the next sync updates it
-
-origin/main is exactly what this computer has.
-3 files managed, 2 to change, 1 in conflict
-```
-
-It fetches — "what changed remotely" cannot be answered without asking the
-remote — and it does not merge, because merging is the modification it promises
-not to make. So when the remote is ahead it says the file lines are the picture
-*before* anything is pulled in, and counts what is waiting:
-
-```
-origin/main: 2 commits to pull, 1 to push.
-The lines above compare $HOME with this computer's copy of the repository, so
-they do not yet include what is waiting to be pulled.
-```
-
-A remote it cannot reach is a worse status, not an error: a laptop on a train
-still has a local half worth reading, and `status` is the command you run when
-something is already wrong.
-
-**`tupferl diff` shows the two copies**, all of them or one by name:
-
-```
-$ tupferl diff .bashrc
---- .bashrc (this computer)
-+++ .bashrc (the repository)
-@@ -1,3 +1,3 @@
- export EDITOR=nvim
--export PAGER=bat
-+export PAGER=less
-```
-
-`$HOME` is the `-` side, which is the other way round from `git diff` — both
-labels say which is which, and this is the same rendering the conflict prompt's
-`[d]` shows, so a file looks the same in both. A file that differs only by its
-executable bit says that instead of showing an empty diff, and one with a NUL
-byte in it reports both sizes rather than printing bytes at a terminal.
-
-**Before anything in `$HOME` is overwritten, a copy goes to
-`~/.local/state/tupferl/backup/<timestamp>/`**, and the last five syncs' worth
-are kept. The directory is created only by a run that actually backs something
-up: five empty ones would push the last real backup out of the window that
-exists to keep it.
-
-The design, the scope boundary and the build order are in
-[`docs/plan.md`](docs/plan.md). The working agreements for changing any of it
-are in [`CLAUDE.md`](CLAUDE.md).
-
-| milestone | what it adds | state |
-|---|---|---|
-| 1 | package skeleton, `doctor`, config loading, test infrastructure | **done** |
-| 2 | `init`, `add`, `remove`, `list` | **done** |
-| 3 | sync engine: snapshots, change detection, automatic merges | **done** |
-| 4 | 3-way merge and the interactive conflict prompt | **done** |
-| 5 | host overlays | **done** |
-| 6 | backups, error messages, `status` and `diff` | **done** |
-| 7 | PyPI packaging | |
-
-## How it works
-
-**Copies, not symlinks.** The repository holds a copy of each managed file and
-tupferl copies between it and `$HOME`. Symlinks break with programs that rewrite
-their config file, and a copy is what makes a real 3-way merge possible.
-
-**The repository mirrors `$HOME`.** `~/.bashrc` is stored as `.bashrc`. No
-`dot_` prefix, no name mangling — the mapping is the path.
-
-**Per-machine differences without templates.** A file in
-`.tupferl/hosts/<hostname>/` replaces the shared one on that host. Whole files
-only; no variables, no merging.
-
-```sh
-tupferl add --host ~/.gitconfig      # this machine gets its own version
-tupferl remove --host ~/.gitconfig   # …and stops having one
-```
-
-The shared file stays managed either way. Other computers *have* the override —
-it is committed and pushed like everything else, so a reinstall of this machine
-gets it back — but only the machine it is named for reads it; the rest keep
-using the shared version. `tupferl list` marks the files this machine
-overrides with `host`. After `remove --host`, the next sync
-copies the shared version back into `$HOME` (backing up what the override put
-there first). Plain `tupferl remove` is a different request: it takes the shared copy every
-other computer is using, along with this machine's override. (Another machine's
-override of the same name survives it, and that machine goes on syncing it —
-`remove` only ever touches the shared tree and the overlay of the host it runs
-on.)
-
-**Some files are refused, on purpose.** Symlinks, anything reached *through* a
-symlink, anything outside `$HOME`, sockets and devices, files over
-`max_file_size`, and tupferl's own repository. The first two matter most: a copy
-cannot represent a link, so following one would store what it points at — which
-is how a credentials file ends up committed under a name nobody would search
-for.
-
-**Conflicts are the point.** tupferl keeps a snapshot of every file as it was
-after the last successful sync, under `.tupferl/state/<hostname>/`, so it has a
-real merge base. `tupferl sync` compares three versions — your `$HOME`, the
-repository, and that snapshot — and resolves everything it safely can:
-
-| what changed | what happens |
-|---|---|
-| nothing | nothing |
-| only `$HOME` | the copy in the repository is updated and committed |
-| only the repository | your file is updated, after a backup |
-| both, in different places | a 3-way merge, applied without asking |
-| both, in the same place | one question, one keypress |
-
-Only the last row needs a person, and it is the only one that asks.
-
-**Nothing is overwritten without a copy.** Before `tupferl sync` replaces a file
-in `$HOME` it writes the old one to `~/.local/state/tupferl/backup/<timestamp>/`,
-and keeps the last five syncs' worth.
-
-**A managed file you deleted comes back.** `tupferl remove` is how you stop
-managing something (it leaves the file in `$HOME`); a file that is simply *gone*
-is far more likely to be an `rm`, a reinstall or a new machine, so sync restores
-it. Reading a missing file as "delete it everywhere" would let one mistake take
-a dotfile off every computer you own.
-
-## Decisions
-
-The plan left three questions open ([`docs/plan.md`](docs/plan.md) §9). They were
-decided in milestone 1:
-
-| question | answer | why |
-|---|---|---|
-| `argparse` or `click` | **`argparse`** | eight verbs and a handful of flags; the plan says prefer fewer dependencies |
-| snapshot storage | **plain copies** under `.tupferl/state/<hostname>/` | the plan sanctions it for v1, and content-addressing buys deduplication nobody has measured a need for |
-| merge implementation | **`git merge-file`** | git is a hard requirement already, and its 3-way merge is battle-tested where a hand-written one would be the most defect-dense file in the project |
-
-One thing diverges from the plan, and it is worth knowing before you write a
-config file. Plan §5 puts a `hostname` override in `.tupferl/config.toml` — but
-that file lives in the repository and is therefore *shared with every machine
-that clones it*, which is the opposite of what "this host is called work-laptop"
-means. So the key is honoured, and `TUPFERL_HOSTNAME` in the environment
-overrides it. A single-machine installation can use either; a second machine
-needs the environment variable.
+That is a supply chain of one package that goes to zero, and it is asserted
+rather than intended: `tests/test_packaging.py` reads every import in the
+package and every requirement in `pyproject.toml` and refuses to let the two
+disagree in either direction.
 
 ## Requirements
 
-- Python 3.10 or newer. On 3.10 the `tomli` backport is installed for you;
-  3.11+ uses the standard library's `tomllib`.
-- **git 2.25 or newer** on `PATH` (January 2020). The floor is
-  `git add --pathspec-from-file`, which tupferl uses so that adding tens of
-  thousands of files at once cannot exceed the kernel's argument limit.
-  `tupferl doctor` checks it and names the version it found.
-- Linux or macOS. Windows is explicitly out of scope for version 1.
+- Python 3.10+ (3.10 gets the `tomli` backport installed for you).
+- git 2.25+ on `PATH`. `tupferl doctor` checks it and names what it found.
+- Linux or macOS. Windows is out of scope for version 1.
 
 ## Development
 
 ```sh
 pip install -e '.[dev]'
-python -m tools.run_tests                 # the suite, sharded across cores
 ruff check . && ruff format --check . && mypy tupferl tests tools \
   && python -m tools.run_tests            # the preflight, exactly what CI runs
 ```
 
-`tools/` holds the test infrastructure — a parallel runner that refuses to call
-a partial run green, and a mutation harness that checks whether a test would
-notice its subject breaking. They were ported from
-[woswoar](https://github.com/martinus/woswoar) (Apache-2.0); see
-[`tools/README.md`](tools/README.md) for what changed and why each one exists.
+[`docs/plan.md`](docs/plan.md) is what this was built from, including what it
+deliberately does not do. `tools/` holds the test infrastructure — a runner that
+refuses to call a partial run green, and a mutation harness that checks whether
+a test would notice its subject breaking; see [`tools/README.md`](tools/README.md).
 
 ## Licence
 

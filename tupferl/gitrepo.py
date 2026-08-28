@@ -543,6 +543,33 @@ def push(repo: Path, remote: str, ref: str) -> Result:
 UNFINISHED = ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD")
 
 
+def configured_pager(repo: Path) -> str:
+    """`core.pager`, or `""` when git has none.
+
+    Here because this module is every call to git, and because *this* is the
+    point of reading it: a user who set `core.pager = delta` configured how they
+    read a diff, not how they read a git diff. Asking git rather than parsing
+    `~/.gitconfig` also gets the include directives, the system file and the
+    per-repository override for free -- all of which a hand-rolled reader would
+    get wrong on the machine that used them.
+    """
+    found = git(["config", "--get", "core.pager"], cwd=repo)
+    return found.out if found.ok else ""
+
+
+def configured_editor(repo: Path) -> str:
+    """`core.editor`, or `""` when git has none.
+
+    Beside `configured_pager` and for the same reason: someone who wrote
+    `core.editor = nvim` said how they edit text, not how they edit a commit
+    message. Asking git rather than reading `~/.gitconfig` gets the includes,
+    the system file and the per-repository override, which a hand-rolled reader
+    gets wrong exactly on the machine that used them.
+    """
+    found = git(["config", "--get", "core.editor"], cwd=repo)
+    return found.out if found.ok else ""
+
+
 def unfinished(repo: Path) -> str | None:
     """The name of the marker file for an operation left half-done, if any.
 

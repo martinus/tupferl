@@ -28,8 +28,17 @@ from tupferl.errors import TupferlError
 #: that is read but missing here is a test that runs against the real machine.
 ENV_KEYS = (
     "EDITOR",
+    # git's own, because tupferl now answers "which editor" and "which pager"
+    # the way git answers them -- see `conflicts.editor` and `inspection.pager`.
+    # Added the moment those reads did: this container has `GIT_EDITOR=true` set
+    # ambiently, and until they were listed here the sandbox left it in place,
+    # so five editor tests ran `true` instead of their own fixture and the
+    # suite reported the prompt accepting a file nobody had edited.
+    "GIT_EDITOR",
+    "GIT_PAGER",
     "HOME",
     "NO_COLOR",
+    "PAGER",
     "TUPFERL_DIR",
     "TUPFERL_HOSTNAME",
     "VISUAL",

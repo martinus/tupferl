@@ -51,6 +51,69 @@ START = "one\ntwo\nthree\nfour\nfive\n"
 CONTROL = "set number\nset expandtab\n"
 
 
+class TestTheThreeShapesOfOneVerb(support.TwoMachines):
+    """`status`, `--all` and `--diff` over one walk.
+
+    They were three verbs. Folding them is only worth anything if each shape
+    still answers its own question, so these are the assertions that would catch
+    the fold being done badly: the plain status still hides what has nothing to
+    report, `--all` still shows it *and* marks the overlay, `--diff` still shows
+    lines rather than a summary, and a path still narrows.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Not `.gitconfig`, which is where the sandbox keeps the git identity:
+        # overwriting it makes every commit fail with "unable to auto-detect
+        # email address", which CLAUDE.md records as its own gotcha.
+        self.first.write(".bashrc", "one\ntwo\n")
+        self.first.write(".inputrc", "set editing-mode vi\n")
+        for name in (".bashrc", ".inputrc"):
+            self.assertEqual(0, self.first.call("add", str(self.first.home / name)))
+        self.assertEqual(0, self.first.call("add", "--host", str(self.first.home / ".inputrc")))
+        self.first.write(".bashrc", "ONE\ntwo\n")
+
+    def said(self, *argv: str) -> str:
+        status, out = self.first.say(*argv)
+        self.assertEqual(0, status, out)
+        return out
+
+    def test_plain_status_names_only_what_has_something_to_report(self) -> None:
+        """The unchanged file is most files on most machines, and a status that
+        printed forty lines saying nothing happened would bury the one that
+        mattered."""
+        out = self.said("status")
+        self.assertIn(".bashrc", out)
+        self.assertNotIn(".inputrc", out)
+
+    def test_all_names_everything_and_marks_the_overlay(self) -> None:
+        """What `list` used to print, with each file's state beside it -- which
+        is the half `list` could not say."""
+        out = self.said("status", "--all")
+        overlay = next(line for line in out.splitlines() if ".inputrc" in line)
+        shared = next(line for line in out.splitlines() if ".bashrc" in line)
+        self.assertTrue(overlay.startswith("host"), overlay)
+        # The negative half, and without it a marker painted on *every* row
+        # passes: "is this file overridden here" is only an answer if it can
+        # come back no.
+        self.assertFalse(shared.startswith("host"), shared)
+        self.assertIn("unchanged", overlay)
+        self.assertIn("1 from this host's overlay", out)
+
+    def test_diff_shows_lines_rather_than_a_summary(self) -> None:
+        out = self.said("status", "--diff")
+        self.assertIn("--- .bashrc", out)
+        self.assertIn("-ONE", out)
+        self.assertNotIn("to change", out, "the summary line belongs to the other shape")
+
+    def test_a_path_narrows_both_shapes(self) -> None:
+        """One rule for the positional -- it limits what is shown -- rather than
+        a rule that depends on which flag is also present."""
+        self.assertNotIn(".inputrc", self.said("status", ".bashrc"))
+        self.assertIn("1 file managed", self.said("status", ".bashrc"))
+        self.assertIn("--- .bashrc", self.said("status", "--diff", ".bashrc"))
+
+
 class Machine(support.TwoMachines):
     """`machine-b` synced and holding two managed files, ready to diverge.
 

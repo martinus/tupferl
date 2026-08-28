@@ -23,7 +23,7 @@ from tupferl.__main__ import NOT_WIRED, build_parser, main
 #: Plan §4's table, which is the contract this file guards. Written out rather
 #: than taken from `PLANNED` plus `doctor`: a list derived from the code under
 #: test cannot notice the code losing a command.
-COMMANDS = ("init", "add", "remove", "sync", "status", "diff", "list", "doctor")
+COMMANDS = ("init", "add", "remove", "sync", "status", "doctor")
 
 #: The arguments each verb needs before argparse will let it through, so the
 #: tests below reach the command rather than a usage error. Only the verbs with
@@ -170,9 +170,30 @@ class TestTheFlags(unittest.TestCase):
         with support.quiet(), self.assertRaises(SystemExit):
             build_parser().parse_args(["sync", "--ours", "--theirs"])
 
-    def test_diff_takes_an_optional_path(self) -> None:
-        self.assertIsNone(self.parse(["diff"]).path)
-        self.assertEqual(".bashrc", self.parse(["diff", ".bashrc"]).path)
+    def test_status_takes_an_optional_path(self) -> None:
+        self.assertIsNone(self.parse(["status"]).path)
+        self.assertEqual(".bashrc", self.parse(["status", ".bashrc"]).path)
+        self.assertEqual(".bashrc", self.parse(["status", "--diff", ".bashrc"]).path)
+
+    def test_the_two_folded_verbs_are_flags_and_default_off(self) -> None:
+        """`diff` and `list` were their own commands until they were folded in:
+        all three read the same `sync.examine` walk, so they were three things
+        to learn about one answer. Asserted off by default, because a `status`
+        that showed every file or every diff without being asked would be the
+        fold done badly rather than done."""
+        plain = self.parse(["status"])
+        self.assertFalse(plain.all)
+        self.assertFalse(plain.diff)
+        self.assertTrue(self.parse(["status", "--all"]).all)
+        self.assertTrue(self.parse(["status", "--diff"]).diff)
+
+    def test_the_old_verbs_are_gone_rather_than_hidden(self) -> None:
+        """No aliases. A verb that still works but is absent from `--help` is a
+        third state -- neither supported nor removed -- and the whole point of
+        the fold is that there are six commands to learn."""
+        for gone in ("diff", "list"):
+            with self.subTest(command=gone), support.quiet(), self.assertRaises(SystemExit):
+                build_parser().parse_args([gone])
 
 
 class TestTheRealProcess(support.SandboxCase):
