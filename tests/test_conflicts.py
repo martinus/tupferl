@@ -1303,6 +1303,28 @@ class TestReviewingOneChange(Prompted):
         self.assertEqual(conflicts.SKIP, got)
         self.assertIn("end of input", self.out.getvalue())
 
+    def test_a_keypress_that_is_several_bytes_is_not_a_key(self) -> None:
+        """A press of Down is `\x1b[B`, and read as one answer it is not one.
+
+        `ask` has the same guard and the same test; this is `review`'s. It also
+        stops the *loop* being unbounded in the direction that matters: a
+        mutant that rejects every key spins for ever, so `deadline` above is
+        what makes this row an answer rather than a `BROKE`.
+
+        Echoed as a repr and not as itself -- the raw bytes would move the
+        cursor or clear the screen on their way out.
+        """
+        self.assertEqual(conflicts.LOCAL, self.review("\x1b[B" + conflicts.LOCAL))
+        said = self.out.getvalue()
+        self.assertIn("is not a key", said)
+        # The escape itself, spelled the way `repr` spells it. Not the whole
+        # sequence: the pty hands `B` back as `b`, which is a property of the
+        # terminal rather than of the prompt -- and `\\x1b` is the half that
+        # says the bytes were shown rather than sent to the screen, which is
+        # what the repr is for.
+        self.assertIn("\\x1b[", said, "the sequence was echoed raw")
+        self.assertNotIn("\x1b[", said.replace("\\x1b[", ""), "a raw escape reached the output")
+
     def test_a_key_from_the_other_prompt_re_asks(self) -> None:
         """`[b]` settles a conflict and means nothing here. One key, not a loop
         over both: the terminal is per-test, and a second `type()` reads the

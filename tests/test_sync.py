@@ -497,7 +497,18 @@ class TestBeingAskedBeforeAChangeIsStored(support.TwoMachines):
         self.first.write(MANAGED, "alpha EDITED\nbeta\n")
 
     def synced(self, keys: str | None = None, *args: str) -> tuple[int, str]:
-        return self.first.say("sync", *args, keys=keys)
+        """One sync, bounded well below the mutation harness's 30s alarm.
+
+        **The bound is the point, not a formality.** A mutant that makes
+        `review` reject every key loops for ever against a pty that never
+        reaches end of input, and the alarm then files the row `BROKE` -- which
+        is not a verdict, so the line it was on ends up guarded by nothing a
+        sweep can see. Four rows came back that way before this. `PATIENCE` is
+        5s against tests that take about one, which is CLAUDE.md's rule: above
+        the longest honest wait here and comfortably under the alarm.
+        """
+        with support.deadline(support.PATIENCE, f"the sync never finished on {keys!r}"):
+            return self.first.say("sync", *args, keys=keys)
 
     def test_l_stores_this_computers_version(self) -> None:
         status, said = self.synced("l")
