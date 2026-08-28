@@ -235,6 +235,10 @@
   "seen": 1,
   "why": "tools/verdict.py:429 in collect() -- returns `None` instead of `_unloadable(head)` -- same branch as `verdict.py:428`, and the caller reads an absent report as `broke` either way."
  },
+ "430e0c555d657ca4": {
+  "seen": 1,
+  "why": "tupferl/sync.py:722 in looked_at() -- the `if` is never taken. Equivalent: the guard is unreachable. `settle` calls this only when `pushes(action)`, which is true for `TO_REPO` alone, and `resolve` produces that only with both sides present -- so `stored is None or found is None` cannot fire. It is there because returning the outcome unchanged is what stays right if a later rule makes it reachable, where raising would turn a display decision into a failed sync."
+ },
  "4310c1dd349bcf5c": {
   "seen": 1,
   "why": "tools/mutate.py:209 -- `2` becomes `3` -- a test reaches this line and asserts nothing about it -- tools/mutate.py:1546 in run() -- `2` becomes `3`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
@@ -286,6 +290,10 @@
  "52ec3930250ffa26": {
   "seen": 1,
   "why": "tupferl/manage.py:242 in add() -- the `if` is always taken -- a real gap, and a narrow one: forcing the branch sends a *file* to `manifest.collect`, which walks it and yields nothing, so `add` on a single file would admit nothing at all. Nothing distinguishes it because every add test that passes a file also passes through `check`, which already recorded the name. Worth a test; it needs `collect`'s behaviour on a non-directory pinned first, which is a change to `manifest` rather than to a fixture."
+ },
+ "535f3d9de3961003": {
+  "seen": 1,
+  "why": "tupferl/sync.py:728 in looked_at() -- returns `None` instead of `reading.outcome`. Equivalent: the line is the body of the unreachable guard above. Nothing reaches it, so what it returns cannot be observed."
  },
  "53adeced17891419": {
   "seen": 1,
@@ -354,6 +362,10 @@
  "66149fff98eb7a7e": {
   "seen": 1,
   "why": "tools/mutate.py:2959 in main() -- the call to `_pidfile(args.json).write_text(...)` never happens -- a test reaches this line and asserts nothing about it -- tools/mutate.py:2721 in main() -- the call to `_pidfile(args.json).write_text(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08."
+ },
+ "6629a424e886570a": {
+  "seen": 1,
+  "why": "tupferl/sync.py:722 in looked_at() -- `or` becomes `and`. Equivalent, and for the same reason as the row above: neither operand is ever true, so `and` and `or` agree. A fixture that told them apart would have to construct a `TO_REPO` outcome with a side missing, which `resolve` will not produce -- it would be testing the test."
  },
  "6682fe441231f0e9": {
   "seen": 1,

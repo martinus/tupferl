@@ -1303,6 +1303,26 @@ class TestReviewingOneChange(Prompted):
         self.assertEqual(conflicts.SKIP, got)
         self.assertIn("end of input", self.out.getvalue())
 
+    def test_the_prompt_is_flushed_before_it_waits_for_a_key(self) -> None:
+        """Watch the call, because the thing that changed is the call.
+
+        A buffered stream can hold the question while `one_key` blocks on the
+        terminal, and the user is then looking at a cursor with no prompt above
+        it. Nothing a captured stream asserts can see that -- a `Spill` shows
+        the text either way -- which is why dropping the flush came back
+        `SURVIVED` on one sweep and `caught` on the next, on the same tree: the
+        catch was a timing accident. CLAUDE.md's ARG_MAX rule is the same shape
+        -- when the change is "this call happens", assert the call.
+        """
+        self.terminal.type(conflicts.LOCAL + support.FALLBACK)
+        flushed: list[int] = []
+        with (
+            mock.patch.object(self.out, "flush", lambda: flushed.append(1)),
+            support.deadline(support.PATIENCE, "the review never settled"),
+        ):
+            conflicts.review(one_change(), self.terminal.source, self.out)
+        self.assertEqual([1], flushed, "the prompt was not flushed before the read")
+
     def test_a_keypress_that_is_several_bytes_is_not_a_key(self) -> None:
         """A press of Down is `\x1b[B`, and read as one answer it is not one.
 
