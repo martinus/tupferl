@@ -106,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
     syncing.add_argument(
         "--no-input", action="store_true", help="never prompt; report conflicts and skip them"
     )
+    # Not in the group above. `--ours` and `--theirs` answer *conflicts*; this
+    # says whether one-sided changes are shown at all, which is a different
+    # question -- and `--theirs --auto` is a coherent thing to ask for even
+    # though `--theirs` already implies it.
+    syncing.add_argument(
+        "--auto",
+        action="store_true",
+        help="do not ask about each changed file; apply what the rules decide",
+    )
 
     # One verb for the three questions that only look. They were `status`,
     # `diff` and `list`, and all three read the same `sync.examine` walk -- so
@@ -141,7 +150,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "remove":
             return manage.remove(args.path, from_host=args.host)
         if args.command == "sync":
-            return sync.main(no_input=args.no_input, ours=args.ours, theirs=args.theirs)
+            return sync.main(
+                no_input=args.no_input, ours=args.ours, theirs=args.theirs, auto=args.auto
+            )
         if args.command == "status":
             # `getattr` for neither: argparse always sets both, and a default
             # reached through `getattr` is one that hides a parser that stopped

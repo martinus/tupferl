@@ -1190,3 +1190,175 @@ class TestWhatTheWeakFixturesMissed(Prompted):
             got = conflicts.ask(one_conflict(), io.StringIO(""), self.out)
         self.assertEqual(conflicts.SKIP, got.choice)
         self.assertIn("end of input", self.out.getvalue())
+
+
+def one_change(diff: str = "--- a\n+++ b\n-old\n+new\n") -> conflicts.Change:
+    """A file this computer changed, as `sync.looked_at` builds one."""
+    return conflicts.Change(PurePosixPath(".bashrc"), diff)
+
+
+class TestWhatTheReviewShows(unittest.TestCase):
+    """`happening` and `shown`: the two lines above the keys, as pure functions.
+
+    Unit tests because they *are* units, and because the sweep said so: driving
+    the whole prompt asserted the diff and the keys and never the sentence
+    between them, so `happening` returning `None` survived -- as did every
+    mutation of the cap in `shown`, which the end-to-end test could not see
+    because `[d]` prints the whole diff underneath it anyway.
+    """
+
+    def test_the_sentence_names_the_file_and_which_side_is_older(self) -> None:
+        said = conflicts.happening(one_change(), colour=False)
+        self.assertIn(".bashrc", said)
+        self.assertIn("you changed this here", said)
+        self.assertIn("the repository has the older copy", said)
+
+    def test_a_short_diff_is_shown_whole(self) -> None:
+        change = one_change("\n".join(f"line {n}" for n in range(conflicts.SHOWN_DIFF)))
+        self.assertEqual(change.diff, conflicts.shown(change))
+        self.assertNotIn("more line(s)", conflicts.shown(change))
+
+    def test_a_diff_exactly_at_the_cap_is_still_shown_whole(self) -> None:
+        """The boundary, which is where `<=` becoming `<` lives. One line either
+        side of it is the only thing that tells the two spellings apart."""
+        for count in (conflicts.SHOWN_DIFF - 1, conflicts.SHOWN_DIFF):
+            with self.subTest(count=count):
+                change = one_change("\n".join(f"line {n}" for n in range(count)))
+                self.assertEqual(change.diff, conflicts.shown(change))
+
+    def test_a_longer_diff_is_cut_and_says_how_much_was_left(self) -> None:
+        """The count is asserted, not just its presence: `len(lines) -
+        SHOWN_DIFF` becoming `+` still prints a number, and a test that only
+        looked for "more line(s)" passed for it."""
+        over = 7
+        change = one_change("\n".join(f"line {n}" for n in range(conflicts.SHOWN_DIFF + over)))
+        cut = conflicts.shown(change)
+        self.assertIn(f"and {over} more line(s)", cut)
+        self.assertIn(f"line {conflicts.SHOWN_DIFF - 1}", cut, "the kept part is wrong")
+        self.assertNotIn(f"line {conflicts.SHOWN_DIFF}", cut, "the slice kept too much")
+        self.assertEqual(
+            conflicts.SHOWN_DIFF + 1, len(cut.split("\n")), "the cut is the wrong size"
+        )
+
+
+class TestReviewingOneChange(Prompted):
+    """`review`: the same loop as `ask`, over three answers instead of five.
+
+    Driven through `Prompted`'s fake terminal rather than a real sync, for the
+    reason its own docstring gives -- and with `support.deadline`, which is what
+    turns a mutant that loops for ever into a fast failure the sweep can read.
+    Without it five rows here came back `BROKE`, which is not a verdict: the
+    harness's 30s alarm fired and the line each was on ended up guarded by
+    nothing a sweep could see. CLAUDE.md records that trap; this is it again.
+    """
+
+    def review(self, keys: str, diff: str | None = None) -> str:
+        self.terminal.type(keys + support.FALLBACK)
+        with support.deadline(support.PATIENCE, f"the review never settled on {keys!r}"):
+            change = one_change() if diff is None else one_change(diff)
+            return conflicts.review(change, self.terminal.source, self.out)
+
+    # One method per key rather than a loop over `REVIEWS`. `Prompted` builds
+    # one terminal per *test*, so a second `type()` in the same one appends to a
+    # stream that still holds the first call's `FALLBACK` -- and every answer
+    # after the first came back `[s]`.
+    def test_l_answers_with_this_computer(self) -> None:
+        self.assertEqual(conflicts.LOCAL, self.review(conflicts.LOCAL))
+
+    def test_r_answers_with_the_repository(self) -> None:
+        self.assertEqual(conflicts.REMOTE, self.review(conflicts.REMOTE))
+
+    def test_s_answers_with_skip(self) -> None:
+        self.assertEqual(conflicts.SKIP, self.review(conflicts.SKIP))
+
+    def test_every_key_on_offer_is_an_answer(self) -> None:
+        """The three above are `REVIEWS` spelled out, so this is what notices a
+        fourth being added to the tuple with nothing driving it."""
+        self.assertEqual((conflicts.LOCAL, conflicts.REMOTE, conflicts.SKIP), conflicts.REVIEWS)
+
+    def test_the_question_the_diff_and_the_keys_are_all_printed(self) -> None:
+        """Three prints, three assertions. Each survived on its own before this:
+        the end-to-end test asserted the diff and the keys, so dropping the
+        sentence between them changed nothing it looked at."""
+        self.review("l")
+        said = self.out.getvalue()
+        self.assertIn("you changed this here", said, "the sentence is gone")
+        self.assertIn("-old", said, "the diff is gone")
+        self.assertIn("[l] store your version", said, "the keys are gone")
+
+    def test_the_key_is_echoed(self) -> None:
+        """A terminal in raw mode does not echo, so the prompt does it. Without
+        the echo the screen shows a question that was answered by nothing
+        visible -- and `[s]` and `[l]` then look identical in a transcript."""
+        self.review("s")
+        self.assertIn("\ns\n", self.out.getvalue(), "the keypress was not echoed")
+
+    def test_end_of_input_is_a_skip(self) -> None:
+        """The answer that cannot lose anything, for a stream with nothing left.
+        `ask` has the same rule and the same test beside it -- and the guard
+        makes `review` loop for ever without it, so `deadline` is what keeps
+        this a failure rather than a hang."""
+        with support.deadline(support.PATIENCE, "review never settled at end of input"):
+            got = conflicts.review(one_change(), io.StringIO(""), self.out)
+        self.assertEqual(conflicts.SKIP, got)
+        self.assertIn("end of input", self.out.getvalue())
+
+    def test_the_prompt_is_flushed_before_it_waits_for_a_key(self) -> None:
+        """Watch the call, because the thing that changed is the call.
+
+        A buffered stream can hold the question while `one_key` blocks on the
+        terminal, and the user is then looking at a cursor with no prompt above
+        it. Nothing a captured stream asserts can see that -- a `Spill` shows
+        the text either way -- which is why dropping the flush came back
+        `SURVIVED` on one sweep and `caught` on the next, on the same tree: the
+        catch was a timing accident. CLAUDE.md's ARG_MAX rule is the same shape
+        -- when the change is "this call happens", assert the call.
+        """
+        self.terminal.type(conflicts.LOCAL + support.FALLBACK)
+        flushed: list[int] = []
+        with (
+            mock.patch.object(self.out, "flush", lambda: flushed.append(1)),
+            support.deadline(support.PATIENCE, "the review never settled"),
+        ):
+            conflicts.review(one_change(), self.terminal.source, self.out)
+        self.assertEqual([1], flushed, "the prompt was not flushed before the read")
+
+    def test_a_keypress_that_is_several_bytes_is_not_a_key(self) -> None:
+        """A press of Down is `\x1b[B`, and read as one answer it is not one.
+
+        `ask` has the same guard and the same test; this is `review`'s. It also
+        stops the *loop* being unbounded in the direction that matters: a
+        mutant that rejects every key spins for ever, so `deadline` above is
+        what makes this row an answer rather than a `BROKE`.
+
+        Echoed as a repr and not as itself -- the raw bytes would move the
+        cursor or clear the screen on their way out.
+        """
+        self.assertEqual(conflicts.LOCAL, self.review("\x1b[B" + conflicts.LOCAL))
+        said = self.out.getvalue()
+        self.assertIn("is not a key", said)
+        # The escape itself, spelled the way `repr` spells it. Not the whole
+        # sequence: the pty hands `B` back as `b`, which is a property of the
+        # terminal rather than of the prompt -- and `\\x1b` is the half that
+        # says the bytes were shown rather than sent to the screen, which is
+        # what the repr is for.
+        self.assertIn("\\x1b[", said, "the sequence was echoed raw")
+        self.assertNotIn("\x1b[", said.replace("\\x1b[", ""), "a raw escape reached the output")
+
+    def test_a_key_from_the_other_prompt_re_asks(self) -> None:
+        """`[b]` settles a conflict and means nothing here. One key, not a loop
+        over both: the terminal is per-test, and a second `type()` reads the
+        first call's `FALLBACK` back."""
+        self.assertEqual(conflicts.LOCAL, self.review(conflicts.BOTH + conflicts.LOCAL))
+        self.assertIn("is not one of the keys", self.out.getvalue())
+
+    def test_the_editor_key_is_not_one_of_these_either(self) -> None:
+        self.assertEqual(conflicts.LOCAL, self.review(conflicts.EDIT + conflicts.LOCAL))
+        self.assertIn("is not one of the keys", self.out.getvalue())
+
+    def test_d_prints_the_whole_diff_and_asks_again(self) -> None:
+        long = "\n".join(f"line {n}" for n in range(conflicts.SHOWN_DIFF + 5))
+        self.assertEqual(conflicts.SKIP, self.review(conflicts.DIFF + conflicts.SKIP, long))
+        said = self.out.getvalue()
+        self.assertIn(f"line {conflicts.SHOWN_DIFF + 4}", said, "[d] did not show the rest")
+        self.assertIn("more line(s)", said, "the first display was not capped")

@@ -4,8 +4,9 @@
 touch.
 
 **Your dotfiles in one git repository, shared between computers.** Edit them on
-whichever machine you are sitting at, run `tupferl sync`, and it merges — asking
-only about what it genuinely cannot decide.
+whichever machine you are sitting at, run `tupferl sync`, and it shows you what
+you changed before it stores anything. `--auto` if you would rather it did not
+ask.
 
 ```sh
 pipx install tupferl
@@ -90,8 +91,33 @@ source, then apply. tupferl goes both ways, because it remembers — per machine
 what that machine last agreed with the repository.
 
 That merge base is why `sync` can tell *you changed it* from *the other computer
-changed it* from *both did*, per file, without being told. Only the last case is
-a question:
+changed it* from *both did*, per file, without being told.
+
+A change **you** made is shown and put to you before it is stored:
+
+```
+$ tupferl sync
+
+.bashrc: you changed this here; the repository has the older copy.
+
+--- .bashrc (the repository)
++++ .bashrc (this computer)
+@@ -1,3 +1,3 @@
+-export EDITOR=vim
++export EDITOR=nvim
+
+  [l] store your version   [r] discard it, take the repository's
+  [d] show the whole diff   [s] skip
+```
+
+`[r]` is the undo: your edit goes, the repository's copy comes back. A change
+the *other* computer made is applied without asking — `tupferl status --diff`
+shows what is waiting before you sync. `--auto` skips the question entirely,
+and so do `--ours`, `--theirs`, `--no-input`, and any run whose input is not a
+terminal, so `init`, cron jobs and CI are unaffected.
+
+When **both** sides changed the same file, that is the one case tupferl cannot
+decide, and it asks differently:
 
 ```
 $ tupferl sync

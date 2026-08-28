@@ -90,6 +90,13 @@ REFUSED = "refused"
 #: `[s] skip`, is `CONFLICT`: skipping is the conflict standing, so it needs no
 #: action of its own -- and a second constant with the same rule and the same
 #: report line is one that can drift from it.
+#: The two answers the per-file review adds, for a change that is *not* a
+#: conflict. `[r]` on a file this computer edited means "put the repository's
+#: copy back", which is the undo tupferl had no command for -- and `[s]` leaves
+#: a one-sided change where it is.
+REVERTED = "reverted"
+LEFT = "left alone"
+
 KEPT_LOCAL = "kept local"
 KEPT_REMOTE = "kept remote"
 KEPT_BOTH = "kept both"
@@ -133,6 +140,12 @@ RULES: dict[str, Rule] = {
     # optimisation: `to_home` is also what takes the backup, and backing up a
     # file that is about to be rewritten with its own contents would push a real
     # backup out of plan §5's window of five.
+    # `needs_user` on `LEFT` for `CONFLICT`'s reason rather than by analogy with
+    # it: the run ends with something the user was asked about still undone, and
+    # an exit status of 0 there would tell a script everything is synced. It is
+    # *not* counted as a conflict by the report, which counts `sides`.
+    REVERTED: Rule(to_repo=False, to_home=True, needs_user=False),
+    LEFT: Rule(to_repo=False, to_home=False, needs_user=True),
     KEPT_LOCAL: Rule(to_repo=True, to_home=False, needs_user=False),
     KEPT_REMOTE: Rule(to_repo=False, to_home=True, needs_user=False),
     KEPT_BOTH: Rule(to_repo=True, to_home=True, needs_user=False),
@@ -169,6 +182,22 @@ def changed(outcome: Outcome) -> bool:
     """Whether this outcome put new bytes anywhere the user can see."""
     rule = RULES[outcome.action]
     return rule.to_repo or rule.to_home
+
+
+def pushes(action: str) -> bool:
+    """Whether this action replaces the repository's copy and not `$HOME`'s.
+
+    One definition, because two readers ask it and would otherwise each spell it
+    out: `inspection.rendered` puts the replaced side on a diff's `-`, and the
+    per-file review says which way the file is about to travel. A diff and a
+    prompt disagreeing about the direction of the same file is the worst of the
+    three possible bugs here, because each on its own looks right.
+
+    `and not to_repo`'s absence is the point: a clean merge writes *both* sides,
+    so `to_repo` alone is true for it and would call a merge a push.
+    """
+    rule = RULES[action]
+    return rule.to_repo and not rule.to_home
 
 
 class Outcome(NamedTuple):
@@ -673,7 +702,52 @@ def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
         )
 
 
-def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> list[Outcome]:
+def looked_at(reading: Reading, reviewer: conflicts.Reviewer) -> Outcome:
+    """One file's outcome after the person was shown it and asked.
+
+    Only ever called for a change *this computer* made -- see the guard in
+    `settle` for why incoming ones are left out. So `reverse=True` is not a
+    decision taken here twice: it is what `pushes` already said, and the diff
+    the prompt shows is the one `status --diff` would have shown.
+
+    A table, for `RULES`' reason: three answers, one action each, and a row
+    that is missing is a `KeyError` rather than a silent fall-through.
+
+    `[r]` is `REVERTED`: the repository's copy goes back into `$HOME` and the
+    edit is gone. It is the one answer here that destroys something -- the undo
+    tupferl otherwise has no command for -- which is why `offers` spells it out
+    rather than calling it "keep remote".
+    """
+    stored, found = reading.stored, reading.found
+    if stored is None or found is None:
+        # Neither can be `None` for an outbound change -- `pushes` is only true
+        # for `TO_REPO`, which needs both sides -- so this is unreachable rather
+        # than a case being skipped. Returning the outcome unchanged is what
+        # stays right if a later rule makes it reachable, where raising would
+        # turn a display decision into a failed sync.
+        return reading.outcome
+    diff = merge.unified(str(reading.name), found.data, stored.data, reverse=True)
+    # **The bytes as well as the action.** `resolve` set `blob` to what `TO_REPO`
+    # would write, which is `$HOME`'s copy -- so replacing the action alone made
+    # `[r]` write `$HOME` back over itself and report `reverted`. A no-op that
+    # says it undid something, found by pressing the key rather than by reading
+    # the code: the report was right about what it meant to do and wrong about
+    # what it did, which is the pair no unit test of the mapping would separate.
+    became, blob = {
+        conflicts.LOCAL: (TO_REPO, found),
+        conflicts.REMOTE: (REVERTED, stored),
+        conflicts.SKIP: (LEFT, None),
+    }[reviewer(conflicts.Change(reading.name, diff))]
+    return reading.outcome._replace(action=became, blob=blob)
+
+
+def settle(
+    repo: Path,
+    home: Path,
+    host: str,
+    settler: conflicts.Settler,
+    reviewer: conflicts.Reviewer | None = None,
+) -> list[Outcome]:
     """Resolve every managed file, write what was decided, and commit it.
 
     `settler` answers the files no rule could decide -- the prompt, or one of
@@ -703,6 +777,18 @@ def settle(repo: Path, home: Path, host: str, settler: conflicts.Settler) -> lis
         outcome = reading.outcome
         if outcome.sides is not None:
             outcome = settled(outcome.sides, settler(outcome.sides))
+        elif reviewer is not None and pushes(outcome.action):
+            # **Only what this computer changed.** An unchanged file is most
+            # files on most runs and has nothing to ask about; an *incoming*
+            # one is deliberately left out, and not for want of trying. A
+            # commit-level conflict the user has just settled at the `[l]/[r]`
+            # prompt arrives here as an ordinary inbound change on the second
+            # pass, so reviewing those asked twice about one file in one run --
+            # and telling the two apart means mapping git's paths in
+            # `reconcile` back to managed names, which is a lot of machinery
+            # for a question already answered. `status --diff` shows what is
+            # coming, correctly oriented, before the sync runs.
+            outcome = looked_at(reading, reviewer)
         try:
             wrote = apply(
                 outcome, reading.target, reading.where, reading.snapshot, reading.found, backups
@@ -847,13 +933,23 @@ def report(outcomes: list[Outcome]) -> str:
 
     unsettled = sum(1 for outcome in outcomes if outcome.sides is not None)
     moved = sum(1 for outcome in outcomes if changed(outcome))
-    lines.append(
-        f"\n{manage.count(len(outcomes))} managed, {moved} changed, {unsettled} in conflict"
-    )
+    summary = f"{manage.count(len(outcomes))} managed, {moved} changed, {unsettled} in conflict"
+    # **Only when there are any**, so a run nobody skipped anything on reads
+    # exactly as it did before. A skipped file is neither changed nor in
+    # conflict, so without this the summary said "0 changed, 0 in conflict"
+    # over an exit status of 1 -- a line that reads as "nothing outstanding"
+    # under a status meaning the opposite, and the per-file line above is easy
+    # to scroll past on a run with forty files in it.
+    left = sum(1 for outcome in outcomes if outcome.action == LEFT)
+    if left:
+        summary += f", {left} left alone"
+    lines.append(f"\n{summary}")
     return "\n".join(lines)
 
 
-def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> int:
+def main(
+    no_input: bool = False, ours: bool = False, theirs: bool = False, auto: bool = False
+) -> int:
     """Pull, resolve, commit, push. Plan §3.5's one command.
 
     The three flags are `conflicts.answering`'s subject, not this function's:
@@ -878,10 +974,14 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
         )
 
     settler = conflicts.answering(no_input, ours, theirs, repo)
+    # `None` on a run that has nobody to ask or has already said what it wants,
+    # and then `settle` keeps what `resolve` decided -- which is what `sync` did
+    # for every one-sided change before this existed.
+    reviewer = conflicts.reviewing(auto, ours, theirs, no_input)
     remote = gitrepo.first_remote(repo)
     branch = gitrepo.branch(repo)
     if remote is None:
-        outcomes = settle(repo, home, host, settler)
+        outcomes = settle(repo, home, host, settler, reviewer)
         print(f"no remote configured, so nothing was pushed; {repo} is a git repository")
     else:
         if branch is None:
@@ -890,7 +990,7 @@ def main(no_input: bool = False, ours: bool = False, theirs: bool = False) -> in
                 f"run `git -C {repo} checkout main`."
             )
         came = integrate(repo, remote, branch, host, settler)
-        outcomes, moved = deliver(repo, home, host, remote, branch, settler)
+        outcomes, moved = deliver(repo, home, host, remote, branch, settler, reviewer)
         print(crossed(f"{remote}/{branch}", Traffic(came + moved.pulled, moved.pushed)))
 
     print(report(outcomes))
@@ -904,6 +1004,7 @@ def deliver(
     remote: str,
     branch: str,
     settler: conflicts.Settler,
+    reviewer: conflicts.Reviewer | None = None,
 ) -> tuple[list[Outcome], Traffic]:
     """Push, and plan §3.4 step 5: if the remote moved, pull, redo, push again.
 
@@ -927,7 +1028,7 @@ def deliver(
     the repository's copy, so it is a different question from the one they
     declined, and a `[s]` that stuck would hide it.
     """
-    outcomes = settle(repo, home, host, settler)
+    outcomes = settle(repo, home, host, settler, reviewer)
     there = f"{remote}/{branch}"
     pulled = 0
     for _ in range(ATTEMPTS):
@@ -951,7 +1052,7 @@ def deliver(
                 f"could not push to {remote}: {gitrepo.reason(pushed)}; "
                 f"run `tupferl doctor` to check the remote."
             )
-        outcomes = settle(repo, home, host, settler)
+        outcomes = settle(repo, home, host, settler, reviewer)
     raise TupferlError(
         f"{remote} moved again on each of {ATTEMPTS} attempts, so nothing was pushed; "
         f"try again when it is quieter."

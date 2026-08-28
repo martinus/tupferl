@@ -285,9 +285,16 @@ class ChoiceMachine(RuleBasedStateMachine):
 
         One key is typed at each. There is one managed file, so at most one
         question, and a key nothing asks for is simply never read.
+
+        **`--auto`, because the subject here is the conflict prompt.** Since the
+        per-file review, a one-sided edit asks its own question first and would
+        eat the key meant for the conflict -- `r` at the review means "discard
+        my edit", so the model's "this line was chosen" then fails on a file
+        that was correctly reverted. `--auto` turns off exactly the prompt this
+        machine is not about, and leaves the one it is.
         """
         for who in (0, 1, 0):
-            assert self.machines[who].call("sync", keys=choice) == 0
+            assert self.machines[who].call("sync", "--auto", keys=choice) == 0
 
         texts = [machine.read(MANAGED) for machine in self.machines]
         assert texts[0] == texts[1], "the two computers did not converge"
