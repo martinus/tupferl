@@ -1017,6 +1017,32 @@ class TestReadingARealDiff(unittest.TestCase):
         self.assertEqual(found, {"tupferl/thing.py": {2, 3}})
         self.assertNotIn("tupferl/later.py", found)
 
+    def test_a_base_that_does_not_exist_is_refused(self) -> None:
+        """**A typo'd `--base` must not read as "nothing changed".**
+
+        `_git` raises on a non-zero status, and without that check a failed
+        `git diff` hands back its empty stdout -- so `--base mian` produces an
+        empty table, the header says "0 file(s), 0 changed lines -> 0 mutants",
+        and the sweep reports every row caught because there are none. That is
+        this repository's flagship failure shape, reached by one keystroke.
+
+        `rev-parse --verify` fires first so the message names the ref rather
+        than the diff invocation it would otherwise fail inside.
+        """
+        with self.assertRaises(SystemExit) as raised:
+            mutants.changed_lines("no-such-ref", self.root)
+        self.assertIn("no-such-ref", str(raised.exception))
+
+    def test_it_refuses_to_run_from_below_the_repository_root(self) -> None:
+        """Paths in a diff are relative to the top level, so a run from a
+        subdirectory reads every one of them against the wrong place -- and
+        `mutable()` then rejects the lot, giving an empty table rather than an
+        error."""
+        below = self.root / "tupferl"
+        with self.assertRaises(SystemExit) as raised:
+            mutants.changed_lines("main", below)
+        self.assertIn("repository root", str(raised.exception))
+
     def test_an_untracked_file_counts_entirely(self) -> None:
         """`git diff` cannot see it, and "no mutants for the new module" reads
         exactly like "the new module is covered"."""
