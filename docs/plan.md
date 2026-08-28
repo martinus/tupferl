@@ -171,7 +171,7 @@ Keep the command set this small:
 | `tupferl add <path>...` | Start managing files. `--host` puts them in the host overlay. |
 | `tupferl remove <path>` | Stop managing a file. Keeps the file in `$HOME`. |
 | `tupferl sync` | Pull, merge both directions, resolve, commit, push. The main command. |
-| `tupferl status [path] [--all] [--diff]` | What the next sync would do. Never modifies anything. `--all` shows every managed file rather than only the changed ones, marking host-overlay ones; `--diff` shows the lines that differ. Was three verbs — `status`, `list` and `diff` — until they were folded: all three read the same walk. |
+| `tupferl status [path] [--all] [--diff]` | What the next sync would do. Never modifies anything. `--all` shows every managed file rather than only the changed ones, marking host-overlay ones; `--diff` shows the lines the next sync will change, oriented by what it will write: for a file being pushed the repository is on the `-` side, for one being pulled `$HOME` is, and where both sides changed it says so rather than implying a direction it does not have. Was three verbs — `status`, `list` and `diff` — until they were folded: all three read the same walk. |
 | `tupferl doctor` | Check git presence, remote access, permissions, dangling state. |
 
 No other commands in version 1.

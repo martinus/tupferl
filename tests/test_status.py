@@ -103,8 +103,46 @@ class TestTheThreeShapesOfOneVerb(support.TwoMachines):
     def test_diff_shows_lines_rather_than_a_summary(self) -> None:
         out = self.said("status", "--diff")
         self.assertIn("--- .bashrc", out)
-        self.assertIn("-ONE", out)
+        # `+ONE`, not `-ONE`. Only `$HOME` changed here, so the next sync pushes
+        # it and the *repository* is the side being replaced -- see
+        # `inspection.rendered`. This assertion read `-ONE` until the
+        # orientation was fixed, which is what a test written against the bug
+        # looks like from the inside.
+        self.assertIn("+ONE", out)
         self.assertNotIn("to change", out, "the summary line belongs to the other shape")
+
+    def test_the_two_directions_are_oriented_oppositely_in_one_run(self) -> None:
+        """The plumbing, which the unit tests of `rendered` cannot reach.
+
+        They call it with an action; `shows` is what has to pass the file's
+        *own* action through, and a `shows` that handed over a constant would
+        satisfy every one of them. Two files in one run, going opposite ways,
+        is the fixture that cannot be satisfied that way -- one output, two
+        orientations, so no single hard-coded answer is right for both.
+
+        `.bashrc` is edited here and pushed. `.inputrc`'s repository copy is
+        edited instead, which is what a fetched change looks like before it is
+        applied: the repository is ahead and `$HOME` has not moved.
+        """
+        # `stored()`, not a path built here: it goes through `manifest.location`,
+        # so a change to the overlay layout moves this test with it rather than
+        # leaving it asserting about a path nothing writes any more.
+        stored = self.first.stored(".inputrc", host=True)
+        self.assertTrue(stored.is_file(), f"the overlay fixture moved: {stored}")
+        stored.write_text("set editing-mode emacs\n", encoding="utf-8")
+        support.git(["commit", "-am", "the repository moved on"], self.first.repo, self.first.env)
+
+        out = self.said("status", "--diff")
+        # Asserted against the whole output rather than a slice of it: the two
+        # names disambiguate on their own, and slicing from `out.index(name)`
+        # cut off the `--- ` the assertion was about.
+        #
+        # `.bashrc` goes out, so the repository's copy is what disappears.
+        self.assertIn("--- .bashrc (the repository)", out)
+        self.assertIn("+ONE", out)
+        # `.inputrc` comes in, so this computer's copy is what disappears.
+        self.assertIn("--- .inputrc (this computer)", out)
+        self.assertIn("+set editing-mode emacs", out)
 
     def test_a_path_narrows_both_shapes(self) -> None:
         """One rule for the positional -- it limits what is shown -- rather than
