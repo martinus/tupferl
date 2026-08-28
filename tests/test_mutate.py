@@ -1687,6 +1687,41 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(TestWhichFileASweepReachesFirst)
         self.assertIn("2 file(s)", said)
         self.assertIn(f"-> {len(table)} mutants", said)
 
+    def imported(self) -> Path:
+        """The repository above, plus a test module that imports one of the two.
+
+        Without it every file takes the whole-suite fallback, so `targets_for(
+        ...) or WHOLE_SUITE` and the notice beside it are unobservable: the
+        fallback is what the fixture produces either way. This is the shape
+        CLAUDE.md calls two symmetric inputs -- both files answer the same, so
+        which branch ran is not visible.
+        """
+        box = self.repository()
+        (box / "tests").mkdir()
+        (box / "tests" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "tests" / "test_wee.py").write_text(
+            "from tupferl import wee  # noqa: F401\n", encoding="utf-8"
+        )
+        return box
+
+    def test_a_row_runs_the_tests_of_whatever_imports_its_file(self) -> None:
+        """`targets_for(...) or WHOLE_SUITE`. Read as `and`, every row that has
+        a real target gets the empty selection instead -- which *is* the
+        whole-suite fallback, so the sweep still finishes and takes many times
+        as long for no extra signal."""
+        table, _ = self.table(self.imported())
+        by_path = {row.path: row.tests for row in table}
+        self.assertEqual("tests.test_wee", by_path["tupferl/wee.py"])
+        self.assertEqual(mutate.WHOLE_SUITE, by_path["tupferl/many.py"])
+
+    def test_the_notice_is_only_for_the_file_nothing_imports(self) -> None:
+        """The other half of the branch. Printed for every file, the line stops
+        distinguishing the slow rows from the ordinary ones -- and it exists
+        only to make that difference visible before the wait."""
+        _, said = self.table(self.imported())
+        self.assertIn("nothing imports tupferl/many.py", said)
+        self.assertNotIn("nothing imports tupferl/wee.py", said)
+
     def test_a_file_nothing_imports_says_its_rows_run_the_whole_suite(self) -> None:
         """`targets_for` finds no importer, so the rows fall back to the whole
         suite -- which is much slower and is a fact about the *tree*, not about
@@ -1708,11 +1743,25 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(TestWhichFileASweepReachesFirst)
         right either way. Per file, because which file lost its rows is what
         decides whether the cap mattered."""
         box = self.repository()
+        whole, _ = self.table(box)
         table, said = self.table(box, limit=2)
         self.assertEqual(2, len(table))
         self.assertIn("--limit 2", said)
-        self.assertIn("not run", said)
-        self.assertIn("tupferl/many.py", said)
+        self.assertIn(f"{len(whole) - 2} not run", said)
+        # **The counts, not just the names.** `share[path] = share.get(path, 0)
+        # + 1` is six mutations' worth of arithmetic, and a report naming the
+        # right files with the wrong numbers reads exactly like a right one.
+        #
+        # The expectation is derived from the *total*, not from a copy of how
+        # `cap` spreads the limit across files -- which is a rule of its own,
+        # with its own tests, and modelling it here would be a test that agrees
+        # with the code because it repeats it. Whatever the split, the parts
+        # have to add up to what was dropped and be listed in a settled order.
+        listed = said.split("not run (", 1)[1].split(").", 1)[0]
+        pairs = [entry.rsplit(" ", 1) for entry in listed.split(", ")]
+        self.assertEqual(2, len(pairs), "one file cannot show the order of the list")
+        self.assertEqual(sorted(path for path, _ in pairs), [path for path, _ in pairs])
+        self.assertEqual(len(whole) - 2, sum(int(count) for _, count in pairs))
 
     def test_an_uncapped_table_says_nothing_about_a_cap(self) -> None:
         """The other half. A line that always appears is one nobody reads."""
@@ -3018,6 +3067,98 @@ class TestWhenARecordedSweepGoesRed(unittest.TestCase):
         report = self.report("caught")
         stale = mutate.Survivors([], [], ["deadbeefdeadbeef"])
         self.assertEqual(0, mutate._status(report, stale))
+
+
+class TestTheSmallDecisionsNothingAsked(unittest.TestCase):
+    """Five one-line judgements, each reached by every run and asserted by none.
+
+    They are here together because they have nothing in common except that: a
+    mixed report's verdict, what identifies a mutation across runs, which of two
+    ways a row is applied, and the sweep of stale bytecode. Each was found by
+    generating every mutation its function admits rather than by reading.
+    """
+
+    def report(self, *outcomes: mutate.Outcome) -> mutate.Report:
+        return mutate.Report(
+            [
+                mutate.Result(
+                    Mutation(f"row {n}", "tupferl/sync.py", "a", "b", "t"),
+                    mutate.Verdict(outcome, ""),
+                )
+                for n, outcome in enumerate(outcomes)
+            ]
+        )
+
+    def test_one_survivor_among_many_caught_is_not_a_clean_report(self) -> None:
+        """`all`, never `any`. Every existing test of `clean` used a report
+        whose rows agreed, and on those the two are the same function -- so a
+        sweep with one survivor in a hundred reported itself complete."""
+        self.assertTrue(self.report("caught", "caught").clean)
+        self.assertFalse(self.report("caught", "survived").clean)
+        self.assertFalse(self.report("survived", "caught").clean)
+
+    def test_a_key_is_short_enough_to_read_in_a_diff(self) -> None:
+        """The record and the killers cache are both keyed by this and both are
+        reviewed by a person. A full sha256 is four times the width and makes a
+        row wrap, which is the whole reason for the slice."""
+        key = mutate._key(Mutation("a", "tupferl/sync.py", "x", "y", "t"))
+        self.assertEqual(16, len(key))
+
+    def test_a_key_ignores_where_the_line_is_and_notices_what_it_says(self) -> None:
+        """The property the disposition record rests on: a row keeps its key
+        when the code above it moves, and gets a new one when the edit itself
+        changes."""
+        base = Mutation("a", "tupferl/sync.py", "x", "y", "t", operator="branch")
+        self.assertEqual(
+            mutate._key(base),
+            mutate._key(base._replace(label="a different label", tests="other", span=(9, 9))),
+        )
+        for changed in (
+            base._replace(path="tupferl/merge.py"),
+            base._replace(old="z"),
+            base._replace(new="z"),
+            base._replace(operator="arith"),
+        ):
+            self.assertNotEqual(mutate._key(base), mutate._key(changed), changed)
+
+    def test_a_row_with_a_span_edits_only_there(self) -> None:
+        """The two ways a row is applied, and the reason there are two: a
+        generated `old` is usually *not* unique -- `if not path.exists():`
+        appears many times -- so it carries the offsets it applies at. Applied
+        by `replace` instead, one row would edit every occurrence in the file.
+        """
+        text = "if a:\n    pass\nif a:\n    pass\n"
+        # Computed, never written out: a hand-counted offset that drifts by one
+        # produces a plausible-looking file and a test that asserts it.
+        second = text.index("if a:", 1)
+        row = Mutation(
+            "second only", "x.py", "if a:", "if True:", "t", span=(second, second + len("if a:"))
+        )
+        self.assertEqual("if a:\n    pass\nif True:\n    pass\n", mutate._applied(text, row))
+
+    def test_a_row_without_a_span_replaces_its_text(self) -> None:
+        """The hand-written shape, whose `old` `check` has already refused
+        unless it appears exactly once."""
+        row = Mutation("the only one", "x.py", "if a:", "if True:", "t")
+        self.assertEqual("if True:\n    pass\n", mutate._applied("if a:\n    pass\n", row))
+
+    def test_stale_bytecode_is_swept_out_of_a_sandbox(self) -> None:
+        """A `__pycache__` left by a previous mutation's run is read by the next
+        one that borrows the same sandbox -- the `(mtime, size)` collision this
+        module's docstring exists to avoid. `ignore_errors` covers a directory
+        that vanished under a concurrent lane, so nothing here may raise."""
+        box = Path(tempfile.mkdtemp(prefix="tupferl-bytecode-"))
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "pkg").mkdir()
+        for cache in (box / "__pycache__", box / "pkg" / "__pycache__"):
+            cache.mkdir()
+            (cache / "stale.pyc").write_bytes(b"\x00")
+        (box / "pkg" / "keep.py").write_text("x = 1\n", encoding="utf-8")
+
+        mutate._clear_bytecode(box)
+
+        self.assertEqual([], list(box.rglob("__pycache__")), "stale bytecode was left behind")
+        self.assertTrue((box / "pkg" / "keep.py").is_file(), "it took the source with it")
 
 
 class TestReadingBackAReportToResumeFrom(unittest.TestCase):
