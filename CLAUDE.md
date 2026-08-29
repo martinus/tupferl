@@ -1135,6 +1135,71 @@ read this file:
 
 ### Measured dead ends — do not re-attempt without new evidence
 
+- **Sorting the whole table by cost, across files** rather than within each
+  one. Tried twice, for two different reasons, and it lost both times.
+
+  The first attempt rested on two beliefs, both wrong. That `sweep` counted a
+  file down to zero before writing its `--json` -- untrue since #46 made that
+  write per row, though `by_size`'s docstring still said it and the claim was
+  quoted as a reason. And that a *timed* row does not need `Learned`, since
+  `Killers.ahead_of` has put its own killer on `first` -- true in principle and
+  false in fact, because `_attempt` ran the learned front **before** that
+  killer. Result: 222.55s against a 215.09s no-ordering control, the whole gain
+  cancelled.
+
+  The second attempt was after that inversion was fixed, when the premise
+  finally held. It still lost: **205.23s / 204.20s against 184.98s / 185.46s**
+  for the within-file sort on the same binary.
+
+  What makes it a real dead end rather than a tuning problem is that the total
+  *work* is identical -- 4233 lane-seconds global against 4226 within-file, 0.2%
+  apart, with global's caught rows marginally *cheaper*. It is purely worse
+  packing: ideal makespan for both is ~132s over 32 lanes, and within-file lands
+  at 185s where global lands at 205s. Better per-row ordering, more idle time,
+  which is the opposite of what LPT promises.
+
+  **The mechanism is not established**, and that is stated rather than guessed
+  at: it would need a completion timeline the logs do not carry.
+
+  **What would justify re-opening it**: that timeline. Instrument each row's
+  start as well as its finish and look at where lanes actually idle. Without it
+  any further attempt is the same guess again.
+
+- **Shuffling the outward walk to break up the survivor herd.** Every lane
+  resolves the same module list through the same loader, so survivors dispatched
+  together march through the suite in lockstep -- all in the same module at the
+  same instant. The effect is real and measured: bunching them costs 3040 ->
+  3181 survivor lane-seconds, **1.6%**.
+
+  Seeding `verdict._reached`'s walk from `_key(row)` -- selection untouched,
+  walk beyond it shuffled -- was **12.7% slower** (208.56s / 208.43s against
+  184.98s / 185.46s). But the timing is the least of it.
+
+  **It reported 24 false `caught` verdicts, reproducibly.** Both runs came back
+  `1300 caught / 6 SURVIVED` where the truth is `1276 / 30` -- a mutation score
+  of 99.5% against 97.7%. A survivor runs the whole suite by construction, so no
+  reordering can honestly change that outcome. All 24 were "caught" by
+  `tests.test_mutate.TestTheHarnessAnswersBothWays.test_the_walk_catches_what_the_selection_missed`,
+  on rows mutating `config.py`, `merge.py`, `manifest.py` and `sync.py`.
+
+  Two things follow, and the second is the one worth carrying forward:
+
+  - **`_unbaselined` did not catch it**, because it cannot. A `tupferl/config.py`
+    row's selection never names `tests.test_mutate`, so no baseline shard had
+    proved that module green in the sandbox -- the walk reached it, it failed,
+    and the failure was recorded as a kill. The guard covers a killer no shard
+    *could* have covered only when the shard existed.
+  - **The suite has order-dependent tests, and the alphabetical order happens to
+    be one that works.** The offending test passes standing alone with the seed
+    set, and fails only with the seed *and* a mutated sandbox -- which is
+    pollution from whatever the shuffle put before it. That is a latent hazard
+    with or without a shuffle, and it is the thing to fix before this idea can
+    be tried again.
+
+  So the walk order is load-bearing for *correctness*, not only for speed, for
+  as long as `tests/` contains tests that drive the harness that runs them.
+  1.6% was never going to pay for that.
+
 - **Interleaving a mutation table round-robin across files** (#49). Proposed so
   that an interrupted sweep would have partial coverage of every file rather
   than complete coverage of some. It breaks `Learned` (#43), whose docstring
