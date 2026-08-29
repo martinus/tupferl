@@ -204,7 +204,18 @@ class TestTheRemoteCheck(DoctorCase):
         # exits immediately with "invalid time interval" -- which arrives as a
         # *refusal*, and would make this test pass for the wrong reason.
         os.environ["GIT_SSH_COMMAND"] = "sh -c 'sleep 30'"
-        with mock.patch.object(gitrepo, "TIMEOUT", 0.5):
+        # Bounded, because the thing under test is a *timeout*: a mutation that
+        # loses the bound -- `gitrepo.git`'s `TIMEOUT if timeout is None`
+        # inverted, so `waiting` becomes `None` -- leaves this waiting the full
+        # 30s of the sleeper, past the harness's per-test alarm. That is filed
+        # `BROKE` rather than `caught`, so the one line making a wedged remote
+        # answerable at all was guarded by nothing. Measured on the whole-tree
+        # sweep before this bound existed. Five seconds against a 0.5s TIMEOUT
+        # is ten times the honest wait and a sixth of the sleeper.
+        with (
+            mock.patch.object(gitrepo, "TIMEOUT", 0.5),
+            support.deadline(support.PATIENCE, "doctor.remote never gave up on the sleeper"),
+        ):
             found = doctor.remote(self.repo, ok=True)
         self.assertIs(False, found.ok)
         self.assertIn("did not answer", found.detail)

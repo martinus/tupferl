@@ -36,6 +36,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -413,7 +414,25 @@ class TestLineEndingsThatAreNotNewline(unittest.TestCase):
     The exactness matters for the same reason the form feed did. A step of 1
     across `\r\n` puts every span below it one character early, which is an edit
     that still parses, in a place the row's label does not name.
+
+    Every test here runs under a deadline. `line_starts` is a
+    `while at < len(source)` loop in which every arm advances `at`, so a mutation
+    that stops one advancing spins for ever, and one that advances *backwards*
+    grows `starts` without limit as well. Four rows came back `BROKE` that way on
+    the whole-tree sweep -- two of them "ran out of memory" -- and `BROKE` is
+    never `caught`, so the exactness this class exists to pin was pinned by
+    nothing.
+
+    Armed in `setUp` rather than around `starts_agree_with_ast`, which was the
+    first attempt: three of the four rows are killed by tests that do not go
+    through that helper, and they stayed `BROKE`. A bound on one helper covers
+    the tests that call it and reads as though it covered the class.
     """
+
+    def setUp(self) -> None:
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(support.PATIENCE, "line_starts never finished"))
 
     def starts_agree_with_ast(self, source: str) -> list[int]:
         """`ast` is the authority; this asserts against it rather than a constant.
@@ -1289,7 +1308,20 @@ class TestCappingTheTable(unittest.TestCase):
     the printed summary would not show it, because the count would be right
     either way". A property the count cannot reveal is exactly the kind that
     needs a test rather than a glance, and it had none.
+
+    Every test here runs under a deadline, because `cap`'s round-robin is a
+    `while` whose exit depends on the very comparison the sweep mutates: turning
+    `len(kept) < limit` into `<=` leaves the outer loop true while the inner one
+    appends nothing, so the queues never drain. That is a hang, and the harness
+    files a hang as `BROKE` -- never `caught` -- so the loop bound was guarded by
+    nothing. Armed for the whole test rather than around one call: every method
+    below calls `cap`, and the mutation hangs whichever runs first.
     """
+
+    def setUp(self) -> None:
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(support.PATIENCE, "cap never finished"))
 
     def rows(self, path: str, many: int) -> list[Mutation]:
         return [Mutation(f"{path}#{i}", path, "a", "b", "t", span=(i, i + 1)) for i in range(many)]

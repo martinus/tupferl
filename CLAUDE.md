@@ -683,6 +683,27 @@ written down.
   wait in the file and comfortably below the alarm, and say both numbers where
   you write it.
 
+  **Arm it on the class, not around the call.** Measured twice in one sitting,
+  both times the same way: bounding the one test a sweep *named* left its
+  siblings hanging on the identical mutation, because they reach the same line
+  by a different route. `line_starts` was bounded in the helper its class goes
+  through and three of its four rows stayed `BROKE` — the tests that kill them
+  do not call that helper. `TestTheHarnessAnswersBothWays` was bounded in
+  `test_the_walk_catches_what_the_selection_missed` and two of six stayed
+  `BROKE` — `if not walk:` inverted hangs the two tests that pass `walk=False`,
+  which is not the test the bound was written on. Put it in `setUp` behind a
+  `contextlib.ExitStack` (`enterContext` is 3.11 and this project supports
+  3.10), and the whole class is covered whichever row a future sweep finds. **A
+  bound around one call covers that call and reads as though it covered the
+  class.**
+
+  **And check what the bound's exception collides with.** `TimeoutError` *is* an
+  `OSError`, so a `deadline` inside an existing `assertRaises(OSError)` is
+  swallowed: the hang is accepted as the error under test and the bound turns
+  one unguarded line into a test that cannot fail, which is worse than the hang
+  it replaced. `tests/test_manage.py`'s fifo test reads the exception type back
+  explicitly for that reason.
+
   **Write it through `support.bounded`, which knows the alarm actually armed.**
   Comparing against `mutate.EACH_TEST` is the obvious spelling and it guards
   only the *default*: `--each-test` is a flag, so a sweep at `--each-test 10`

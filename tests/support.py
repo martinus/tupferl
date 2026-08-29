@@ -143,9 +143,11 @@ def bounded(seconds: float) -> float:
 #: tighter bound for a single *read*; this one covers a whole command.
 PROMPTED = bounded(20.0)
 
-#: How long a fixture will wait for a read from a terminal before calling it a
-#: failure. Five seconds against a suite that runs 500 tests in twelve, so a
-#: legitimate prompt has three orders of magnitude of headroom -- and a mutant
+#: How long a fixture will wait for a read from a terminal -- or for any call
+#: whose subject could loop for ever -- before calling it a failure. Both uses
+#: want the same number and the same argument, so they share one: five seconds
+#: against a suite that runs 500 tests in twelve, so a legitimate prompt has
+#: three orders of magnitude of headroom -- and a mutant
 #: that leaves `one_key` blocking fails in five seconds rather than holding a
 #: mutation lane for the harness's full per-test alarm. Through `bounded` too,
 #: so an `--each-test` below about 7.5s brings this down with it.
@@ -170,6 +172,14 @@ def deadline(seconds: float, why: str) -> Iterator[None]:
 
     The previous handler is restored, not assumed to be the default: the harness
     installs its own per-test alarm around this one.
+
+    **Arm it on the class where the subject can hang, not around the one call a
+    sweep named.** Measured twice: bounding the call left the *sibling* tests
+    hanging on the same mutation, because they reach the line by another route --
+    three of four `line_starts` rows and two of six `verdict` walk rows stayed
+    `BROKE`. The spelling is a `contextlib.ExitStack` entered in `setUp` and
+    closed by `addCleanup`; `TestCase.enterContext` would say it in one line and
+    is 3.11, which this project does not require.
     """
 
     def ring(signum: int, frame: object) -> None:
