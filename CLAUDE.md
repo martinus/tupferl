@@ -1199,16 +1199,24 @@ read this file:
     proved that module green in the sandbox -- the walk reached it, it failed,
     and the failure was recorded as a kill. The guard covers a killer no shard
     *could* have covered only when the shard existed.
-  - **The suite has order-dependent tests, and the alphabetical order happens to
-    be one that works.** The offending test passes standing alone with the seed
-    set, and fails only with the seed *and* a mutated sandbox -- which is
-    pollution from whatever the shuffle put before it. That is a latent hazard
-    with or without a shuffle, and it is the thing to fix before this idea can
-    be tried again.
+  - **The mechanism is not established, and "the suite has order-dependent
+    tests" was written here on a hypothesis that then failed to confirm.** The
+    offending test reproduces in *no* smaller setting: not standing alone, not
+    with the seed set, not with a mutated sandbox, not after the exact
+    eleven-module prefix the shuffled walk would have run before it (reproduced
+    from the row's own seed), not under a lane-sized `RLIMIT_AS`, and not as a
+    one-row sweep with the shuffle applied -- where the row correctly survives.
+    Only a full 32-lane sweep produces it, and then reproducibly.
 
-  So the walk order is load-bearing for *correctness*, not only for speed, for
-  as long as `tests/` contains tests that drive the harness that runs them.
-  1.6% was never going to pay for that.
+    What that leaves pointing at is something that exists only there: many lanes
+    sharing a sandbox pool while one of the tests being run is itself a nested
+    mutation harness. **What would settle it** is the traceback: `Verdict.why`
+    already records it for a `caught` row and nothing prints or persists it for
+    a mutation row, so a sweep that surfaced `why` for an unbaselined killer
+    would answer this in one run instead of the six that failed here.
+
+  So the walk order is load-bearing for *correctness* and not only for speed,
+  by a route not yet understood. 1.6% was never going to pay for that.
 
 - **Interleaving a mutation table round-robin across files** (#49). Proposed so
   that an interrupted sweep would have partial coverage of every file rather
