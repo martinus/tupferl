@@ -185,6 +185,9 @@ def keep_both(name: str, base: bytes | None, ours: bytes, theirs: bytes) -> byte
     not, since there are no lines to take from each side.
     """
     merged = three_way(name, base, ours, theirs, union=True)
+    # survivor: connector -- named in the code: `keep_both`'s own comment says this branch is not
+    #   reachable through the prompt, which offers `[b]` only for a text file, and reports rather
+    #   than asserts the two ways it could happen.
     if merged.data is None or merged.conflicts:
         # Not reachable through the prompt, which offers `[b]` only for a text
         # file. Reported rather than asserted because the two ways it could

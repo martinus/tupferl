@@ -107,6 +107,8 @@ def tint(line: str, out: TextIO | None = None) -> str:
     stream, and a caller writing somewhere other than stdout -- including a test
     -- must be able to say which.
     """
+    # survivor: off-by-one -- a test reaches this line and asserts nothing about it Weak fixture or
+    #   equivalent; from the whole-tree sweep of 2026-08.
     return paint.paint(line, SHOUT.get(line.split(" ", 1)[0].rstrip(":"), ""), out)
 
 
@@ -181,6 +183,8 @@ def counted(log: Path, pattern: re.Pattern[str]) -> int:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
+    # survivor: off-by-one -- a test reaches this line and asserts nothing about it Weak fixture or
+    #   equivalent; from the whole-tree sweep of 2026-08.
     return sum(1 for line in text.splitlines() if pattern.search(line))
 
 
@@ -222,6 +226,8 @@ class Watch:
         #: doubling rather than a repeat. Zero means nothing said yet -- and, as
         #: with `moved`, the opening poll overwrites it before `stalling` can
         #: read it, so this value is the declaration rather than the behaviour.
+        # survivor: drop-assign -- a test reaches this line and asserts nothing about it told` is
+        #   never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         self.told = 0.0
 
     def minutes(self) -> int:
@@ -270,6 +276,8 @@ class Watch:
         idle = time.monotonic() - self.moved
         # `told * 2` is the doubling. Below `stale` nothing is said at all, and
         # `told` is 0 until the first report, so that term cannot suppress it.
+        # survivor: boundary -- a test reaches this line and asserts nothing about it Weak fixture
+        #   or equivalent; from the whole-tree sweep of 2026-08.
         if idle < self.stale or idle < self.told * 2:
             return None
         self.told = idle
@@ -328,8 +336,12 @@ def _await_pid(where: Path, interval: float, patience: float | None = None) -> i
         try:
             return a_pid(where.read_text(encoding="utf-8").strip())
         except (OSError, ValueError, argparse.ArgumentTypeError) as exc:
+            # survivor: boundary -- a test reaches this line and asserts nothing about it Weak
+            #   fixture or equivalent; from the whole-tree sweep of 2026-08.
             if time.monotonic() >= deadline:
                 raise SystemExit(f"no usable pid in {where} after {waiting:g}s: {exc}") from None
+        # survivor: drop-call -- a test reaches this line and asserts nothing about it sleep(...)`
+        #   never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         time.sleep(step)
 
 

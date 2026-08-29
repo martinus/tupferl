@@ -490,72 +490,77 @@ Five things are not where a newcomer would guess, all on purpose:
   message legitimately cannot take that shape, argue it in the PR and change
   the check; do not add an exception list, which is how the rule stops meaning
   anything.
-- **Every row that is not `caught` has a disposition, and it lives in
-  `known-survivors.json`.** A whole-tree sweep found 557 survivors. Triaging
-  them in prose does not survive to the following Sunday: the next sweep
-  produces the same 557 rows with nothing to say which were already understood,
-  so either somebody reads all of them again or nobody reads any. Both have
-  happened here. The record holds one row per row, so a sweep reports only what
-  is *new*:
+- **Every row that is not `caught` has a disposition, and it is a comment
+  beside the code.** A whole-tree sweep found 557 survivors. Triaging them in
+  prose does not survive to the following Sunday: the next sweep produces the
+  same rows with nothing to say which were already understood, so either
+  somebody reads all of them again or nobody reads any. Both have happened here.
 
-  ```sh
-  python -m tools.mutate --base main --accept   # record this run's survivors
+  ```python
+  # survivor: branch -- equivalent: `Path.cwd() / an_absolute_path` discards the
+  #   left side, so taking the branch anyway is the same answer.
+  if not expanded.is_absolute():
   ```
 
-  Four things about it are load-bearing, and each is a way it could quietly
-  become a mute list instead of a record:
+  On the mutated line or in the comment block directly above it; the block is
+  joined, so a reason may wrap. `python -m tools.mutate --all --accept` writes a
+  `TODO` tag beside every unread row for a person to finish.
+
+  **The operator is required, and that is the whole design.** Measured on a
+  whole-tree table: mutations average 2.1 per source line and reach 13, and
+  **53% of the lines carrying a survivor also carry a row that is caught**. A
+  bare tag would excuse a live guard about half the time it was used — and would
+  go on excusing operators `mutants.py` has not learnt yet, which is the
+  flattering direction arriving through the record's own syntax.
+
+  Four things about it are load-bearing, each a way it could quietly become a
+  mute list instead of a record:
 
   - **`--accept` is a flag, never automatic.** Recording a survivor is saying
     somebody read it and decided; a run that did that by itself would be
     deciding on their behalf.
-  - **A new row says `TODO`, and that is the point.** The tool writes a
-    placeholder naming the file and function, because a reason nobody wrote is
-    not a reason. Seeing `TODO` in a diff is the review.
-  - **A row names its own mutation.** `--accept` writes the label in, and a
-    reason edited by hand has to keep it: 163 of 210 rows lost theirs when they
-    were rewritten in bulk, leaving a file of arguments with nothing to say what
-    each was about. The key is content-addressed and unreadable on purpose, so
-    the label is the only thing a reviewer can navigate by.
-  - **A row is counted, not merely matched.** `_key` is content and not
-    position — that is what lets a disposition survive the code moving — and it
-    is also why two identical mutations in one file share a key. Measured: the
-    557 survivors collapse to **432 keys**, so a record shaped as a set would
-    absorb 125 rows nobody read, and would go on absorbing every future one of
-    those shapes. `Accepted.seen` is how the 126th is still new.
-  - **A stale entry is reported loudly -- but only a whole-tree sweep may
-    judge one.** "This key matches nothing the run generated" is evidence the
-    code has gone only if the run generated everything, and `--base` generates
-    rows for the changed lines alone. `_accept` *drops* what it calls stale, so
-    the command two lines up would have deleted 206 of the record's 210
-    reasons, silently: the count simply came back smaller. Fixed in #57;
-    `--base ... --accept` now adds and never removes. A record whose documented
-    use destroys it is worse than no record.
+  - **A new tag says `TODO`, and that is the point.** A reason nobody wrote is
+    not a reason. Seeing `TODO` in a diff, next to the line it excuses, is the
+    review.
+  - **Nothing is ever removed by the tool.** A tag is deleted by deleting a line
+    of code, which is a person's job and shows up as one.
+  - **A tag that has stopped earning its place is reported.** Today that means a
+    row the suite has learnt to *catch* — good news, and good news nobody is
+    told is exactly how a mute list forms.
 
-    A row the suite has since learned to *kill* is the other exception and
-    is kept silently: `stale` means the code has moved or gone, and an outcome
-    is not stable between runs the way a line of source is -- a row near the
-    alarm can be `caught` one Sunday and `timeout` the next, and churning the
-    reason each time is worse than one dead row.
+  **This replaced a file of sha256 keys (`known-survivors.json`), and the
+  reason it was replaced is worth keeping.** It was not kept up to date: twelve
+  equivalences proved in one sitting went into commit messages instead, because
+  editing a JSON blob keyed on a hash was further away than writing a sentence
+  nobody would read again. Seventeen of its 213 entries had come to match
+  nothing the tree generated. Three pieces of machinery went with it, and every
+  one existed only to compensate for the key being content-addressed rather
+  than positional:
 
-  An unreadable file reads as *empty*, so a lost comma reports every survivor
-  rather than none. The failure to guard against is always the flattering one.
+  - `Accepted.seen`, an occurrence count, because two identical mutations in one
+    file collapsed to one key — 557 survivors to 432 — so a count was needed to
+    tell the 126th from the 125th. Two lines carry two tags.
+  - `complete`, which decided whether "this key matched nothing" was evidence. A
+    `--base` run generates rows for the changed lines alone, so it reported 206
+    of 210 entries stale — and `_accept` *dropped* what `stale` named, so the
+    documented recording command destroyed the record it recorded into. A tag is
+    judged where it sits, so a narrowed run judges exactly the tags it reached.
+  - a collision `_resume_key`'s docstring still records: three unrelated `0`/`1`
+    literals in one file shared a key, so a reason written for one was absorbed
+    by the others rather than read.
 
-  **`BROKE` and `TIMEOUT` are in the record too, and are excused on the same
-  terms** (#57). They were the one category a sweep could not settle: 33 came
-  back every whole-tree run with nothing to say which had been read, and worse
-  than a survivor's version of it, because such a row is never `caught` -- so
-  the line it appears to guard is guarded by nothing while the summary shows it
-  in neither of the two numbers a reader looks at. Three of them cannot be
-  answered at all and never will be: two force `verdict.collect` down
-  `loader.discover(".")`, running the whole suite nested inside a memory-capped
-  sandbox, and `run_tests`'s `if args.worker:` becomes a fork bomb. Those want a
-  written reason exactly as an equivalent mutant does. `verify()` is unchanged
-  and still counts `survived` alone -- a hand-written table has no record to
-  consult, and a row it cannot answer is a mistake in the table.
+  **`BROKE` and `TIMEOUT` are excused on the same terms** (#57). They were the
+  one category a sweep could not settle: 33 came back every whole-tree run with
+  nothing to say which had been read, and worse than a survivor's version of it,
+  because such a row is never `caught` — so the line it appears to guard is
+  guarded by nothing while the summary shows it in neither of the two numbers a
+  reader looks at. `verify()` is unchanged and still counts `survived` alone: a
+  hand-written table has no disposition to consult, and a row it cannot answer
+  is a mistake in the table.
 
-  What the widening *cannot* do is stop the row happening. `"a" + "b"` becoming
+  What the tags *cannot* do is stop the row happening. `"a" + "b"` becoming
   `"a" - "b"` is a `TypeError` every time, so `tools/mutants.py` refuses to
-  generate it when either operand is a string literal -- 9 of this tree's 45
+  generate it when either operand is a string literal — 9 of this tree's 45
   `arith` rows. The other 36 include `paint.GOOD + paint.HEAD`, which is two
   *attributes*: proving those string-valued means resolving a name across a
   module boundary, which is a type checker rather than a guard. Getting the

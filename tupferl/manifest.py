@@ -121,6 +121,9 @@ def named(path: str | Path) -> Path:
     name -- so a lexical answer never escapes this module unverified.
     """
     expanded = Path(os.path.expanduser(str(path)))
+    # survivor: branch -- equivalent, measured: `Path.cwd() / Path('/etc/x')` is `/etc/x` --
+    #   pathlib's `/` returns the right operand when it is absolute, so taking the branch for an
+    #   already-absolute path is the identity.
     if not expanded.is_absolute():
         expanded = Path.cwd() / expanded
     return Path(os.path.normpath(expanded))
@@ -325,6 +328,8 @@ def ignored(name: PurePosixPath, patterns: Sequence[str]) -> bool:
     same repository would ignore different files on two machines -- and the
     repository is the thing both machines share.
     """
+    # survivor: branch -- equivalent: the guard is an early-out for the common case, and `any([])`
+    #   is `False` -- the same answer the body computes from an empty pattern list.
     if not patterns:
         return False  # the default, and the branch most runs take
     candidates = [name, *name.parents]

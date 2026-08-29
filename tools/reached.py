@@ -279,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
     corrected = sum(len(fixed[p] - raw.get(p, set())) for p in fixed)
     split = partition(rows, fixed)
     _summarise(rows, split, corrected)
+    # survivor: branch -- prints an empty heading above an empty list. `reached` is a reading tool
+    #   whose output a person interprets, and its exit status -- the thing a script reads -- is
+    #   asserted.
     if split.unreached:
         print(paint.paint("\nunreached survivors by file:", paint.HEAD))
         _by_file(split.unreached)
@@ -286,6 +289,9 @@ def main(argv: list[str] | None = None) -> int:
         print(paint.paint("\nunreached survivors:", paint.HEAD))
         for row in sorted(split.unreached, key=lambda r: (r.path, r.line)):
             print(f"  {row.label}")
+    # survivor: return-value -- `main` is called as `raise SystemExit(main())`, and
+    #   `SystemExit(None)` exits 0 exactly as `SystemExit(0)` does. Indistinguishable from outside
+    #   the process.
     return 0
 
 

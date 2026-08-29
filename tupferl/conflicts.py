@@ -238,8 +238,14 @@ def hunks(sides: Sides) -> list[Hunk]:
 
 def somewhere_in(run: list[bytes], whole: list[bytes]) -> bool:
     """Whether `run` appears as a block of consecutive lines of `whole`."""
+    # survivor: branch -- equivalent, measured: with the guard skipped, an empty `run` still returns
+    #   `True` from the comprehension -- `whole[0:0] == []` holds and the range is never empty. The
+    #   guard says the answer plainly rather than deriving it.
     if not run:
         return True
+    # survivor: arith -- equivalent: the extra iterations slice past the end of `whole` and produce
+    #   lists shorter than `run`, which cannot equal it. Measured: a run that is absent stays absent
+    #   with the wider range.
     return any(whole[at : at + len(run)] == run for at in range(len(whole) - len(run) + 1))
 
 

@@ -134,6 +134,9 @@ def _unloadable(loader: unittest.TestLoader) -> dict[str, str]:
     they encode what `unittest` prints and that is one fact.
     """
     return {
+        # survivor: off-by-one, sign -- equivalent for anything anyone reads: `TextTestRunner`'s
+        #   verbosity controls the per-test detail on stderr, and the `Ran N tests` line that
+        #   `test_the_worker_says_how_many_tests_it_ran` asserts is printed at every level.
         said.splitlines()[0].rsplit(": ", 1)[-1]: said.splitlines()[0]
         for said in (str(error) for error in loader.errors)
     }
@@ -233,6 +236,9 @@ def run_batch(names: list[str], out: Path) -> int:
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromNames(names)
     unloadable = _unloadable(loader)
+    # survivor: branch -- equivalent: with nothing unloadable the loop over `loader.errors` prints
+    #   nothing and `_loaded(suite, {})` filters nothing out, so the forced branch produces the same
+    #   suite and the same output.
     if unloadable:
         # The whole traceback, once, where a human reads it in context -- the
         # summary carries only the first line, as it does for every other row.
@@ -295,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
+    # survivor: branch -- unmeasurable by construction: forcing this branch off makes every spawned
+    #   worker ignore `--worker`, run the whole suite itself and spawn more -- an unbounded fork
+    #   storm. `_Lanes` killed the session at 2199 MiB against its 2063 MiB share and took the rest
+    #   of the table with it, so the row can never come back anything but BROKE.
     if args.worker:
         assert args.out
         return run_batch(args.worker, Path(args.out))
@@ -373,9 +383,13 @@ def main(argv: list[str] | None = None) -> int:
     # measured on four cores, jobs=8 beats jobs=4 by ~9%, and jobs=16 regresses.
     # `tools/cpus.py` says why the count is not `os.cpu_count()`, and why the
     # doubling stays here rather than moving in with it.
+    # survivor: arith, off-by-one -- equivalent observably: batch granularity only.
     jobs = args.jobs or usable_cpus() * 2
     # More batches than workers, so a batch that runs long is overlapped by the
     # others rather than deciding the wall clock on its own.
+    # survivor: arith -- equivalent observably: this decides how finely the classes are split across
+    #   batches. Every class is still placed exactly once --
+    #   `test_every_class_is_placed_exactly_once` -- and every test still runs.
     batches = pack(classes, jobs * 2)
 
     with tempfile.TemporaryDirectory(prefix="tupferl-batches-") as tmp:
@@ -406,6 +420,11 @@ def main(argv: list[str] | None = None) -> int:
             reports = list(pool.map(run, enumerate(batches)))
 
     for report in reports:
+        # survivor: drop-call -- measured unreachable: `discover` drops a module it could not import
+        #   from `classes` as well as recording it, so no batch is ever asked to load one and no
+        #   batch report carries an `unloadable` entry. Verified by driving a real tree with a
+        #   broken module -- exactly one `could not import` line is printed, from the parent's own
+        #   discovery. The line guards a `discover` that stopped doing that.
         unloadable.update(report["unloadable"])
     ran = [tid for report in reports for tid in report["ran"]]
     failures = [tid for report in reports for tid in report["failures"]]
@@ -420,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
             # the traceback is already above, from the batch
             print(paint.paint(f"  {label}: {tid}", paint.BAD))
 
+    # survivor: order -- equivalent for what `discover` produces: `unloadable` is filled by a walk
+    #   that visits modules in sorted order, so its insertion order already is the sorted order. The
+    #   *reversal* of this line is caught by `test_broken_modules_are_named_in_a_settled_order`;
+    #   only the redundancy is not.
     for name in sorted(unloadable):
         # Its own line and its own wording: this is not a test that failed, and
         # printing it as one is what sent a reader looking for an assertion.
@@ -431,7 +454,12 @@ def main(argv: list[str] | None = None) -> int:
         for tid in sorted(missing):
             print(paint.paint(f"  never ran: {tid}", paint.BAD))
         ok = False
+    # survivor: branch -- unreachable through `pack`, which places each class in exactly one batch
+    #   -- so no test id can be reported twice and `len(ran) - len(set(ran))` is always 0. The guard
+    #   is there for a future batching rule that overlapped, which is the change it exists to catch.
     if duplicated := len(ran) - len(set(ran)):
+        # survivor: drop-call -- same as `run_tests.py:424` -- the line only runs when a test id was
+        #   reported twice, which `pack` makes impossible today.
         print(f"::error::{duplicated} tests ran more than once")
         ok = False
     if skipped:
