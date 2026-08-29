@@ -4811,10 +4811,18 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         with support.quiet():
             return [row.new for row in mutate.slowest_first(table, seconds)]
 
-    def timed(self, table: Sequence[Mutation], *costs: float) -> dict[str, float]:
+    def timed(self, table: Sequence[Mutation], *costs: float | None) -> dict[str, float]:
         """`mutate._key` rather than a second spelling of the hash here: a test
-        carrying its own copy of the code it checks cannot fail (CLAUDE.md §2)."""
-        return {mutate._key(row): cost for row, cost in zip(table, costs, strict=True)}
+        carrying its own copy of the code it checks cannot fail (CLAUDE.md §2).
+
+        `None` is "this row was never timed", so a fixture can lay its costs out
+        in row order and leave gaps where the cold rows are.
+        """
+        return {
+            mutate._key(row): cost
+            for row, cost in zip(table, costs, strict=True)
+            if cost is not None
+        }
 
     def test_the_dearest_row_in_a_file_goes_first(self) -> None:
         """Expected order differs from the input *and* from its reverse, so a
@@ -4836,11 +4844,7 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         row lands strictly between the 10 and the 4. Front and back are the two
         obvious wrong answers and this fixture rejects both."""
         table = self.rows(*[("a.py", tag) for tag in ("p", "q", "cold", "r", "s")])
-        seconds = {
-            mutate._key(row): cost
-            for row, cost in zip(table, [12.0, 10.0, None, 4.0, 2.0], strict=True)
-            if cost is not None
-        }
+        seconds = self.timed(table, 12.0, 10.0, None, 4.0, 2.0)
         self.assertEqual(["p", "q", "cold", "r", "s"], self.order(table, seconds))
 
     def test_the_median_a_cold_row_takes_is_its_own_file_s(self) -> None:
@@ -4855,12 +4859,7 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         """
         tags = ("p", "q", "cold", "r", "s")
         table = self.rows(*[("cheap.py", tag) for tag in tags], *[("dear.py", tag) for tag in tags])
-        costs = [12.0, 10.0, None, 4.0, 2.0, 1200.0, 1000.0, None, 400.0, 200.0]
-        seconds = {
-            mutate._key(row): cost
-            for row, cost in zip(table, costs, strict=True)
-            if cost is not None
-        }
+        seconds = self.timed(table, 12.0, 10.0, None, 4.0, 2.0, 1200.0, 1000.0, None, 400.0, 200.0)
         got = self.order(table, seconds)
         self.assertEqual(["p", "q", "cold", "r", "s"], got[:5], "the cheap file")
         self.assertEqual(["p", "q", "cold", "r", "s"], got[5:], "the dear file")
@@ -4898,17 +4897,25 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
     them. A `spent` that stayed 0.0 would order nothing and say nothing.
     """
 
+    #: One real sweep for both halves of the claim. Each `mutate.run` copies the
+    #: tree and spawns an interpreter, and the second test asserts about the
+    #: same numbers the first produced -- so running it twice bought nothing and
+    #: cost a `copytree` and a subprocess on every suite execution.
+    swept: typing.ClassVar[mutate.Report]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.swept = mutate.run([UNWATCHED], baseline=False, workers=1, summarise=False, walk=False)
+
     def test_a_real_run_times_the_row_it_ran(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=False, workers=1, summarise=False, walk=False)
-        (only,) = found.results
+        (only,) = self.swept.results
         self.assertGreater(only.verdict.spent, 0.0, "the row was not timed")
 
     def test_the_time_reaches_the_cache_under_the_row_s_key(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=False, workers=1, summarise=False, walk=False)
         cache = mutate.Killers(None)
-        cache.learn(found)
+        cache.learn(self.swept)
         self.assertEqual([mutate._key(UNWATCHED)], list(cache.seconds))
-        self.assertEqual(found.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)])
+        self.assertEqual(self.swept.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)])
 
     def test_a_row_that_was_never_answered_is_timed_too(self) -> None:
         """`broke` and `timeout` rows are the *most* expensive there are -- a

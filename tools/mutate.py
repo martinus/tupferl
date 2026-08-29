@@ -1328,7 +1328,7 @@ def _attempt(
                 timeout=timeout,
                 memory=memory,
                 each=each,
-                first=first if ahead else mutation.first,
+                first=first,
                 walk=walk,
             )
             verdict = verdict._replace(spent=time.monotonic() - began)
@@ -1750,11 +1750,12 @@ def run(
     places: list[int] = []
     timings: dict[str, float] = {}
     red = False
-    #: One `Learned` shared by every lane, which under a stride is the shape
-    #: that works: a lane sees roughly every Nth row, so a private front would
-    #: learn a thinned-out version of the same signal. The same list object in
-    #: every slot rather than a second code path, so `_attempt` is unchanged.
-    learning = [Learned()] * lanes
+    #: One `Learned` for every lane, which under a stride is the shape that
+    #: works: a lane sees roughly every Nth row, so a private front would learn a
+    #: thinned-out version of the same signal. One object rather than one per
+    #: lane -- `[Learned()] * lanes` was the first spelling and is N references
+    #: to this same object anyway, so it only made a reader check.
+    learning = Learned()
     work = Work(len(table))
     total = len(table)
     width = len(str(total))
@@ -1815,7 +1816,7 @@ def run(
             if index is None:
                 return
             verdict = _attempt(
-                table[index], available, failfast, timeout, memory, each, walk, learning[lane]
+                table[index], available, failfast, timeout, memory, each, walk, learning
             )
             deliver(index, lane, verdict)
             if strict and not verdict.answered:
@@ -2001,7 +2002,12 @@ def _report_stats(
     same table ran at 1.84 rows/s over 32 lanes and 1.49 over 16, and neither
     figure means anything alone.
     """
-    counts = Counter(result.verdict.outcome for result in results)
+    # `Counter[str]`, not `Counter[Outcome]`: `_recorded` rebuilds a `Verdict`
+    # from JSON, so a report written by a newer `mutate` can carry an outcome
+    # this build has never heard of. That is the case `named != total` below is
+    # for, and typing the key narrowly would deny it exists. `tools/reached.py`
+    # reads `MEANING` with the same untrusted string for the same reason.
+    counts: Counter[str] = Counter(result.verdict.outcome for result in results)
     total = len(results)
     if not total or pace is None:
         # Silent rather than zeroed. A block of noughts under a report read back
@@ -2016,13 +2022,19 @@ def _report_stats(
             paint.HEAD,
         )
     )
-    for outcome in ("caught", "survived", "broke", "timeout"):
-        known = MEANING[outcome]
-        # Every one of the four, at zero as well, and painted the way the row
-        # itself was. A category that disappears when empty is one a reader
-        # stops expecting to see.
+    for outcome, known in MEANING.items():
+        # Every one of them, at zero as well, and painted the way the row itself
+        # was. A category that disappears when empty is one a reader stops
+        # expecting to see.
         print(f"  {paint.paint(f'{known.headline:9}', known.colour)} {counts[outcome]:>6}")
-    named = sum(counts[outcome] for outcome in ("caught", "survived", "broke", "timeout"))
+    # Over `MEANING` rather than a list of the four spelled here, and asking
+    # `Meaning.answered` rather than naming which two those are. Both exist to
+    # be the one place that knows: a fifth outcome added to that table joins
+    # this block by existing, where a hand-written tuple would drop it silently
+    # and then report it below as having gone missing.
+    named = sum(counts[outcome] for outcome in MEANING)
+    answered = sum(counts[outcome] for outcome in MEANING if MEANING[outcome].answered)
+    unanswered = named - answered
     if named != total:
         print(
             paint.paint(
@@ -2039,18 +2051,16 @@ def _report_stats(
                 paint.BAD + paint.HEAD,
             )
         )
-        if headroom:
-            _report_headroom(pace.ceiling)
-        return
-    answered = counts["caught"] + counts["survived"]
-    if not answered:
-        return
-    unanswered = counts["broke"] + counts["timeout"]
-    caught = counts["caught"]
-    said = f"  {caught} caught of {answered} answered -- {caught / answered:.1%}"
-    if unanswered:
-        said += f"; {unanswered} row(s) answered nothing"
-    print(paint.paint(said + ".", paint.QUIET))
+    elif answered:
+        caught = counts["caught"]
+        said = f"  {caught} caught of {answered} answered -- {caught / answered:.1%}"
+        if unanswered:
+            said += f"; {unanswered} row(s) answered nothing"
+        print(paint.paint(said + ".", paint.QUIET))
+    # One exit rather than three. The headroom line was printed from two of the
+    # old ones and skipped by the third -- a table of nothing but `broke` rows
+    # returned before reaching it -- so the guarantee `run` makes about it held
+    # everywhere except the run most likely to have been killed for memory.
     if headroom:
         _report_headroom(pace.ceiling)
 
@@ -2718,19 +2728,20 @@ class Killers:
         """
         self.cost.update(report.times or {})
         for result in report.results:
+            key = _key(result.mutation)
             if result.verdict.spent > 0:
                 # Every outcome, not only the answered ones. A `timeout` row
                 # costs the full `--timeout` and a `broke` row is expensive
                 # too, and what this orders by is price rather than verdict --
                 # those are exactly the rows a run most wants to start early.
-                self.seconds[_key(result.mutation)] = result.verdict.spent
+                self.seconds[key] = result.verdict.spent
             if result.verdict.outcome == "caught" and result.verdict.killer:
-                self.known[_key(result.mutation)] = result.verdict.killer
+                self.known[key] = result.verdict.killer
             elif result.verdict.answered:
                 # It survived. Whatever used to catch it does not any more, so
                 # keeping the entry would put a test that cannot help at the
                 # front of every future run of this row.
-                self.known.pop(_key(result.mutation), None)
+                self.known.pop(key, None)
 
     def save(self) -> None:
         if self.where is None:
@@ -2913,7 +2924,11 @@ def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> li
 
     That restriction costs much less than it looks, because of where the tail
     actually forms. `by_size` puts the **largest** file last, so a sweep's final
-    stretch is one file's rows -- exactly the stretch this reorders.
+    stretch is one file's rows -- exactly the stretch this reorders. And sorting
+    *globally* is a measured dead end rather than an untried idea: it was tried
+    twice, the second time with the killer-first ordering that removed its only
+    stated obstacle, and lost both times -- 205.2s and 204.2s against 184.98s
+    and 185.46s, on total work identical to within 0.2%. See CLAUDE.md.
 
     **A row nobody has timed takes its file's median**, so cold rows sort into
     the middle as a block and, the sort being stable, keep their line order
@@ -2925,6 +2940,13 @@ def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> li
     cost does not need it -- `Killers.ahead_of` has already put its own killer
     on `first`.
 
+    A file with *no* timed row takes zero rather than some tree-wide figure, and
+    the value is arbitrary because it cannot be observed: every row of that file
+    shares it, the sort is within the file, and a stable sort therefore returns
+    them exactly as they arrived. A tree median was computed here for one
+    release, at the cost of a whole extra pass, and could never change an
+    answer.
+
     Keyed by `_key`, so 556 of this tree's 3103 rows share a key with another
     and therefore share a recorded cost. That is fine and is the same argument
     `Killers` makes about `known`: a wrong estimate costs ordering quality and
@@ -2933,24 +2955,25 @@ def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> li
     """
     if not seconds:
         return list(table)
-    by_path: dict[str, list[Mutation]] = {}
-    for row in table:
-        by_path.setdefault(row.path, []).append(row)
-    known = [seconds[key] for row in table if (key := _key(row)) in seconds]
-    overall = median(known) if known else 0.0
-
     ordered: list[Mutation] = []
-    cold = 0
-    for rows in by_path.values():
-        here = [seconds[key] for row in rows if (key := _key(row)) in seconds]
-        # This file's own median, not the tree's: `gitrepo.py`'s rows each drive
-        # a real `git` subprocess and `merge.py`'s do not, so a global figure
-        # would place every cold row of the cheap file ahead of the expensive
-        # file's timed ones.
-        middle = median(here) if here else overall
-        cold += len(rows) - len(here)
-        ordered.extend(sorted(rows, key=lambda row: -seconds.get(_key(row), middle)))
-    timed = len(table) - cold
+    timed = 0
+    # `by_size` for the grouping rather than a `setdefault` loop here, which is
+    # the second spelling its own docstring warns against. It also re-sorts the
+    # files, which is a no-op: `generated` already hands back its output.
+    for rows in by_size(table).values():
+        # Hashed once per row and carried. `_key` is a sha256 and the three
+        # spellings this replaced asked for it three times -- 3.7ms a sweep, so
+        # not a saving worth having, but one pass is easier to read than three.
+        keys = [_key(row) for row in rows]
+        here = [seconds[key] for key in keys if key in seconds]
+        timed += len(here)
+        # This file's own median: `gitrepo.py`'s rows each drive a real `git`
+        # subprocess and `merge.py`'s do not, so a tree-wide figure would place
+        # every cold row of the cheap file ahead of the dear file's timed ones.
+        middle = median(here) if here else 0.0
+        order = sorted(range(len(rows)), key=lambda at: -seconds.get(keys[at], middle))
+        ordered.extend(rows[at] for at in order)
+    cold = len(table) - timed
     if timed:
         print(
             paint.paint(
@@ -3272,9 +3295,11 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         return Report(collected, widened=True)
 
     # Smallest file first, and its rows contiguous -- `by_size`, which the plain
-    # `--base` path now shares. Contiguity is what `Work` hands each lane as a
-    # segment, so it is load-bearing here in a way it was not when the pool took
-    # whatever was next: a segment that straddled files would learn nothing.
+    # `--base` path now shares. Contiguity is what `Learned` rests on, and only
+    # for rows with no remembered killer: a timed row carries its own killer on
+    # `first` and does not care where it runs. `Work` is a stride cursor and
+    # hands out no segments -- this said it did, describing a scheduler that was
+    # measured, lost, and removed in the same change that wrote the line.
     order = list(by_file)
     rows = [row for rows_here in by_file.values() for row in rows_here]
     print(
