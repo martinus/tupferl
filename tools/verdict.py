@@ -153,7 +153,7 @@ def cap(limit: int) -> None:
             # raising a hard limit needs a privilege none of this has.
             #
             # It costs the ability to *undo* the cap further down, which one
-            # test wanted (`TestWhatALaneMayHold` spawned children that raised
+            # test wanted (`TestTheMemoryCapsArithmetic` spawned children that raised
             # soft back to hard to reach a known state). That is now bought with
             # a bounded number instead of an unbounded one, which it should have
             # been: "clear the inherited cap" and "have no cap" are different

@@ -803,10 +803,13 @@ class TestTheMemoryCapsArithmetic(Probe):
     #: which is the smallest number that makes the lowering observable.
     ROOMY = 4 << 30
 
-    def limits(self, limit: int, soft: int | None = None, hard: int | None = None) -> int:
+    def limits(self, limit: int, soft: int | None = None) -> int:
         """`RLIMIT_AS`'s soft limit after `cap(limit)`, from a child that starts
         from a known state. The state it started *from* is left on `self.started`,
-        because two of the assertions below are about a difference.
+        because one assertion below is about a difference rather than a value.
+
+        There is no `hard` parameter, and that is a finding rather than an
+        omission -- see `test_a_higher_finite_soft_limit_is_brought_down`.
 
         **The child settles its own starting cap first, and that is
         load-bearing.** `verdict.main` calls `cap` before the suite loads, so
@@ -843,13 +846,6 @@ class TestTheMemoryCapsArithmetic(Probe):
             "hard = resource.getrlimit(resource.RLIMIT_AS)[1]\n"
             f"resource.setrlimit(resource.RLIMIT_AS, (under({self.ROOMY}, hard), hard))\n"
         )
-        if hard is not None:
-            # **`hard` may only ever be lowered from here.** Naming a ceiling
-            # *above* the inherited one is a raise, and since `cap` began
-            # lowering `hard` a raise is refused outright -- "not allowed to
-            # raise maximum limit", which is the child dying rather than the
-            # case under test being expressed.
-            setup += f"hard = under({hard}, hard)\n"
         if soft is not None:
             setup += f"resource.setrlimit(resource.RLIMIT_AS, (under({soft}, hard), hard))\n"
         code = (
@@ -892,31 +888,36 @@ class TestTheMemoryCapsArithmetic(Probe):
         already = self.ASKED // 2
         self.assertEqual(already, self.limits(self.ASKED, soft=already))
 
-    def test_it_lowers_a_finite_ceiling_rather_than_leaving_it(self) -> None:
-        """`min(limit, hard)`. A process already bounded *above* what is asked
-        must still come down to what is asked.
-
-        An earlier draft of this docstring argued at length that `hard ==
-        RLIM_INFINITY` read as `!=` is an equivalent mutant. **That was wrong,
-        and the sweep had already said so** -- it reports that row `caught`.
-        `resource.RLIM_INFINITY` is `-1`, not a large number, so with the
-        comparison inverted an infinite `hard` gives `min(limit, -1) == -1` and
-        the process is left *uncapped*. The argument assumed infinity sorted
-        above every finite limit; the constant is a sentinel, and reading it as
-        an ordinary value is how the whole paragraph went wrong.
-
-        The genuinely equivalent one on this pair is `soft <= ceiling` read as
-        `soft < ceiling` at the line below, which the sweep does report
-        SURVIVED: it changes the answer only when `soft` is exactly `ceiling`,
-        and setting a limit to the value it already holds is a no-op either way.
-        """
-        hard = self.ASKED * 2
-        self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=hard, hard=hard))
-
     def test_a_higher_finite_soft_limit_is_brought_down(self) -> None:
         """The `soft != RLIM_INFINITY and soft <= ceiling` branch. Read with
         `or`, a finite soft limit *above* the ceiling short-circuits the whole
-        function and the process keeps the larger allowance."""
+        function and the process keeps the larger allowance.
+
+        An earlier draft argued at length that `hard == RLIM_INFINITY` read as
+        `!=` is an equivalent mutant. **That was wrong, and the sweep had
+        already said so** -- it reports that row `caught`. `RLIM_INFINITY` is
+        `-1`, not a large number, so with the comparison inverted an infinite
+        `hard` gives `min(limit, -1) == -1` and the process is left *uncapped*.
+        The argument assumed infinity sorted above every finite limit; the
+        constant is a sentinel, and reading it as an ordinary value is how the
+        whole paragraph went wrong.
+
+        **`min(limit, hard)` itself cannot be observed**, and this test stands
+        where a second one used to try. The kernel refuses `soft > hard`
+        (measured: "current limit exceeds maximum limit"), so whenever `hard` is
+        below `limit` the clamp gives `ceiling == hard` -- and `soft <= ceiling`
+        then holds by that same invariant, so `cap` returns having touched
+        nothing. Dropping the `min` would make it *attempt* a raise of `hard`
+        and swallow the refusal, reaching the identical state by a longer road.
+        No fixture can tell those apart. The test that claimed to was passing a
+        `hard` *above* `limit`, where the `min` picks `limit` either way, so it
+        asserted exactly what this one does.
+
+        The other equivalent here is `soft <= ceiling` read as `soft <
+        ceiling`, which the sweep does report SURVIVED: it changes the answer
+        only when `soft` is exactly `ceiling`, and setting a limit to the value
+        it already holds is a no-op either way.
+        """
         self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2))
 
 

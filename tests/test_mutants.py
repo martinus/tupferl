@@ -1209,17 +1209,15 @@ class TestABoundedCallStillReturns(unittest.TestCase):
     return under `len(kept) <= limit`.
     """
 
-    #: Above the fraction of a second an honest call takes, and far below
-    #: `tools/mutate.py`'s 30s per-test alarm -- see `tests/test_watch.py`'s
-    #: constant of the same name for why both bounds matter. Through
-    #: `support.bounded`, so it stays under the alarm a sweep *armed* rather
-    #: than under the default.
+    #: `support.PATIENCE`, which *is* `bounded(5.0)` and whose docstring already
+    #: covers this use -- "any call whose subject could loop for ever". Named
+    #: here so the class reads, but never a second copy of the number.
     #:
-    #: Five rather than the twenty it was. The honest call is a subprocess spawn
+    #: Five rather than the twenty it was: the honest call is a subprocess spawn
     #: and a few hundred microseconds of work, so twenty was four thousand times
     #: the wait it bounds -- and the bound is paid per test, under a sweep, on a
     #: machine already running thirty-eight lanes.
-    BOUND = support.bounded(5.0)
+    BOUND = support.PATIENCE
 
     #: What the child may allocate. The mutants under test do not merely spin,
     #: they spin *while appending*, so an unbounded child takes memory from the
@@ -1229,24 +1227,23 @@ class TestABoundedCallStillReturns(unittest.TestCase):
     #: rather than on a clock. Measured: `mutants.py:170` came back `TIMEOUT` at
     #: 300s without this, on a line that two other bounds already covered.
     #:
-    #: **Asked for, not required.** macOS refuses `RLIMIT_AS` outright -- the
-    #: `macos` leg went red with "current limit exceeds maximum limit" the first
-    #: time this was set unguarded -- so the child swallows the refusal, exactly
-    #: as `verdict.cap` does one module over. Where the platform declines, the
-    #: `BOUND` timeout is still in force; this only makes the failure faster and
-    #: kinder to the machine where it works.
+    #: Applied by calling `verdict.cap`, not by a second `setrlimit` here. That
+    #: function owns every part of this that is easy to get wrong: it sets
+    #: `RLIMIT_DATA` as well as `RLIMIT_AS` -- the one macOS is likelier to
+    #: honour, so a hand-rolled copy is weakest on the very leg it apologises
+    #: for -- it swallows a platform's refusal, and since the fix in this branch
+    #: it lowers the hard half too. Where the platform declines, `BOUND` is
+    #: still in force; the ceiling only makes the failure faster.
     CEILING = 512 << 20
 
     def returns(self, body: str) -> None:
         """Run `body` against the real module in a child, and insist it ends."""
         script = textwrap.dedent(
             """
-            import resource, sys
-            try:
-                resource.setrlimit(resource.RLIMIT_AS, ({ceiling}, {ceiling}))
-            except (OSError, ValueError):
-                pass  # macOS refuses RLIMIT_AS; the timeout still bounds this
+            import sys
             sys.path.insert(0, {root!r})
+            from tools.verdict import cap
+            cap({ceiling})
             from tools import mutants
             from tools.mutants import Mutation
             {body}
@@ -1255,7 +1252,7 @@ class TestABoundedCallStillReturns(unittest.TestCase):
         ).format(
             root=str(REPO_ROOT),
             ceiling=self.CEILING,
-            body=textwrap.indent(textwrap.dedent(body), "").strip(),
+            body=textwrap.dedent(body).strip(),
         )
         done = subprocess.run(
             [sys.executable, "-B", "-c", script],

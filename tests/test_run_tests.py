@@ -291,27 +291,24 @@ class TestHowManyWorkersAndBatchesARunUses(Tree):
     a real subprocess in a tree of its own, which is this file's whole shape.
     """
 
-    #: Six classes across three modules, which is the fixture the batch count
-    #: needs: `pack` cannot make more batches than there are classes, so with
-    #: the two this file's other trees hold, `jobs * 2`, `jobs * 3` and
-    #: `jobs * 1` all come back as 2 and the assertion pins nothing.
-    MANY = "".join(
-        f"import unittest\n\n\nclass T{n}(unittest.TestCase):\n"
-        f"    def test_it(self) -> None:\n        self.assertTrue(True)\n"
-        f"\n\nclass U{n}(unittest.TestCase):\n"
-        f"    def test_it(self) -> None:\n        self.assertTrue(True)\n"
-        for n in range(1)
+    #: Two classes, written across three modules below, because the batch count
+    #: needs six: `pack` cannot make more batches than there are classes, so
+    #: against the two this file's other trees hold, `jobs * 2`, `jobs * 3` and
+    #: `jobs * 1` all come back as 2 and the assertion pins nothing. The names
+    #: need not vary -- discovery keys a class by its module.
+    MANY = (
+        "import unittest\n\n\nclass T(unittest.TestCase):\n"
+        "    def test_it(self) -> None:\n        self.assertTrue(True)\n"
+        "\n\nclass U(unittest.TestCase):\n"
+        "    def test_it(self) -> None:\n        self.assertTrue(True)\n"
     )
-
-    def spread(self) -> None:
-        for n in range(3):
-            self.add(f"test_many{n}.py", self.MANY.replace("T1", f"T{n}").replace("U1", f"U{n}"))
 
     def test_the_batch_count_is_twice_the_worker_count(self) -> None:
         """More batches than workers, so a batch that runs long is overlapped by
         the others rather than deciding the wall clock on its own. Six classes
         and two workers, so four batches is a number only `jobs * 2` gives."""
-        self.spread()
+        for n in range(3):
+            self.add(f"test_many{n}.py", self.MANY)
         done = self.run_it("--jobs", "2")
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertIn("in 4 batches on 2 workers", done.stdout)

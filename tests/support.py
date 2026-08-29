@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import time
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -185,13 +186,31 @@ def deadline(seconds: float, why: str) -> Iterator[None]:
     def ring(signum: int, frame: object) -> None:
         raise TimeoutError(why)
 
+    # **What was already armed is restored, not cancelled.** There is one
+    # `ITIMER_REAL` per process, and `tools/mutate.py` arms it around every test
+    # -- so a bound that zeroed it on the way out left the *rest* of that test
+    # unwatched by the harness. A hang after this block then costs `TIMEOUT`'s
+    # 300s rather than `EACH_TEST`'s 30, holding a lane ten times as long and
+    # filing the row under the outcome that names no test. Measured: the alarm
+    # read `(29.999998, 0.0)` before and `(0.0, 0.0)` after.
+    outer, _ = signal.getitimer(signal.ITIMER_REAL)
+    began = time.monotonic()
     before = signal.signal(signal.SIGALRM, ring)
     signal.setitimer(signal.ITIMER_REAL, seconds)
     try:
         yield
     finally:
+        # Ours off and the previous handler back *before* re-arming, or the
+        # restored alarm could fire into `ring` and be reported as this bound.
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, before)
+        if outer:
+            # Whatever the outer alarm had left, less the time spent in here.
+            # Never zero: `setitimer(0)` means *disarm*, so a bound that
+            # overran its parent would silently switch the alarm off rather
+            # than let it fire at once.
+            left = outer - (time.monotonic() - began)
+            signal.setitimer(signal.ITIMER_REAL, max(left, 1e-6))
 
 
 #: Typed after every set of keys a fixture sends to a conflict prompt.

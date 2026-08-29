@@ -701,7 +701,7 @@ written down.
   `mutants.py:170`'s killer is `TestWhatIsNeverMutated`, a *different class* from
   the one the sweep named, reaching the same line through the module-level
   `mutate()` helper; and the route that actually hung was
-  `TestTheseLoopsTerminate`, which drives a **subprocess**, where no in-process
+  `TestABoundedCallStillReturns`, which drives a **subprocess**, where no in-process
   alarm can reach at all. The rule that survives all four: **the killer a sweep
   reports is one route to the line, not all of them.** Find the callers of the
   hang-prone function and bound each entry point, rather than bounding the test
