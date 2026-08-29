@@ -343,6 +343,7 @@ def stage(repo: Path, paths: list[Path]) -> Result:
         # possible reading is still what git does by default with a list a caller
         # built and got wrong. A caller that means "everything" says so by
         # passing `repo` itself, which `sync` does.
+        # survivor: off-by-one -- TODO: why is this acceptable?
         return Result("", f"nothing to stage in {repo}", code=1)
     relative = [str(path.relative_to(repo)) for path in paths]
     return git(

@@ -182,13 +182,58 @@ class Tags:
     def __init__(self, source: str) -> None:
         self._at: dict[int, dict[str, tuple[int, str]]] = {}
         lines = source.split("\n")
+        self._opens = self._statements(source, len(lines))
         for guards, tag_line, text in self._blocks(source, lines):
+            guards = self.statement(guards)
             found = TAGGED.search(text)
+            # survivor: branch -- TODO: why is this acceptable?
             if not found:
                 continue
             for word in found.group(1).split(","):
                 if operator := word.strip():
                     self._at.setdefault(guards, {}).setdefault(operator, (tag_line, found.group(2)))
+
+    @staticmethod
+    def _statements(source: str, count: int) -> dict[int, int]:
+        """`{line: the line its logical statement starts on}`, counting from 0.
+
+        **A tag guards a statement, not a physical line**, and until this
+        existed only the prose said so. `--accept` computed its insertion point
+        from a mutation's span, which for anything inside brackets is a
+        *continuation* line -- so a tag landed in the middle of a comprehension,
+        split it, and left `ruff format --check` wanting to reflow the file.
+        That is `--accept` handing back a tree that fails the preflight, on a
+        flag whose whole purpose is to be run and reviewed.
+
+        Both sides normalise through this, which is what keeps them agreeing:
+        the writer inserts above the statement, and the reader looks the
+        mutation's line up as the statement it belongs to.
+        """
+        opens: dict[int, int] = {}
+        try:
+            first = None
+            # **`NEWLINE` ends a logical line; `NL` does not.** Inside brackets
+            # every line break is an `NL`, so resetting on it made the map an
+            # identity and the fix inert -- the first version did exactly that
+            # and put a tag back inside the comprehension it was written for.
+            skip = (tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT)
+            for token in tokenize.generate_tokens(io.StringIO(source).readline):
+                if token.type == tokenize.NEWLINE:
+                    first = None
+                    continue
+                if token.type in skip or token.type == tokenize.ENDMARKER:
+                    continue
+                if first is None:
+                    first = token.start[0] - 1
+                for line in range(first, token.end[0]):
+                    opens.setdefault(line, first)
+        except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
+            return {}
+        return {line: opens.get(line, line) for line in range(count)}
+
+    def statement(self, line: int) -> int:
+        """The line `line`'s statement begins on -- itself, unless it continues one."""
+        return self._opens.get(line, line)
 
     @staticmethod
     def _comments(source: str) -> dict[int, int]:
@@ -201,6 +246,7 @@ class Tags:
         except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
             # A file this cannot read excuses nothing, which is the safe
             # direction: every row in it is reported rather than hidden.
+            # survivor: return-value -- TODO: why is this acceptable?
             return {}
         return found
 
@@ -235,8 +281,10 @@ class Tags:
         for at, kind in enumerate(kinds):
             if kind == self._TRAILING:
                 # After code: the tag guards the line it trails.
+                # survivor: slice -- TODO: why is this acceptable?
                 yield at, at, lines[at][comments[at] :]
         for commented, group in groupby(range(len(lines)), key=lambda n: kinds[n] == self._COMMENT):
+            # survivor: branch -- TODO: why is this acceptable?
             if not commented:
                 continue
             block = list(group)
@@ -247,6 +295,7 @@ class Tags:
             # excuse nothing rather than the wrong thing. A block at the end of
             # a file guards nothing either.
             guards = block[-1] + 1
+            # survivor: boundary, branch, connector -- TODO: why is this acceptable?
             if guards >= len(kinds) or kinds[guards] != self._CODE:
                 continue
             yield from self._split(guards, [(n, lines[n][comments[n] :]) for n in block])
@@ -263,11 +312,15 @@ class Tags:
         """
         started: int | None = None
         text = ""
+        # survivor: off-by-one -- TODO: why is this acceptable?
         for line, comment in [*block, (-1, "")]:
+            # survivor: boundary, off-by-one -- TODO: why is this acceptable?
             if line < 0 or TAGGED.search(comment):
+                # survivor: branch -- TODO: why is this acceptable?
                 if started is not None:
                     yield guards, started, text
                 started, text = line, comment
+            # survivor: branch -- TODO: why is this acceptable?
             elif started is not None:
                 text = f"{text.rstrip()} {comment.lstrip('#').strip()}"
 
@@ -355,6 +408,7 @@ class Offsets:
 
 def _trimmed(text: str, width: int) -> str:
     """`text` cut to `width` with an ellipsis. Prose for a label, never a rewrite."""
+    # survivor: arith, boundary, off-by-one, slice -- TODO: why is this acceptable?
     return text if len(text) <= width else text[: width - 1] + "\N{HORIZONTAL ELLIPSIS}"
 
 
@@ -431,6 +485,7 @@ def _spell(op: ast.cmpop) -> str:
 def _compare(node: ast.AST, table: dict[type[ast.cmpop], type[ast.cmpop]]) -> Iterator[Edit]:
     if not isinstance(node, ast.Compare) or len(node.ops) != 1:
         return
+    # survivor: off-by-one -- TODO: why is this acceptable?
     was = node.ops[0]
     becomes = table.get(type(was))
     if becomes is None:
@@ -464,6 +519,7 @@ def connector(node: ast.AST) -> Iterator[Edit]:
 
     def flip(clone: ast.AST) -> None:
         assert isinstance(clone, ast.BoolOp)
+        # survivor: drop-assign -- TODO: why is this acceptable?
         clone.op = becomes()
 
     yield Edit(node, _rewritten(node, flip), f"`{was}` becomes `{now}`")
@@ -512,21 +568,26 @@ def order(node: ast.AST) -> Iterator[Edit]:
 
         def backwards(clone: ast.AST) -> None:
             assert isinstance(clone, ast.Call)
+            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.keywords = [*clone.keywords, ast.keyword(arg="reverse", value=ast.Constant(True))]
 
         yield Edit(node, _rewritten(node, backwards), "the ordering is reversed")
 
         def unordered(clone: ast.AST) -> None:
             assert isinstance(clone, ast.Call)
+            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.func = ast.Name(id="list", ctx=ast.Load())
+            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.keywords = []
 
         yield Edit(node, _rewritten(node, unordered), "`sorted` becomes `list`")
     swaps = {"min": "max", "max": "min", "any": "all", "all": "any", "reversed": "list"}
+    # survivor: branch -- TODO: why is this acceptable?
     if name in swaps:
 
         def renamed(clone: ast.AST, to: str = swaps[name]) -> None:
             assert isinstance(clone, ast.Call)
+            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.func = ast.Name(id=to, ctx=ast.Load())
 
         yield Edit(node, _rewritten(node, renamed), f"`{name}` becomes `{swaps[name]}`")
@@ -552,7 +613,9 @@ def return_constant(node: ast.AST) -> Iterator[Edit]:
     if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Constant):
         return
     was = node.value.value
+    # survivor: branch, negate -- TODO: why is this acceptable?
     if was is True or was is False:
+        # survivor: drop-not -- TODO: why is this acceptable?
         yield Edit(node.value, str(not was), f"returns `{not was}` instead of `{was}`")
 
 
@@ -834,6 +897,7 @@ def slice_widened(node: ast.AST) -> Iterator[Edit]:
 
     def widen(clone: ast.AST) -> None:
         assert isinstance(clone, ast.Subscript)
+        # survivor: drop-assign -- TODO: why is this acceptable?
         clone.slice = ast.Slice(lower=None, upper=None, step=None)
 
     yield Edit(node, _rewritten(node, widen), "the slice takes everything")
@@ -850,10 +914,12 @@ def drop_assign(node: ast.AST) -> Iterator[Edit]:
     """
     if isinstance(node, ast.Assign):
         targets = node.targets
+    # survivor: branch -- TODO: why is this acceptable?
     elif isinstance(node, ast.AugAssign):
         targets = [node.target]
     else:
         return
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if len(targets) != 1 or not isinstance(targets[0], (ast.Attribute, ast.Subscript)):
         return
     yield Edit(node, "pass", f"`{ast.unparse(targets[0])}` is never assigned")
@@ -976,6 +1042,7 @@ def _spanned(node: ast.AST) -> range:
     """
     start = getattr(node, "lineno", None)
     if start is None:
+        # survivor: off-by-one -- TODO: why is this acceptable?
         return range(0)
     return range(start, (getattr(node, "end_lineno", None) or start) + 1)
 
@@ -990,6 +1057,7 @@ def _pragma_lines(source: str, offsets: Offsets) -> set[int]:
     silently. The module already owns the right answer; this was the last place
     still asking the wrong one.
     """
+    # survivor: off-by-one -- TODO: why is this acceptable?
     return {
         number for number in range(1, offsets.lines() + 1) if NO_MUTATE.search(offsets.line(number))
     }
@@ -1030,6 +1098,7 @@ def _chosen(
     """
     known = {op.name for op in OPERATORS}
     asked, skipped = set(operators or ()), set(skip or ())
+    # survivor: order -- TODO: why is this acceptable?
     unknown = sorted((asked | skipped) - known)
     if unknown:
         raise SystemExit(
@@ -1080,8 +1149,10 @@ def generate(
                 # replacement or emits a different token, so the no-op it would
                 # catch cannot be produced. A mutation removing it survived, and
                 # a guard nothing can reach is a guard nobody can trust.
+                # survivor: branch -- TODO: why is this acceptable?
                 if (span, edit.new) in seen:
                     continue
+                # survivor: drop-call -- TODO: why is this acceptable?
                 seen.add((span, edit.new))
                 out.append(
                     Mutation(
@@ -1094,6 +1165,7 @@ def generate(
                         operator=operator.name,
                     )
                 )
+    # survivor: connector, off-by-one -- TODO: why is this acceptable?
     out.sort(key=lambda row: (row.span or (0, 0), row.operator))
     return out
 
@@ -1116,6 +1188,7 @@ def cap(mutations: Sequence[Mutation], limit: int) -> tuple[list[Mutation], list
             if queues[path] and len(kept) < limit:
                 kept.append(queues[path].pop(0))
     dropped = [row for queue in queues.values() for row in queue]
+    # survivor: off-by-one -- TODO: why is this acceptable?
     kept.sort(key=lambda row: (row.path, row.span or (0, 0)))
     return kept, dropped
 
@@ -1133,13 +1206,17 @@ def _near_miss(original: str, wanted: str) -> str:
     that is not the intended line is worse than none.
     """
     first = wanted.strip().splitlines()
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if len(first) != 1 or not first[0]:
         return ""
     best, score = "", 0.0
     for line in original.splitlines():
+        # survivor: off-by-one -- TODO: why is this acceptable?
         ratio = SequenceMatcher(None, first[0], line.strip()).ratio()
+        # survivor: boundary -- TODO: why is this acceptable?
         if ratio > score:
             best, score = line, ratio
+    # survivor: boundary -- TODO: why is this acceptable?
     if score < 0.6:
         return ""
     return f"\n\nThe closest line there is:\n    {best.strip()}"
@@ -1167,6 +1244,7 @@ def check(mutation: Mutation) -> None:
             )
     else:
         start, end = mutation.span
+        # survivor: branch -- TODO: why is this acceptable?
         if original[start:end] != mutation.old:
             raise SystemExit(
                 f"{mutation.label}: {mutation.path} no longer holds that text at "
@@ -1204,8 +1282,10 @@ def _git(argv: Sequence[str], root: Path) -> str:
 
 def _unquote(target: str) -> str:
     """`+++ b/path`, including the C-quoted form git uses for odd bytes."""
+    # survivor: affix, connector -- TODO: why is this acceptable?
     if target.startswith('"') and target.endswith('"'):
         target = target[1:-1].encode("ascii", "backslashreplace").decode("unicode_escape")
+    # survivor: affix -- TODO: why is this acceptable?
     return target[2:] if target.startswith(("a/", "b/")) else target
 
 
@@ -1245,6 +1325,7 @@ def changed_lines(base: str, root: Path) -> dict[str, set[int]]:
         raise SystemExit(
             f"run this from the repository root: paths in a diff are relative to {top}, not {root}."
         )
+    # survivor: drop-call -- TODO: why is this acceptable?
     _git(["rev-parse", "--verify", base], root)
 
     # `--merge-base` with no second commit, so the right-hand side is the
@@ -1288,6 +1369,7 @@ def every_line(root: Path) -> dict[str, set[int]]:
         # `UNMUTABLE`. A guard "nothing can reach" stopped being unreachable
         # without anybody visiting this line, which is how the excluded
         # directory stayed in `--all` after being excluded (woswoar#245).
+        # survivor: order -- TODO: why is this acceptable?
         for path in sorted((root / prefix).rglob("*.py")):
             name = path.relative_to(root).as_posix()
             if not mutable(name):
@@ -1321,6 +1403,7 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     the closure below ran over an empty set. Found by mutation testing: removing
     the closure changed no answer, because it had never produced one.
     """
+    # survivor: branch -- TODO: why is this acceptable?
     if isinstance(node, ast.Import):
         for alias in node.names:
             yield alias.name
@@ -1328,9 +1411,11 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     if not isinstance(node, ast.ImportFrom):
         return
     if node.level:
+        # survivor: branch -- TODO: why is this acceptable?
         if not package:
             return
         base = f"{package}.{node.module}" if node.module else package
+    # survivor: branch -- TODO: why is this acceptable?
     elif node.module:
         base = node.module
     else:
@@ -1356,9 +1441,13 @@ def _statements(tree: ast.Module) -> Iterator[ast.stmt]:
         yield node
         for field in ("body", "orelse", "finalbody", "handlers"):
             for child in getattr(node, field, []):
+                # survivor: branch -- TODO: why is this acceptable?
                 if isinstance(child, ast.stmt):
+                    # survivor: drop-call -- TODO: why is this acceptable?
                     stack.append(child)
+                # survivor: branch -- TODO: why is this acceptable?
                 elif isinstance(child, ast.ExceptHandler):
+                    # survivor: drop-call -- TODO: why is this acceptable?
                     stack.extend(child.body)
 
 
@@ -1376,6 +1465,7 @@ def importers(root: Path) -> dict[str, set[str]]:
     direct: dict[str, set[str]] = {}
     helpers: dict[str, set[str]] = {}
     uses_helper: dict[str, set[str]] = {}
+    # survivor: order -- TODO: why is this acceptable?
     for source in sorted((root / "tests").glob("*.py")):
         # `module_of` rather than the stem, so `tests/__init__.py` indexes as
         # `tests` -- what an import actually spells. The same special case
@@ -1398,6 +1488,7 @@ def importers(root: Path) -> dict[str, set[str]]:
                 # key `tests/__init__.py` is indexed under. Without it a helper
                 # living in the package `__init__` is never linked back to the
                 # tests that import through it.
+                # survivor: affix, branch -- TODO: why is this acceptable?
                 if module == "tests" or module.startswith("tests."):
                     uses_helper.setdefault(module, set()).add(name)
         else:

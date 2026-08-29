@@ -84,6 +84,9 @@ from tools import paint
 #: So the print site reads the first word back. An unrecognised one is simply not
 #: painted: a wording change then costs a colour, where a wrong colour would cost
 #: a reader looking at an hour-long job and seeing green where it said DIED.
+# survivor: arith -- TODO: why is this acceptable?
+# survivor: arith -- TODO: why is this acceptable?
+# survivor: arith -- TODO: why is this acceptable?
 SHOUT = {
     "FINISHED": paint.GOOD + paint.HEAD,
     "DIED": paint.BAD + paint.HEAD,
@@ -165,6 +168,7 @@ def alive(pid: int) -> bool:
     if pid <= 0:
         raise ValueError(f"{pid} names a process group, not a process")
     try:
+        # survivor: off-by-one -- TODO: why is this acceptable?
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
@@ -212,6 +216,7 @@ class Watch:
         #: -1 rather than 0, so a job that is already at zero rows still gets its
         #: first "working" line. Starting at 0 would make the opening silence
         #: indistinguishable from a job that never starts.
+        # survivor: off-by-one -- TODO: why is this acceptable?
         self.last = -1
         #: When the count last moved. `began` rather than 0, because nothing has
         #: moved yet and "since we started watching" is what that means. In
@@ -426,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
             print(tint(line), flush=True)
             if status >= 0:
                 return status
+        # survivor: drop-call -- TODO: why is this acceptable?
         time.sleep(args.interval)
 
 

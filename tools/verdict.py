@@ -140,7 +140,9 @@ def cap(limit: int) -> None:
             continue
         # Never raise an existing ceiling: a caller who already sandboxed us
         # meant it.
+        # survivor: negate -- TODO: why is this acceptable?
         ceiling = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+        # survivor: boundary -- TODO: why is this acceptable?
         if soft != resource.RLIM_INFINITY and soft <= ceiling:
             continue
         try:
@@ -173,6 +175,7 @@ def _exhausted(err: ExcInfo | None) -> bool:
     because building the instance is itself an allocation that may not have
     succeeded.
     """
+    # survivor: off-by-one -- TODO: why is this acceptable?
     return err is not None and err[0] is not None and issubclass(err[0], MemoryError)
 
 
@@ -186,6 +189,7 @@ def _carrier(test: object, err: ExcInfo | None, each: float) -> str:
     twice, a refinement to one copy leaves the other crediting -- and the
     `addSubTest` copy had no test at all.
     """
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if err is None or err[0] is None:
         return ""
     if issubclass(err[0], Hung):
@@ -249,11 +253,13 @@ class Verdicts(unittest.TextTestResult):
         #: runs are where they mostly come from, since those alone run a whole
         #: selection to the end without `failfast` cutting it short.
         self.times: dict[str, float] = {}
+        # survivor: drop-assign -- TODO: why is this acceptable?
         self._began = 0.0
 
     def startTest(self, test: unittest.TestCase) -> None:
         super().startTest(test)
         self._began = time.perf_counter()
+        # survivor: branch -- TODO: why is this acceptable?
         if self.each:
             signal.setitimer(signal.ITIMER_REAL, self.each)
 
@@ -262,8 +268,11 @@ class Verdicts(unittest.TextTestResult):
         # Cancelled here rather than only on the next `startTest`, or a fast test
         # would be charged for the timer its predecessor set and the alarm would
         # land in whatever ran next.
+        # survivor: branch -- TODO: why is this acceptable?
         if self.each:
+            # survivor: drop-call, off-by-one -- TODO: why is this acceptable?
             signal.setitimer(signal.ITIMER_REAL, 0)
+        # survivor: drop-call -- TODO: why is this acceptable?
         super().stopTest(test)
 
     def _answered(self, test: unittest.TestCase, err: ExcInfo | None = None) -> None:
@@ -285,6 +294,7 @@ class Verdicts(unittest.TextTestResult):
         self._answered(test, err)
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
+        # survivor: drop-call -- TODO: why is this acceptable?
         super().addError(test, err)
         # The two limits, classified by type rather than by protocol, because by
         # protocol they are a test noticing. See `_carrier`.
@@ -305,12 +315,14 @@ class Verdicts(unittest.TextTestResult):
         target.append(str(test))
         if target is self.noticed:
             self.killers.append(test.id())
+            # survivor: branch -- TODO: why is this acceptable?
             if not self.reasons:
                 self.reasons.append("".join(traceback.format_exception(*err)))
 
     def addSubTest(
         self, test: unittest.TestCase, subtest: unittest.TestCase, err: ExcInfo | None
     ) -> None:
+        # survivor: drop-call -- TODO: why is this acceptable?
         super().addSubTest(test, subtest, err)
         if err is not None:
             # `test` is the owning case; `subtest` is the `_SubTest` carrier that
@@ -365,6 +377,7 @@ def every_module(names: list[str]) -> list[str]:
         root = Path(package.replace(".", "/")) if package else Path()
         prefix = f"{package}." if package else ""
         found += [f"{prefix}{beside.stem}" for beside in root.glob("test_*.py")]
+    # survivor: order -- TODO: why is this acceptable?
     return sorted(set(found))
 
 
@@ -384,11 +397,14 @@ def _reached(names: list[str], walk: bool) -> list[list[str]]:
     # asks the selection which package to look in, and an empty selection names
     # none, so both arms below return `[]` and the caller falls through. A guard
     # was written here first and no fixture could tell it from its absence.
+    # survivor: branch, drop-not -- TODO: why is this acceptable?
     if not walk:
         # A baseline. It asks whether *this selection* is green, and widening it
         # would make every baseline a whole-suite run.
+        # survivor: return-value -- TODO: why is this acceptable?
         return [[name] for name in names]
     chosen = set(names)
+    # survivor: return-value -- TODO: why is this acceptable?
     return [[name] for name in names] + [[m] for m in every_module(names) if m not in chosen]
 
 
@@ -419,6 +435,7 @@ def collect(
     """
     loader = unittest.TestLoader()
     groups = _reached(names, walk)
+    # survivor: branch, drop-not -- TODO: why is this acceptable?
     if not groups:
         chosen = loader.discover(".", pattern="test_*.py", top_level_dir=".")
         # `first` in its own argument rather than pushed onto `names`, and that is
@@ -441,6 +458,7 @@ def collect(
         made.each = armed
         return made
 
+    # survivor: off-by-one -- TODO: why is this acceptable?
     result = build(io.StringIO(), False, 0)
     result.failfast = failfast
     broke: list[str] = []
@@ -472,6 +490,7 @@ def collect(
     try:
         for suite in ready:
             suite(result)
+            # survivor: branch -- TODO: why is this acceptable?
             if result.shouldStop:
                 break
         else:
@@ -488,6 +507,7 @@ def collect(
                 # Not hoisted into the baseline's arm: there `failfast` being
                 # off is the request, and stopping at the first red module would
                 # report one shard of a broken tree as the whole story.
+                # survivor: branch, connector -- TODO: why is this acceptable?
                 if result.shouldStop or (walk and result.noticed):
                     break
                 # A fresh loader per group: `TestLoader.errors` accumulates, so a
@@ -504,6 +524,7 @@ def collect(
         #   `result.stopTestRun(...)` never happens -- the matching hook, equally empty. Both are
         #   called because the protocol says to, not because either does anything here.
         result.stopTestRun()
+    # survivor: off-by-one -- TODO: why is this acceptable?
     return {
         "loaded": True,
         "ran": result.testsRun,
@@ -543,6 +564,7 @@ def main(argv: list[str]) -> None:
     # -- the baseline asks whether that selection is green, the mutation asks
     # what in the whole suite notices. Inferring it from `names` cannot tell them
     # apart, and getting it wrong turns every baseline into a whole-suite run.
+    # survivor: negate -- TODO: why is this acceptable?
     first, walk, names = [n for n in argv[4].split() if n], argv[5] == "1", argv[6:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.

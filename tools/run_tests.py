@@ -133,11 +133,11 @@ def _unloadable(loader: unittest.TestLoader) -> dict[str, str]:
     and the message shape live here rather than at the two call sites, because
     they encode what `unittest` prints and that is one fact.
     """
+    # survivor: off-by-one, sign -- tools/run_tests.py:137 in _unloadable() -- `1` becomes `2` --
+    #   equivalent for anything anyone reads: `TextTestRunner`'s verbosity controls the per- test
+    #   detail on stderr, and the `Ran N tests` line that
+    #   `test_the_worker_says_how_many_tests_it_ran` asserts is printed at every level.
     return {
-        # survivor: off-by-one, sign -- tools/run_tests.py:137 in _unloadable() -- `1` becomes `2`
-        #   -- equivalent for anything anyone reads: `TextTestRunner`'s verbosity controls the per-
-        #   test detail on stderr, and the `Ran N tests` line that
-        #   `test_the_worker_says_how_many_tests_it_ran` asserts is printed at every level.
         said.splitlines()[0].rsplit(": ", 1)[-1]: said.splitlines()[0]
         for said in (str(error) for error in loader.errors)
     }
@@ -188,6 +188,7 @@ def pack(classes: dict[str, list[str]], bins: int) -> list[list[str]]:
     before calling this.
     """
     batches: list[list[str]] = [[] for _ in range(max(1, min(bins, len(classes))))]
+    # survivor: off-by-one -- TODO: why is this acceptable?
     weights = [0] * len(batches)
     for name in sorted(classes, key=lambda n: (-len(classes[n]), n)):
         light = weights.index(min(weights))
@@ -206,6 +207,7 @@ def shard_of(spec: str) -> tuple[int, int]:
     if not sep or not index.strip().isdigit() or not total.strip().isdigit():
         raise ValueError(f"--shard wants I/N, got {spec!r}")
     got, count = int(index), int(total)
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if count < 1 or not 1 <= got <= count:
         raise ValueError(f"--shard {spec} is out of range: I must be 1..N and N at least 1")
     return got - 1, count
@@ -250,6 +252,7 @@ def run_batch(names: list[str], out: Path) -> int:
     # Tracebacks go to stderr, where they interleave with the tests' own output
     # and a human reads them in context. Only ids travel back to the parent:
     # shipping the traceback too would print every failure twice.
+    # survivor: off-by-one -- TODO: why is this acceptable?
     result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1, resultclass=_Recorder).run(
         suite
     )

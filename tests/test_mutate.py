@@ -4054,6 +4054,39 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
             self.assertIn("# survivor", written.split("\n")[line - 1])
             self.assertEqual(guard, written.split("\n")[line].strip())
 
+    def test_a_tag_goes_above_the_statement_not_inside_it(self) -> None:
+        """A mutation inside brackets sits on a *continuation* line, and a
+        comment inserted there is legal Python that splits the expression.
+
+        Found by running `--accept` for real: it put a tag in the middle of a
+        set comprehension in `tools/mutants.py`, and `ruff format --check` then
+        wanted to reflow the file -- the flag handing back a tree that fails the
+        preflight it exists to be reviewed under. The file still has to parse
+        *and* still has to be formatted, so both are asserted.
+        """
+        body = "def f():\n    return {\n        n\n        for n in range(3)\n    }\n"
+        box = self.tree(body)
+        at = body.index("range(3)")
+        row = mutate.Result(
+            Mutation(
+                "tupferl/sync.py:4 in f() -- boundary",
+                "tupferl/sync.py",
+                "range(3)",
+                "range(4)",
+                "tests.test_sync",
+                span=(at, at + 8),
+                operator="boundary",
+            ),
+            mutate.Verdict("survived", ""),
+        )
+        with support.quiet():
+            mutate._accept(mutate.Survivors([row], [], []), box)
+        after = (box / "tupferl" / "sync.py").read_text(encoding="utf-8")
+        compile(after, "sync.py", "exec")
+        self.assertLess(
+            after.index("# survivor"), after.index("return {"), f"the tag went inside\n{after}"
+        )
+
     def test_a_row_with_no_span_is_left_alone(self) -> None:
         """There is nothing to hang a tag on, and guessing a line from a prose
         label is how one lands on the wrong statement."""
