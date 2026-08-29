@@ -56,8 +56,9 @@ import io
 import re
 import subprocess
 import tokenize
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from difflib import SequenceMatcher
+from itertools import groupby
 from pathlib import Path
 from typing import NamedTuple
 
@@ -203,41 +204,78 @@ class Tags:
             return {}
         return found
 
+    #: How each line of a file reads to `_blocks`.
+    _CODE, _BLANK, _COMMENT, _TRAILING = "code", "blank", "comment", "trailing"
+
+    def _kinds(self, comments: Mapping[int, int], lines: Sequence[str]) -> list[str]:
+        """One label per line, so the grouping below needs no index arithmetic."""
+        found = []
+        for at, line in enumerate(lines):
+            col = comments.get(at)
+            if col is None:
+                found.append(self._CODE if line.strip() else self._BLANK)
+            else:
+                found.append(self._TRAILING if line[:col].strip() else self._COMMENT)
+        return found
+
     def _blocks(self, source: str, lines: Sequence[str]) -> Iterator[tuple[int, int, str]]:
-        """`(line guarded, line the tag is on, tag text)` for each tag."""
+        """`(line guarded, line the tag is on, tag text)` for each tag.
+
+        **No `while`, and that is deliberate.** The first version walked the file
+        with two hand-rolled counters, and a mutation dropping either increment
+        spun for ever -- seven rows came back `BROKE` on the sweep that followed,
+        one of them `ran out of memory` because the loop appended while it spun.
+        `BROKE` is never `caught`, so those lines were guarded by nothing. A
+        `groupby` over labelled lines says the same thing with no counter to
+        mutate, which removes the whole class rather than bounding the tests
+        that trip over it.
+        """
         comments = self._comments(source)
-        at = 0
-        while at < len(lines):
-            if at not in comments:
-                at += 1
-                continue
-            if lines[at][: comments[at]].strip():
+        kinds = self._kinds(comments, lines)
+        for at, kind in enumerate(kinds):
+            if kind == self._TRAILING:
                 # After code: the tag guards the line it trails.
                 yield at, at, lines[at][comments[at] :]
-                at += 1
+        for commented, group in groupby(range(len(lines)), key=lambda n: kinds[n] == self._COMMENT):
+            if not commented:
                 continue
-            block = []
-            while at < len(lines) and at in comments and not lines[at][: comments[at]].strip():
-                block.append((at, lines[at][comments[at] :]))
-                at += 1
+            block = list(group)
             # The line directly below the block, and **a blank line ends it**.
             # A comment separated from the code by one is a section header or a
             # note about what came before at least as often as it is about what
             # follows, and the safe direction for a record of dispositions is to
             # excuse nothing rather than the wrong thing. A block at the end of
             # a file guards nothing either.
-            guards = at
-            if guards >= len(lines) or not lines[guards].strip():
+            guards = block[-1] + 1
+            # survivor: branch -- equivalent, both ways: dropping either half
+            #   indexes the tag at a blank line or past the end of the file, and
+            #   no mutation sits on either -- so the entry is never queried and
+            #   the answer is unchanged. Kept because "a tag guards a statement"
+            #   is the claim, and a guard that says so is worth more than one
+            #   fixture could show.
+            if guards >= len(kinds) or kinds[guards] != self._CODE:
                 continue
-            started: int | None = None
-            text = ""
-            for line, comment in [*block, (-1, "")]:
-                if line < 0 or TAGGED.search(comment):
-                    if started is not None:
-                        yield guards, started, text
-                    started, text = line, comment
-                elif started is not None:
-                    text = f"{text.rstrip()} {comment.lstrip('#').strip()}"
+            yield from self._split(guards, [(n, lines[n][comments[n] :]) for n in block])
+
+    @staticmethod
+    def _split(guards: int, block: Sequence[tuple[int, str]]) -> Iterator[tuple[int, int, str]]:
+        """One block's comment lines, cut into tags.
+
+        A line beginning a new `# survivor:` starts one; any other comment line
+        continues the one before it, which is what lets a reason wrap. Several
+        tags in a block is the case the first version could not represent at
+        all -- it joined the block and ran one regex, so the second tag was
+        swallowed into the first one's reason and its rows stayed unread.
+        """
+        started: int | None = None
+        text = ""
+        for line, comment in [*block, (-1, "")]:
+            if line < 0 or TAGGED.search(comment):
+                if started is not None:
+                    yield guards, started, text
+                started, text = line, comment
+            elif started is not None:
+                text = f"{text.rstrip()} {comment.lstrip('#').strip()}"
 
     def excuse(self, line: int, operator: str) -> tuple[int, str] | None:
         """The tag guarding `line` for `operator`: where it sits, and why."""

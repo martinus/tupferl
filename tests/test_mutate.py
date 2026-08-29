@@ -3405,6 +3405,17 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
     `--accept` writes `TODO` rather than a reason it invented.
     """
 
+    def setUp(self) -> None:
+        # Bounded, because everything here goes through `mutants.line_starts`
+        # and `Tags`, and `line_starts` is a `while` whose every arm advances
+        # its counter. A mutation dropping one spins, and a hang is filed
+        # `BROKE` rather than `caught` -- so the lines these tests exist to
+        # guard would be guarded by nothing. Measured: that row came back
+        # `BROKE` on the sweep that followed these tests being written.
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(support.PATIENCE, f"{type(self).__name__} hung"))
+
     def tree(self, body: str) -> Path:
         """A one-file tree, whose text is what a tag is read out of."""
         box = Path(tempfile.mkdtemp(prefix="tupferl-tags-"))
@@ -3562,7 +3573,16 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
         """
         outcomes: tuple[mutate.Outcome, ...] = ("broke", "timeout")
         for outcome in outcomes:
-            with self.subTest(outcome=outcome):
+            # **Its own bound per iteration, not the one `setUp` armed.**
+            # `support.deadline` is a one-shot alarm and `subTest` *catches* the
+            # `TimeoutError` it raises -- so the first iteration fails as it
+            # should, and the second runs on with nothing armed. Measured: this
+            # test hung past 120s under a mutation the class bound was written
+            # to catch, while its siblings failed in five seconds each.
+            with (
+                self.subTest(outcome=outcome),
+                support.deadline(support.PATIENCE, f"the {outcome} row hung"),
+            ):
                 body = "y = 2  # survivor: branch -- a fork bomb\n"
                 box, results = self.rows(body, "y = 2", outcome=outcome)
                 found = mutate.sort_survivors(results, box)
@@ -3960,6 +3980,17 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
     the whole reason the record moved out of a file of hashes: a `TODO` in a
     diff next to the code is read, and a `TODO` under a sha256 key is not.
     """
+
+    def setUp(self) -> None:
+        # Bounded, because everything here goes through `mutants.line_starts`
+        # and `Tags`, and `line_starts` is a `while` whose every arm advances
+        # its counter. A mutation dropping one spins, and a hang is filed
+        # `BROKE` rather than `caught` -- so the lines these tests exist to
+        # guard would be guarded by nothing. Measured: that row came back
+        # `BROKE` on the sweep that followed these tests being written.
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(support.PATIENCE, f"{type(self).__name__} hung"))
 
     def tree(self, body: str) -> Path:
         box = Path(tempfile.mkdtemp(prefix="tupferl-accept-"))

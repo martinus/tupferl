@@ -723,6 +723,14 @@ written down.
   hang-prone function and bound each entry point, rather than bounding the test
   in the row.
 
+  **A bound is one shot, and `subTest` spends it.** `support.deadline` arms a
+  single alarm; `subTest` *catches* the `TimeoutError` it raises, records a
+  failure and carries on to the next iteration — with nothing armed. Measured:
+  a class-level bound covered the first case of a two-case loop and the second
+  ran past 120s under the very mutation the bound was written for, while its
+  siblings failed in five seconds each. Arm it **inside** the `subTest`, not
+  around the loop.
+
   **And check what the bound's exception collides with.** `TimeoutError` *is* an
   `OSError`, so a `deadline` inside an existing `assertRaises(OSError)` is
   swallowed: the hang is accepted as the error under test and the bound turns
