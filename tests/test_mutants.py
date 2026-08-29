@@ -1228,6 +1228,13 @@ class TestABoundedCallStillReturns(unittest.TestCase):
     #: `MemoryError` in milliseconds and the test fails on its own assertion
     #: rather than on a clock. Measured: `mutants.py:170` came back `TIMEOUT` at
     #: 300s without this, on a line that two other bounds already covered.
+    #:
+    #: **Asked for, not required.** macOS refuses `RLIMIT_AS` outright -- the
+    #: `macos` leg went red with "current limit exceeds maximum limit" the first
+    #: time this was set unguarded -- so the child swallows the refusal, exactly
+    #: as `verdict.cap` does one module over. Where the platform declines, the
+    #: `BOUND` timeout is still in force; this only makes the failure faster and
+    #: kinder to the machine where it works.
     CEILING = 512 << 20
 
     def returns(self, body: str) -> None:
@@ -1235,7 +1242,10 @@ class TestABoundedCallStillReturns(unittest.TestCase):
         script = textwrap.dedent(
             """
             import resource, sys
-            resource.setrlimit(resource.RLIMIT_AS, ({ceiling}, {ceiling}))
+            try:
+                resource.setrlimit(resource.RLIMIT_AS, ({ceiling}, {ceiling}))
+            except (OSError, ValueError):
+                pass  # macOS refuses RLIMIT_AS; the timeout still bounds this
             sys.path.insert(0, {root!r})
             from tools import mutants
             from tools.mutants import Mutation
