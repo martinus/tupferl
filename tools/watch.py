@@ -84,6 +84,11 @@ from tools import paint
 #: So the print site reads the first word back. An unrecognised one is simply not
 #: painted: a wording change then costs a colour, where a wrong colour would cost
 #: a reader looking at an hour-long job and seeing green where it said DIED.
+# survivor: arith -- `TypeError` every time, and not generated on purpose where the tool can tell:
+#   these are `paint.GOOD + paint.HEAD`, two *attributes*, so `mutants.py`'s refusal -- which fires
+#   on a string *literal* -- cannot see them. Proving them string-valued means resolving a name
+#   across a module boundary, which is a type checker rather than a guard. CLAUDE.md records the
+#   trade: refusing too strictly stops mutating real arithmetic and nothing would report it.
 SHOUT = {
     "FINISHED": paint.GOOD + paint.HEAD,
     "DIED": paint.BAD + paint.HEAD,
@@ -107,6 +112,9 @@ def tint(line: str, out: TextIO | None = None) -> str:
     stream, and a caller writing somewhere other than stdout -- including a test
     -- must be able to say which.
     """
+    # survivor: off-by-one -- `line.split(" ", 1)[0]` -- equivalent: `maxsplit` decides how many
+    #   pieces come back, never what the *first* one is, so `[0]` is the same word at 1, 2 or any
+    #   other bound.
     return paint.paint(line, SHOUT.get(line.split(" ", 1)[0].rstrip(":"), ""), out)
 
 
@@ -162,6 +170,11 @@ def alive(pid: int) -> bool:
     if pid <= 0:
         raise ValueError(f"{pid} names a process group, not a process")
     try:
+        # survivor: off-by-one -- signal 0 asks whether a process exists; signal 1 is SIGHUP. A
+        #   fixture that let this run would send SIGHUP to the pid under test -- which in this suite
+        #   is usually the test process itself, so the mutant kills the run rather than being
+        #   noticed by it. That is why the row is `BROKE` and not `SURVIVED`, and why no honest
+        #   fixture makes it otherwise.
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
@@ -209,6 +222,9 @@ class Watch:
         #: -1 rather than 0, so a job that is already at zero rows still gets its
         #: first "working" line. Starting at 0 would make the opening silence
         #: indistinguishable from a job that never starts.
+        # survivor: off-by-one -- equivalent: the comment above says the value is "-1 rather than
+        #   0", and any negative number carries that meaning -- a first count of 0 is still an
+        #   increase, so the opening "working" line still prints.
         self.last = -1
         #: When the count last moved. `began` rather than 0, because nothing has
         #: moved yet and "since we started watching" is what that means. In
@@ -222,6 +238,9 @@ class Watch:
         #: doubling rather than a repeat. Zero means nothing said yet -- and, as
         #: with `moved`, the opening poll overwrites it before `stalling` can
         #: read it, so this value is the declaration rather than the behaviour.
+        # survivor: drop-assign -- equivalent, and the comment above says why: the opening poll
+        #   assigns `self.told` again (`Watch.poll`) before `stalling` ever reads it, so this line
+        #   declares the attribute rather than deciding anything.
         self.told = 0.0
 
     def minutes(self) -> int:
@@ -270,6 +289,9 @@ class Watch:
         idle = time.monotonic() - self.moved
         # `told * 2` is the doubling. Below `stale` nothing is said at all, and
         # `told` is 0 until the first report, so that term cannot suppress it.
+        # survivor: boundary -- equivalent in practice: both sides are `time.monotonic()`
+        #   differences, so `<` and `<=` differ only when two floats are bit-identical. A fixture
+        #   that produced that would be pinning the clock, not the rule.
         if idle < self.stale or idle < self.told * 2:
             return None
         self.told = idle
@@ -328,8 +350,15 @@ def _await_pid(where: Path, interval: float, patience: float | None = None) -> i
         try:
             return a_pid(where.read_text(encoding="utf-8").strip())
         except (OSError, ValueError, argparse.ArgumentTypeError) as exc:
+            # survivor: boundary -- equivalent in practice: both sides are `time.monotonic()`
+            #   differences, so `<` and `<=` differ only when two floats are bit-identical. A
+            #   fixture that produced that would be pinning the clock, not the rule.
             if time.monotonic() >= deadline:
                 raise SystemExit(f"no usable pid in {where} after {waiting:g}s: {exc}") from None
+        # survivor: drop-call -- costs CPU, not correctness: without the sleep the loop spins
+        #   instead of waiting, and still leaves at the same deadline. Worth keeping and not worth a
+        #   test -- asserting *that the process idled* means timing the watcher, which is the
+        #   flakiest kind of assertion this suite could hold.
         time.sleep(step)
 
 
@@ -410,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
             print(tint(line), flush=True)
             if status >= 0:
                 return status
+        # survivor: drop-call -- costs CPU, not correctness -- the same argument as the sleep in
+        #   `_await_pid`. Without it the poll spins instead of waiting and reports the identical
+        #   lines at the identical points. Asserting that a process *idled* means timing the
+        #   watcher, which is the flakiest assertion this suite could hold.
         time.sleep(args.interval)
 
 

@@ -343,6 +343,10 @@ def stage(repo: Path, paths: list[Path]) -> Result:
         # possible reading is still what git does by default with a list a caller
         # built and got wrong. A caller that means "everything" says so by
         # passing `repo` itself, which `sync` does.
+        # survivor: off-by-one -- equivalent: `Result.ok` is `self.code == 0`, and every reader of
+        #   this result asks `ok`. Any non-zero code says the same thing here. The number matters
+        #   for `merge_file`, where it is git's conflict count -- this one is a refusal, and
+        #   refusals have no count.
         return Result("", f"nothing to stage in {repo}", code=1)
     relative = [str(path.relative_to(repo)) for path in paths]
     return git(
@@ -429,6 +433,10 @@ def distance(repo: Path, here: str, there: str) -> tuple[int, int] | None:
     they cannot come from refs that moved between them.
     """
     counted = git(["rev-list", "--left-right", "--count", f"{here}...{there}"], cwd=repo)
+    # survivor: branch -- tupferl/gitrepo.py:426 in distance() -- the `if` is never taken -- named
+    #   in the code: `distance`'s own comment calls this an equivalent mutant and says why -- a git
+    #   that would not compare produces output the parse below rejects anyway, reaching the same
+    #   `None`.
     if not counted.ok:
         # An **equivalent mutant** lives here, and it is named rather than
         # tested: removing this `if` changes nothing observable, because a
@@ -477,6 +485,12 @@ def unmerged(repo: Path) -> list[str]:
     came back as a name that does not exist, and `sync` then told the user to go
     and resolve it. One question, one spelling, one git call.
     """
+    # survivor: order -- tupferl/gitrepo.py:474 in unmerged() -- `sorted` becomes `list` --
+    #   equivalent for the names git can produce: `conflicted` builds its dict from `ls-files -u
+    #   -z`, which git emits in byte order, and UTF-8 byte order agrees with Python's code-point
+    #   order. The *reversal* of this line is caught by
+    #   `test_two_conflicted_files_come_back_in_a_settled_order`; only the redundancy of sorting an
+    #   already-sorted list is not.
     return sorted(conflicted(repo))
 
 
@@ -516,6 +530,11 @@ def conflicted(repo: Path) -> dict[str, dict[int, int]]:
         )
     except (OSError, subprocess.TimeoutExpired):
         return {}
+    # survivor: branch -- tupferl/gitrepo.py:513 in conflicted() -- the `if` is never taken --
+    #   equivalent: an exit status git sets also means empty stdout, and the parse below turns that
+    #   into `{}` by itself -- the loop sees one empty field, `not raw` skips it, and the same empty
+    #   dict comes back. The guard is an early-out, not a decision. Its neighbour on 514 (`return
+    #   {}` becoming `return None`) *is* caught, by `TestWhenGitWillNotAnswerAboutConflicts`.
     if done.returncode != 0:
         return {}
     stages: dict[str, dict[int, int]] = {}
@@ -525,6 +544,12 @@ def conflicted(repo: Path) -> dict[str, dict[int, int]]:
         # Only the empty tail after the final NUL is reachable here; git's own
         # output always has three fields and two numbers. Guarded anyway because
         # the alternative to a skipped row is a `ValueError` from inside a merge.
+        # survivor: connector -- tupferl/gitrepo.py:522 in conflicted() -- `or` becomes `and` --
+        #   equivalent given git's contract: the two operands disagree only for a row that is non-
+        #   empty *and* malformed, and `ls-files -u -z` always emits three fields. The trailing
+        #   empty field after the final NUL satisfies both spellings. The guard is there so a future
+        #   git cannot turn a merge into a `ValueError`, which is a claim about git rather than
+        #   about this code.
         if not raw or len(parts) != 3:
             continue
         stages.setdefault(raw.decode("utf-8", "surrogateescape"), {})[int(parts[2])] = int(

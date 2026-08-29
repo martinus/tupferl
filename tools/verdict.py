@@ -118,6 +118,8 @@ def cap(limit: int) -> None:
     in this function can see that, which is why the guard against it is a
     sampler one level up rather than another rlimit here.
     """
+    # survivor: off-by-one -- tools/verdict.py:121 in cap() -- `0` becomes `1` -- cosmetic, same as
+    #   the `-1` mutation on this line.
     if limit <= 0:
         # 0 is "no cap", as `--memory 0` promises and as `--limit 0` beside it
         # already means. Guarded here as well as at the CLI because `cap` is
@@ -138,7 +140,17 @@ def cap(limit: int) -> None:
             continue
         # Never raise an existing ceiling: a caller who already sandboxed us
         # meant it.
+        # survivor: negate -- **caught outside the harness and equivalent inside it, because of this
+        #   branch's own fix.** Run under `python -m unittest`, three tests in
+        #   `TestTheMemoryCapsArithmetic` fail -- measured. Run inside a sweep they cannot: since
+        #   `cap` began lowering the *hard* half, a probe's children inherit a finite ceiling, so
+        #   `hard == RLIM_INFINITY` is false either way and the two spellings agree. Closing the
+        #   escape hatch that let a descendant run unbounded cost this row its observability under
+        #   the tool, which is a trade worth naming rather than a gap.
         ceiling = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+        # survivor: boundary -- equivalent: `<=` against `<` differs only when `soft` is exactly
+        #   `ceiling`, and setting a limit to the value it already holds is a no-op in either
+        #   reading.
         if soft != resource.RLIM_INFINITY and soft <= ceiling:
             continue
         try:
@@ -171,6 +183,11 @@ def _exhausted(err: ExcInfo | None) -> bool:
     because building the instance is itself an allocation that may not have
     succeeded.
     """
+    # survivor: off-by-one -- `err` is `sys.exc_info()`, whose first element is the class. Index 1
+    #   is the instance and -1 the traceback, and `issubclass` refuses both with `TypeError` -- so
+    #   the mutant raises inside the result object rather than answering, which the docstring above
+    #   already argues is why the *class* is what this reads: building the instance is itself an
+    #   allocation that may not have succeeded.
     return err is not None and err[0] is not None and issubclass(err[0], MemoryError)
 
 
@@ -184,6 +201,8 @@ def _carrier(test: object, err: ExcInfo | None, each: float) -> str:
     twice, a refinement to one copy leaves the other crediting -- and the
     `addSubTest` copy had no test at all.
     """
+    # survivor: off-by-one -- same tuple, same argument as `_exhausted`: index 0 is the exception
+    #   class, and a `None` there is how `sys.exc_info()` says there is nothing to report.
     if err is None or err[0] is None:
         return ""
     if issubclass(err[0], Hung):
@@ -247,11 +266,19 @@ class Verdicts(unittest.TextTestResult):
         #: runs are where they mostly come from, since those alone run a whole
         #: selection to the end without `failfast` cutting it short.
         self.times: dict[str, float] = {}
+        # survivor: drop-assign -- equivalent: `startTest` assigns it before any test body runs, and
+        #   `stopTest` is the only reader. The line declares the attribute so the class is complete
+        #   without a test having started, which is what a `Verdicts` handed to `_unloadable` is.
         self._began = 0.0
 
     def startTest(self, test: unittest.TestCase) -> None:
         super().startTest(test)
         self._began = time.perf_counter()
+        # survivor: branch -- `each` is 0 exactly where `SIGALRM` does not exist -- Windows, and any
+        #   non-main thread -- and this suite runs on neither. Taking the branch there would raise
+        #   inside `startTest`; skipping it where the alarm exists loses the per-test bound, which
+        #   is `verdict.each_test`'s whole job and is asserted by
+        #   `TestAHungTestIsBoundedAndNotCredited` through the alarm rather than through this line.
         if self.each:
             signal.setitimer(signal.ITIMER_REAL, self.each)
 
@@ -260,8 +287,22 @@ class Verdicts(unittest.TextTestResult):
         # Cancelled here rather than only on the next `startTest`, or a fast test
         # would be charged for the timer its predecessor set and the alarm would
         # land in whatever ran next.
+        # survivor: branch -- `each` is 0 exactly where `SIGALRM` does not exist -- Windows, and any
+        #   non-main thread -- and this suite runs on neither. Taking the branch there would raise
+        #   inside `startTest`; skipping it where the alarm exists loses the per-test bound, which
+        #   is `verdict.each_test`'s whole job and is asserted by
+        #   `TestAHungTestIsBoundedAndNotCredited` through the alarm rather than through this line.
         if self.each:
+            # survivor: drop-call, off-by-one -- cancels the alarm the previous test armed. Dropping
+            #   it charges a fast test for its predecessor's timer, so the bound fires in whatever
+            #   ran next -- which is a misattributed `BROKE` rather than a wrong verdict, and the
+            #   comment above says so. Asserting it means watching *which* test a timeout is blamed
+            #   on, and that is a race by construction.
             signal.setitimer(signal.ITIMER_REAL, 0)
+        # survivor: drop-call -- `TestResult.stopTest` clears the per-test bookkeeping the base
+        #   class keeps. Nothing this module reads comes from it, so the mutant answers identically
+        #   -- and a fixture for it would be asserting on `unittest`'s internals rather than on any
+        #   claim of ours.
         super().stopTest(test)
 
     def _answered(self, test: unittest.TestCase, err: ExcInfo | None = None) -> None:
@@ -283,6 +324,10 @@ class Verdicts(unittest.TextTestResult):
         self._answered(test, err)
 
     def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
+        # survivor: drop-call -- the base class's own error list, which nothing here reads:
+        #   `noticed`, `broke` and `killers` are this module's answer and are appended above.
+        #   Delegating keeps `wasSuccessful()` honest for a caller that asks it, and
+        #   `verdict.collect` does not.
         super().addError(test, err)
         # The two limits, classified by type rather than by protocol, because by
         # protocol they are a test noticing. See `_carrier`.
@@ -303,12 +348,17 @@ class Verdicts(unittest.TextTestResult):
         target.append(str(test))
         if target is self.noticed:
             self.killers.append(test.id())
+            # survivor: branch -- the first traceback is the one kept, and the comment above says
+            #   why: a run without `failfast` is diagnosed from the first failure as well as from
+            #   forty. Keeping them all is a longer report, not a different verdict.
             if not self.reasons:
                 self.reasons.append("".join(traceback.format_exception(*err)))
 
     def addSubTest(
         self, test: unittest.TestCase, subtest: unittest.TestCase, err: ExcInfo | None
     ) -> None:
+        # survivor: drop-call -- same as `addError`'s: the base class keeps its own list and this
+        #   module keeps the one it reports from.
         super().addSubTest(test, subtest, err)
         if err is not None:
             # `test` is the owning case; `subtest` is the `_SubTest` carrier that
@@ -355,10 +405,18 @@ def every_module(names: list[str]) -> list[str]:
     about.
     """
     found: list[str] = []
+    # survivor: order -- tools/verdict.py:342 in every_module() -- the ordering is reversed --
+    #   equivalent: this sorts the *packages* the walk visits, and the function ends `return
+    #   sorted(set(found))` -- so the order the names are appended in is not observable. The sort on
+    #   line 346 *is* guarded, by `test_what_it_returns_is_sorted`.
     for package in sorted({name.rpartition(".")[0] for name in names}):
         root = Path(package.replace(".", "/")) if package else Path()
         prefix = f"{package}." if package else ""
         found += [f"{prefix}{beside.stem}" for beside in root.glob("test_*.py")]
+    # survivor: order -- `sorted` over a *set*, which CLAUDE.md records as only probabilistically
+    #   guarded: a set iterates in hash order, randomised per run, so the mutant agrees with the
+    #   original whenever that order happens to match. Sizing a fixture for the odds would be
+    #   pinning the hash seed rather than the sort.
     return sorted(set(found))
 
 
@@ -378,11 +436,39 @@ def _reached(names: list[str], walk: bool) -> list[list[str]]:
     # asks the selection which package to look in, and an empty selection names
     # none, so both arms below return `[]` and the caller falls through. A guard
     # was written here first and no fixture could tell it from its absence.
+    # survivor: branch, drop-not -- unanswered rather than equivalent, and this is the honest state.
+    #   The walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk makes
+    #   that inner run hang or exit rather than fail -- and the harness files either as `BROKE`,
+    #   which is never `caught`. Two attempts are recorded: #73 gave the tests a deadline so a hang
+    #   fails, and #74 passed `strict=False` so an inapplicable row comes back in the report instead
+    #   of raising `SystemExit` out of the test. Both were verified against a chosen selection and
+    #   both still come back unanswered under the *generated* one, which is the lesson CLAUDE.md
+    #   states twice: the killer a sweep names is one route to a line, not all of them. Re-open with
+    #   the generated selection in hand, not a chosen one.
     if not walk:
         # A baseline. It asks whether *this selection* is green, and widening it
         # would make every baseline a whole-suite run.
+        # survivor: return-value -- unanswered rather than equivalent, and this is the honest state.
+        #   The walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk
+        #   makes that inner run hang or exit rather than fail -- and the harness files either as
+        #   `BROKE`, which is never `caught`. Two attempts are recorded: #73 gave the tests a
+        #   deadline so a hang fails, and #74 passed `strict=False` so an inapplicable row comes
+        #   back in the report instead of raising `SystemExit` out of the test. Both were verified
+        #   against a chosen selection and both still come back unanswered under the *generated*
+        #   one, which is the lesson CLAUDE.md states twice: the killer a sweep names is one route
+        #   to a line, not all of them. Re-open with the generated selection in hand, not a chosen
+        #   one.
         return [[name] for name in names]
     chosen = set(names)
+    # survivor: return-value -- unanswered rather than equivalent, and this is the honest state. The
+    #   walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk makes
+    #   that inner run hang or exit rather than fail -- and the harness files either as `BROKE`,
+    #   which is never `caught`. Two attempts are recorded: #73 gave the tests a deadline so a hang
+    #   fails, and #74 passed `strict=False` so an inapplicable row comes back in the report instead
+    #   of raising `SystemExit` out of the test. Both were verified against a chosen selection and
+    #   both still come back unanswered under the *generated* one, which is the lesson CLAUDE.md
+    #   states twice: the killer a sweep names is one route to a line, not all of them. Re-open with
+    #   the generated selection in hand, not a chosen one.
     return [[name] for name in names] + [[m] for m in every_module(names) if m not in chosen]
 
 
@@ -413,6 +499,15 @@ def collect(
     """
     loader = unittest.TestLoader()
     groups = _reached(names, walk)
+    # survivor: branch, drop-not -- unanswered rather than equivalent, and this is the honest state.
+    #   The walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk makes
+    #   that inner run hang or exit rather than fail -- and the harness files either as `BROKE`,
+    #   which is never `caught`. Two attempts are recorded: #73 gave the tests a deadline so a hang
+    #   fails, and #74 passed `strict=False` so an inapplicable row comes back in the report instead
+    #   of raising `SystemExit` out of the test. Both were verified against a chosen selection and
+    #   both still come back unanswered under the *generated* one, which is the lesson CLAUDE.md
+    #   states twice: the killer a sweep names is one route to a line, not all of them. Re-open with
+    #   the generated selection in hand, not a chosen one.
     if not groups:
         chosen = loader.discover(".", pattern="test_*.py", top_level_dir=".")
         # `first` in its own argument rather than pushed onto `names`, and that is
@@ -435,18 +530,44 @@ def collect(
         made.each = armed
         return made
 
+    # survivor: off-by-one -- the third argument is `unittest`'s own verbosity, and the stream is a
+    #   `StringIO` nobody reads -- `collect` reports through `Verdicts`, never through what the
+    #   runner printed.
     result = build(io.StringIO(), False, 0)
     result.failfast = failfast
     broke: list[str] = []
+    # survivor: branch -- tools/verdict.py:425 in collect() -- the `if` is never taken -- the
+    #   `first` prefix -- the remembered killer tried ahead of a row. Skipping it costs a longer run
+    #   and cannot change a verdict: the same tests run afterwards as part of the selection. That is
+    #   the whole design of the cache, and `Killers`/`Learned` have their own tests for what goes
+    #   into it.
     if first and groups:
         head = unittest.TestLoader()
+        # survivor: drop-call -- tools/verdict.py:427 in collect() -- the call to
+        #   `ready.append(...)` never happens -- same as `verdict.py:425`: the prefix is an ordering
+        #   optimisation, and dropping it changes when a killer is found rather than whether.
         ready.append(head.loadTestsFromNames(first))
+        # survivor: branch -- tools/verdict.py:428 in collect() -- the `if` is never taken -- a
+        #   prefix naming a test that will not import. Reachable only from a killers cache written
+        #   by an older tree, which `Killers` already validates once per run -- so by the time
+        #   `collect` sees it, it has been checked.
         if head.errors:
+            # survivor: return-value -- tools/verdict.py:429 in collect() -- returns `None` instead
+            #   of `_unloadable(head)` -- same branch as `verdict.py:428`, and the caller reads an
+            #   absent report as `broke` either way.
             return _unloadable(head)
+    # survivor: drop-call -- tools/verdict.py:430 in collect() -- the call to
+    #   `result.startTestRun(...)` never happens -- `TextTestResult.startTestRun` is a hook with no
+    #   body in the stdlib, and `Verdicts` does not override it. Nothing in the process has anything
+    #   to do at that point.
     result.startTestRun()
     try:
         for suite in ready:
             suite(result)
+            # survivor: branch -- the `failfast` early exit inside one group. Losing it runs the
+            #   remaining tests of a group whose verdict is already decided -- slower, never
+            #   different, because `noticed` is already non-empty and that is what the outcome
+            #   reads.
             if result.shouldStop:
                 break
         else:
@@ -463,6 +584,17 @@ def collect(
                 # Not hoisted into the baseline's arm: there `failfast` being
                 # off is the request, and stopping at the first red module would
                 # report one shard of a broken tree as the whole story.
+                # survivor: branch, connector -- unanswered rather than equivalent, and this is the
+                #   honest state. The walk is reached only by tests that drive a *nested*
+                #   `mutate.run`, so a broken walk makes that inner run hang or exit rather than
+                #   fail -- and the harness files either as `BROKE`, which is never `caught`. Two
+                #   attempts are recorded: #73 gave the tests a deadline so a hang fails, and #74
+                #   passed `strict=False` so an inapplicable row comes back in the report instead of
+                #   raising `SystemExit` out of the test. Both were verified against a chosen
+                #   selection and both still come back unanswered under the *generated* one, which
+                #   is the lesson CLAUDE.md states twice: the killer a sweep names is one route to a
+                #   line, not all of them. Re-open with the generated selection in hand, not a
+                #   chosen one.
                 if result.shouldStop or (walk and result.noticed):
                     break
                 # A fresh loader per group: `TestLoader.errors` accumulates, so a
@@ -475,7 +607,14 @@ def collect(
                     break
                 found(result)
     finally:
+        # survivor: drop-call -- tools/verdict.py:462 in collect() -- the call to
+        #   `result.stopTestRun(...)` never happens -- the matching hook, equally empty. Both are
+        #   called because the protocol says to, not because either does anything here.
         result.stopTestRun()
+    # survivor: off-by-one -- `argv` indices into `_probe`'s own command line, which `_run` builds
+    #   three frames away in the same repository -- so the two are always the same revision and a
+    #   shifted index is a protocol break rather than an input. It shows up as every row coming back
+    #   `BROKE` at once, which no single fixture would diagnose better than the first sweep does.
     return {
         "loaded": True,
         "ran": result.testsRun,
@@ -515,6 +654,9 @@ def main(argv: list[str]) -> None:
     # -- the baseline asks whether that selection is green, the mutation asks
     # what in the whole suite notices. Inferring it from `names` cannot tell them
     # apart, and getting it wrong turns every baseline into a whole-suite run.
+    # survivor: negate -- `argv[5] == "1"` against `!=` flips whether the walk runs, and every test
+    #   that could see it drives a nested harness -- the same family as the walk rows above, and
+    #   unanswered for the same reason.
     first, walk, names = [n for n in argv[4].split() if n], argv[5] == "1", argv[6:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.

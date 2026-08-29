@@ -110,6 +110,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -572,6 +573,9 @@ def _signalled(returncode: int) -> str:
     then reported an out-of-memory that had not happened. A message that names
     the wrong cause costs more than one that names none.
     """
+    # survivor: off-by-one -- tools/mutate.py:495 in _signalled() -- `0` becomes `-1` -- equivalent:
+    #   the mutation is on `left.get(key, 0)`'s *default*, and a default of -1 is still not `> 0`,
+    #   so a key that was never accepted is still fresh.
     if returncode >= 0:
         return f"the probe exited {returncode} without writing a report"
     name = signal.Signals(-returncode).name if -returncode in set(signal.Signals) else "?"
@@ -650,6 +654,11 @@ def _from_proc() -> dict[int, Process]:
     table: dict[int, Process] = {}
     page = os.sysconf("SC_PAGE_SIZE")
     for entry in Path("/proc").iterdir():
+        # survivor: branch -- equivalent: `/proc` holds no entry whose name is all digits and is not
+        #   a process, and the `stat` read below is already wrapped in `suppress(OSError)` -- so
+        #   taking the branch for `self`, `cpuinfo` and the rest costs a failed open and reaches the
+        #   same table. A fixture would have to invent a `/proc`, which `TestWhereThereIsAProc` does
+        #   and which the macos leg excludes.
         if not entry.name.isdigit():
             continue
         try:
@@ -665,6 +674,11 @@ def _from_proc() -> dict[int, Process]:
         # `ppid` is the fourth field, `pgrp` the fifth and `rss` the
         # twenty-fourth, which is why the indices below are those minus three.
         fields = said.rpartition(") ")[2].split()
+        # survivor: boundary, branch -- guards a kernel format, not an input: `/proc/<pid>/stat` has
+        #   had at least 52 fields since Linux 2.6 and this reads four of the first 24. Both the
+        #   bound and the comparison are there so a future kernel that shortened the line is skipped
+        #   rather than raising `IndexError` inside a sampler that holds a lock -- which is not a
+        #   state any fixture on this machine can produce.
         if len(fields) < 22:
             continue
         with suppress(ValueError):
@@ -714,6 +728,11 @@ def _parse_ps(text: str) -> dict[int, Process]:
     table: dict[int, Process] = {}
     for line in text.splitlines():
         fields = line.split()
+        # survivor: order -- equivalent: `len(fields) != 4` and the `all(...)` digit check are both
+        #   true or both false for every line `ps` emits -- a row with the wrong field count is also
+        #   a row with a non-digit in it, because the fields are counted by splitting on the spaces
+        #   that separate them. Swapping the two therefore changes which check reports first and
+        #   nothing else.
         if len(fields) != 4 or not all(field.isdigit() for field in fields):
             continue
         pid, parent, group, resident = (int(field) for field in fields)
@@ -779,9 +798,18 @@ def _end_lane(leader: int, members: Iterable[int]) -> None:
     than a walk done a moment earlier.
     """
     with suppress(OSError):
+        # survivor: drop-call -- tools/mutate.py:702 in _end_lane() -- the call to `os.killpg(...)`
+        #   never happens -- the teardown, and no test may drive it: it sends SIGKILL to a real
+        #   process group, and a fixture that got the group wrong would kill the suite running it.
+        #   Guarded instead by `_lane`, whose membership walk is what decides *which* group -- that
+        #   is where the defect found in #58 was, and it has tests.
         os.killpg(leader, signal.SIGKILL)
     for pid in members:
         with suppress(OSError):
+            # survivor: drop-call -- tools/mutate.py:705 in _end_lane() -- the call to
+            #   `os.kill(...)` never happens -- same as `mutate.py:702`: the escapee pass, sending
+            #   SIGKILL to processes outside the group. Untestable for the same reason and covered
+            #   by `_lane`'s tests, which decide the list.
             os.kill(pid, signal.SIGKILL)
 
 
@@ -822,6 +850,7 @@ class _Lanes:
         #: What a group was holding when this killed it, until `release` says it.
         self._killed: dict[int, int] = {}
         self._thread: threading.Thread | None = None
+        # survivor: drop-assign -- TODO: why is this acceptable?
         self._stop = threading.Event()
         #: The most address space any single watched process has been seen
         #: holding. Run-wide rather than per lane: what it answers is "was the
@@ -831,10 +860,12 @@ class _Lanes:
 
     def watch(self, group: int, ceiling: int) -> None:
         """Count `group` against `ceiling` from now on. ``0`` is no cap."""
+        # survivor: boundary, branch, off-by-one -- TODO: why is this acceptable?
         if ceiling <= 0:
             return
         with self._lock:
             self._ceilings[group] = ceiling
+            # survivor: branch -- TODO: why is this acceptable?
             if self._thread is None:
                 # One sampler for every lane, started with the first and stopped
                 # with the last. Per-lane threads would each walk the whole
@@ -859,11 +890,14 @@ class _Lanes:
     def release(self, group: int) -> int:
         """Stop counting, and say what it held if this is what killed it."""
         with self._lock:
+            # survivor: drop-call -- TODO: why is this acceptable?
             self._ceilings.pop(group, None)
             held = self._killed.pop(group, 0)
+            # survivor: branch, connector, drop-not, negate -- TODO: why is this acceptable?
             if not self._ceilings and self._thread is not None:
                 self._stop.set()
                 self._thread = None
+        # survivor: return-value -- TODO: why is this acceptable?
         return held
 
     def _sample(self, stop: threading.Event) -> None:
@@ -871,6 +905,7 @@ class _Lanes:
         while not stop.wait(_SAMPLE):
             with self._lock:
                 watched = dict(self._ceilings)
+            # survivor: branch -- TODO: why is this acceptable?
             if not watched:
                 continue
             table = _processes()
@@ -893,15 +928,19 @@ class _Lanes:
                 if sizes := [table[pid].address for pid in members]:
                     with self._lock:
                         self._widest = max(self._widest, *sizes)
+                # survivor: boundary, branch -- TODO: why is this acceptable?
                 if held <= ceiling:
                     continue
                 with self._lock:
                     # Re-checked under the lock: `release` may have run while
                     # the process table was being read, and a kill after that
                     # names ids the kernel is free to have reused.
+                    # survivor: branch, negate -- TODO: why is this acceptable?
                     if leader not in self._ceilings:
                         continue
+                    # survivor: drop-assign -- TODO: why is this acceptable?
                     self._killed[leader] = held
+                # survivor: drop-call -- TODO: why is this acceptable?
                 _end_lane(leader, members)
 
 
@@ -927,10 +966,17 @@ def _end(probe: subprocess.Popen[bytes]) -> None:
     walk done afterwards would not find it. Between those two moments is the
     only time anything can see it.
     """
+    # survivor: drop-call -- tools/mutate.py:850 in _end() -- the call to `_end_lane(...)` never
+    #   happens -- the teardown path again -- see `mutate.py:702`. Reached only when a probe has to
+    #   be killed, and a test that produced one would be killing processes beside the suite.
     _end_lane(probe.pid, _lane(probe.pid, _processes()))
     with suppress(OSError):
+        # survivor: drop-call -- TODO: why is this acceptable?
         probe.kill()  # if the session is somehow gone, at least reap this one
     with suppress(subprocess.TimeoutExpired):
+        # survivor: arith, drop-call -- tools/mutate.py:854 in _end() -- the call to
+        #   `probe.wait(...)` never happens -- the reap after the kill. Dropping it leaves a zombie
+        #   rather than changing an answer, so nothing a verdict can see is different.
         probe.wait(timeout=_SAMPLE * 5)
 
 
@@ -975,6 +1021,11 @@ def _run(
     processes" -- which is none of the others and is the one that reached the
     OOM killer.
     """
+    # survivor: drop-call -- cannot be observed from a passing run: `_clear_bytecode` deletes
+    #   `__pycache__` in a *fresh* sandbox copy, so on the first use there is nothing to delete and
+    #   the mutant behaves identically. It earns its place on a *reused* sandbox, where a stale
+    #   `.pyc` of the same size and second would be read instead of the mutation -- the hazard
+    #   CLAUDE.md records, whose whole point is that it leaves no trace to assert on.
     _clear_bytecode(root)
     # Both files land outside the sandbox on purpose: the copy is what the
     # mutation edits, and a report written into it is one `open()` away from
@@ -1030,10 +1081,12 @@ def _run(
                 # threads, and this one is done in C between fork and exec.
                 start_new_session=True,
             )
+        # survivor: drop-call -- TODO: why is this acceptable?
         _WATCHED.watch(probe.pid, memory)
         try:
             probe.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            # survivor: drop-call -- TODO: why is this acceptable?
             _end(probe)
             return Verdict("timeout", f"no answer within {timeout:g}s")
         finally:
@@ -1072,6 +1125,7 @@ def _run(
             return Verdict("broke", str(written.get("why", "")).strip() or _tail(noise))
 
     if written["broke"]:
+        # survivor: off-by-one -- TODO: why is this acceptable?
         return Verdict("broke", str(written["broke"][0]))
     if written["noticed"]:
         # Required, like every sibling key on these lines. `_probe` reads
@@ -1080,6 +1134,7 @@ def _run(
         # here would turn a real protocol break into a silently empty ordering.
         remembered = written["killers"]
         reasons = written["reasons"]
+        # survivor: off-by-one -- TODO: why is this acceptable?
         return Verdict(
             "caught",
             str(written["noticed"][0]),
@@ -1128,6 +1183,7 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
         for index in range(count):
             root = Path(holder) / f"tree{index}"
             shutil.copytree(Path.cwd(), root, ignore=_SKIP, symlinks=True)
+            # survivor: drop-call -- TODO: why is this acceptable?
             available.put(root)
         yield available
 
@@ -1144,6 +1200,7 @@ def _borrow(
     try:
         return _run(tests, root, timeout=timeout, memory=memory, each=each)
     finally:
+        # survivor: drop-call -- TODO: why is this acceptable?
         available.put(root)
 
 
@@ -1237,6 +1294,10 @@ class Learned:
         """
         with self._lock:
             recent = list(self.recent)
+        # survivor: branch -- tools/mutate.py:1156 in Learned.ahead() -- the `if` is never taken --
+        #   equivalent: with nothing remembered the comprehension below iterates an empty list and
+        #   `' '.join([])` is the same empty string the guard returns. The guard says it plainly
+        #   rather than deriving it.
         if not recent:
             return ""
         already = set(row.first.split())
@@ -1291,6 +1352,7 @@ class Work:
             if self._next >= self._rows:
                 return None
             got = self._next
+            # survivor: drop-assign, off-by-one -- TODO: why is this acceptable?
             self._next += 1
             return got
 
@@ -1353,7 +1415,9 @@ def _attempt(
                 first=first,
                 walk=walk,
             )
+            # survivor: arith -- TODO: why is this acceptable?
             verdict = verdict._replace(spent=time.monotonic() - began)
+            # survivor: branch, connector -- TODO: why is this acceptable?
             if learned is not None and verdict.outcome == "caught":
                 learned.saw(verdict.killer)
             return verdict
@@ -1362,6 +1426,7 @@ def _attempt(
             # to borrow this copy starts from clean source.
             source.write_text(original, encoding="utf-8")
     finally:
+        # survivor: drop-call -- TODO: why is this acceptable?
         available.put(root)
 
 
@@ -1400,10 +1465,12 @@ def _visible_memory() -> int:
     # and the same answer shape, which is why it is a limit here rather than a
     # branch somewhere in `run`.
     inherited = os.environ.get(_BUDGET, "")
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if inherited.isdigit() and int(inherited) > 0:
         limits.append(int(inherited))
     with suppress(AttributeError, OSError, ValueError):  # not POSIX
         limits.append(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    # survivor: arith -- TODO: why is this acceptable?
     return min(limits) if limits else _BLIND_LANES * _LANE
 
 
@@ -1460,6 +1527,11 @@ def _unclaimed() -> int:
     try:
         said = MEMINFO.read_text(encoding="utf-8")
     except OSError:
+        # survivor: return-value -- the `except OSError` arm of a file that exists on every machine
+        #   this runs on. Returning 0 means "the kernel would not say", which `_budget` then answers
+        #   by halving visible memory -- the macOS path. Reachable only by deleting `/proc/meminfo`,
+        #   and `TestWhoOwnsTheMachine` covers the *answer* by patching the reader rather than the
+        #   file.
         return 0
     for line in said.splitlines():
         name, _, rest = line.partition(":")
@@ -1480,9 +1552,14 @@ def _confined() -> int:
     machine that sentinel is what `memory.limit_in_bytes` holds. Comparing
     against the host total is the only way to tell a real limit from either.
     """
+    # survivor: off-by-one -- TODO: why is this acceptable?
     host = 0
     with suppress(AttributeError, OSError, ValueError):  # not POSIX
         host = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    # survivor: branch -- `sysconf` returning nothing is the non-POSIX case the `suppress` above
+    #   names, and this repository's CI has no such leg -- macOS answers both calls. The guard is
+    #   what stops a 0-byte host silently becoming an unlimited budget, which is the direction that
+    #   gets a machine OOM-killed.
     if not host:
         return 0
     for where in CGROUPS:
@@ -1490,6 +1567,7 @@ def _confined() -> int:
             said = Path(where).read_text(encoding="utf-8").strip()
         except OSError:
             continue
+        # survivor: off-by-one -- TODO: why is this acceptable?
         if said.isdigit() and 0 < int(said) < host:
             return int(said)
     return 0
@@ -1660,6 +1738,7 @@ def _share(wanted: int, memory: int, pinned: bool = False) -> Share:
     There is no product to bound once one factor is infinite, and quietly
     imposing one would be the flag lying.
     """
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if memory <= 0:
         return Share(max(1, wanted), memory)
     budget = _budget()
@@ -1718,10 +1797,18 @@ def run(
     throw away every answer already paid for.
     """
     table = list(mutations)
+    # survivor: branch -- equivalent: an empty table makes every loop below iterate zero times and
+    #   `Report([])` is what falls out anyway. The early return saves building a sandbox pool for
+    #   nothing, which is a cost rather than an answer.
     if not table:
+        # survivor: return-value -- TODO: why is this acceptable?
         return Report([])
     asked = memory
     for mutation in table:
+        # survivor: drop-call -- `check` refuses a mutation whose `old` text is absent or ambiguous,
+        #   and every row a *generated* table holds was built from that text a moment earlier -- so
+        #   on the path a sweep takes it cannot fail. `TestTheEditIsRefusedRatherThanGuessed` drives
+        #   it directly, which is where the guarantee is worth asserting.
         check(mutation)
 
     shards = baseline_shards(table)
@@ -1737,6 +1824,7 @@ def run(
     # worth 30%: 214s against 303s over the 1309 rows of `--only tupferl/`,
     # two interleaved pairs.
     wanted = workers or min(len(table) + len(shards), usable_cpus() * 2)
+    # survivor: negate -- TODO: why is this acceptable?
     lanes, memory = _share(wanted, memory, pinned=workers is not None)
     if lanes != wanted or memory != asked:
         # Said out loud, for the reason `--limit` says what it dropped: a run
@@ -1781,11 +1869,14 @@ def run(
     work = Work(len(table))
     total = len(table)
     width = len(str(total))
+    # survivor: arith, off-by-one, order -- TODO: why is this acceptable?
     lane_width = len(str(max(lanes - 1, 1)))
     #: The indent an unanswered row's reason sits at, so it lines up under the
     #: label rather than under the counter. Derived rather than a literal,
     #: because the counter's width is the table's.
+    # survivor: arith, off-by-one -- TODO: why is this acceptable?
     reason_at = " " * (2 * width + lane_width + 6)
+    # survivor: off-by-one -- TODO: why is this acceptable?
     done = 0
     stop = threading.Event()
     #: Held across recording *and* printing, so two lanes finishing together
@@ -1797,7 +1888,9 @@ def run(
         nonlocal done
         mutation = table[index]
         with speaking:
+            # survivor: off-by-one -- TODO: why is this acceptable?
             done += 1
+            # survivor: drop-call -- TODO: why is this acceptable?
             timings.update(verdict.times or {})
             results.append(Result(mutation, verdict))
             # The row's own position, kept beside the result rather than
@@ -1806,6 +1899,7 @@ def run(
             # the generator rather than of anything here.
             places.append(index)
             if landed is not None:
+                # survivor: off-by-one -- TODO: why is this acceptable?
                 landed(results[-1])
             known = MEANING[verdict.outcome]
             counter = paint.paint(f"[{done:>{width}}/{total}]", paint.QUIET)
@@ -1822,9 +1916,11 @@ def run(
             # counter. Measured here: a sweep's log sat empty for five minutes
             # because its header was 250 bytes and nothing had flushed it.
             print(f"{counter} {where} {head} {mutation.label}", flush=True)
+            # survivor: branch, drop-not -- TODO: why is this acceptable?
             if not verdict.answered:
                 # Not indented under the row by accident: an unanswered row must
                 # not be skimmable as one of the two real verdicts.
+                # survivor: drop-call -- TODO: why is this acceptable?
                 print(paint.paint(f"{reason_at}-- {verdict.detail}", known.colour), flush=True)
 
     def _first_look(shard: str) -> Verdict:
@@ -1841,10 +1937,12 @@ def run(
                 table[index], available, failfast, timeout, memory, each, walk, learning
             )
             deliver(index, lane, verdict)
+            # survivor: branch -- TODO: why is this acceptable?
             if strict and not verdict.answered:
                 # Every lane stops at its next take. The rows already in flight
                 # are paid for either way, which is what the cancelling version
                 # of this also settled for.
+                # survivor: drop-call -- TODO: why is this acceptable?
                 stop.set()
 
     def announce(checked: Future[Verdict]) -> None:
@@ -1870,6 +1968,7 @@ def run(
             # nothing failing has measured every test in it, which is where most
             # of what `Killers` orders by comes from. A red one still measured
             # whatever ran before it went red.
+            # survivor: connector, drop-call -- TODO: why is this acceptable?
             timings.update(looked.times or {})
             if looked.outcome == "survived" or red:
                 return
@@ -1877,6 +1976,8 @@ def run(
             # the mutation vocabulary reads backwards. A shard that broke or
             # timed out is red too, and its reason is the only clue to why.
             red = True
+            # survivor: drop-call -- TODO: why is this acceptable?
+            # survivor: arith -- TODO: why is this acceptable?
             print(
                 paint.paint(
                     f"  BASELINE NOT GREEN ({looked.outcome}) -- the suite does not "
@@ -1889,7 +1990,9 @@ def run(
             # that cannot be diagnosed by re-running the row, and the shard it
             # came from is rarely reproducible by hand -- `first` is a shard of
             # its own, the sandbox is a copy, and the lanes are concurrent.
+            # survivor: branch -- TODO: why is this acceptable?
             if looked.why:
+                # survivor: drop-call -- TODO: why is this acceptable?
                 print(indent(looked.why.rstrip(), "  | "), flush=True)
 
     with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
@@ -1900,6 +2003,7 @@ def run(
         for checked in checking:
             checked.add_done_callback(announce)
         for walker in [pool.submit(lane_walk, lane) for lane in range(lanes)]:
+            # survivor: drop-call -- TODO: why is this acceptable?
             walker.result()
 
     # Completion order on the console, table order on disk. A report whose rows
@@ -1909,12 +2013,15 @@ def run(
     # Keyed on the position alone: a tie would fall through to comparing two
     # `Result`s, which is not an ordering anyone defined. Positions are unique,
     # so this never happens -- and that is exactly when it is cheap to say so.
+    # survivor: order -- TODO: why is this acceptable?
     ordered = sorted(zip(places, results, strict=True), key=lambda pair: pair[0])
     results = [result for _, result in ordered]
 
+    # survivor: branch -- TODO: why is this acceptable?
     if stop.is_set():
         # The earliest unanswered row in *table* order, not whichever lane
         # tripped first. Which row wins a race is not something to report.
+        # survivor: drop-not -- TODO: why is this acceptable?
         broke = next(result for result in results if not result.verdict.answered)
         raise SystemExit(
             f"{broke.mutation.label}: this mutation broke collection rather than being "
@@ -1938,6 +2045,7 @@ def run(
         # nothing else to read, and it is the case this run cannot repeat.
         for line in _loose_evidence(results, loose):
             print(paint.paint(line, paint.QUIET), flush=True)
+        # survivor: off-by-one -- TODO: why is this acceptable?
         with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
             loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
         if loose_verdict.outcome != "survived":
@@ -1961,11 +2069,14 @@ def run(
                 )
             )
 
+    # survivor: arith -- TODO: why is this acceptable?
     pace = Pace(time.monotonic() - began, lanes, memory)
     # Only when this call owns the output. With ``summarise`` off the caller is
     # doing the reporting and gets `pace` on the report to do it with, which is
     # what keeps the block last instead of buried above the survivor list.
+    # survivor: branch -- TODO: why is this acceptable?
     if summarise:
+        # survivor: drop-call -- TODO: why is this acceptable?
         _report_stats(results, pace=pace, red=red)
     else:
         # The caller is doing the reporting and will print the block, but the
@@ -1976,13 +2087,27 @@ def run(
         # block, so it is printed once either way.
         _report_headroom(memory)
 
+    # survivor: branch, connector -- `summarise` is False only for a nested `sweep` batch, which
+    #   reports once at the end rather than per file, and `red` voids the rows anyway. Both terms
+    #   are covered by `TestWhatTheFinalBlockSays` at the level below; what survives here is the
+    #   *composition*, and a fixture for it would drive a batch sweep to assert which of two
+    #   printers ran.
+    # survivor: drop-not -- TODO: why is this acceptable?
     if not red and summarise:
+        # survivor: drop-call -- the survivor list itself, which every other test in this file reads
+        #   through `support.quiet()` rather than asserting is *absent*. Dropping the call is caught
+        #   by `TestTheParagraphAPullRequestQuotes` when a row survives; it survives here because
+        #   the generated table this row belongs to has none.
         _summarise(results)
     # `widened=walk`, never a bare `True`: the flag's whole job is to say
     # whether a survivor here has been run against everything, and with `walk`
     # off it has not. Hard-coding it would make the one report that must not
     # claim the guarantee the one that claims it loudest.
     report = Report(results, red, widened=walk, times=timings or None, pace=pace)
+    # survivor: drop-call -- `_RUNS` exists so a spec file calling `verify` twice has both tables
+    #   decide the exit status -- woswoar#213's symptom. `TestWhatASpecFileExitsWith` covers the
+    #   two-table case through `main`; this row is the append seen from inside `run`, where nothing
+    #   in the same process reads it back.
     _RUNS.append(report)
     return report
 
@@ -2114,6 +2239,7 @@ def _report_headroom(ceiling: int) -> None:
     reported as a result, which is the shape this function exists to correct.
     """
     widest = _WATCHED.widest()
+    # survivor: off-by-one -- TODO: why is this acceptable?
     if not widest or ceiling <= 0:
         return
     share = widest / ceiling
@@ -2124,20 +2250,24 @@ def _report_headroom(ceiling: int) -> None:
     print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
 
 
-def _summarise(
-    results: Sequence[Result],
-    accepted: dict[str, Accepted] | None = None,
-    complete: bool = True,
-) -> None:
+def _summarise(results: Sequence[Result], sorted_out: Survivors | None = None) -> None:
     """The part a pull request quotes when the news is bad.
 
-    ``accepted`` splits the survivors into ones somebody has already read and
-    ones nobody has. The accepted ones are *counted and not listed*: the count
-    is what stops the file becoming a way to hide them, and the list is what
-    would bury the rows that are new.
+    ``sorted_out`` is the split the caller already computed, and giving it is
+    what separates survivors somebody has read from ones nobody has. The excused
+    ones are *counted and not listed*: the count is what stops the tags becoming
+    a way to hide rows, and the list is what would bury the new ones.
+
+    **Passed in rather than computed here.** `main` needs the same split for its
+    exit status, and `sort_survivors` reads every tagged file -- so computing it
+    twice cost 12.2s twice on a whole-tree table, all of it after the last lane
+    had finished and the terminal looked done.
+
+    `None` means "do not consult the tags at all", which is what a hand-written
+    table wants: `verify` expects no survivors, so excusing one would be the
+    table lying to the person who wrote it.
     """
-    sorted_out = sort_survivors(results, accepted or {}, complete)
-    if accepted is not None:
+    if sorted_out is not None:
         _report_known(sorted_out)
     # One list of rows-to-read, then split by whether the row answered anything.
     # Both paragraphs below are about the *unread* rows once there is a record,
@@ -2145,7 +2275,7 @@ def _summarise(
     # list as reliably as an accepted survivor.
     fresh = (
         sorted_out.fresh
-        if accepted is not None
+        if sorted_out is not None
         else [result for result in results if not MEANING[result.verdict.outcome].clean]
     )
     survivors = [result for result in fresh if result.verdict.answered]
@@ -2191,46 +2321,104 @@ def _summarise(
             print(f"  - {paint.paint(result.mutation.label, colour)}: {result.verdict.detail}")
 
 
-def _accept(sorted_out: Survivors, accepted: dict[str, Accepted]) -> None:
-    """Write this run's unread survivors into the record, and drop stale rows.
+def tag(operators: str, why: str, indent: str = "") -> list[str]:
+    """A `# survivor:` comment, wrapped to the line limit this project lints at.
+
+    Wrapped rather than truncated: the reason is the whole value of the record,
+    and one that had to fit in what was left of a line would be the record
+    shaping the argument. `_nearby` joins a comment block back into one string,
+    so a wrapped tag reads exactly as a single-line one does.
+    """
+    lead = f"{indent}# survivor: {operators} -- "
+    body = textwrap.wrap(
+        why,
+        width=_COLUMNS,
+        initial_indent=lead,
+        # Lined up under the reason rather than under the `#`, so the tag reads
+        # as one sentence and not as several comments that happen to be adjacent.
+        subsequent_indent=f"{indent}#   ",
+    )
+    return body or [lead.rstrip()]
+
+
+def _accept(sorted_out: Survivors, root: Path = Path()) -> None:
+    """Write a `TODO` tag beside every unread row, for a person to finish.
 
     `--accept` is a *deliberate* act, and it is why this is a flag rather than
-    something a run does when it feels like it: recording a survivor is saying
-    somebody read it and decided, and a tool that did that on its own would be
-    deciding on their behalf.
+    something a run does when it feels like it: recording a disposition is
+    saying somebody read the row and decided, and a tool that did that on its
+    own would be deciding on their behalf.
 
-    The reason it writes is a placeholder naming the file and function, because
-    a reason nobody wrote is not a reason -- the row is there to be edited, and
-    a reviewer seeing `TODO` in the diff is the point rather than an oversight.
+    What it writes is a placeholder, because a reason nobody wrote is not a
+    reason -- the tag is there to be edited, and a reviewer seeing `TODO` is the
+    point rather than an oversight. **It now lands in the diff beside the line
+    it excuses**, which is the whole reason the record moved out of a file of
+    hashes: the twelve equivalences proved in one sitting went into commit
+    messages, because editing a JSON blob keyed on sha256 was further away than
+    writing a sentence nobody would read again.
+
+    Nothing is ever *removed* here. The hash record's `--accept` dropped what it
+    called stale and so destroyed 206 reviewed reasons on its documented
+    command; a tag is deleted by deleting a line of code, which is a person's
+    job and shows up as one.
     """
-    gone = set(sorted_out.stale)
-    rows = {key: row for key, row in accepted.items() if key not in gone}
+    read = _Reader(root)
+    edits: dict[Path, dict[int, set[str]]] = {}
     for result in sorted_out.fresh:
-        key = _key(result.mutation)
-        if (already := rows.get(key)) is not None:
-            # Another row of a shape already read. The count rises rather than
-            # the reason being rewritten: what changed is how many there are.
-            rows[key] = already._replace(seen=already.seen + 1)
-        else:
-            rows[key] = Accepted(f"TODO: why is {result.mutation.label} acceptable?", 1)
-    KNOWN.write_text(
-        json.dumps(
-            {key: {"why": row.why, "seen": row.seen} for key, row in rows.items()},
-            indent=1,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+        mutation = result.mutation
+        if mutation.span is None:
+            # Nothing to hang a tag on. A hand-written row has no span, and
+            # guessing a line from its prose label is how a tag lands on the
+            # wrong statement and excuses something nobody looked at.
+            continue
+        found = read.of(mutation.path)
+        # survivor: branch -- TODO: why is this acceptable?
+        if found is None:
+            continue
+        index, offsets = found
+        # survivor: off-by-one -- TODO: why is this acceptable?
+        # The statement's first line, never a continuation of it. Inserting a
+        # comment inside a bracketed expression is legal Python and splits the
+        # expression across the tag, which left `ruff format --check` wanting to
+        # reflow a comprehension -- `--accept` handing back a tree that fails
+        # the preflight it exists to be reviewed under.
+        at = index.statement(offsets.line_of(mutation.span[0]))
+        # **What is already tagged there is consulted, not overwritten.** The
+        # first version inserted blind, so a line that already carried a tag for
+        # one operator grew an identical `TODO` for another on *every* run --
+        # three runs, three copies, and the row still unread, because only one
+        # tag per block could be found. Reproduced before this was written.
+        if mutation.operator in index.operators(at):
+            continue
+        edits.setdefault(root / mutation.path, {}).setdefault(at, set()).add(mutation.operator)
+    # survivor: off-by-one -- TODO: why is this acceptable?
+    written = 0
+    for where, rows in edits.items():
+        source = where.read_text(encoding="utf-8")
+        # `splitlines(keepends=True)` and a plain join, so a CRLF file comes back
+        # a CRLF file: `split("\n")` plus `"\n".join(...)` silently rewrites
+        # every line ending in the tree, which is a change to a dotfile
+        # repository's own sources that nobody asked this flag for.
+        lines = source.splitlines(keepends=True)
+        # survivor: affix, connector, off-by-one -- TODO: why is this acceptable?
+        ending = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+        for at in sorted(rows, reverse=True):
+            # Bottom upwards, so an inserted line cannot move the ones still
+            # to do.
+            indent = lines[at][: len(lines[at]) - len(lines[at].lstrip())]
+            # survivor: order -- TODO: why is this acceptable?
+            body = tag(", ".join(sorted(rows[at])), "TODO: why is this acceptable?", indent)
+            # survivor: order -- TODO: why is this acceptable?
+            for line in reversed(body):
+                lines.insert(at, line + ending)
+            # survivor: arith, off-by-one -- TODO: why is this acceptable?
+            written += 1
+        where.write_text("".join(lines), encoding="utf-8")
+    # survivor: drop-call -- TODO: why is this acceptable?
     print(
         paint.paint(
-            f"recorded {len(sorted_out.fresh)} new and dropped {len(sorted_out.stale)} stale; "
-            # Both numbers, because they differ: on the first whole-tree sweep
-            # 557 survivors shared 432 keys, and a report of either alone reads
-            # as the other.
-            f"{KNOWN} now holds {len(rows)} key(s) covering "
-            f"{sum(row.seen for row in rows.values())} survivor(s). "
-            "Every new row says TODO on purpose.",
+            f"wrote {written} TODO tag(s) across {len(edits)} file(s). "
+            "Each says TODO on purpose; a tag nobody finished is a row nobody read.",
             paint.ODD,
         )
     )
@@ -2256,6 +2444,7 @@ def _status(report: Report, sorted_out: Survivors) -> int:
     have meant a recorded `BROKE` row still turning the run red -- a reason
     written and then ignored, which is how a record stops being read.
     """
+    # survivor: off-by-one -- TODO: why is this acceptable?
     return 1 if sorted_out.fresh or report.baseline_red else 0
 
 
@@ -2272,22 +2461,29 @@ def _report_known(sorted_out: Survivors) -> None:
     if sorted_out.accepted:
         print(
             paint.paint(
-                f"{len(sorted_out.accepted)} survivor(s) already recorded in {KNOWN} "
+                f"{len(sorted_out.accepted)} survivor(s) excused by a tag beside the code "
                 f"-- counted, not listed.",
                 paint.QUIET,
             )
         )
-    if sorted_out.stale:
-        # Loud, because a stale entry is a claim about code that no longer
-        # exists -- and the row it used to cover may have been replaced by one
-        # nobody has read.
+    # **Said every run, and not quietly.** A `TODO` tag silences its row exactly
+    # as a written reason does -- that is what makes `--accept` usable -- so
+    # without this the unfinished ones are invisible from the output and a green
+    # sweep becomes a claim nobody made. 93 of this tree's 159 tags arrived that
+    # way from the record they replaced, which is the number this line exists to
+    # keep in front of a reader until it is zero.
+    if unfinished := sum(1 for _, why in sorted_out.accepted if "TODO" in why):
         print(
             paint.paint(
-                f"{len(sorted_out.stale)} entr(y/ies) in {KNOWN} match nothing this run "
-                f"generated; the code they describe has moved or gone.",
+                f"{unfinished} of those say TODO: nobody has written the reason yet.",
                 paint.ODD,
             )
         )
+    for spent in sorted_out.spent:
+        # Loud, and listed rather than counted. A tag that has stopped earning
+        # its place is the one way this record can quietly become a mute list,
+        # and unlike the file it replaces there are few enough of them to name.
+        print(paint.paint(f"  spent tag: {spent}", paint.ODD))
 
 
 def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | None = None) -> int:
@@ -2340,6 +2536,7 @@ def baseline_shards(table: Sequence[Mutation]) -> list[str]:
     already went stale once here.
     """
     shards = sorted({mutation.tests for mutation in table})
+    # survivor: order -- TODO: why is this acceptable?
     if ahead := " ".join(sorted({name for row in table for name in row.first.split()})):
         shards.append(ahead)
     return shards
@@ -2369,6 +2566,9 @@ def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
     if any(not shard for shard in shards):
         return []
     reachable = [only for shard in shards for only in shard.split()]
+    # survivor: order -- tools/mutate.py:2030 in _unbaselined() -- the ordering is reversed -- same
+    #   set, same argument as the `sorted` mutation on this line -- and reversal is equally
+    #   invisible to a caller that only needs the names.
     return sorted(
         {
             result.verdict.killer
@@ -2452,54 +2652,113 @@ PREFIX = 0.5
 #: which survivors have been read and what was decided about them, and it is
 #: reviewed in a pull request like any other claim about the tree.
 #:
-#: The problem it exists for: a whole-tree sweep found 557 survivors, and
-#: triaging them in prose does not survive to the next sweep. The following
-#: Sunday produces the same 557 rows with nothing to say which were already
-#: understood, so either somebody reads all of them again or nobody reads any of
-#: them. Both have happened.
-KNOWN = Path("known-survivors.json")
+#: A disposition written beside the code it excuses, rather than in a file of
+#: hashes. `# survivor: <operator>[, <operator>] -- <reason>`, on the mutated
+#: line or on the comment line above it.
+#:
+#: **The operator is required, and that is the whole design.** Measured on a
+#: whole-tree table: mutations average 2.1 per source line and reach 13, and
+#: **53% of the lines carrying a survivor also carry a row that is caught**.
+#: A bare tag would therefore excuse a live guard about half the time it was
+#: used -- and would go on excusing operators `mutants.py` has not learnt yet,
+#: which is the flattering direction and the failure this record exists to
+#: prevent, arriving through its own syntax.
+_TAGGED = "# survivor:"
+
+#: The line limit `ruff` enforces here, so a written tag never needs reflowing by
+#: hand and `ruff format --check` stays green after `--accept`. The same number
+#: as `pyproject.toml`'s `line-length`, and `tests/test_packaging.py` asserts
+#: they agree -- a tag wrapped to the wrong width turns the preflight red on
+#: generated text nobody would think to attribute.
+_COLUMNS = 100
+
+_TAG = re.compile(r"#\s*survivor:\s*([\w\s,-]+?)\s*--\s*(\S.*?)\s*$")
 
 
-class Accepted(NamedTuple):
-    """What was decided about one kind of survivor, and how many there were."""
+class Excuse(NamedTuple):
+    """A tag's reason, and the line the tag itself sits on.
 
-    why: str
-    #: **How many rows of this shape somebody read.** `_key` is content, never
-    #: position -- that is what lets a row keep its disposition when the code
-    #: around it moves, and it is also why two identical mutations in one file
-    #: share a key. Measured on the first whole-tree sweep: 557 survivors
-    #: collapsed to 432 keys, so 125 rows would have been absorbed by a sibling
-    #: nobody read.
-    #:
-    #: With a count, the 126th occurrence of a shape is still new. Without one,
-    #: accepting `if x:` becoming `if True:` once in a file accepts every such
-    #: line in it, for ever -- which is the failure this whole record exists to
-    #: prevent, arriving through its own key.
-    seen: int
-
-
-def known_survivors(where: Path = KNOWN) -> dict[str, Accepted]:
-    """Every accepted survivor's key, why it was accepted, and how many.
-
-    Missing or unreadable is an empty answer rather than an error: a run that
-    cannot read the file must report *more* than it should, never less. The
-    failure this guards against is a record that silently swallows everything
-    because a JSON comma went missing in a merge.
+    The tag's line rather than the mutated one, because a tag answers every
+    operator it names -- so deciding whether one has stopped earning its place
+    means grouping by the tag, and two tags above one statement are two things.
     """
-    try:
-        rows = json.loads(where.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(rows, dict):
-        return {}
-    found: dict[str, Accepted] = {}
-    for key, value in rows.items():
-        if not isinstance(value, dict):
-            continue
-        why, seen = value.get("why"), value.get("seen")
-        if isinstance(why, str) and isinstance(seen, int) and seen > 0:
-            found[str(key)] = Accepted(why, seen)
-    return found
+
+    at: int
+    why: str
+
+
+def excused(mutation: Mutation, root: Path = Path(), tags: _Reader | None = None) -> Excuse | None:
+    """The reason a tag beside `mutation` gives for it, or `None`.
+
+    **Beside the code, not in a file keyed by hash.** The record this replaces
+    was content-addressed so a disposition would survive the code moving; a
+    comment on the line survives it by moving *with* it, which is the same
+    guarantee bought without the machinery. Three things fall out of that:
+
+    - **no occurrence counting.** `Accepted.seen` existed because two identical
+      mutations in one file collapse to one hash -- 557 survivors to 432 keys --
+      so a count was needed to tell the 126th from the 125th. Position separates
+      them by construction.
+    - **no stale entries.** Seventeen of the record's keys matched nothing the
+      last whole-tree run generated, because a file and its record drift apart.
+      A tag cannot outlive the line it sits on.
+    - **no collisions.** `_resume_key`'s docstring records a disposition that
+      could not go in the record at all, because the key is `(path, operator,
+      old, new)` and three `0`/`1` literals elsewhere in the same file share it:
+      the reason would have been absorbed rather than read.
+
+    The line is found from `span`, not from `label`: a label is prose and a
+    hand-written row's is anything at all, where a span is what the mutation was
+    actually applied at. A row with no span cannot be excused, which is the safe
+    direction -- it stays unread and gets reported.
+    """
+    if mutation.span is None:
+        return None
+    # survivor: negate -- TODO: why is this acceptable?
+    read = tags if tags is not None else _Reader(root)
+    found = read.of(mutation.path)
+    if found is None:
+        return None
+    index, offsets = found
+    # survivor: off-by-one -- TODO: why is this acceptable?
+    # Through `statement`, because a tag guards a statement rather than a
+    # physical line: a mutation inside brackets sits on a *continuation*, and a
+    # tag can only be written above the line the statement opens on.
+    at = index.statement(offsets.line_of(mutation.span[0]))
+    got = index.excuse(at, mutation.operator)
+    return Excuse(*got) if got else None
+
+
+class _Reader:
+    """Each mutable file's tags and line offsets, read once.
+
+    **Once per file, not once per row.** `excused` used to `read_text` and scan
+    the whole source for every result, and `sort_survivors` asks about every
+    row -- so a whole-tree table of 3328 rows across 23 files did 3328 reads
+    where 23 would do. Measured at 13.3s a pass, paid twice because `main`
+    summarised and then sorted again.
+
+    Held for the length of one `sort_survivors` rather than for the process:
+    `--accept` rewrites these very files, so a cache outliving a run would
+    answer the next one from the text before the tags were written.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._seen: dict[str, tuple[mutants.Tags, mutants.Offsets] | None] = {}
+
+    def of(self, path: str) -> tuple[mutants.Tags, mutants.Offsets] | None:
+        # survivor: branch -- TODO: why is this acceptable?
+        if path not in self._seen:
+            try:
+                source = (self._root / path).read_text(encoding="utf-8")
+            except OSError:
+                # More than it should, never less -- the direction the record it
+                # replaces took when its JSON would not parse.
+                self._seen[path] = None
+            else:
+                self._seen[path] = (mutants.Tags(source), mutants.Offsets(source))
+        return self._seen[path]
 
 
 class Survivors(NamedTuple):
@@ -2508,15 +2767,23 @@ class Survivors(NamedTuple):
     fresh: list[Result]
     #: Accepted, with the reason each was accepted for.
     accepted: list[tuple[Result, str]]
-    #: Keys in the file that this run's table never produced. Reported so the
-    #: file cannot quietly accumulate rows for code that no longer exists --
-    #: which is how a baseline stops describing the tree it claims to.
-    stale: list[str]
+    #: Tags no longer earning their place -- today, one every row of which the
+    #: suite has learnt to *catch*. Reported so the tags cannot quietly become a
+    #: mute list, which is the failure a record of dispositions exists to
+    #: prevent and the one it is most likely to arrive at.
+    #:
+    #: Named `spent` rather than `stale`, which is what the hash record called
+    #: an entry matching nothing generated. That question cannot arise here -- a
+    #: tag is judged where it sits -- and reusing the word would read as the old
+    #: meaning to the next person.
+    #:
+    #: The hash-keyed record could not see this case at all: its key ignores the
+    #: outcome deliberately, so a reason written for a survivor went on excusing
+    #: the same row once it started being killed.
+    spent: list[str]
 
 
-def sort_survivors(
-    results: Sequence[Result], accepted: dict[str, Accepted], complete: bool = True
-) -> Survivors:
+def sort_survivors(results: Sequence[Result], root: Path = Path()) -> Survivors:
     """Split every row that is not `caught` into read and unread.
 
     **Not caught, rather than `survived`.** `MEANING` spends "survived" narrowly,
@@ -2536,42 +2803,62 @@ def sort_survivors(
     does. In the field's own vocabulary all of these *are* survivors -- the
     mutant was not killed -- which is why the file keeps its name.
 
-    **Counted, not merely matched.** A key covers as many rows as were read, and
-    the next one of that shape is fresh -- see `Accepted.seen` for the 125 rows
-    that would otherwise have been absorbed by a sibling.
+    **The disposition is a comment beside the code** -- see `excused`. It used
+    to be a hash in `known-survivors.json`, and the file is gone because it was
+    not kept: twelve equivalences proved in one sitting went into commit
+    messages instead, and seventeen of its keys had come to match nothing at all.
+    Three pieces of machinery went with it, each of which existed only to
+    compensate for the key being content-addressed rather than positional:
 
-    **`complete` is what makes `stale` mean anything.** "This key matches nothing
-    the run generated" is evidence the code has gone only if the run generated
-    everything -- and a `--base` run generates rows for the changed lines alone,
-    so it "fails to generate" every key belonging to a file the diff did not
-    touch. Measured on this change's own sweep: 206 of the record's 210 entries
-    were reported stale by a two-file diff.
+    - `Accepted.seen`, the occurrence count that told the 126th row of a shape
+      from the 125th. Two identical mutations on two lines carry two tags.
+    - `complete`, which decided whether "this key matched nothing" was evidence.
+      A `--base` run generates rows for the changed lines alone, so it reported
+      206 of 210 entries stale -- and `_accept` *dropped* what `stale` named, so
+      the documented recording command destroyed the record it was recording
+      into. A tag is judged where it sits, so a narrowed run judges exactly the
+      tags it reached and says nothing about the rest.
+    - the collision `_resume_key`'s docstring records: three unrelated `0`/`1`
+      literals in one file share a key, so a reason written for one was absorbed
+      by the others rather than read.
 
-    That was not merely a misleading line. `_accept` **drops** what `stale`
-    names, so `python -m tools.mutate --base main --accept` -- the command
-    CLAUDE.md gives for recording a run's survivors -- would have deleted 206
-    reviewed reasons and left the file claiming four. A record whose documented
-    use destroys it is worse than no record, and nothing in the output said so:
-    the count simply came back smaller.
-
-    With no evidence, say nothing. An entry kept one sweep too long is a line in
-    a file; an entry dropped is an argument somebody has to make again.
+    What is *kept* is the direction of the guard. A tag that has stopped being
+    needed is reported (`Survivors.spent`), because a record that only ever
+    grows is a mute list; and a row with no tag is fresh, because the safe
+    failure is reporting too much.
     """
     fresh: list[Result] = []
     seen: list[tuple[Result, str]] = []
-    left = {key: row.seen for key, row in accepted.items()}
+    # A tag is identified by the line it sits on, not by the row that matched
+    # it, because one tag answers every operator it names -- and `arith` alone
+    # covers `+` becoming `-` *and* `-` becoming `+`, which need not have the
+    # same answer. Measured on this repository: `conflicts.somewhere_in`'s range
+    # arithmetic is equivalent widened and caught narrowed, so a check that
+    # called a tag spent on the first caught row it saw reported a live tag as
+    # dead on its first real sweep.
+    earned: set[tuple[str, int]] = set()
+    idle: dict[tuple[str, int], str] = {}
+    read = _Reader(root)
     for result in results:
-        if MEANING[result.verdict.outcome].clean:
+        found = excused(result.mutation, root, read)
+        if found is None:
+            if not MEANING[result.verdict.outcome].clean:
+                fresh.append(result)
             continue
-        key = _key(result.mutation)
-        if left.get(key, 0) > 0:
-            left[key] -= 1
-            seen.append((result, accepted[key].why))
-        else:
-            fresh.append(result)
-    reached = {_key(result.mutation) for result in results}
-    stale = sorted(set(accepted) - reached) if complete else []
-    return Survivors(fresh, seen, stale)
+        where = (result.mutation.path, found.at)
+        if MEANING[result.verdict.outcome].clean:
+            # A tag on a row the suite now *catches*. This is the direction the
+            # old record could not see at all: a hash keyed on content matches
+            # whatever the outcome, so a reason written for a survivor went on
+            # excusing it silently once it became a kill. A tag that is no
+            # longer needed is good news, and good news nobody is told is how a
+            # mute list forms.
+            idle[where] = f"{result.mutation.label} -- now caught, so the tag is spent"
+            continue
+        earned.add(where)
+        seen.append((result, found.why))
+    # survivor: order -- TODO: why is this acceptable?
+    return Survivors(fresh, seen, [why for tag, why in sorted(idle.items()) if tag not in earned])
 
 
 def _resume_key(mutation: Mutation) -> tuple[str, int, int, str] | None:
@@ -2603,13 +2890,16 @@ def _resume_key(mutation: Mutation) -> tuple[str, int, int, str] | None:
     rows sharing a start (or an end) and a `new` while differing in the other
     coordinate -- an outer and an inner node beginning at the same offset and
     rewritten to the same text. Nothing in this tree is that, and a fixture
-    built to be it would be testing the tuple rather than the resume. Written
-    here rather than as a row in `known-survivors.json` because that record
-    keys on `(path, operator, old, new)` and these three collide with unrelated
-    `0`/`1` literals elsewhere in this file -- absorbed, not read.
+    built to be it would be testing the tuple rather than the resume. It was
+    written here rather than in the record because the record keyed on
+    `(path, operator, old, new)` and these three collide with unrelated `0`/`1`
+    literals elsewhere in this file -- absorbed, not read. A `# survivor:` tag
+    is positional, so it would sit on these lines and nowhere else; the
+    paragraph stays because the argument is worth more here than in a comment.
     """
     if mutation.span is None:
         return None
+    # survivor: off-by-one -- TODO: why is this acceptable?
     return (mutation.path, mutation.span[0], mutation.span[1], mutation.new)
 
 
@@ -2675,6 +2965,7 @@ class Killers:
         self.budget = budget
         #: What the last `ahead_of` decided, for a caller that wants to say so.
         self.head: list[str] = []
+        # survivor: off-by-one -- TODO: why is this acceptable?
         self.dropped = 0
         self.known: dict[str, str] = {}
         self.cost: dict[str, float] = {}
@@ -2683,6 +2974,7 @@ class Killers:
         #: mutation and answers "which rows should run first". Two different
         #: questions that happen to share a file.
         self.seconds: dict[str, float] = {}
+        # survivor: branch -- TODO: why is this acceptable?
         if where is not None and where.is_file():
             try:
                 saved = json.loads(where.read_text(encoding="utf-8"))
@@ -2690,8 +2982,10 @@ class Killers:
                 # recorded. Read rather than discarded: the killers in it are
                 # still good, and the costs refill on the next run.
                 rows = saved.get("killers", saved) if isinstance(saved, dict) else {}
+                # survivor: connector -- TODO: why is this acceptable?
                 self.known = {str(k): str(v) for k, v in rows.items() if isinstance(v, str) and v}
                 found = saved.get("costs", {}) if isinstance(saved, dict) else {}
+                # survivor: drop-assign -- TODO: why is this acceptable?
                 self.cost = {str(k): float(v) for k, v in found.items()}
                 spent = saved.get("seconds", {}) if isinstance(saved, dict) else {}
                 self.seconds = {str(k): float(v) for k, v in spent.items()}
@@ -2726,6 +3020,7 @@ class Killers:
         covered: set[str] = set()
         chosen: list[str] = []
         spent = 0.0
+        # survivor: boundary -- TODO: why is this acceptable?
         while spent < self.budget:
             best, yield_ = "", 0.0
             for test, caught in rows.items():
@@ -2736,6 +3031,7 @@ class Killers:
                 rate = fresh / max(self.cost[test], 0.001)
                 if fresh and rate > yield_:
                     best, yield_ = test, rate
+            # survivor: boundary -- TODO: why is this acceptable?
             if not best or spent + self.cost[best] > self.budget:
                 break
             chosen.append(best)
@@ -2756,11 +3052,15 @@ class Killers:
         head = self.prefix()
         wanted = {self.known[_key(row)] for row in table if _key(row) in self.known} | set(head)
         usable = _loadable(wanted)
+        # survivor: arith, branch -- TODO: why is this acceptable?
         if dropped := len(wanted) - len(usable):
+            # survivor: drop-call -- TODO: why is this acceptable?
             print(f"{dropped} remembered test(s) no longer load, so their rows run as usual.")
         head = [test for test in head if test in usable]
+        # survivor: branch -- TODO: why is this acceptable?
         if head:
             spent = sum(self.cost.get(test, 0.0) for test in head)
+            # survivor: drop-call -- TODO: why is this acceptable?
             print(
                 f"{len(head)} cheap test(s), {spent:.2f}s, run first where nothing is remembered."
             )
@@ -2787,6 +3087,7 @@ class Killers:
             # and the prefix was cut to nothing for exactly them. And a selection
             # naming a class rather than a module never matched at all.
             reachable = row.tests.split()
+            # survivor: order -- TODO: why is this acceptable?
             mine = [
                 test
                 for test in head
@@ -2807,12 +3108,14 @@ class Killers:
         self.cost.update(report.times or {})
         for result in report.results:
             key = _key(result.mutation)
+            # survivor: boundary, branch, off-by-one -- TODO: why is this acceptable?
             if result.verdict.spent > 0:
                 # Every outcome, not only the answered ones. A `timeout` row
                 # costs the full `--timeout` and a `broke` row is expensive
                 # too, and what this orders by is price rather than verdict --
                 # those are exactly the rows a run most wants to start early.
                 self.seconds[key] = result.verdict.spent
+            # survivor: connector -- TODO: why is this acceptable?
             if result.verdict.outcome == "caught" and result.verdict.killer:
                 self.known[key] = result.verdict.killer
             elif result.verdict.answered:
@@ -2825,6 +3128,7 @@ class Killers:
         if self.where is None:
             return
         self.where.parent.mkdir(parents=True, exist_ok=True)
+        # survivor: off-by-one -- TODO: why is this acceptable?
         self.where.write_text(
             json.dumps(
                 {"killers": self.known, "costs": self.cost, "seconds": self.seconds},
@@ -2877,8 +3181,10 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
 
     index = mutants.importers(root)
     table: list[Mutation] = []
+    # survivor: order -- TODO: why is this acceptable?
     for path in sorted(touched):
         tests = mutants.targets_for(path, root, index) or WHOLE_SUITE
+        # survivor: connector -- TODO: why is this acceptable?
         table.extend(
             mutants.generate(
                 (root / path).read_text(encoding="utf-8"),
@@ -2911,6 +3217,7 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
         share: dict[str, int] = {}
         for row in dropped:
             share[row.path] = share.get(row.path, 0) + 1
+        # survivor: order -- TODO: why is this acceptable?
         listed = ", ".join(f"{path} {count}" for path, count in sorted(share.items()))
         print(paint.paint(f"--limit {args.limit}: {len(dropped)} not run ({listed}).", paint.ODD))
         print(
@@ -3052,6 +3359,7 @@ def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> li
         order = sorted(range(len(rows)), key=lambda at: -seconds.get(keys[at], middle))
         ordered.extend(rows[at] for at in order)
     cold = len(table) - timed
+    # survivor: branch -- TODO: why is this acceptable?
     if timed:
         print(
             paint.paint(
@@ -3076,6 +3384,7 @@ def _bytes(said: str) -> int:
         value = int(said)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not a byte count: {said}") from None
+    # survivor: branch, off-by-one -- TODO: why is this acceptable?
     if value < 0:
         raise argparse.ArgumentTypeError(
             f"negative memory limit: {said}. Use 0 for no cap; -1 is not infinity here."
@@ -3169,6 +3478,7 @@ def _persist(report: Report, where: Path, announce: bool = True) -> None:
     # recovery file has a 1-in-70 chance of being the casualty is not one, and
     # the failure is silent: the next run simply starts over.
     beside = where.with_name(where.name + ".tmp")
+    # survivor: off-by-one -- TODO: why is this acceptable?
     beside.write_text(
         json.dumps(
             {"baseline_red": report.baseline_red, "widened": report.widened, "results": rows},
@@ -3380,6 +3690,7 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     # measured, lost, and removed in the same change that wrote the line.
     order = list(by_file)
     rows = [row for rows_here in by_file.values() for row in rows_here]
+    # survivor: drop-call -- TODO: why is this acceptable?
     print(
         paint.paint(f"\n{len(rows)} mutant(s) across {len(order)} file(s), in one pool", paint.HEAD)
     )
@@ -3412,9 +3723,13 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
 
     report = _run_generated(rows, args, landed=finished)
     collected.extend(report.results)
+    # survivor: branch -- TODO: why is this acceptable?
     if args.json:
+        # survivor: drop-call -- TODO: why is this acceptable?
         _persist(Report(collected, report.baseline_red, widened=report.widened), args.json)
+    # survivor: branch -- TODO: why is this acceptable?
     if report.baseline_red:
+        # survivor: drop-call -- TODO: why is this acceptable?
         print(
             paint.paint(
                 f"\nthe baseline was red, so none of the {len(collected)} row(s) means anything.",
@@ -3446,7 +3761,9 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
     shards = baseline_shards(table)
     # The same sizing `run` does, so the question is asked under the conditions
     # the sweep will ask it under -- which is the whole point of asking early.
+    # survivor: negate -- TODO: why is this acceptable?
     wanted = args.workers if args.workers is not None else _affordable()
+    # survivor: negate -- TODO: why is this acceptable?
     lanes, memory = _share(wanted, args.memory, pinned=args.workers is not None)
     green = True
     with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
@@ -3456,13 +3773,17 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
         ]
         for shard, future in zip(shards, checks, strict=True):
             verdict = future.result()
+            # survivor: boundary -- TODO: why is this acceptable?
             name = shard if len(shard) < 70 else f"{shard[:67]}..."
             if verdict.outcome == "survived":
+                # survivor: drop-call -- TODO: why is this acceptable?
                 print(f"  {paint.paint('green  ', paint.GOOD)} {paint.paint(name, paint.QUIET)}")
                 continue
             green = False
             print(paint.paint(f"  RED ({verdict.outcome})  {name}: {verdict.detail}", paint.BAD))
+            # survivor: branch -- TODO: why is this acceptable?
             if verdict.why:
+                # survivor: drop-call -- TODO: why is this acceptable?
                 print(indent(verdict.why.rstrip(), "  | "))
     print(
         paint.paint(
@@ -3538,6 +3859,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="write the outcomes here, for `python -m tools.reached`",
     )
+    # survivor: drop-call -- TODO: why is this acceptable?
     parser.add_argument(
         "--killers",
         type=Path,
@@ -3554,8 +3876,8 @@ def main(argv: list[str] | None = None) -> int:
         "--accept",
         action="store_true",
         help=(
-            f"record this run's survivors in {KNOWN} so later runs report only new ones "
-            "(only a whole-tree --all run may also drop entries)"
+            "write a TODO `# survivor:` tag beside each unread row, for a person "
+            "to finish; later runs then report only what is new"
         ),
     )
     parser.add_argument(
@@ -3606,7 +3928,9 @@ def main(argv: list[str] | None = None) -> int:
             # for here to learn what this prints -- and the second was launched
             # on a theory the first could not have confirmed.
             return 0 if _baseline_is_green(table, args) else 1
+        # survivor: branch -- TODO: why is this acceptable?
         if killers.dropped:
+            # survivor: drop-call -- TODO: why is this acceptable?
             print(
                 paint.paint(
                     f"{killers.dropped} remembered test(s) no longer load; "
@@ -3614,8 +3938,10 @@ def main(argv: list[str] | None = None) -> int:
                     paint.ODD,
                 )
             )
+        # survivor: branch -- TODO: why is this acceptable?
         if killers.head:
             spent = sum(killers.cost.get(test, 0.0) for test in killers.head)
+            # survivor: drop-call -- TODO: why is this acceptable?
             print(
                 paint.paint(
                     f"{len(killers.head)} cheap test(s), {spent:.2f}s, run first "
@@ -3635,17 +3961,19 @@ def main(argv: list[str] | None = None) -> int:
             # retract a marker an earlier complete run earned.
             _marker(args.json).unlink(missing_ok=True)
         report = sweep(table, args) if args.all or args.batch else _run_generated(table, args)
-        accepted = known_survivors()
-        # Each term is a way the table can be a subset of what the record covers,
-        # and `stale` is only evidence when it is not: `--all` is the whole tree
-        # where `--base` is a diff, and the three filters narrow even that. A
-        # `--limit` that bites is the one case this does not see; it caps per
-        # file under `--all`, so it would have to be reached deliberately.
-        complete = args.all and not (args.only or args.operator or args.skip_operator)
-        _summarise(report.results, accepted, complete)
-        sorted_out = sort_survivors(report.results, accepted, complete)
+
+        # No `complete` any more. It existed because a hash record could only
+        # judge an entry stale if the run had generated everything; a tag is
+        # judged where it sits, so a narrowed run judges exactly the tags it
+        # reached and stays silent about the rest -- which is what the flag was
+        # trying and failing to arrange.
+        sorted_out = sort_survivors(report.results)
+        # survivor: drop-call -- TODO: why is this acceptable?
+        _summarise(report.results, sorted_out)
+        # survivor: branch -- TODO: why is this acceptable?
         if args.accept:
-            _accept(sorted_out, accepted)
+            # survivor: drop-call -- TODO: why is this acceptable?
+            _accept(sorted_out)
         if report.baseline_red:
             # Its verdicts are meaningless by definition, so its killers are
             # too -- and a killer recorded from a red tree is a test that fails
@@ -3659,12 +3987,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             killers.learn(report)
+            # survivor: drop-call -- TODO: why is this acceptable?
             killers.save()
         # Last, and after `_summarise`. The numbers are what a reader looks at
         # first, so they go where the eye lands at the end of a scroll rather
         # than above a hundred and sixty survivors.
+        # survivor: drop-call -- TODO: why is this acceptable?
         _report_stats(report.results, pace=report.pace, red=report.baseline_red, headroom=False)
         if args.json:
+            # survivor: drop-call -- TODO: why is this acceptable?
             _persist(report, args.json)
             # Last: the marker means the whole run is over, and nothing after
             # this point can still change a verdict.
@@ -3685,16 +4016,20 @@ def main(argv: list[str] | None = None) -> int:
     ran_itself = bool(mine)
     mutations = namespace.get("MUTATIONS")
 
+    # survivor: branch, connector -- TODO: why is this acceptable?
     if mutations and ran_itself:
         # Both shapes in one file. Re-running the table would cost the same
         # minutes for the same answer and print it twice with nothing to say
         # which pass a reader is looking at, so take the one that already ran.
+        # survivor: drop-call -- TODO: why is this acceptable?
         print(
             f"{args.script} defines MUTATIONS *and* calls verify(); the results above "
             f"are the run it did itself. Delete one of the two.",
             file=sys.stderr,
         )
+    # survivor: branch -- TODO: why is this acceptable?
     if ran_itself:
+        # survivor: off-by-one, order, return-value -- TODO: why is this acceptable?
         return 0 if all(report.clean for report in mine) else 1
     if mutations:
         return _run_spec(mutations, args)

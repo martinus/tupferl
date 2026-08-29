@@ -228,6 +228,13 @@ def add(wanted: list[str], to_host: bool, anyway: bool = False) -> int:
         # the same name. The branch buys one fewer `stat` storm, not a different
         # answer, and a test asserting otherwise would be asserting the cost.
         name = manifest.check(path, home, repo, config, anyway)
+        # survivor: branch -- tupferl/manage.py:242 in add() -- the `if` is always taken -- a real
+        #   gap, and a narrow one: forcing the branch sends a *file* to `manifest.collect`, which
+        #   walks it and yields nothing, so `add` on a single file would admit nothing at all.
+        #   Nothing distinguishes it because every add test that passes a file also passes through
+        #   `check`, which already recorded the name. Worth a test; it needs `collect`'s behaviour
+        #   on a non-directory pinned first, which is a change to `manifest` rather than to a
+        #   fixture.
         if path.is_dir():
             names, skipped = manifest.collect(path, home, repo, config, anyway)
             refused.extend(skipped)

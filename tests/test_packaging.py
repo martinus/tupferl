@@ -27,6 +27,7 @@ import sys
 import unittest
 from pathlib import Path
 
+from tools import mutate
 from tupferl import config
 
 #: The repository root: this file's parent's parent.
@@ -144,3 +145,27 @@ class TestTheDeclarationAgreesWithTheImports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheTagWidthMatchesTheFormatter(unittest.TestCase):
+    """`mutate._COLUMNS` is `pyproject.toml`'s `line-length`, and must stay so.
+
+    `--accept` writes `# survivor:` tags into real source files, wrapped to
+    `_COLUMNS`. If the two drift, every tag the tool writes is a line
+    `ruff format --check` rejects -- so the preflight goes red on generated text
+    in a file the change never touched, which is a long way from the edit that
+    caused it.
+
+    Asserted here rather than read from `pyproject.toml` by `tools/mutate.py`:
+    `tools/` may not import the package, and parsing TOML there would drag
+    `tomli` in on 3.10 for a constant that changes once a decade. This file
+    already opens `pyproject.toml` for the dependency surface, so the comparison
+    costs nothing new.
+    """
+
+    def test_the_wrap_width_is_the_formatter_s_line_length(self) -> None:
+        # `config.toml()` for the reason the class above gives: it reads TOML
+        # the way tupferl does, including on the 3.10 leg.
+        with (ROOT / "pyproject.toml").open("rb") as handle:
+            settings = config.toml().load(handle)
+        self.assertEqual(settings["tool"]["ruff"]["line-length"], mutate._COLUMNS)

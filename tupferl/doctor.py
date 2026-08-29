@@ -254,6 +254,9 @@ def report(found: list[Check]) -> str:
     command; `tests/test_doctor.py` asserts on it, which is the only reason it is
     a function rather than a loop of `print`.
     """
+    # survivor: off-by-one -- tupferl/doctor.py:257 in report() -- `0` becomes `1` -- equivalent:
+    #   `default=0` is used only when `found` is empty, and an empty `found` produces no lines for
+    #   the width to pad. Measured: `'ab'.ljust(-1)` and `'ab'.ljust(0)` are both `'ab'`.
     width = max((len(check.title) for check in found), default=0)
     lines = [f"{MARKS[check.ok]} {check.title.ljust(width)}  {check.detail}" for check in found]
     failed = sum(1 for check in found if check.ok is False)

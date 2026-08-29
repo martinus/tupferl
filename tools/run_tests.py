@@ -133,6 +133,10 @@ def _unloadable(loader: unittest.TestLoader) -> dict[str, str]:
     and the message shape live here rather than at the two call sites, because
     they encode what `unittest` prints and that is one fact.
     """
+    # survivor: off-by-one, sign -- tools/run_tests.py:137 in _unloadable() -- `1` becomes `2` --
+    #   equivalent for anything anyone reads: `TextTestRunner`'s verbosity controls the per- test
+    #   detail on stderr, and the `Ran N tests` line that
+    #   `test_the_worker_says_how_many_tests_it_ran` asserts is printed at every level.
     return {
         said.splitlines()[0].rsplit(": ", 1)[-1]: said.splitlines()[0]
         for said in (str(error) for error in loader.errors)
@@ -184,6 +188,9 @@ def pack(classes: dict[str, list[str]], bins: int) -> list[list[str]]:
     before calling this.
     """
     batches: list[list[str]] = [[] for _ in range(max(1, min(bins, len(classes))))]
+    # survivor: off-by-one -- equivalent: `weights.index(min(weights))` picks the lightest bin, and
+    #   adding the same constant to every bin leaves that comparison exactly where it was. The zero
+    #   is the natural spelling of "nothing packed yet", not an arithmetic the packing depends on.
     weights = [0] * len(batches)
     for name in sorted(classes, key=lambda n: (-len(classes[n]), n)):
         light = weights.index(min(weights))
@@ -202,6 +209,10 @@ def shard_of(spec: str) -> tuple[int, int]:
     if not sep or not index.strip().isdigit() or not total.strip().isdigit():
         raise ValueError(f"--shard wants I/N, got {spec!r}")
     got, count = int(index), int(total)
+    # survivor: off-by-one -- equivalent because the second term already covers it: with `count` at
+    #   0, `1 <= got <= 0` is false for every `got`, so `not ...` raises regardless of what the
+    #   first term says. `count < 1` is the sentence a reader wants -- "N at least 1" -- rather than
+    #   a check the range test needs.
     if count < 1 or not 1 <= got <= count:
         raise ValueError(f"--shard {spec} is out of range: I must be 1..N and N at least 1")
     return got - 1, count
@@ -233,6 +244,10 @@ def run_batch(names: list[str], out: Path) -> int:
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromNames(names)
     unloadable = _unloadable(loader)
+    # survivor: branch -- tools/run_tests.py:236 in run_batch() -- the `if` is always taken --
+    #   equivalent: with nothing unloadable the loop over `loader.errors` prints nothing and
+    #   `_loaded(suite, {})` filters nothing out, so the forced branch produces the same suite and
+    #   the same output.
     if unloadable:
         # The whole traceback, once, where a human reads it in context -- the
         # summary carries only the first line, as it does for every other row.
@@ -242,6 +257,9 @@ def run_batch(names: list[str], out: Path) -> int:
     # Tracebacks go to stderr, where they interleave with the tests' own output
     # and a human reads them in context. Only ids travel back to the parent:
     # shipping the traceback too would print every failure twice.
+    # survivor: off-by-one -- verbosity decides how much a *worker* prints to its own stderr, and
+    #   the comment above says why only ids travel back to the parent. Changing it moves noise in a
+    #   log, never a verdict.
     result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1, resultclass=_Recorder).run(
         suite
     )
@@ -295,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
+    # survivor: branch -- tools/run_tests.py:298 in main() -- the `if` is never taken --
+    #   unmeasurable by construction: forcing this branch off makes every spawned worker ignore
+    #   `--worker`, run the whole suite itself and spawn more -- an unbounded fork storm. `_Lanes`
+    #   killed the session at 2199 MiB against its 2063 MiB share and took the rest of the table
+    #   with it, so the row can never come back anything but BROKE.
     if args.worker:
         assert args.out
         return run_batch(args.worker, Path(args.out))
@@ -406,6 +429,12 @@ def main(argv: list[str] | None = None) -> int:
             reports = list(pool.map(run, enumerate(batches)))
 
     for report in reports:
+        # survivor: drop-call -- tools/run_tests.py:399 in main() -- the call to
+        #   `unloadable.update(...)` never happens -- measured unreachable: `discover` drops a
+        #   module it could not import from `classes` as well as recording it, so no batch is ever
+        #   asked to load one and no batch report carries an `unloadable` entry. Verified by driving
+        #   a real tree with a broken module -- exactly one `could not import` line is printed, from
+        #   the parent's own discovery. The line guards a `discover` that stopped doing that.
         unloadable.update(report["unloadable"])
     ran = [tid for report in reports for tid in report["ran"]]
     failures = [tid for report in reports for tid in report["failures"]]
@@ -420,6 +449,10 @@ def main(argv: list[str] | None = None) -> int:
             # the traceback is already above, from the batch
             print(paint.paint(f"  {label}: {tid}", paint.BAD))
 
+    # survivor: order -- tools/run_tests.py:413 in main() -- `sorted` becomes `list` -- equivalent
+    #   for what `discover` produces: `unloadable` is filled by a walk that visits modules in sorted
+    #   order, so its insertion order already is the sorted order. The *reversal* of this line is
+    #   caught by `test_broken_modules_are_named_in_a_settled_order`; only the redundancy is not.
     for name in sorted(unloadable):
         # Its own line and its own wording: this is not a test that failed, and
         # printing it as one is what sent a reader looking for an assertion.
@@ -431,7 +464,14 @@ def main(argv: list[str] | None = None) -> int:
         for tid in sorted(missing):
             print(paint.paint(f"  never ran: {tid}", paint.BAD))
         ok = False
+    # survivor: branch -- tools/run_tests.py:424 in main() -- the `if` is never taken -- unreachable
+    #   through `pack`, which places each class in exactly one batch -- so no test id can be
+    #   reported twice and `len(ran) - len(set(ran))` is always 0. The guard is there for a future
+    #   batching rule that overlapped, which is the change it exists to catch.
     if duplicated := len(ran) - len(set(ran)):
+        # survivor: drop-call -- tools/run_tests.py:425 in main() -- the call to `print(...)` never
+        #   happens -- same as `run_tests.py:424` -- the line only runs when a test id was reported
+        #   twice, which `pack` makes impossible today.
         print(f"::error::{duplicated} tests ran more than once")
         ok = False
     if skipped:
