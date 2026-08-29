@@ -682,6 +682,18 @@ written down.
   and `watch.alive` came back `BROKE`. Pick a bound above the longest honest
   wait in the file and comfortably below the alarm, and say both numbers where
   you write it.
+
+  **Write it through `support.bounded`, which knows the alarm actually armed.**
+  Comparing against `mutate.EACH_TEST` is the obvious spelling and it guards
+  only the *default*: `--each-test` is a flag, so a sweep at `--each-test 10`
+  puts a 20s bound back above the alarm and the test written to prevent that
+  cannot see it, because the constant still reads 30. `_run` now passes the
+  armed value to the child in `TUPFERL_MUTATE_EACH_TEST`, and `bounded` takes
+  `SHARE` (two thirds) of it — which is the ratio `PROMPTED` and `EACH_TEST`
+  already had, so stating the rule left every measured number where it was and
+  changed only what happens when the alarm moves. It is a floor, never a
+  ceiling: with nothing armed, or with `--each-test 0`, the fixture's own number
+  stands unchanged, which is every ordinary run of the suite.
 - **`discover` and `loadTestsFromNames` classify a broken module differently**,
   and a fixture written for one proves nothing about the other. `discover`
   wraps everything into `loader.errors`; `loadTestsFromNames` wraps only what
@@ -1215,10 +1227,16 @@ read this file:
 
     What that leaves pointing at is something that exists only there: many lanes
     sharing a sandbox pool while one of the tests being run is itself a nested
-    mutation harness. **What would settle it** is the traceback: `Verdict.why`
-    already records it for a `caught` row and nothing prints or persists it for
-    a mutation row, so a sweep that surfaced `why` for an unbaselined killer
-    would answer this in one run instead of the six that failed here.
+    mutation harness. **What would settle it is the traceback, and a sweep now
+    prints it.** `Verdict.why` is recorded for every `caught` row and was read
+    by nothing but the baseline branch; `_loose_evidence` prints it for each
+    unbaselined killer, one row per killer with the count of what it caught.
+    Deliberately on the *green* path as well as the red one — a killer that
+    fails untouched is diagnosed by the check that follows, while a killer that
+    *passes* untouched and still caught rows is corrected by nothing and leaves
+    nothing to read, which is exactly the shape of this result. Re-open the
+    shuffle only with that output in hand; six attempts to reproduce it failed
+    and none of them had it.
 
   So the walk order is load-bearing for *correctness* and not only for speed,
   by a route not yet understood. 1.6% was never going to pay for that.
