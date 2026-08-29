@@ -101,8 +101,21 @@ class TestWhichTomlParserIsUsed(unittest.TestCase):
 
     def test_three_ten_uses_the_backport_it_was_taken_from(self) -> None:
         """`(3, 11, 0)` above and `(3, 10, 7)` here are the two sides of the
-        comparison: with `>` instead of `>=`, 3.11 itself would fall through to
-        the backport.
+        branch.
+
+        **They are not the two sides of the `>=`**, and this docstring used to
+        claim they were: "with `>` instead of `>=`, 3.11 itself would fall
+        through to the backport". That is false, and the sweep said so by
+        reporting the row SURVIVED. `sys.version_info` is a five-field tuple, so
+        the value compared is `(3, 11, 0, 'final', 0)` -- and a longer tuple with
+        an equal prefix sorts *above* the shorter one, so `> (3, 11)` is `True`
+        exactly where `>=` is. The only value that separates them is the bare
+        two-tuple `(3, 11)`, which no interpreter can report.
+
+        So `>=` against `>` is an equivalent mutant here, recorded rather than
+        chased. Writing a fixture that patched `version_info` to `(3, 11)` would
+        kill the row by testing a state that cannot occur, which is asserting
+        the mutation rather than the code.
 
         `tomli` is a *conditional* dependency -- it is only installed below 3.11
         -- so on the interpreter this suite usually runs on, importing it fails.
@@ -119,6 +132,24 @@ class TestWhichTomlParserIsUsed(unittest.TestCase):
 
 
 class TestRejectingAnUnknownKey(unittest.TestCase):
+    def test_the_settings_are_listed_in_a_fixed_order(self) -> None:
+        """`sorted(KNOWN)`, which today's `KNOWN` cannot show: it holds two keys
+        declared in the order `sorted` would put them in, so `list` gives the
+        same answer and the row survives.
+
+        Patched with keys declared *out* of order, because the claim is about
+        the message rather than about the constant -- a reader comparing what
+        tupferl printed against a colleague's should not have to allow for two
+        machines listing the same settings differently, and the next key added
+        to `KNOWN` will not be added alphabetically.
+        """
+        with (
+            mock.patch.object(config, "KNOWN", {"zebra": list, "apple": int}),
+            self.assertRaises(TupferlError) as caught,
+        ):
+            parse("nope = 1", WHERE)
+        self.assertIn("apple, zebra", str(caught.exception))
+
     def test_a_typo_is_an_error_rather_than_silence(self) -> None:
         with self.assertRaises(TupferlError) as caught:
             parse('ignroe = ["*.pem"]', WHERE)

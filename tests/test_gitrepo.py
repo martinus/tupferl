@@ -382,8 +382,20 @@ class TestReadingTheStagesOfAConflict(ConflictedIndex):
         The name the user is told to go and resolve comes from here, and a list
         whose order moved between two runs of the same repository would read as
         two different answers. One file passes against a sort, a reverse and no
-        sort at all -- the shape of fixture §2 warns about -- so this diverges
-        two, committed in the order that is *not* the answer.
+        sort at all -- the shape §2 warns about -- so this diverges two.
+
+        **Committing them in the reverse order does not reach the answer**, and
+        this docstring used to claim it did ("committed in the order that is
+        *not* the answer"). git's index is sorted by path, so `ls-files -u`
+        emits sorted rows whatever order the commits arrived in, and
+        `conflicted` therefore cannot hand back anything else. Measured:
+        replacing `sorted` with `list` leaves all 63 tests in this file green,
+        which is the sweep's SURVIVED said a second way.
+
+        So the `sorted` is an equivalent mutant *and worth keeping*: it is the
+        one line that would still hold if git's ordering ever stopped being an
+        accident this code relies on. What is asserted below is the order, which
+        is the real claim; that no fixture can break it is a property of git.
         """
         for name in (".zshrc", ".bashrc"):
             self.commit(name, b"base\n")
