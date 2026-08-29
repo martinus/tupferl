@@ -79,11 +79,21 @@ CARRIES = (
     "TUPFERL_MUTATE_BUDGET",
 )
 
-#: How long a fixture waits for a CLI driven through a pty to exit. Generous
-#: against a sync that takes milliseconds, because the only thing it bounds is a
-#: prompt asking more times than the fixture answered -- and a child killed here
-#: still has its partial output read back, so the failure says what it was doing.
-PROMPTED = 60.0
+#: How long a fixture waits for a keyed CLI run to finish -- a child through a
+#: pty, or `typing` in this process. The only thing it bounds is a prompt asking
+#: more times than the fixture answered, and a child killed here still has its
+#: partial output read back, so the failure says what it was doing.
+#:
+#: **It has to beat `tools/mutate.py`'s per-test alarm, not merely exist.** That
+#: alarm is 30s and files whatever trips it as `BROKE`, which is never `caught`
+#: -- so at the 60s this used to be, the two raced and the alarm always won. A
+#: mutation making `conflicts.ask` reject every key came back `BROKE` in three of
+#: four ordered sweeps and `caught` in none, leaving the line it appears to guard
+#: guarded by nothing. 20s is far above the longest honest wait (a driven `sync`
+#: is milliseconds, and its slowest here is under two seconds even under a
+#: 32-lane sweep) and comfortably below 30. `PATIENCE` is the tighter bound for a
+#: single *read*; this one covers a whole command.
+PROMPTED = 20.0
 
 #: How long a fixture will wait for a read from a terminal before calling it a
 #: failure. Five seconds against a suite that runs 500 tests in twelve, so a
@@ -671,7 +681,25 @@ def typing(keys: str | None) -> Iterator[None]:
     terminal = Terminal()
     try:
         terminal.type(keys + FALLBACK)
-        with mock.patch("sys.stdin", terminal.source):
+        # **Bounded, because `FALLBACK` is not a bound.** `conflicts.one_key`
+        # sets `VMIN` to 1, so a read on a pty whose master is still open waits
+        # for ever rather than reporting exhaustion -- right for a real terminal,
+        # and it means the eight `s` keys are the only thing standing between a
+        # prompt that asks once too often and a suite that hangs. A mutant making
+        # `ask` reject *every* key eats all of them and then blocks: measured,
+        # `conflicts.py:635` came back `BROKE` in three of four ordered sweeps
+        # and `caught` in none, so the line was guarded by nothing.
+        #
+        # `deadline` rather than closing the pty's master, which was tried first
+        # and cannot be made exact: neither `select` nor `FIONREAD` can tell
+        # "canonical mode, nothing read yet" from "every key spent" -- both
+        # report zero -- so a watcher either fires before the first read or
+        # races the reader and misses. `SIGALRM` interrupts the blocking read
+        # itself, which is what this helper exists for.
+        with (
+            mock.patch("sys.stdin", terminal.source),
+            deadline(PROMPTED, f"the prompt never settled on {keys!r}"),
+        ):
             yield
     finally:
         terminal.close()

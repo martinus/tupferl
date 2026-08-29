@@ -90,6 +90,13 @@ class Mutation(NamedTuple):
     #: made every row its own shard -- 1 baseline run became 42, each a full
     #: suite. See `mutate.Killers`.
     first: str = ""
+    #: Whether `first` is the test recorded as catching *this* row, rather than
+    #: the general cheap-yield prefix. The two are both "run these first" and
+    #: are otherwise indistinguishable once written into one string, but they
+    #: deserve opposite treatment against `mutate.Learned`: an exact killer
+    #: belongs in front of it, a general prefix behind it. `mutate.Killers`
+    #: sets this; nothing else does.
+    exact: bool = False
 
 
 #: Nodes that carry a source position. `ast.AST` does not -- only statements and

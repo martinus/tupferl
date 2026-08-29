@@ -664,6 +664,16 @@ written down.
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.
+- **A stale `.pyc` can survive an edit of the same size in the same second.**
+  Python invalidates cached bytecode on mtime *and size*, so rewriting
+  `PROMPTED = 60.0` as `PROMPTED = 20.0` -- identical length -- within one second
+  left the old bytecode in place, and a test read the value the file no longer
+  had. It cost a wrong diagnosis: the constant was correct on disk and wrong in
+  memory. Any script that edits a file, runs the suite and edits it back is
+  exposed; `find . -name __pycache__ -not -path './.venv/*' -exec rm -rf {} +`
+  settles it. `tools/mutate.py` is not exposed -- it passes `-B` and sets
+  `PYTHONDONTWRITEBYTECODE`, and `_clear_bytecode` runs over each sandbox.
+
 - **A test's own timeout must *beat* the harness's, not merely exist.**
   `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
   that trips it as `BROKE` — which is never `caught`, so the line it was
@@ -916,9 +926,14 @@ written down.
   rule it used:
 
   ```
-  7 lane(s) at 2053 MiB each, from 14374 MiB of usable memory
-  (15398 MiB unclaimed, less 1024 MiB spare) -- see tools.mutate._share.
+  32 lane(s) at 2529 MiB each, from 53962 MiB of usable memory
+  (54986 MiB unclaimed, less 1024 MiB spare), committing 150% -- see tools.mutate._share.
   ```
+
+  The last clause is `_COMMIT`, and it is said out loud for the reason the rest
+  of the line is: over-committing is a judgement that lane peaks do not
+  coincide, and a reader has to be able to see it was made -- especially on the
+  run that does get killed.
 
   Two things follow, and both bit before this existed:
 
@@ -1006,7 +1021,207 @@ read this file:
   than comparing URLs, and greps a copy for the template's path so that a *third*
   such file is caught rather than waited for.
 
+- **Ordering each file's rows by what they cost last sweep** (`slowest_first`).
+  Four interleaved pairs over `--only tupferl/`, 1309 rows, one binary and one
+  variable — the control is the same `killers.json` with its `seconds` map
+  stripped, since an empty map makes `slowest_first` a no-op and no second code
+  path is needed:
+
+  | lanes | pair | unordered | slowest-first | |
+  |---|---|---|---|---|
+  | 16 | 1 | 306.81s | 286.97s | −6.5% |
+  | 16 | 2 | 300.83s | 282.90s | −6.0% |
+  | 32 | 1 | 214.06s | 192.42s | −10.1% |
+  | 32 | 2 | 214.68s | 192.64s | −10.3% |
+
+  Median paired difference **−18.9s at 16 lanes and −21.8s at 32** — an almost
+  constant saving, so it is a bigger *share* of a shorter run. That is the
+  mechanism showing itself rather than a coincidence: it predicts, and the runs
+  confirm, that more lanes means more idle capacity for a late 90s row to waste.
+
+  **It thins the tail rather than removing it.** The last survivor finishes dead
+  last in all eight runs; what moves is the median survivor's completion, 1198 →
+  1043 of 1309 at 16 lanes and 1295 → 1189 at 32. The residual is structural:
+  the sort is *within* a file and `by_size` runs the largest file **last**, so
+  that file's survivors are dispatched near the end however well its own rows
+  are ordered. Ordering *files* by predicted cost would reach them and would
+  keep every row contiguous — at the price of #49's reason for smallest-first.
+  Not attempted.
+
+  **And it costs one row, reproducibly.** `tupferl/conflicts.py:635 in ask()`
+  went `caught` in 4 of 4 unordered runs and `BROKE` in 3 of 4 ordered ones,
+  always as `test_b_keeps_both ... did not finish within 30s`. The landmine is
+  pre-existing and is the one CLAUDE.md already names — a prompt in a test must
+  fail, not block — but `Killers.ahead_of` sets `first` identically in both
+  arms, so what differs is `Learned`, whose front is fed by completion order.
+  Reordering changes which test is tried first, and one candidate blocks rather
+  than failing. A `BROKE` row is never `caught`, so that line is unguarded on
+  the runs where it fires.
+
+- **The lane count was held at 16 by a constant, and lifting it was worth
+  30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind
+  its comment ("the most lanes worth running, whatever the machine reports"). On
+  a 32-core machine it was the *only* binding term — `usable_cpus() * 2` gave
+  64 and memory gave 25 — so the tool used half the machine. Measured over the
+  1309 rows of `--only tupferl/`, two interleaved pairs each: **214.1s and
+  214.7s at 32 lanes against 306.8s and 300.8s at 16.**
+
+  Removed. What bounds the ask now is the work there is and the cores there
+  are, and nothing else.
+
+  **And the ceilings may now add up to `_COMMIT` (150%) of the budget.** A
+  ceiling is headroom for a pathological row, not what an honest one spends, so
+  requiring `lanes x ceiling <= budget` prices every lane as though all were
+  pathological at once. The evidence it was already too strict: `--workers 32`
+  had been committing **126%** for dozens of sweeps, whole-tree included, and
+  nothing has ever been killed for memory. On this machine the default goes from
+  16 lanes to 39.
+
+  Three things to keep straight, each a way it could go wrong quietly:
+
+  - **`_COMMIT` is not applied to `_affordable`**, which divides by what a lane
+    is *measured* to use rather than by its ceiling. That number already prices
+    peaks as independent, so scaling it too would spend one allowance twice.
+  - **The allowance must buy lanes, not headroom.** Applying it to the ceiling
+    alone gives the same lane count a bigger ceiling nobody reaches — no more
+    parallel than before, and it passes every obvious assertion. Measured: that
+    mutation survived every other test in the class until
+    `test_the_commitment_buys_lanes_rather_than_headroom` was written for it.
+  - **The number that would justify a figure rather than a judgement is not
+    measured.** `_report_headroom` samples the heaviest *single* lane process;
+    nothing samples the *sum* of lane RSS at one instant, which is what the host
+    feels. "One lane reached 92% of its ceiling" and "the machine was near its
+    limit" are different claims and only the first is in evidence. 150% is
+    calibrated against "126% has never been killed" and no more — **if a sweep
+    is ever OOM-killed, this is the first thing to look at**, and the sampler is
+    the thing to write before arguing about the constant.
+
+  The counter-argument, which is measured and which `slowest_first` makes worse:
+  woswoar#232 was not lanes drifting up independently, it was *three of four
+  lanes running away simultaneously on the same source line*, because a
+  generated table walks a file in order and its expensive rows are adjacent.
+  Peaks are correlated by position, and ordering rows dearest-first concentrates
+  them further — peak lane memory measured 466 MiB unordered against 528 MiB
+  ordered, both trivial against a 3363 MiB ceiling on this table, but the
+  whole-tree figure is 92%.
+
+- **Two "run these first" mechanisms met in the wrong order, and swapping them
+  is worth 3.9%.** `Killers.ahead_of` puts the test recorded as catching *this
+  row* on `Mutation.first`; `Learned` (#43) is move-to-front over the last 8
+  killers seen during the run. `_attempt` composed them as
+  `f"{ahead} {mutation.first}"` — so up to `LEARNED - 1` general tests ran ahead
+  of the one test known to catch the row, on **1105 of a 1309-row table**.
+
+  `Killers.ahead_of` already argues the opposite one function away: it drops the
+  cheap prefix entirely for a row whose killer is known, because "exact beats
+  general, the prefix would only be work before the answer". `Learned` is
+  general in the same way — what caught the *previous* rows is a proxy for what
+  catches this one, and here the thing being proxied is in hand.
+
+  Measured over `--only tupferl/`, 1309 rows, warm cache, 32 lanes:
+
+  | ordering | wall |
+  |---|---|
+  | none | 215.09s |
+  | by recorded cost, `Learned` first | 192.42s / 192.64s |
+  | by recorded cost, **killer first** | **184.98s / 185.46s** |
+
+  The mechanism is visible per row, which is what the recorded `spent` is for:
+  the median **caught** row falls from 0.67s to 0.33s and caught work from 1711
+  to 1137 lane-seconds, while survivor cost is unchanged (3040 → 3089). That is
+  the shape to expect — a survivor runs everything by construction, so nothing
+  about `first` can reach it.
+
+  **`Learned` follows the killer rather than being dropped.** A recorded killer
+  can be stale — the code moved, the test no longer sees the mutation — and the
+  learned front is then the next guess before the whole selection. It costs
+  nothing when the killer is right, because the killer has already answered. And
+  removing `Learned` outright would gut the sweep that matters most: its own
+  docstring is right that `Killers.known` "misses by construction on `--base
+  main`", whose rows are new text, so on a diff sweep the move-to-front is the
+  only adaptive ordering there is.
+
+  **`Mutation.exact` is what carries the distinction**, because `first` holds
+  either kind and they are indistinguishable once written into one string. The
+  flag's *producer* needs its own test: dropping `exact=True` from
+  `Killers.ahead_of` sends every row down the `else` arm and silently restores
+  the old order — measured, that mutation survived every test written against
+  the composition itself.
+
 ### Measured dead ends — do not re-attempt without new evidence
+
+- **Sorting the whole table by cost, across files** rather than within each
+  one. Tried twice, for two different reasons, and it lost both times.
+
+  The first attempt rested on two beliefs, both wrong. That `sweep` counted a
+  file down to zero before writing its `--json` -- untrue since #46 made that
+  write per row, though `by_size`'s docstring still said it and the claim was
+  quoted as a reason. And that a *timed* row does not need `Learned`, since
+  `Killers.ahead_of` has put its own killer on `first` -- true in principle and
+  false in fact, because `_attempt` ran the learned front **before** that
+  killer. Result: 222.55s against a 215.09s no-ordering control, the whole gain
+  cancelled.
+
+  The second attempt was after that inversion was fixed, when the premise
+  finally held. It still lost: **205.23s / 204.20s against 184.98s / 185.46s**
+  for the within-file sort on the same binary.
+
+  What makes it a real dead end rather than a tuning problem is that the total
+  *work* is identical -- 4233 lane-seconds global against 4226 within-file, 0.2%
+  apart, with global's caught rows marginally *cheaper*. It is purely worse
+  packing: ideal makespan for both is ~132s over 32 lanes, and within-file lands
+  at 185s where global lands at 205s. Better per-row ordering, more idle time,
+  which is the opposite of what LPT promises.
+
+  **The mechanism is not established**, and that is stated rather than guessed
+  at: it would need a completion timeline the logs do not carry.
+
+  **What would justify re-opening it**: that timeline. Instrument each row's
+  start as well as its finish and look at where lanes actually idle. Without it
+  any further attempt is the same guess again.
+
+- **Shuffling the outward walk to break up the survivor herd.** Every lane
+  resolves the same module list through the same loader, so survivors dispatched
+  together march through the suite in lockstep -- all in the same module at the
+  same instant. The effect is real and measured: bunching them costs 3040 ->
+  3181 survivor lane-seconds, **1.6%**.
+
+  Seeding `verdict._reached`'s walk from `_key(row)` -- selection untouched,
+  walk beyond it shuffled -- was **12.7% slower** (208.56s / 208.43s against
+  184.98s / 185.46s). But the timing is the least of it.
+
+  **It reported 24 false `caught` verdicts, reproducibly.** Both runs came back
+  `1300 caught / 6 SURVIVED` where the truth is `1276 / 30` -- a mutation score
+  of 99.5% against 97.7%. A survivor runs the whole suite by construction, so no
+  reordering can honestly change that outcome. All 24 were "caught" by
+  `tests.test_mutate.TestTheHarnessAnswersBothWays.test_the_walk_catches_what_the_selection_missed`,
+  on rows mutating `config.py`, `merge.py`, `manifest.py` and `sync.py`.
+
+  Two things follow, and the second is the one worth carrying forward:
+
+  - **`_unbaselined` did not catch it**, because it cannot. A `tupferl/config.py`
+    row's selection never names `tests.test_mutate`, so no baseline shard had
+    proved that module green in the sandbox -- the walk reached it, it failed,
+    and the failure was recorded as a kill. The guard covers a killer no shard
+    *could* have covered only when the shard existed.
+  - **The mechanism is not established, and "the suite has order-dependent
+    tests" was written here on a hypothesis that then failed to confirm.** The
+    offending test reproduces in *no* smaller setting: not standing alone, not
+    with the seed set, not with a mutated sandbox, not after the exact
+    eleven-module prefix the shuffled walk would have run before it (reproduced
+    from the row's own seed), not under a lane-sized `RLIMIT_AS`, and not as a
+    one-row sweep with the shuffle applied -- where the row correctly survives.
+    Only a full 32-lane sweep produces it, and then reproducibly.
+
+    What that leaves pointing at is something that exists only there: many lanes
+    sharing a sandbox pool while one of the tests being run is itself a nested
+    mutation harness. **What would settle it** is the traceback: `Verdict.why`
+    already records it for a `caught` row and nothing prints or persists it for
+    a mutation row, so a sweep that surfaced `why` for an unbaselined killer
+    would answer this in one run instead of the six that failed here.
+
+  So the walk order is load-bearing for *correctness* and not only for speed,
+  by a route not yet understood. 1.6% was never going to pay for that.
 
 - **Interleaving a mutation table round-robin across files** (#49). Proposed so
   that an interrupted sweep would have partial coverage of every file rather
@@ -1041,3 +1256,63 @@ read this file:
   verdicts, no counter on the hit rate, just a slower sweep — which reads as
   "mutation testing is slow", a conclusion already reached here once for a
   different reason.
+
+- **Four cleverer mutation dispatches, all of them losing to the plain stride**
+  (#49 follow-on). A `ThreadPoolExecutor` fed the whole table hands rows out
+  first-come, so with N lanes each lane walks a *stride* of N and no lane ever
+  gets two consecutive rows. `Learned` is move-to-front over adjacency, so that
+  dispatch is structurally the round-robin ordering the entry above measures at
+  a 27.3% hit rate. Four attempts to fix it, each built behind an environment
+  switch **in one binary** so the arms could be attributed:
+
+  | dispatch | `--only tupferl/` (1309 rows) | `tools/mutants.py` (dense) |
+  |---|---|---|
+  | stride — what `main` does | 357s | **236s** |
+  | equal segments + steal the widest half | **318s** | 288s |
+  | segments + suspect a survivor's next 4 | — | 242s |
+  | segments + suspect a survivor's next 8 | — | 239s |
+  | segments + suspect anything past 15s | 364s | 237s |
+
+  Contiguity does exactly what it was predicted to do — replayed at `keep=8`
+  over 2811 caught rows, 32 lanes: stride+shared front 37.2%, contiguous+per-lane
+  **70.7%**, against a 72.9% sequential ideal — and winning that proxy was worth
+  **11% at most, on one of the two tables, and −22% on the other.**
+
+  The two tables disagree because they differ in the one thing that decides what
+  a move-to-front hit is *worth*: `tools/mutants.py` has **1 distinct test
+  selection** for every row, so the front has nothing to discriminate and a hit
+  saves almost nothing; `tupferl/` has 11, one of them spanning 21 modules over
+  133 rows, where a hit means running one test instead of walking all 21. **A
+  benchmark table was chosen wrongly twice here, in opposite directions**, and
+  each time the conclusion reversed. Any future claim about dispatch has to name
+  its table's selection count.
+
+  Three further things measured along the way, each worth more than the
+  scheduling was:
+
+  - **A survivor is ~71s against ~7.3s for a caught row**, so survivors are
+    ~12% of a whole-tree table's rows and **~49% of its lane-seconds**. That is
+    the tail, and no dispatch can fix it: by the time a row is *known* to be a
+    survivor it has already cost its 71s, and under a stride every neighbour it
+    might have warned has long since been claimed. Both suspect variants fired
+    `0 early` on the table they were written for.
+  - **An absolute "slow" threshold is the wrong shape.** At 15s it fired on
+    ~22% of `tupferl/`'s rows — 287 flags for 30 real survivors — shredding
+    contiguity for nothing and costing 46s. The measured move-to-front rate
+    fell 63.9% → 55.0% while the tail was *identical*, which is how it was
+    settled. A threshold that must self-calibrate wants a multiple of a running
+    median, not a percentile: the *fraction* of dear rows differs between tables
+    (2.3% and 11%) while the *ratio* dear-to-typical is ~10x on both.
+  - **The handout is not the cost.** `Work.take` measured 209ns uncontended and
+    265ns with 32 lanes on it — 0.85ms across a 3199-row sweep.
+
+  **What would justify re-opening it**: nothing about the *scheduler*. Every one
+  of the four was an attempt to infer during a run something a previous run
+  already knew, so the thing to try instead is recording it — which is what
+  `Killers.seconds` and `slowest_first` do, measured below. Re-open the
+  scheduler only with a table whose selection count is stated and a mechanism
+  that is not a within-run guess.
+
+  Kept from the branch, because they were measured free (236s in the new binary
+  against `main`'s 232s and 234s): streaming per-row output with a `[n/total]`
+  counter and a lane tag, and the closing statistics block.

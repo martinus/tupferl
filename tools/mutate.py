@@ -111,11 +111,14 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from statistics import median
 from textwrap import indent
 from typing import Literal, NamedTuple
 
@@ -145,8 +148,32 @@ TIMEOUT = 300.0
 #: a `setUpModule`, or an import. This does not replace it, it makes it rare.
 EACH_TEST = 30.0
 
-#: The most lanes worth running, whatever the machine reports.
-_LANES = 16
+#: How much of the budget the lanes' *ceilings* may add up to. A ceiling is
+#: headroom for a pathological row, not what an honest one spends, and peaks are
+#: not simultaneous -- so requiring `lanes x ceiling <= budget` prices every lane
+#: as though all of them were pathological at once.
+#:
+#: Measured before it was raised: `--workers 32` already committed **126%** of
+#: this machine's budget (32 x 2048 MiB against 52135 MiB) across dozens of
+#: sweeps, whole-tree ones included, and nothing has ever been killed for
+#: memory. The heaviest single lane process ran 14-18% of its ceiling on
+#: `--only tupferl/` and 92% on a whole-tree run.
+#:
+#: **Not applied to `_affordable`**, which divides by what a lane is *measured*
+#: to use rather than by its ceiling. That number already assumes peaks are
+#: independent, so scaling it here would spend the same allowance twice.
+#:
+#: The quantity that would actually justify a number rather than a judgement is
+#: the *sum* of lane RSS at one instant, and nothing samples it --
+#: `_report_headroom` watches the heaviest single process. Until something does,
+#: this is calibrated against "126% has never been killed" and no more.
+_COMMIT = 1.5
+
+#: The budget to assume on a machine that publishes nothing at all -- no
+#: `/proc/meminfo`, no cgroup, no `sysconf`. Sixteen lanes' worth of measured
+#: use, which is a guess and is only ever reached when every real source has
+#: failed.
+_BLIND_LANES = 16
 
 #: Rows a generated table runs before it stops, when nobody said otherwise.
 #: Sized for a diff; `--all` resets it, because a cap meant to keep one
@@ -375,6 +402,23 @@ class Verdict(NamedTuple):
     #: to diagnose one. Five hand-built reproductions of a red baseline all came
     #: back green because the thing that differed was never guessed.
     why: str = ""
+    #: What this row cost, in seconds, measured around the suite run alone.
+    #: `Killers` keeps it and `slowest_first` orders the *next* run's table by
+    #: it: a survivor costs ~10x a caught row, so which rows are expensive is
+    #: the single most useful thing one sweep can tell the next.
+    #:
+    #: Persisted to the `--json` report, unlike `times` beside it. The
+    #: distinction is whose property it is: `times` is per *test* and describes
+    #: the suite, where this is per *row* and belongs with the row's verdict --
+    #: which is also what makes a resumed sweep able to learn from rows it
+    #: skipped rather than leaving them cold for ever.
+    #:
+    #: Timed around `_run` rather than around the whole of `_attempt`: waiting
+    #: for a sandbox is a property of how busy the machine was, not of the row,
+    #: and an ordering keyed on it would learn the contention rather than the
+    #: cost. `0.0` on a verdict that never ran a suite -- a baseline shard, or a
+    #: report read back from disk.
+    spent: float = 0.0
 
     @property
     def answered(self) -> bool:
@@ -390,6 +434,21 @@ class Verdict(NamedTuple):
 class Result(NamedTuple):
     mutation: Mutation
     verdict: Verdict
+
+
+class Pace(NamedTuple):
+    """What a run cost, for the block that reports it.
+
+    On the `Report` rather than printed where it is measured, because the run
+    that measures it is not always the one that owns the output: `--all` has
+    `main` do the summarising, so a block printed inside `run` would land above
+    a hundred and sixty survivors instead of after them. Carried, not global --
+    `_RUNS` already holds more than one report per process.
+    """
+
+    seconds: float
+    lanes: int
+    ceiling: int
 
 
 class Report(NamedTuple):
@@ -416,6 +475,9 @@ class Report(NamedTuple):
     #: about the code, it is what `Killers` needs to put the cheap high-yield
     #: tests first.
     times: dict[str, float] | None = None
+    #: What the run cost, for `_report_stats`. `None` on a report assembled
+    #: rather than run -- an empty table, or one read back from disk.
+    pace: Pace | None = None
 
     @property
     def clean(self) -> bool:
@@ -1165,6 +1227,52 @@ class Learned:
         )
 
 
+class Work:
+    """Which row each lane runs next: the next one nobody has taken yet.
+
+    One cursor, so with N lanes each lane walks a *stride* of N. That is what a
+    `ThreadPoolExecutor` handed the whole table already did; this exists as a
+    class rather than as submission order only so a lane has an identity to
+    print and so the handout has one place to be measured.
+
+    **Four cleverer dispatches were built and measured here and every one of
+    them lost** -- equal segments, guided chunks, work stealing, and pulling a
+    survivor's neighbours forward. Their numbers are in CLAUDE.md's dead ends.
+    The short version is that each was an attempt to guess *during* a run
+    something a previous run already knew: which rows are expensive, and which
+    test kills each one. `Killers` records both across runs, so there is nothing
+    left for a scheduler to infer -- the table arrives ordered slowest-first per
+    file (`slowest_first`) and each row already carries its own killer on
+    `first`.
+
+    That is also why the stride's poor locality stopped costing anything.
+    `Learned` is move-to-front over *adjacency*, which is a proxy for "the next
+    row is caught by whatever caught this one", and a stride hands no lane two
+    consecutive rows -- measured, the contiguous dispatches scored a 70.7%
+    move-to-front hit rate against the stride's 37.2%. Winning that proxy was
+    worth up to 11% of wall clock and never more. A recorded killer is the
+    answer the proxy was approximating, exactly and per row, so `Learned` is now
+    what a *cold* row falls back on rather than the mechanism the run rests on.
+    """
+
+    def __init__(self, rows: int) -> None:
+        self._rows = rows
+        self._next = 0
+        # `run` drives its lanes from threads, so the cursor is shared. Measured
+        # at 209ns uncontended and 265ns with 32 lanes on it, which is 0.85ms
+        # across a whole 3199-row sweep -- nothing worth a lock-free spelling.
+        self._lock = threading.Lock()
+
+    def take(self) -> int | None:
+        """The next row nobody has taken, or `None` when the table is done."""
+        with self._lock:
+            if self._next >= self._rows:
+                return None
+            got = self._next
+            self._next += 1
+            return got
+
+
 def _attempt(
     mutation: Mutation,
     available: queue.Queue[Path],
@@ -1190,6 +1298,29 @@ def _attempt(
             # `run` submits the whole table to the pool at once, so at submit
             # time no verdict exists yet and there is nothing to have learned.
             ahead = learned.ahead(mutation) if learned is not None else ""
+            # **The exact killer goes in front of the learned front, not
+            # behind it.** `Killers.ahead_of` already drops the cheap prefix
+            # for a row whose killer is known -- "exact beats general, the
+            # prefix would only be work before the answer" -- and `Learned` is
+            # general in exactly the same way: it is what caught the *previous*
+            # rows, which is a proxy for what catches this one, and here the
+            # thing being proxied is already in hand.
+            #
+            # It was the other way round until measured, so up to
+            # `LEARNED` - 1 tests ran ahead of the one test known to catch the
+            # row, on 1105 of this table's 1309 rows.
+            #
+            # `Learned` still follows, rather than being skipped: a recorded
+            # killer can be stale -- the code moved and the test no longer sees
+            # it -- and then the learned front is the next best guess before
+            # the full selection. That costs nothing when the killer is right,
+            # because the killer has already answered.
+            first = (
+                f"{mutation.first} {ahead}".strip()
+                if mutation.exact
+                else f"{ahead} {mutation.first}".strip()
+            )
+            began = time.monotonic()
             verdict = _run(
                 mutation.tests.split(),
                 root,
@@ -1197,9 +1328,10 @@ def _attempt(
                 timeout=timeout,
                 memory=memory,
                 each=each,
-                first=f"{ahead} {mutation.first}".strip() if ahead else mutation.first,
+                first=first,
                 walk=walk,
             )
+            verdict = verdict._replace(spent=time.monotonic() - began)
             if learned is not None and verdict.outcome == "caught":
                 learned.saw(verdict.killer)
             return verdict
@@ -1250,7 +1382,7 @@ def _visible_memory() -> int:
         limits.append(int(inherited))
     with suppress(AttributeError, OSError, ValueError):  # not POSIX
         limits.append(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    return min(limits) if limits else _LANES * _LANE
+    return min(limits) if limits else _BLIND_LANES * _LANE
 
 
 #: Where the kernel publishes what it can still hand out. A module constant so a
@@ -1509,12 +1641,17 @@ def _share(wanted: int, memory: int, pinned: bool = False) -> Share:
     if memory <= 0:
         return Share(max(1, wanted), memory)
     budget = _budget()
+    # What the ceilings may add up to, which is more than there is: see
+    # `_COMMIT`. `_affordable()` below is deliberately left on the unscaled
+    # budget -- it counts lanes by measured use, which already prices peaks as
+    # independent.
+    allowed = int(budget * _COMMIT)
     # An explicit `--memory` under the floor is the caller's call, not a mistake
     # to correct: they may be reproducing a small machine on purpose. It still
     # sets how many lanes fit.
     floor = min(memory, _FLOOR)
-    lanes = max(1, wanted if pinned else min(wanted, _affordable(), budget // floor))
-    return Share(lanes, min(memory, max(floor, budget // lanes)))
+    lanes = max(1, wanted if pinned else min(wanted, _affordable(), allowed // floor))
+    return Share(lanes, min(memory, max(floor, allowed // lanes)))
 
 
 def run(
@@ -1571,7 +1708,13 @@ def run(
     # regressed). An earlier `cpu // 2` here gave two lanes on a four-core runner
     # and was 1.76x slower than this for eight runs. A sandbox is ~1 ms, so a lane
     # is nearly free.
-    wanted = workers or min(len(table) + len(shards), usable_cpus() * 2, _LANES)
+    # Bounded by the work there is and by the cores there are, and by nothing
+    # else. A hardcoded `_LANES = 16` used to sit here too, with no measurement
+    # behind "the most lanes worth running, whatever the machine reports" -- on a
+    # 32-core machine it was the *only* binding term, and lifting it to 32 was
+    # worth 30%: 214s against 303s over the 1309 rows of `--only tupferl/`,
+    # two interleaved pairs.
+    wanted = workers or min(len(table) + len(shards), usable_cpus() * 2)
     lanes, memory = _share(wanted, memory, pinned=workers is not None)
     if lanes != wanted or memory != asked:
         # Said out loud, for the reason `--limit` says what it dropped: a run
@@ -1582,7 +1725,12 @@ def run(
         print(
             paint.paint(
                 f"{lanes} lane(s) at {memory >> 20} MiB each, from {_budget() >> 20} MiB "
-                f"of usable memory ({_why()}) -- see tools.mutate._share.",
+                f"of usable memory ({_why()}), committing "
+                # Said, never silent. Over-committing is a judgement about
+                # peaks not coinciding, and a reader has to be able to see it
+                # was made -- especially on the run that does get killed.
+                f"{100 * lanes * memory / max(_budget(), 1):.0f}% "
+                f"-- see tools.mutate._share.",
                 paint.QUIET,
             )
         )
@@ -1591,117 +1739,166 @@ def run(
     # module-level singleton and a process may call `run` more than once -- a
     # spec file calling `verify` twice is the shape that does it.
     _WATCHED.forget()
+    # Around the baseline as well as the rows, because that is the wall clock a
+    # reader waited through. A rate computed over the rows alone would flatter
+    # every run by however long its suite takes untouched.
+    began = time.monotonic()
 
     results: list[Result] = []
+    #: `results[n]` came from `table[places[n]]`. Two lists rather than a list of
+    #: pairs, so nothing downstream has to unpack a shape it did not ask for.
+    places: list[int] = []
     timings: dict[str, float] = {}
     red = False
-    # One shared list, not one per lane. Rows go to the pool one at a time, so a
-    # lane sees roughly every Nth row rather than a contiguous block -- per-lane
-    # lists would each learn a thinned-out version of the same signal.
+    #: One `Learned` for every lane, which under a stride is the shape that
+    #: works: a lane sees roughly every Nth row, so a private front would learn a
+    #: thinned-out version of the same signal. One object rather than one per
+    #: lane -- `[Learned()] * lanes` was the first spelling and is N references
+    #: to this same object anyway, so it only made a reader check.
     learning = Learned()
-    with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
-        checking = (
-            [
-                pool.submit(_borrow, available, shard.split(), timeout, memory, each)
-                for shard in shards
-            ]
-            if baseline
-            else []
-        )
-        futures = [
-            pool.submit(
-                _attempt, mutation, available, failfast, timeout, memory, each, walk, learning
-            )
-            for mutation in table
-        ]
-        if landed is not None:
-            # Collected *before* the rows when a caller persists incrementally,
-            # which reverses the order below and is worth the reversal. A report
-            # written mid-run says `baseline_red: false`, `_recorded` drops the
-            # flag entirely, and `sweep` skips a recorded file by name -- so a
-            # red-baseline run that is interrupted leaves rows a resume treats as
-            # final. The per-file code this replaced could not do that: it wrote
-            # after its batch returned, by which time the baseline was known.
-            for future in checking:
-                first_look = future.result()
-                timings.update(first_look.times or {})
-                if first_look.outcome != "survived":
-                    print(
-                        paint.paint(
-                            f"  BASELINE NOT GREEN ({first_look.outcome}) -- the suite does not "
-                            f"pass untouched, so {scope} means anything: {first_look.detail}",
-                            paint.BAD + paint.HEAD,
-                        )
-                    )
-                    # The traceback, not just the name. A red baseline is the one
-                    # verdict that cannot be diagnosed by re-running the row, and
-                    # the shard it came from is rarely reproducible by hand --
-                    # `first` is a shard of its own, the sandbox is a copy, and
-                    # the lanes are concurrent. Printing what actually failed
-                    # costs nothing on a green run, which is every run.
-                    if first_look.why:
-                        print(indent(first_look.why.rstrip(), "  | "))
-                    red = True
-                    break
-            checking = []
+    work = Work(len(table))
+    total = len(table)
+    width = len(str(total))
+    lane_width = len(str(max(lanes - 1, 1)))
+    #: The indent an unanswered row's reason sits at, so it lines up under the
+    #: label rather than under the counter. Derived rather than a literal,
+    #: because the counter's width is the table's.
+    reason_at = " " * (2 * width + lane_width + 6)
+    done = 0
+    stop = threading.Event()
+    #: Held across recording *and* printing, so two lanes finishing together
+    #: cannot interleave a row's two lines, and `done` counts every row once.
+    speaking = threading.Lock()
 
-        for mutation, future in zip(table, futures, strict=True):
-            verdict = future.result()
+    def deliver(index: int, lane: int, verdict: Verdict) -> None:
+        """Record and announce one finished row, from the lane that ran it."""
+        nonlocal done
+        mutation = table[index]
+        with speaking:
+            done += 1
             timings.update(verdict.times or {})
             results.append(Result(mutation, verdict))
+            # The row's own position, kept beside the result rather than
+            # recovered from it afterwards. Sorting by `id(mutation)` would work
+            # only while no two rows are the same object, which is a property of
+            # the generator rather than of anything here.
+            places.append(index)
             if landed is not None:
-                # In table order, because that is the order results are
-                # collected in -- so a caller can tell when a *file* is finished
-                # by counting, without knowing anything about the pool.
                 landed(results[-1])
             known = MEANING[verdict.outcome]
+            counter = paint.paint(f"[{done:>{width}}/{total}]", paint.QUIET)
+            where = paint.paint(f"L{lane:>{lane_width}}", paint.QUIET)
             # Padded first, painted second. `f"{painted:9}"` counts the escape
             # bytes as columns, so a nine-wide field becomes four and every
             # coloured row sits five characters left of every plain one. The
             # argument is in `tools/paint.py`; this is the table it was found in.
-            print(f"  {paint.paint(f'{known.headline:9}', known.colour)} {mutation.label}")
-            if verdict.answered:
-                continue
-            if strict:
-                # Cancel first, or the `with` block's `shutdown(wait=True)` runs
-                # every remaining row to completion and discards its verdict
-                # unprinted -- so "stopping" would cost the whole table it was
-                # meant to save. Only the rows not yet started can go; the
-                # `lanes` already in flight are paid for either way.
-                for pending in futures:
-                    pending.cancel()
-                raise SystemExit(
-                    f"{mutation.label}: this mutation broke collection rather than being "
-                    f"noticed, so neither 'caught' nor 'SURVIVED' would mean anything "
-                    f"about {mutation.tests}. {verdict.detail}"
-                )
-            # Not indented under the row by accident: an unanswered row must not
-            # be skimmable as one of the two real verdicts.
-            print(paint.paint(f"           -- {verdict.detail}", known.colour))
-        # After the rows, not before, so a red baseline never costs the reader the
-        # results they were waiting for -- they are simply told to disbelieve them.
-        for future in checking:
-            baseline_verdict = future.result()
-            # Before the `break`: a shard that ran a whole selection with nothing
-            # failing has measured every test in it, which is where most of what
-            # `Killers` orders by comes from. A red one still measured whatever
-            # ran before it went red.
-            timings.update(baseline_verdict.times or {})
-            if baseline_verdict.outcome != "survived":
-                # `survived` is the untouched suite passing, which is the one
-                # place the mutation vocabulary reads backwards. A shard that
-                # broke or timed out is red too, and its reason is the only clue
-                # to why -- the old wording asserted a failure that may not have
-                # happened.
-                print(
-                    paint.paint(
-                        f"  BASELINE NOT GREEN ({baseline_verdict.outcome}) -- the suite does not "
-                        f"pass untouched, so {scope} means anything: {baseline_verdict.detail}",
-                        paint.BAD + paint.HEAD,
-                    )
-                )
-                red = True
-                break
+            head = paint.paint(f"{known.headline:9}", known.colour)
+            # `flush`, and not as a nicety. Every documented way of running a
+            # sweep redirects to a log, and a stream that is not a terminal is
+            # *block* buffered -- so without this a progress counter would arrive
+            # in 8 KiB steps of about a hundred rows, which is not a progress
+            # counter. Measured here: a sweep's log sat empty for five minutes
+            # because its header was 250 bytes and nothing had flushed it.
+            print(f"{counter} {where} {head} {mutation.label}", flush=True)
+            if not verdict.answered:
+                # Not indented under the row by accident: an unanswered row must
+                # not be skimmable as one of the two real verdicts.
+                print(paint.paint(f"{reason_at}-- {verdict.detail}", known.colour), flush=True)
+
+    def _first_look(shard: str) -> Verdict:
+        """One baseline shard, in a borrowed sandbox like any other lane task."""
+        return _borrow(available, shard.split(), timeout, memory, each)
+
+    def lane_walk(lane: int) -> None:
+        """One lane: take the next row, run it, say what it found, repeat."""
+        while not stop.is_set():
+            index = work.take()
+            if index is None:
+                return
+            verdict = _attempt(
+                table[index], available, failfast, timeout, memory, each, walk, learning
+            )
+            deliver(index, lane, verdict)
+            if strict and not verdict.answered:
+                # Every lane stops at its next take. The rows already in flight
+                # are paid for either way, which is what the cancelling version
+                # of this also settled for.
+                stop.set()
+
+    def announce(checked: Future[Verdict]) -> None:
+        """Say what a baseline shard found, the moment it is known.
+
+        A callback rather than a blocking wait, because waiting is what cost the
+        overlap. The shards go into the pool *first*, so FIFO gives them workers
+        before the lane walkers; the walkers then fill every remaining worker at
+        once, and each shard hands its worker to another walker as it finishes.
+        Nothing idles, and the warning still arrives as early as it possibly can
+        -- which for a red baseline is what matters, since the rows streaming
+        under it are all void.
+
+        Measured, and this is why it is a callback: resolving these before
+        starting any lane left 24 of 32 lanes idle for the whole baseline and
+        put the run at 536s against the stride's 351s. That number was reported
+        as a cost of the dispatch. It was not.
+        """
+        nonlocal red
+        looked = checked.result()
+        with speaking:
+            # Before any early return: a shard that ran a whole selection with
+            # nothing failing has measured every test in it, which is where most
+            # of what `Killers` orders by comes from. A red one still measured
+            # whatever ran before it went red.
+            timings.update(looked.times or {})
+            if looked.outcome == "survived" or red:
+                return
+            # `survived` is the untouched suite passing, which is the one place
+            # the mutation vocabulary reads backwards. A shard that broke or
+            # timed out is red too, and its reason is the only clue to why.
+            red = True
+            print(
+                paint.paint(
+                    f"  BASELINE NOT GREEN ({looked.outcome}) -- the suite does not "
+                    f"pass untouched, so {scope} means anything: {looked.detail}",
+                    paint.BAD + paint.HEAD,
+                ),
+                flush=True,
+            )
+            # The traceback, not just the name. A red baseline is the one verdict
+            # that cannot be diagnosed by re-running the row, and the shard it
+            # came from is rarely reproducible by hand -- `first` is a shard of
+            # its own, the sandbox is a copy, and the lanes are concurrent.
+            if looked.why:
+                print(indent(looked.why.rstrip(), "  | "), flush=True)
+
+    with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
+        # Submitted before the walkers, and never waited on here. There are
+        # exactly as many sandboxes as workers and every borrower is a pool
+        # task, so shards and rows can share the pool without starving it.
+        checking = [pool.submit(_first_look, shard) for shard in shards] if baseline else []
+        for checked in checking:
+            checked.add_done_callback(announce)
+        for walker in [pool.submit(lane_walk, lane) for lane in range(lanes)]:
+            walker.result()
+
+    # Completion order on the console, table order on disk. A report whose rows
+    # arrive in whatever order the lanes finished cannot be diffed against the
+    # next one, and `sort_survivors` walks `results` in order to decide which
+    # occurrence of a shared key is the one already recorded.
+    # Keyed on the position alone: a tie would fall through to comparing two
+    # `Result`s, which is not an ordering anyone defined. Positions are unique,
+    # so this never happens -- and that is exactly when it is cheap to say so.
+    ordered = sorted(zip(places, results, strict=True), key=lambda pair: pair[0])
+    results = [result for _, result in ordered]
+
+    if stop.is_set():
+        # The earliest unanswered row in *table* order, not whichever lane
+        # tripped first. Which row wins a race is not something to report.
+        broke = next(result for result in results if not result.verdict.answered)
+        raise SystemExit(
+            f"{broke.mutation.label}: this mutation broke collection rather than being "
+            f"noticed, so neither 'caught' nor 'SURVIVED' would mean anything "
+            f"about {broke.mutation.tests}. {broke.verdict.detail}"
+        )
 
     if not red and (loose := _unbaselined(results, shards)):
         # After the pool, in a sandbox of its own. These are tests the baseline
@@ -1737,7 +1934,20 @@ def run(
                 )
             )
 
-    _report_headroom(memory)
+    pace = Pace(time.monotonic() - began, lanes, memory)
+    # Only when this call owns the output. With ``summarise`` off the caller is
+    # doing the reporting and gets `pace` on the report to do it with, which is
+    # what keeps the block last instead of buried above the survivor list.
+    if summarise:
+        _report_stats(results, pace=pace, red=red)
+    else:
+        # The caller is doing the reporting and will print the block, but the
+        # headroom line is a *guarantee of `run`* rather than of the block --
+        # `tests.test_mutate.TestWhatTheHeaviestLaneHeld` pins it, because with
+        # `forget` working and no lane sampled, a run that never reports is
+        # indistinguishable from a correct one. Reported here and skipped in the
+        # block, so it is printed once either way.
+        _report_headroom(memory)
 
     if not red and summarise:
         _summarise(results)
@@ -1745,7 +1955,7 @@ def run(
     # whether a survivor here has been run against everything, and with `walk`
     # off it has not. Hard-coding it would make the one report that must not
     # claim the guarantee the one that claims it loudest.
-    report = Report(results, red, widened=walk, times=timings or None)
+    report = Report(results, red, widened=walk, times=timings or None, pace=pace)
     _RUNS.append(report)
     return report
 
@@ -1756,6 +1966,103 @@ def run(
 #: train a reader to skip the line. 90% is "one more test away", which is the
 #: point at which somebody should look.
 _TIGHT = 0.90
+
+
+def _report_stats(
+    results: Sequence[Result], *, pace: Pace | None, red: bool, headroom: bool = True
+) -> None:
+    """The block a reader looks at first, and the four numbers that must be in it.
+
+    **`broke` and `timeout` get their own lines, always, including at zero.**
+    They were the one category a sweep could not settle here, and the reason is
+    worse than a survivor's version of it: such a row is never `caught`, so the
+    line it appears to guard is guarded by nothing *while the summary shows it
+    in neither of the two numbers a reader looks at*. A block reporting only
+    caught and survived would rebuild exactly that hole with better typography.
+
+    **The score names its denominator.** `caught / (caught + survived)` silently
+    drops the unanswered rows, which is the flattering direction -- the one
+    every bug in this class has erred in. Saying "of N answered" beside "M
+    answered nothing" makes the flattering reading unavailable.
+
+    **With a red baseline there is no score at all.** A failing suite notices
+    every mutation, so the harness credits every row: a table of 51 came back 51
+    for 51 twice here before anyone read the line rather than the rows. A
+    percentage is far more seductive than a wall of verdicts, so this refuses to
+    compute one rather than printing a flattering number under a warning. Make
+    tools fail loudly rather than substituting a default.
+
+    **The sum is silent when it is right and loud when it is wrong.** A tick
+    that cannot be false is the decoration CLAUDE.md's test bar is about, so
+    there is none; a discrepancy gets a line, because rows going missing between
+    the table and the report is exactly the failure nothing else here would see.
+
+    **`rows/s` is reported beside the lane count, and per lane.** A rate without
+    the lane count beside it is not comparable to anything -- measured here, the
+    same table ran at 1.84 rows/s over 32 lanes and 1.49 over 16, and neither
+    figure means anything alone.
+    """
+    # `Counter[str]`, not `Counter[Outcome]`: `_recorded` rebuilds a `Verdict`
+    # from JSON, so a report written by a newer `mutate` can carry an outcome
+    # this build has never heard of. That is the case `named != total` below is
+    # for, and typing the key narrowly would deny it exists. `tools/reached.py`
+    # reads `MEANING` with the same untrusted string for the same reason.
+    counts: Counter[str] = Counter(result.verdict.outcome for result in results)
+    total = len(results)
+    if not total or pace is None:
+        # Silent rather than zeroed. A block of noughts under a report read back
+        # from disk is a measurement reported as a result, which is the shape
+        # `_report_headroom` exists to correct.
+        return
+    rate = total / pace.seconds if pace.seconds > 0 else 0.0
+    print(
+        paint.paint(
+            f"\n{total} row(s) in {pace.seconds:.0f}s -- {rate:.2f}/s over "
+            f"{pace.lanes} lane(s) ({rate / pace.lanes:.3f}/s/lane)",
+            paint.HEAD,
+        )
+    )
+    for outcome, known in MEANING.items():
+        # Every one of them, at zero as well, and painted the way the row itself
+        # was. A category that disappears when empty is one a reader stops
+        # expecting to see.
+        print(f"  {paint.paint(f'{known.headline:9}', known.colour)} {counts[outcome]:>6}")
+    # Over `MEANING` rather than a list of the four spelled here, and asking
+    # `Meaning.answered` rather than naming which two those are. Both exist to
+    # be the one place that knows: a fifth outcome added to that table joins
+    # this block by existing, where a hand-written tuple would drop it silently
+    # and then report it below as having gone missing.
+    named = sum(counts[outcome] for outcome in MEANING)
+    answered = sum(counts[outcome] for outcome in MEANING if MEANING[outcome].answered)
+    unanswered = named - answered
+    if named != total:
+        print(
+            paint.paint(
+                f"  {named} row(s) accounted for of {total} -- {total - named} went missing "
+                f"between the table and this report.",
+                paint.BAD + paint.HEAD,
+            )
+        )
+    if red:
+        print(
+            paint.paint(
+                "  no score: the baseline was red, so every row above is void -- a suite "
+                "that fails untouched notices every mutation.",
+                paint.BAD + paint.HEAD,
+            )
+        )
+    elif answered:
+        caught = counts["caught"]
+        said = f"  {caught} caught of {answered} answered -- {caught / answered:.1%}"
+        if unanswered:
+            said += f"; {unanswered} row(s) answered nothing"
+        print(paint.paint(said + ".", paint.QUIET))
+    # One exit rather than three. The headroom line was printed from two of the
+    # old ones and skipped by the third -- a table of nothing but `broke` rows
+    # returned before reaching it -- so the guarantee `run` makes about it held
+    # everywhere except the run most likely to have been killed for memory.
+    if headroom:
+        _report_headroom(pace.ceiling)
 
 
 def _report_headroom(ceiling: int) -> None:
@@ -2293,6 +2600,11 @@ class Killers:
         self.dropped = 0
         self.known: dict[str, str] = {}
         self.cost: dict[str, float] = {}
+        #: What each *row* cost last time, by `_key`. `cost` above is per test
+        #: and answers "which tests are cheap and catch a lot"; this is per
+        #: mutation and answers "which rows should run first". Two different
+        #: questions that happen to share a file.
+        self.seconds: dict[str, float] = {}
         if where is not None and where.is_file():
             try:
                 saved = json.loads(where.read_text(encoding="utf-8"))
@@ -2303,10 +2615,12 @@ class Killers:
                 self.known = {str(k): str(v) for k, v in rows.items() if isinstance(v, str) and v}
                 found = saved.get("costs", {}) if isinstance(saved, dict) else {}
                 self.cost = {str(k): float(v) for k, v in found.items()}
+                spent = saved.get("seconds", {}) if isinstance(saved, dict) else {}
+                self.seconds = {str(k): float(v) for k, v in spent.items()}
             except (OSError, ValueError, AttributeError, TypeError):
                 # A half-written or hand-edited file is not worth a failure: the
                 # worst an empty cache does is run at yesterday's speed.
-                self.known, self.cost = {}, {}
+                self.known, self.cost, self.seconds = {}, {}, {}
 
     def prefix(self) -> list[str]:
         """Cheap tests that between them catch a lot, cheapest yield first.
@@ -2378,8 +2692,10 @@ class Killers:
             killer = self.known.get(_key(row), "")
             if killer and killer in usable:
                 # Exact beats general: this test is known to catch *this* row, so
-                # the prefix would only be work before the answer.
-                ahead.append(row._replace(first=killer))
+                # the prefix would only be work before the answer. `exact` says
+                # so to `_attempt`, which owes the same precedence against
+                # `Learned` and for the same reason.
+                ahead.append(row._replace(first=killer, exact=True))
                 continue
             # Nothing remembered -- a new row, or one whose killer stopped
             # working. Cut to what this row can reach: a test in a module that
@@ -2412,20 +2728,31 @@ class Killers:
         """
         self.cost.update(report.times or {})
         for result in report.results:
+            key = _key(result.mutation)
+            if result.verdict.spent > 0:
+                # Every outcome, not only the answered ones. A `timeout` row
+                # costs the full `--timeout` and a `broke` row is expensive
+                # too, and what this orders by is price rather than verdict --
+                # those are exactly the rows a run most wants to start early.
+                self.seconds[key] = result.verdict.spent
             if result.verdict.outcome == "caught" and result.verdict.killer:
-                self.known[_key(result.mutation)] = result.verdict.killer
+                self.known[key] = result.verdict.killer
             elif result.verdict.answered:
                 # It survived. Whatever used to catch it does not any more, so
                 # keeping the entry would put a test that cannot help at the
                 # front of every future run of this row.
-                self.known.pop(_key(result.mutation), None)
+                self.known.pop(key, None)
 
     def save(self) -> None:
         if self.where is None:
             return
         self.where.parent.mkdir(parents=True, exist_ok=True)
         self.where.write_text(
-            json.dumps({"killers": self.known, "costs": self.cost}, indent=1, sort_keys=True),
+            json.dumps(
+                {"killers": self.known, "costs": self.cost, "seconds": self.seconds},
+                indent=1,
+                sort_keys=True,
+            ),
             encoding="utf-8",
         )
 
@@ -2538,10 +2865,14 @@ def by_size(table: Sequence[Mutation]) -> dict[str, list[Mutation]]:
     the whole budget on the slowest file and produced no coverage of the rest.
 
     Smallest first, so a run that is stopped has answered whole files. **Each
-    file's rows stay contiguous**, and that is load-bearing twice over:
+    file's rows stay contiguous**, and that is load-bearing once, not twice.
+    This said it was also what let `sweep` count a file down to zero before
+    writing its `--json`; **that stopped being true at #46**, which made the
+    write per *row* and the resume key positional-per-row, and the claim sat
+    here for releases afterwards being quoted as a reason. `sweep` uses the
+    grouping to build a flat list and to print a file count, and for nothing
+    else. What is left:
 
-    - `sweep`'s `finished` counts a file down to zero by relying on it, which is
-      what makes the per-file `--json` write safe;
     - `Learned` (tupferl#43) is move-to-front, and its docstring rests on rows
       arriving sorted by file and line so that consecutive mutants sit in the
       same function. Interleaving *rows* across files was this issue's first
@@ -2561,6 +2892,97 @@ def by_size(table: Sequence[Mutation]) -> dict[str, list[Mutation]]:
     for row in table:
         grouped.setdefault(row.path, []).append(row)
     return {path: grouped[path] for path in sorted(grouped, key=lambda name: len(grouped[name]))}
+
+
+def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> list[Mutation]:
+    """The same table, each file's rows ordered by what they cost last time.
+
+    Longest-processing-time-first, which is the classic greedy for makespan and
+    is within 4/3 of optimal. It matters here because row costs are wildly
+    uneven: measured on this tree, survivors are ~12% of the rows and ~49% of
+    the lane-seconds, at ~71s each against ~7.3s for a caught row. Left in line
+    order they arrive whenever they arrive, and a handful reached near the end
+    is what every lane then waits on -- observed repeatedly, with the last ten
+    completions of a 32-lane sweep spread over seven lanes.
+
+    **Within each file, never across** -- and that restriction is more
+    conservative than it needs to be. It was chosen believing `sweep` counted a
+    file down to zero before writing its `--json`; it does not, and has not
+    since #46 made that write per row. See `by_size`, where the stale claim
+    was. What actually wants contiguity is `Learned`, and only for rows with no
+    recorded killer -- a timed row already carries its exact killer on `first`,
+    which is the answer adjacency was approximating.
+
+    So a *global* sort is available for the timed rows, keeping only the cold
+    ones grouped by file, and it would reach the residual tail this cannot: the
+    largest file runs last under `by_size`, so its survivors are dispatched near
+    the end however well its own rows are ordered (measured: the median
+    survivor moves 1198 -> 1043 of 1309, but the last one is last in every
+    run). What still argues against it is #49's smallest-file-first, so an
+    interrupted run has answered whole files -- weaker than when it was written,
+    since a per-row resume no longer loses a partial file. Not attempted.
+
+    That restriction costs much less than it looks, because of where the tail
+    actually forms. `by_size` puts the **largest** file last, so a sweep's final
+    stretch is one file's rows -- exactly the stretch this reorders. And sorting
+    *globally* is a measured dead end rather than an untried idea: it was tried
+    twice, the second time with the killer-first ordering that removed its only
+    stated obstacle, and lost both times -- 205.2s and 204.2s against 184.98s
+    and 185.46s, on total work identical to within 0.2%. See CLAUDE.md.
+
+    **A row nobody has timed takes its file's median**, so cold rows sort into
+    the middle as a block and, the sort being stable, keep their line order
+    within it. Three things follow, and all three are wanted: a brand-new file
+    is left exactly as it arrived; a `--base` diff, whose rows are new text by
+    construction and so almost entirely cold, is barely reordered at all; and
+    `Learned`, which is move-to-front over adjacency, keeps the contiguity it
+    rests on for precisely the rows that still need it. A row with a recorded
+    cost does not need it -- `Killers.ahead_of` has already put its own killer
+    on `first`.
+
+    A file with *no* timed row takes zero rather than some tree-wide figure, and
+    the value is arbitrary because it cannot be observed: every row of that file
+    shares it, the sort is within the file, and a stable sort therefore returns
+    them exactly as they arrived. A tree median was computed here for one
+    release, at the cost of a whole extra pass, and could never change an
+    answer.
+
+    Keyed by `_key`, so 556 of this tree's 3103 rows share a key with another
+    and therefore share a recorded cost. That is fine and is the same argument
+    `Killers` makes about `known`: a wrong estimate costs ordering quality and
+    can never cost an answer. It is why this is not `_resume_key`, which is
+    unique but positional, and so empty after any edit above a row.
+    """
+    if not seconds:
+        return list(table)
+    ordered: list[Mutation] = []
+    timed = 0
+    # `by_size` for the grouping rather than a `setdefault` loop here, which is
+    # the second spelling its own docstring warns against. It also re-sorts the
+    # files, which is a no-op: `generated` already hands back its output.
+    for rows in by_size(table).values():
+        # Hashed once per row and carried. `_key` is a sha256 and the three
+        # spellings this replaced asked for it three times -- 3.7ms a sweep, so
+        # not a saving worth having, but one pass is easier to read than three.
+        keys = [_key(row) for row in rows]
+        here = [seconds[key] for key in keys if key in seconds]
+        timed += len(here)
+        # This file's own median: `gitrepo.py`'s rows each drive a real `git`
+        # subprocess and `merge.py`'s do not, so a tree-wide figure would place
+        # every cold row of the cheap file ahead of the dear file's timed ones.
+        middle = median(here) if here else 0.0
+        order = sorted(range(len(rows)), key=lambda at: -seconds.get(keys[at], middle))
+        ordered.extend(rows[at] for at in order)
+    cold = len(table) - timed
+    if timed:
+        print(
+            paint.paint(
+                f"{timed} of {len(table)} row(s) ordered slowest-first from the last sweep; "
+                f"{cold} never timed, kept in line order.",
+                paint.QUIET,
+            )
+        )
+    return ordered
 
 
 def _bytes(said: str) -> int:
@@ -2648,6 +3070,14 @@ def _persist(report: Report, where: Path, announce: bool = True) -> None:
                 "old": result.mutation.old,
                 "new": result.mutation.new,
                 "span": list(result.mutation.span) if result.mutation.span else None,
+                # Beside `killer`, which is the other half of what `Killers`
+                # learns from a row. Without it a *resumed* sweep could never
+                # time a row at all: the resume skips what is already recorded,
+                # so a table that kept crashing would stay permanently cold and
+                # `slowest_first` would have nothing to order it by -- on
+                # exactly the long whole-tree sweeps that crash. Three decimals
+                # because this orders rows spanning 0.3s to a 300s timeout.
+                "seconds": round(result.verdict.spent, 3),
             }
         )
     # **Written aside and renamed, never in place.** `os.replace` is atomic on
@@ -2778,7 +3208,12 @@ def _recorded(where: Path | None) -> list[Result]:
                     span=(row["span"][0], row["span"][1]) if row.get("span") else None,
                     operator=row.get("operator", ""),
                 ),
-                Verdict(row["outcome"], row.get("detail", ""), row.get("killer", "")),
+                Verdict(
+                    row["outcome"],
+                    row.get("detail", ""),
+                    row.get("killer", ""),
+                    spent=float(row.get("seconds", 0.0)),
+                ),
             )
             for row in saved.get("results", [])
         ]
@@ -2860,12 +3295,13 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         return Report(collected, widened=True)
 
     # Smallest file first, and its rows contiguous -- `by_size`, which the plain
-    # `--base` path now shares. The pool ignores the order; it takes whatever is
-    # next. But results are *collected* in table order, so contiguous rows are
-    # what let `finished` count a file down to zero.
+    # `--base` path now shares. Contiguity is what `Learned` rests on, and only
+    # for rows with no remembered killer: a timed row carries its own killer on
+    # `first` and does not care where it runs. `Work` is a stride cursor and
+    # hands out no segments -- this said it did, describing a scheduler that was
+    # measured, lost, and removed in the same change that wrote the line.
     order = list(by_file)
     rows = [row for rows_here in by_file.values() for row in rows_here]
-    left = {path: len(rows_here) for path, rows_here in by_file.items()}
     print(
         paint.paint(f"\n{len(rows)} mutant(s) across {len(order)} file(s), in one pool", paint.HEAD)
     )
@@ -2874,8 +3310,6 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
 
     def finished(result: Result) -> None:
         fresh.append(result)
-        path = result.mutation.path
-        left[path] -= 1
         if args.json:
             # Every row, not every file. #46 asked for this measured before the
             # change landed, and offered a write-every-N fallback if it showed.
@@ -2897,13 +3331,6 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
             # `NameError` on every `--batch` sweep that persists mid-run. `main`
             # is the only caller and always walks.
             _persist(Report([*collected, *fresh], widened=True), args.json, announce=False)
-        if left[path]:
-            return
-        print(
-            paint.paint(
-                f"  -- {path} complete, {len(collected) + len(fresh)} row(s) recorded", paint.QUIET
-            )
-        )
 
     report = _run_generated(rows, args, landed=finished)
     collected.extend(report.results)
@@ -2919,7 +3346,13 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
     # `times` carried through, not dropped. Re-wrapping the report without them
     # is what made the cheap prefix silently learn nothing: the run measured
     # every test and the number reached `Killers` as an empty dict.
-    return Report(collected, report.baseline_red, widened=report.widened, times=report.times)
+    return Report(
+        collected,
+        report.baseline_red,
+        widened=report.widened,
+        times=report.times,
+        pace=report.pace,
+    )
 
 
 def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
@@ -3082,6 +3515,11 @@ def main(argv: list[str] | None = None) -> int:
         # After `--list`, which is about the table rather than about how it will
         # be run, and before the first row.
         table = killers.ahead_of(table)
+        # After `ahead_of`, which maps each row to itself with `first` set and
+        # so leaves table order alone, and before anything runs. `sweep`
+        # re-groups with `by_size`, which appends in iteration order, so a
+        # within-file reorder survives that regrouping intact.
+        table = slowest_first(table, killers.seconds)
         if args.baseline_only:
             # Before the prefix is announced and before any sandbox is built: a
             # red baseline voids every row, so being able to ask *only* that
@@ -3144,6 +3582,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             killers.learn(report)
             killers.save()
+        # Last, and after `_summarise`. The numbers are what a reader looks at
+        # first, so they go where the eye lands at the end of a scroll rather
+        # than above a hundred and sixty survivors.
+        _report_stats(report.results, pace=report.pace, red=report.baseline_red, headroom=False)
         if args.json:
             _persist(report, args.json)
             # Last: the marker means the whole run is over, and nothing after

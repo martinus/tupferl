@@ -24,7 +24,8 @@ from typing import Any
 from unittest import mock
 
 from tests import support
-from tupferl import paths
+from tools import mutate
+from tupferl import conflicts, paths
 
 #: A directory that does not exist and never will. Absolute, because
 #: `TUPFERL_DIR` rejects a relative value -- the poison has to survive that check
@@ -479,3 +480,62 @@ class TestTheTwoMachineTemplate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
+    """`typing` fails a prompt that asks more often than its keys answer.
+
+    **`FALLBACK` is not a bound.** `conflicts.one_key` sets `VMIN` to 1, so a
+    read on a pty whose master is still open waits for ever rather than
+    reporting exhaustion -- correct for a real terminal, and it leaves the eight
+    `s` keys as the only thing between a prompt asking once too often and a
+    suite that hangs.
+
+    That gap had a measured cost. A mutation making `ask` treat *every* key as
+    unrecognised eats all nine and blocks; under `tools/mutate.py` it tripped
+    the 30s per-test alarm and was filed `BROKE`, which is never `caught` --
+    `tupferl/conflicts.py:635` came back that way in three of four ordered
+    sweeps and `caught` in none, so the line it appears to guard was guarded by
+    nothing. With the bound in place the same mutation is `caught`.
+
+    `PROMPTED` is patched down here rather than waited out: the claim is that a
+    bound exists and fires, not what it is set to.
+    """
+
+    def test_a_prompt_that_never_settles_fails_instead_of_hanging(self) -> None:
+        with (
+            mock.patch.object(support, "PROMPTED", 0.5),
+            self.assertRaises(TimeoutError),
+            support.typing("l"),
+        ):
+            while True:
+                conflicts.one_key(sys.stdin)
+
+    def test_the_bounds_beat_the_harness_alarm(self) -> None:
+        """The number, not just the mechanism -- and the tests above patch it, so
+        nothing else can see it.
+
+        `tools/mutate.py` arms a per-test alarm and files whatever trips it as
+        `BROKE`, which is never `caught`. A fixture bound *above* that alarm
+        therefore never fires: the two race and the harness always wins, and the
+        line under test ends up guarded by nothing while the summary shows the
+        row in neither of the two numbers a reader looks at. That is exactly how
+        `conflicts.py:635` went unguarded, at `PROMPTED = 60.0` against a 30s
+        alarm.
+
+        Asserted against `mutate.EACH_TEST` rather than against a literal, so
+        raising the alarm cannot silently re-open the gap.
+        """
+        self.assertLess(support.PROMPTED, mutate.EACH_TEST, "a whole keyed run")
+        self.assertLess(support.PATIENCE, mutate.EACH_TEST, "a single read")
+
+    def test_a_prompt_that_settles_is_left_alone(self) -> None:
+        """The other half, and without it "always raise" passes the test above.
+        A bound that fires on a prompt which *did* get its answer would fail
+        every keyed test in the suite -- which is exactly what an earlier
+        attempt at this did, 11 failures and an error, while the mutation run
+        above them reported `caught` on a red baseline and read like a clean
+        sweep.
+        """
+        with mock.patch.object(support, "PROMPTED", 0.5), support.typing("l"):
+            self.assertEqual("l", conflicts.one_key(sys.stdin))

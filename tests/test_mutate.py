@@ -23,12 +23,14 @@ import contextlib
 import itertools
 import json
 import os
+import queue
 import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import typing
 import unittest
@@ -331,6 +333,28 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         (ahead,) = cached.ahead_of([one])
         self.assertEqual(REAL, ahead.first)
         self.assertEqual("tests.test_sync", ahead.tests)
+
+    def test_a_remembered_test_is_marked_as_exact(self) -> None:
+        """The flag `_attempt` reads to decide whether this goes in front of the
+        learned front or behind it. Without it every row takes the `else` arm
+        and the ordering silently reverts -- nothing fails, the sweep is just
+        slower, which is the failure mode this whole area keeps producing.
+
+        Measured: dropping `exact=True` here survived every other test of the
+        ordering, because those construct the flag by hand.
+        """
+        one = row()
+        (ahead,) = self.cache({mutate._key(one): REAL}).ahead_of([one])
+        self.assertTrue(ahead.exact, "a remembered killer was not marked exact")
+
+    def test_the_cheap_prefix_is_not_marked_as_exact(self) -> None:
+        """The other half. The prefix is what a row with *no* remembered killer
+        falls back on -- tests that catch a lot per second across the table,
+        which is a claim about the suite and not about this row -- so it must
+        not claim the precedence an exact killer has earned."""
+        with support.quiet():
+            (ahead,) = mutate.Killers(None).ahead_of([row()])
+        self.assertFalse(ahead.exact, "the general prefix claimed to be exact")
 
     def test_the_whole_selection_is_kept_behind_it(self) -> None:
         """The safety argument, asserted rather than assumed. Substituting the
@@ -1977,13 +2001,16 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         real finding.
 
         The row is asserted with its spacing, not just its word: this is the
-        line another program parses, and `  caught    ` is what it parses.
+        line another program parses, and `L0 caught    ` is what it parses. The
+        counter and the lane sit in front of it now, so the pattern is anchored
+        on the lane tag rather than on the start of the line -- `--match` is a
+        substring search, and it is the *word* that must survive intact.
         """
         box = self.repository()
         code, said = self.sweep(box, box / "r.json")
         self.assertEqual(0, code, said)
         self.assertNotIn("\x1b", said, "a captured run was painted")
-        self.assertIn("  caught    tupferl/tiny.py:", said)
+        self.assertIn("L0 caught    tupferl/tiny.py:", said)
 
     def test_the_same_sweep_on_a_terminal_is_coloured(self) -> None:
         """The half that stops the test above from being satisfied by a tool
@@ -2004,11 +2031,18 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         anyone reading nine hundred rows.
 
         Asserted by stripping the codes back off and insisting the line is the
-        one a log file gets, character for character.
+        one a log file gets, character for character. The counter and the lane
+        tag are painted too, so they are part of what must survive stripping --
+        three painted fields on one line is three chances to pad the wrong side
+        of the escape.
         """
         box = self.repository()
         _, coloured = self.sweep(box, box / "r.json", terminal=True)
-        self.assertIn("  caught    tupferl/tiny.py:", re.sub(r"\x1b\[[0-9;]*m", "", coloured))
+        bare = re.sub(r"\x1b\[[0-9;]*m", "", coloured)
+        self.assertIn("L0 caught    tupferl/tiny.py:", bare)
+        # The counter keeps its width too: `[1/8]`, not `[1/8] ` shifted by the
+        # escapes that were around it.
+        self.assertRegex(bare, r"\[\d+/8\] L0 caught    tupferl/tiny\.py:")
 
     def test_a_capped_run_says_what_it_did_not_run(self) -> None:
         """The one print in `generated` whose absence changes a decision.
@@ -4425,19 +4459,65 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
         with mock.patch.object(mutate, "_budget", lambda: budget):
             return mutate._share(wanted, memory, pinned)
 
-    def test_the_product_never_exceeds_the_budget(self) -> None:
+    def test_the_product_never_exceeds_what_may_be_committed(self) -> None:
         """woswoar#232 in one line, and the reason the two numbers are chosen
         together rather than separately. Swept across shapes, because a single
-        pair is satisfied by an implementation that happens to fit it."""
+        pair is satisfied by an implementation that happens to fit it.
+
+        The bound is `_COMMIT` times the budget rather than the budget: a
+        ceiling is headroom for a pathological row and peaks do not coincide,
+        which is the argument `_COMMIT` carries. It is still a *bound* -- the
+        pair is chosen together, and that is what #232 was about.
+        """
+        allowed = mutate._COMMIT
         for budget in (2 << 30, 8 << 30, 64 << 30):
             for wanted in (1, 3, 7, 16):
                 with self.subTest(budget=budget >> 20, wanted=wanted):
                     share = self.sharing(budget, wanted, mutate.MEMORY)
                     self.assertLessEqual(
                         share.lanes * share.memory,
-                        budget,
-                        f"{share.lanes} lanes x {share.memory >> 20} MiB exceeds {budget >> 20}",
+                        int(budget * allowed),
+                        f"{share.lanes} lanes x {share.memory >> 20} MiB exceeds "
+                        f"{int(budget * allowed) >> 20} MiB",
                     )
+
+    def test_the_commitment_is_really_more_than_the_machine_has(self) -> None:
+        """Without this, the bound above passes just as well with `_COMMIT` at
+        1.0 -- so the relaxation would be untested and a silent revert to the
+        old rule would cost lanes with nothing going red.
+
+        A 4 GiB machine is the shape that shows it: the lane count comes from
+        `allowed // floor` there, and each lane still gets the floor.
+        """
+        share = self.sharing(4 << 30, 16, mutate.MEMORY)
+        self.assertGreater(
+            share.lanes * share.memory,
+            4 << 30,
+            "the ceilings fit inside the budget, so nothing is being committed",
+        )
+        self.assertLessEqual(share.lanes * share.memory, int((4 << 30) * mutate._COMMIT))
+
+    def test_the_commitment_buys_lanes_rather_than_headroom(self) -> None:
+        """Where the extra allowance is spent, which is the whole point of
+        raising it and is not implied by the two assertions above.
+
+        Applying `_COMMIT` only to the *ceiling* passes both of those: the same
+        two lanes simply get a 3 GiB ceiling instead of 2 GiB, the product still
+        exceeds the budget, and the run is no more parallel than before -- while
+        nothing has ever been killed for reaching a ceiling, so the headroom
+        buys nothing at all. Measured: that mutation survived every other test
+        in this class.
+
+        Stated against the rule being beaten -- what the uncommitted
+        `budget // floor` would have allowed -- rather than against the current
+        arithmetic, which would be a copy of the code.
+        """
+        share = self.sharing(4 << 30, 16, mutate.MEMORY)
+        self.assertGreater(
+            share.lanes,
+            (4 << 30) // mutate._FLOOR,
+            "the commitment went into ceilings nobody reaches instead of into lanes",
+        )
 
     def test_more_memory_never_means_fewer_lanes(self) -> None:
         """Monotonicity. Nothing else here would catch a comparison flipped in
@@ -4550,3 +4630,436 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
         """The other half. Without it, "always print" passes the test above and
         every run carries a line about a limit that did not bind."""
         self.assertNotIn("lane(s)", self.lines(8, mutate.Share(self.WANTED, mutate.MEMORY)))
+
+    def test_nothing_but_the_cores_and_the_table_caps_what_is_asked_for(self) -> None:
+        """A hardcoded `_LANES = 16` used to sit in this expression, with no
+        measurement behind "the most lanes worth running, whatever the machine
+        reports". On a 32-core machine it was the only binding term, and lifting
+        it was worth 30% -- 214s against 303s over 1309 rows, two interleaved
+        pairs.
+
+        Asserted on what `run` *asks* `_share` for, not on what it gets: the
+        cap was in the asking, and a machine that then declines on memory is a
+        different and legitimate answer.
+        """
+        asked: list[int] = []
+
+        def watch(wanted: int, memory: int, pinned: bool = False) -> mutate.Share:
+            asked.append(wanted)
+            return mutate.Share(1, memory)
+
+        table = [self.ROW._replace(new=f"PROBE = {n}") for n in range(2, 60)]
+        with (
+            mock.patch.object(mutate, "_share", watch),
+            mock.patch.object(mutate, "usable_cpus", lambda: 20),
+            mock.patch.object(
+                mutate, "_attempt", lambda *a, **k: mutate.Verdict("caught", "probe")
+            ),
+            support.quiet(),
+        ):
+            mutate.run(table, baseline=False, summarise=False)
+        # 20 cores x 2 against a 58-row table: the cores are the smaller, so
+        # that is what must come through. A constant of 16 would clip it.
+        self.assertEqual([40], asked)
+
+
+class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
+    """An exact killer goes ahead of the learned front; a general prefix behind.
+
+    Two "run these first" mechanisms meet in `_attempt`, and until this was
+    measured they met in the wrong order: `Learned`'s up-to-8 recently-successful
+    tests ran *before* the one test recorded as catching this very row, on 1105
+    of a 1309-row table.
+
+    `Killers.ahead_of` already makes the argument one function away -- it drops
+    the cheap prefix entirely for a row whose killer is known, because "exact
+    beats general, the prefix would only be work before the answer". `Learned`
+    is general in the same way: it is what caught the *previous* rows, a proxy
+    for what catches this one, and for these rows the thing being proxied is
+    already in hand.
+
+    Driven through `_attempt` with `_run` watched, rather than by asserting on
+    the pieces: the string those two are composed into is the whole of what
+    changed, and each half is correct on its own.
+    """
+
+    KILLER = "tests.test_sync.TestTheDecisionTable.test_it"
+    FRONT = "tests.test_sync.TestSomethingElse.test_other"
+
+    def first_for(self, mutation: Mutation) -> str:
+        """What `_attempt` hands `_run` as its `first`, for one row."""
+        seen: list[str] = []
+
+        def watch(*args: object, **kw: object) -> mutate.Verdict:
+            seen.append(str(kw["first"]))
+            return mutate.Verdict("caught", "probe", killer=self.KILLER)
+
+        learned = mutate.Learned()
+        learned.saw(self.FRONT)
+        available: queue.Queue[Path] = queue.Queue()
+        with tempfile.TemporaryDirectory() as box:
+            root = Path(box)
+            (root / "tupferl").mkdir()
+            (root / mutation.path).write_text(mutation.old, encoding="utf-8")
+            available.put(root)
+            with mock.patch.object(mutate, "_run", watch):
+                mutate._attempt(mutation, available, True, 60.0, 0, 30.0, True, learned)
+        return seen[0]
+
+    def row(self, **kw: object) -> Mutation:
+        return mutants.Mutation(
+            "tupferl/sync.py:1 in f() -- x",
+            "tupferl/sync.py",
+            "x",
+            "y",
+            "tests.test_sync",
+            **kw,  # type: ignore[arg-type]
+        )
+
+    def test_a_recorded_killer_runs_before_the_learned_front(self) -> None:
+        """The row this exists for. `exact` is what `Killers.ahead_of` sets when
+        it found this row's own killer."""
+        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        self.assertEqual([self.KILLER, self.FRONT], got)
+
+    def test_a_general_prefix_runs_after_it(self) -> None:
+        """The other half, and without it "always put `first` in front" passes
+        the test above. The cheap prefix is *not* about this row -- it is the
+        tests that catch a lot per second across the table -- so the learned
+        front, which is at least about this row's neighbours, precedes it."""
+        got = self.first_for(self.row(first=self.KILLER, exact=False)).split()
+        self.assertEqual([self.FRONT, self.KILLER], got)
+
+    def test_the_learned_front_still_follows_a_killer_rather_than_being_dropped(
+        self,
+    ) -> None:
+        """A recorded killer can be stale -- the code moved and the test no
+        longer sees the mutation -- and the learned front is then the next
+        guess before the whole selection. It costs nothing when the killer is
+        right, because the killer has already answered by then.
+        """
+        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        self.assertIn(self.FRONT, got, "the learned front was dropped, not demoted")
+
+
+class TestHandingRowsOutToLanes(unittest.TestCase):
+    """`Work` hands out every row exactly once, in table order.
+
+    Two claims, and they matter for different reasons. **Once** is the one that
+    would corrupt something: `Accepted.seen` counts occurrences of a
+    content-addressed key, because two identical mutations in one file share
+    one, so a row handed to two lanes would eat a `seen` slot a genuinely new
+    survivor could then not claim, and `known-survivors.json` would drift in the
+    flattering direction with nothing to say it had.
+
+    **In table order** is what makes `slowest_first` mean anything at all. A
+    dispatch free to pick rows in some other order would make ordering the table
+    a no-op, and nothing else in the suite would notice -- same verdicts, same
+    counts, just the slow tail back again.
+    """
+
+    def test_every_row_comes_out_exactly_once_under_threads(self) -> None:
+        """Real threads rather than turns, because the race this is about is two
+        lanes inside `take` at the same moment."""
+        rows, lanes = 500, 8
+        work = mutate.Work(rows)
+        seen: list[int] = []
+        guard = threading.Lock()
+
+        def drain() -> None:
+            while (index := work.take()) is not None:
+                with guard:
+                    seen.append(index)
+
+        walkers = [threading.Thread(target=drain) for _ in range(lanes)]
+        for walker in walkers:
+            walker.start()
+        for walker in walkers:
+            walker.join()
+        self.assertEqual(list(range(rows)), sorted(seen), "a row was dropped or run twice")
+
+    def test_the_table_is_walked_front_to_back(self) -> None:
+        work = mutate.Work(9)
+        self.assertEqual(list(range(9)), [work.take() for _ in range(9)])
+
+    def test_an_exhausted_table_says_so_rather_than_running_off_the_end(self) -> None:
+        work = mutate.Work(2)
+        self.assertEqual([0, 1], [work.take(), work.take()])
+        self.assertIsNone(work.take())
+        self.assertIsNone(work.take(), "a second ask past the end answered differently")
+
+    def test_more_lanes_than_rows_hands_out_every_row_and_no_more(self) -> None:
+        work = mutate.Work(3)
+        self.assertEqual([0, 1, 2, None, None, None, None, None], [work.take() for _ in range(8)])
+
+
+class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
+    """`slowest_first`: longest-processing-time-first, but only within a file.
+
+    The restriction is the interesting half. File contiguity is what lets
+    `sweep` count a file down to zero before writing its rows, and what
+    `by_size` needs to put the smallest file first, so a global sort by cost
+    would be a correctness problem and not merely a different order.
+    """
+
+    def rows(self, *spec: tuple[str, str]) -> list[Mutation]:
+        """One row per `(path, tag)`. `_key` is over `(path, operator, old,
+        new)`, so a distinct tag in `new` is a distinct row."""
+        return [mutants.Mutation(f"{path} {tag}", path, "x", tag, "tests.t") for path, tag in spec]
+
+    def order(self, table: Sequence[Mutation], seconds: dict[str, float]) -> list[str]:
+        with support.quiet():
+            return [row.new for row in mutate.slowest_first(table, seconds)]
+
+    def timed(self, table: Sequence[Mutation], *costs: float | None) -> dict[str, float]:
+        """`mutate._key` rather than a second spelling of the hash here: a test
+        carrying its own copy of the code it checks cannot fail (CLAUDE.md §2).
+
+        `None` is "this row was never timed", so a fixture can lay its costs out
+        in row order and leave gaps where the cold rows are.
+        """
+        return {
+            mutate._key(row): cost
+            for row, cost in zip(table, costs, strict=True)
+            if cost is not None
+        }
+
+    def test_the_dearest_row_in_a_file_goes_first(self) -> None:
+        """Expected order differs from the input *and* from its reverse, so a
+        sort with the sign the wrong way round, or none at all, both fail."""
+        table = self.rows(("a.py", "p"), ("a.py", "q"), ("a.py", "r"))
+        self.assertEqual(["q", "r", "p"], self.order(table, self.timed(table, 1.0, 9.0, 5.0)))
+
+    def test_a_dear_row_never_overtakes_a_file(self) -> None:
+        """The claim contiguity rests on. Every row of `b.py` costs fifty times
+        every row of `a.py`, so a sort over the whole table would interleave
+        them -- and `sweep`'s per-file countdown would then write a file's rows
+        out before they had all been answered."""
+        table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"), ("b.py", "t"))
+        got = self.order(table, self.timed(table, 1.0, 2.0, 100.0, 200.0))
+        self.assertEqual(["q", "p", "t", "s"], got)
+
+    def test_a_row_nobody_timed_sits_at_its_file_s_median(self) -> None:
+        """Four timed rows at 12, 10, 4 and 2 give a median of 7, so the cold
+        row lands strictly between the 10 and the 4. Front and back are the two
+        obvious wrong answers and this fixture rejects both."""
+        table = self.rows(*[("a.py", tag) for tag in ("p", "q", "cold", "r", "s")])
+        seconds = self.timed(table, 12.0, 10.0, None, 4.0, 2.0)
+        self.assertEqual(["p", "q", "cold", "r", "s"], self.order(table, seconds))
+
+    def test_the_median_a_cold_row_takes_is_its_own_file_s(self) -> None:
+        """Not the tree's, and the two answers differ by two orders of magnitude
+        here on purpose. `gitrepo.py`'s rows each drive a real `git` subprocess
+        and `merge.py`'s do not, so one figure for the tree would put every cold
+        row of the cheap file ahead of the dear file's *timed* ones.
+
+        Both files put their cold row third. Against a tree-wide median of 106
+        the cheap file's would go first and the dear file's last, so this
+        fixture rejects that answer in both directions.
+        """
+        tags = ("p", "q", "cold", "r", "s")
+        table = self.rows(*[("cheap.py", tag) for tag in tags], *[("dear.py", tag) for tag in tags])
+        seconds = self.timed(table, 12.0, 10.0, None, 4.0, 2.0, 1200.0, 1000.0, None, 400.0, 200.0)
+        got = self.order(table, seconds)
+        self.assertEqual(["p", "q", "cold", "r", "s"], got[:5], "the cheap file")
+        self.assertEqual(["p", "q", "cold", "r", "s"], got[5:], "the dear file")
+
+    def test_a_file_nothing_has_timed_is_left_exactly_as_it_arrived(self) -> None:
+        """What a `--base` diff is almost entirely made of: its rows are new text
+        by construction, so nothing remembers them. They must keep the line order
+        `Learned` rests on rather than being shuffled by a tree-wide median."""
+        table = self.rows(
+            ("a.py", "p"), ("a.py", "q"), ("new.py", "s"), ("new.py", "t"), ("new.py", "u")
+        )
+        got = self.order(table, self.timed(table[:2], 1.0, 9.0))
+        self.assertEqual(["s", "t", "u"], got[2:], "a file nobody has timed was reordered")
+
+    def test_nothing_remembered_at_all_leaves_the_table_alone(self) -> None:
+        table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"))
+        self.assertEqual(["p", "q", "s"], self.order(table, {}))
+
+    def test_it_says_how_much_of_the_table_it_could_order(self) -> None:
+        """A silent reorder reads the same whether the cache loaded or not --
+        which is exactly how `Killers.cost` was empty for a whole milestone."""
+        table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"))
+        with support.quiet() as said:
+            mutate.slowest_first(table, self.timed(table[:1], 4.0))
+        self.assertIn("1 of 3", said.getvalue())
+        self.assertIn("2 never timed", said.getvalue())
+
+
+class TestRememberingWhatEachRowCost(unittest.TestCase):
+    """The measurement `slowest_first` orders by, end to end.
+
+    Driven through a real `mutate.run` rather than a hand-built `Verdict`, for
+    the reason the class above `test_a_run_measures_the_tests_it_ran` gives: a
+    test that builds its own inputs cannot see a data path that never delivers
+    them. A `spent` that stayed 0.0 would order nothing and say nothing.
+    """
+
+    #: One real sweep for both halves of the claim. Each `mutate.run` copies the
+    #: tree and spawns an interpreter, and the second test asserts about the
+    #: same numbers the first produced -- so running it twice bought nothing and
+    #: cost a `copytree` and a subprocess on every suite execution.
+    swept: typing.ClassVar[mutate.Report]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.swept = mutate.run([UNWATCHED], baseline=False, workers=1, summarise=False, walk=False)
+
+    def test_a_real_run_times_the_row_it_ran(self) -> None:
+        (only,) = self.swept.results
+        self.assertGreater(only.verdict.spent, 0.0, "the row was not timed")
+
+    def test_the_time_reaches_the_cache_under_the_row_s_key(self) -> None:
+        cache = mutate.Killers(None)
+        cache.learn(self.swept)
+        self.assertEqual([mutate._key(UNWATCHED)], list(cache.seconds))
+        self.assertEqual(self.swept.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)])
+
+    def test_a_row_that_was_never_answered_is_timed_too(self) -> None:
+        """`broke` and `timeout` rows are the *most* expensive there are -- a
+        timeout costs the whole `--timeout` -- and they are never `caught`, so a
+        record kept only for answered rows would miss precisely the rows worth
+        starting first."""
+        row = mutants.Mutation("a.py x", "a.py", "x", "y", "tests.t")
+        broke = mutate.Verdict("broke", "nothing loaded", spent=41.0)
+        cache = mutate.Killers(None)
+        cache.learn(mutate.Report([mutate.Result(row, broke)]))
+        self.assertEqual({mutate._key(row): 41.0}, cache.seconds)
+
+    def test_a_survivor_keeps_its_cost_while_losing_its_killer(self) -> None:
+        """The two records answer different questions. Whatever used to catch a
+        survivor demonstrably does not any more, so the killer goes; what it
+        cost is still true, and a survivor is the dearest row there is."""
+        row = mutants.Mutation("a.py x", "a.py", "x", "y", "tests.t")
+        cache = mutate.Killers(None)
+        cache.known = {mutate._key(row): "tests.t.T.test_it"}
+        cache.learn(mutate.Report([mutate.Result(row, mutate.Verdict("survived", spent=70.0))]))
+        self.assertEqual({}, cache.known)
+        self.assertEqual({mutate._key(row): 70.0}, cache.seconds)
+
+    def test_it_survives_a_trip_through_the_file(self) -> None:
+        row = mutants.Mutation("a.py x", "a.py", "x", "y", "tests.t")
+        with tempfile.TemporaryDirectory() as box:
+            where = Path(box) / "killers.json"
+            made = mutate.Killers(where)
+            made.learn(
+                mutate.Report(
+                    [mutate.Result(row, mutate.Verdict("caught", killer="t.T.m", spent=3.5))]
+                )
+            )
+            made.save()
+            self.assertEqual({mutate._key(row): 3.5}, mutate.Killers(where).seconds)
+
+    def test_a_cost_survives_the_report_a_resume_reads_back(self) -> None:
+        """The gap this closes, and it only exists on the sweeps that matter.
+
+        A resumed sweep *skips* rows already in the `--json` report, so unless
+        the cost rides in the report beside the verdict, a row answered by the
+        run that crashed is never timed by the run that finishes -- and a table
+        that kept crashing would stay permanently cold. Those are exactly the
+        multi-hour whole-tree sweeps `slowest_first` is for.
+        """
+        row = mutants.Mutation("a.py:1 in f() -- x", "a.py", "x", "y", "tests.t", span=(0, 1))
+        caught = mutate.Verdict("caught", killer="t.T.m", spent=8.25)
+        with tempfile.TemporaryDirectory() as box:
+            report = Path(box) / "r.json"
+            mutate._persist(
+                mutate.Report([mutate.Result(row, caught)], widened=True), report, announce=False
+            )
+            (back,) = mutate._recorded(report)
+        self.assertEqual(8.25, back.verdict.spent, "the cost did not survive the report")
+        cache = mutate.Killers(None)
+        cache.learn(mutate.Report([back]))
+        self.assertEqual({mutate._key(row): 8.25}, cache.seconds)
+
+    def test_a_report_written_before_costs_existed_reads_back_untimed(self) -> None:
+        """Cut from a real report rather than built by hand, so it holds exactly
+        the fields `_persist` writes minus the one under test. It must read as
+        "never timed" -- which `slowest_first` answers with the file median --
+        rather than as a failure that loses every other row with it."""
+        row = mutants.Mutation("a.py:1 in f() -- x", "a.py", "x", "y", "tests.t", span=(0, 1))
+        with tempfile.TemporaryDirectory() as box:
+            report = Path(box) / "r.json"
+            mutate._persist(
+                mutate.Report([mutate.Result(row, mutate.Verdict("survived", spent=70.0))]),
+                report,
+                announce=False,
+            )
+            written = json.loads(report.read_text(encoding="utf-8"))
+            self.assertIn("seconds", written["results"][0], "nothing was removed")
+            del written["results"][0]["seconds"]
+            report.write_text(json.dumps(written), encoding="utf-8")
+            (back,) = mutate._recorded(report)
+        self.assertEqual("survived", back.verdict.outcome, "the whole row was lost")
+        self.assertEqual(0.0, back.verdict.spent)
+
+    def test_a_cache_written_before_costs_existed_still_loads(self) -> None:
+        """The shape `killers.json` had until this landed. It must read as "no
+        times recorded" rather than as a failure -- the worst an empty record
+        does is run at yesterday's speed."""
+        with tempfile.TemporaryDirectory() as box:
+            where = Path(box) / "killers.json"
+            where.write_text(json.dumps({"killers": {"k": "t.T.m"}, "costs": {"t.T.m": 1.0}}))
+            cache = mutate.Killers(where)
+            self.assertEqual({}, cache.seconds)
+            self.assertEqual({"k": "t.T.m"}, cache.known)
+
+
+class TestWhatTheFinalBlockSays(unittest.TestCase):
+    """The four counts, the denominator, and the refusal on a red baseline."""
+
+    def block(self, outcomes: Sequence[mutate.Outcome], red: bool = False) -> str:
+        results = [
+            mutate.Result(
+                mutants.Mutation(f"f{n}.py", "x", "y", f"f{n}.py:1 in f() -- x", "tests.t"),
+                mutate.Verdict(outcome),
+            )
+            for n, outcome in enumerate(outcomes)
+        ]
+        pace = mutate.Pace(10.0, 4, 2 << 30)
+        with support.quiet() as said:
+            mutate._report_stats(results, pace=pace, red=red)
+        return said.getvalue()
+
+    def test_all_four_outcomes_are_named_even_at_zero(self) -> None:
+        """A category that vanishes when empty is one a reader stops expecting.
+        `BROKE` and `TIMEOUT` are the two that matter: such a row is never
+        `caught`, so the line it appears to guard is guarded by nothing."""
+        said = self.block(["caught", "caught"])
+        for headline in ("caught", "SURVIVED", "BROKE", "TIMEOUT"):
+            self.assertIn(headline, said, f"{headline} is missing from the block")
+
+    def test_the_score_names_what_it_is_a_score_of(self) -> None:
+        said = self.block(["caught", "caught", "survived", "broke"])
+        self.assertIn("2 caught of 3 answered", said)
+        self.assertIn("1 row(s) answered nothing", said)
+
+    def test_a_red_baseline_gets_no_percentage_at_all(self) -> None:
+        """Not a flattering number under a warning. A failing suite notices
+        every mutation, and a percentage is far more seductive than a wall of
+        rows -- 51 of 51 was read twice here before anyone read the line."""
+        said = self.block(["caught", "caught"], red=True)
+        self.assertIn("no score", said)
+        self.assertNotIn("%", said)
+
+    def test_the_rate_is_reported_with_the_lane_count_beside_it(self) -> None:
+        """A rate alone is comparable to nothing: this tree measured the same
+        table at 1.84/s over 32 lanes and 1.49/s over 16."""
+        said = self.block(["caught"] * 20)
+        self.assertIn("over 4 lane(s)", said)
+        self.assertIn("/s/lane", said)
+
+    def test_a_report_with_no_pace_says_nothing_rather_than_zero(self) -> None:
+        """A resumed run does not re-run anything, so it has no rate to report.
+        Noughts there would be a measurement reported as a result."""
+        results = [
+            mutate.Result(
+                mutants.Mutation("f.py", "x", "y", "f.py:1 in f() -- x", "tests.t"),
+                mutate.Verdict("caught"),
+            )
+        ]
+        with support.quiet() as said:
+            mutate._report_stats(results, pace=None, red=False)
+        self.assertEqual("", said.getvalue())
