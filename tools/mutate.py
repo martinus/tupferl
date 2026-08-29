@@ -2790,10 +2790,14 @@ def by_size(table: Sequence[Mutation]) -> dict[str, list[Mutation]]:
     the whole budget on the slowest file and produced no coverage of the rest.
 
     Smallest first, so a run that is stopped has answered whole files. **Each
-    file's rows stay contiguous**, and that is load-bearing twice over:
+    file's rows stay contiguous**, and that is load-bearing once, not twice.
+    This said it was also what let `sweep` count a file down to zero before
+    writing its `--json`; **that stopped being true at #46**, which made the
+    write per *row* and the resume key positional-per-row, and the claim sat
+    here for releases afterwards being quoted as a reason. `sweep` uses the
+    grouping to build a flat list and to print a file count, and for nothing
+    else. What is left:
 
-    - `sweep`'s `finished` counts a file down to zero by relying on it, which is
-      what makes the per-file `--json` write safe;
     - `Learned` (tupferl#43) is move-to-front, and its docstring rests on rows
       arriving sorted by file and line so that consecutive mutants sit in the
       same function. Interleaving *rows* across files was this issue's first
@@ -2826,11 +2830,22 @@ def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> li
     is what every lane then waits on -- observed repeatedly, with the last ten
     completions of a 32-lane sweep spread over seven lanes.
 
-    **Within each file, never across.** File contiguity is load-bearing twice
-    over and neither reason has gone away: `sweep` counts a file down to zero to
-    decide when a per-file `--json` write is safe, and `by_size` puts the
-    *smallest* file first (tupferl#49) so an interrupted run has answered whole
-    files. Reordering rows inside a file disturbs neither.
+    **Within each file, never across** -- and that restriction is more
+    conservative than it needs to be. It was chosen believing `sweep` counted a
+    file down to zero before writing its `--json`; it does not, and has not
+    since #46 made that write per row. See `by_size`, where the stale claim
+    was. What actually wants contiguity is `Learned`, and only for rows with no
+    recorded killer -- a timed row already carries its exact killer on `first`,
+    which is the answer adjacency was approximating.
+
+    So a *global* sort is available for the timed rows, keeping only the cold
+    ones grouped by file, and it would reach the residual tail this cannot: the
+    largest file runs last under `by_size`, so its survivors are dispatched near
+    the end however well its own rows are ordered (measured: the median
+    survivor moves 1198 -> 1043 of 1309, but the last one is last in every
+    run). What still argues against it is #49's smallest-file-first, so an
+    interrupted run has answered whole files -- weaker than when it was written,
+    since a per-row resume no longer loses a partial file. Not attempted.
 
     That restriction costs much less than it looks, because of where the tail
     actually forms. `by_size` puts the **largest** file last, so a sweep's final
