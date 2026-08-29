@@ -18,9 +18,11 @@ to make, and `TestWhichSideIsWhich` is where it is written down.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path, PurePosixPath
+from typing import Any
 from unittest import mock
 
 from tests import support
@@ -464,6 +466,38 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         printed = self.diff()
         self.assertIn("--- .bashrc", printed)
         self.assertIn("could not show the diff", printed)
+
+    def test_a_spawn_that_raises_still_shows_the_diff(self) -> None:
+        """The `except (OSError, BrokenPipeError, ValueError)` arm, which the
+        test above does *not* reach: a pager that is not installed comes back as
+        a shell **return code** of 127, not as an exception, which is the whole
+        point of the comment beside that check. This arm is for the spawn itself
+        failing -- a fork that cannot allocate, a pipe that closes early.
+
+        `subprocess.run` is patched rather than provoked, and that is a
+        concession worth naming: there is no portable way to make the operating
+        system refuse a fork on demand. What is asserted is the same either way
+        -- the user is told, and **the diff is printed anyway**, which is the one
+        thing this function promises never to skip.
+        """
+        self.configure(f"{sys.executable} {self.fake}")
+        real = subprocess.run
+
+        def refuse(*args: Any, **kwargs: Any) -> Any:
+            # Only the pager spawn, which is the one `shell=True` call in the
+            # module. Patching `subprocess.run` outright also breaks the `git`
+            # that `difference` runs to build the diff, and the test then fails
+            # in the fixture rather than in the arm under test.
+            if kwargs.get("shell"):
+                raise OSError("no fork for you")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(subprocess, "run", refuse):
+            printed = self.diff()
+        self.assertIn("could not show the diff", printed)
+        self.assertIn("no fork for you", printed, "the reason was swallowed")
+        self.assertIn("--- .bashrc", printed, "the diff itself was lost with the pager")
+        self.assertFalse(self.seen.exists(), "the pager somehow ran")
 
     def test_git_pager_wins_over_the_configured_one(self) -> None:
         """git's own order is `GIT_PAGER`, then `core.pager`, then `PAGER`, and

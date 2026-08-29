@@ -18,7 +18,9 @@ classes here against 20.48s for the module they were in.
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from pathlib import PurePosixPath
+from unittest import mock
 
 from tests import support
 from tupferl import conflicts, copies, gitrepo, merge, sync
@@ -235,6 +237,25 @@ class TestBackups(support.SandboxCase):
         backups.take(PurePosixPath(".bashrc"), copies.Blob(b"a", False))
         backups.take(PurePosixPath(".vimrc"), copies.Blob(b"b", False))
         self.assertEqual(1, len(list(self.root.iterdir())))
+
+    def test_a_directory_that_is_already_there_is_reused_rather_than_fatal(self) -> None:
+        """`exist_ok=True`. `STAMP` carries microseconds, so two runs colliding
+        is not something a test can race for honestly -- the clock is frozen
+        instead, which is the same collision arrived at on purpose.
+
+        It is worth guarding because of *when* it fires: `take` is called with
+        the user's file already in hand and about to be overwritten, so a
+        `FileExistsError` here is an exception raised out of a sync at exactly
+        the moment the copy plan §5 promises exists.
+        """
+        frozen = datetime(2026, 8, 29, 12, 0, 0)
+        with mock.patch.object(sync, "datetime") as clock:
+            clock.now.return_value = frozen
+            sync.Backups(self.root).take(NAME, copies.Blob(b"first", False))
+            # A second run, same stamp: the directory is already there.
+            sync.Backups(self.root).take(NAME, copies.Blob(b"second", False))
+        (only,) = list(self.root.iterdir())
+        self.assertEqual(copies.Blob(b"second", False), copies.read(only / str(NAME)))
 
     def test_nothing_is_deleted_while_there_is_room(self) -> None:
         """The other side of the window, and the one that loses data if it is
