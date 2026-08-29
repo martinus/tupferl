@@ -926,9 +926,14 @@ written down.
   rule it used:
 
   ```
-  7 lane(s) at 2053 MiB each, from 14374 MiB of usable memory
-  (15398 MiB unclaimed, less 1024 MiB spare) -- see tools.mutate._share.
+  32 lane(s) at 2529 MiB each, from 53962 MiB of usable memory
+  (54986 MiB unclaimed, less 1024 MiB spare), committing 150% -- see tools.mutate._share.
   ```
+
+  The last clause is `_COMMIT`, and it is said out loud for the reason the rest
+  of the line is: over-committing is a judgement that lane peaks do not
+  coincide, and a reader has to be able to see it was made -- especially on the
+  run that does get killed.
 
   Two things follow, and both bit before this existed:
 
