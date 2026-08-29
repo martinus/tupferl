@@ -519,7 +519,6 @@ def connector(node: ast.AST) -> Iterator[Edit]:
 
     def flip(clone: ast.AST) -> None:
         assert isinstance(clone, ast.BoolOp)
-        # survivor: drop-assign -- TODO: why is this acceptable?
         clone.op = becomes()
 
     yield Edit(node, _rewritten(node, flip), f"`{was}` becomes `{now}`")
@@ -568,16 +567,13 @@ def order(node: ast.AST) -> Iterator[Edit]:
 
         def backwards(clone: ast.AST) -> None:
             assert isinstance(clone, ast.Call)
-            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.keywords = [*clone.keywords, ast.keyword(arg="reverse", value=ast.Constant(True))]
 
         yield Edit(node, _rewritten(node, backwards), "the ordering is reversed")
 
         def unordered(clone: ast.AST) -> None:
             assert isinstance(clone, ast.Call)
-            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.func = ast.Name(id="list", ctx=ast.Load())
-            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.keywords = []
 
         yield Edit(node, _rewritten(node, unordered), "`sorted` becomes `list`")
@@ -587,7 +583,6 @@ def order(node: ast.AST) -> Iterator[Edit]:
 
         def renamed(clone: ast.AST, to: str = swaps[name]) -> None:
             assert isinstance(clone, ast.Call)
-            # survivor: drop-assign -- TODO: why is this acceptable?
             clone.func = ast.Name(id=to, ctx=ast.Load())
 
         yield Edit(node, _rewritten(node, renamed), f"`{name}` becomes `{swaps[name]}`")
@@ -897,7 +892,6 @@ def slice_widened(node: ast.AST) -> Iterator[Edit]:
 
     def widen(clone: ast.AST) -> None:
         assert isinstance(clone, ast.Subscript)
-        # survivor: drop-assign -- TODO: why is this acceptable?
         clone.slice = ast.Slice(lower=None, upper=None, step=None)
 
     yield Edit(node, _rewritten(node, widen), "the slice takes everything")

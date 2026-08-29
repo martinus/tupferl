@@ -179,6 +179,58 @@ class TestTheOperators(unittest.TestCase):
                 got = self.prose(body, operators=[name])
                 self.assertEqual(got, expected)
 
+    def test_every_operator_rewrites_the_code_and_not_only_its_label(self) -> None:
+        """The prose and the *edit*, which are two claims and were one test.
+
+        `_FIRES` above pins what each operator says. Nothing pinned what it
+        writes -- so an operator whose clone was never modified produced the
+        right sentence over unchanged source, and the sweep reported the
+        assignment that does the rewriting as a survivor in six places at once:
+        `connector`'s `clone.op`, `order`'s two `clone.func`/`clone.keywords`
+        pairs, `slice`'s `clone.slice`, and `negate`'s comparison swap.
+
+        A mutation that changes nothing is not caught by any suite: it is the
+        original program. So this is the one assertion that separates "the
+        generator described an edit" from "the generator made one".
+        """
+        for name, (body, prose) in _FIRES.items():
+            with self.subTest(operator=name):
+                rows = mutate(body, operators=[name])
+                # The count first, or an operator that produced *nothing* would
+                # satisfy every assertion in the loop below by never entering it
+                # -- the precondition that was never established, from §2.
+                self.assertEqual(len(prose), len(rows), f"{name} produced the wrong rows")
+                for row in rows:
+                    # Compared through `ast`, not as text. `ast.unparse` adds
+                    # parentheses, so a clone nobody modified comes back as
+                    # `(a and b)` against `a and b` -- different strings, the
+                    # same program. Six survivors hid behind exactly that.
+                    self.assertNotEqual(
+                        ast.unparse(ast.parse(row.old)),
+                        ast.unparse(ast.parse(row.new)),
+                        f"{name} produced an edit that changes nothing: {row.new!r}",
+                    )
+
+    def test_the_order_operator_rewrites_both_of_its_shapes(self) -> None:
+        """`order` has two branches and `_FIRES` reaches one.
+
+        Its fixture is `sorted(days)`, which has no keywords -- so clearing them
+        is a no-op there, and `list(days)` comes out right either way. And the
+        `min`/`max`/`any`/`all` swap is a different branch that fixture never
+        enters at all. Both assignments came back survivors while the operator
+        looked covered.
+        """
+
+        # Normalised through `ast`, because `ast.unparse` wraps what it emits:
+        # the rows really read `(list(days))`, and comparing raw text here would
+        # be asserting on the unparser's brackets rather than on the edit.
+        def rewrites(body: str) -> set[str]:
+            return {ast.unparse(ast.parse(row.new)) for row in mutate(body, operators=["order"])}
+
+        kept = rewrites("x = sorted(days, key=len)\n")
+        self.assertIn("list(days)", kept, f"sorted's keywords survived the swap to list: {kept}")
+        self.assertEqual({"all(items)"}, rewrites("x = any(items)\n"))
+
     def test_no_operator_fires_on_a_fixture_it_should_not(self) -> None:
         for name, body in _QUIET.items():
             with self.subTest(operator=name):
