@@ -513,9 +513,14 @@ Five things are not where a newcomer would guess, all on purpose:
   if not expanded.is_absolute():
   ```
 
-  On the mutated line or in the comment block directly above it; the block is
-  joined, so a reason may wrap. `python -m tools.mutate --all --accept` writes a
-  `TODO` tag beside every unread row for a person to finish.
+  **A tag guards a *statement*, not a physical line.** Trailing the statement,
+  or in the comment block directly above it; the block is joined, so a reason
+  may wrap, and several tags may sit in one block. Both the reader and
+  `--accept` normalise a mutation's line to the line its statement opens on --
+  anything inside brackets is a *continuation*, and a comment inserted there
+  splits the expression and leaves `ruff format --check` wanting to reflow the
+  file. `python -m tools.mutate --all --accept` writes a `TODO` tag above every
+  unread row for a person to finish.
 
   **The operator is required, and that is the whole design.** Measured on a
   whole-tree table: mutations average 2.1 per source line and reach 13, and
@@ -524,7 +529,7 @@ Five things are not where a newcomer would guess, all on purpose:
   go on excusing operators `mutants.py` has not learnt yet, which is the
   flattering direction arriving through the record's own syntax.
 
-  Four things about it are load-bearing, each a way it could quietly become a
+  Five things about it are load-bearing, each a way it could quietly become a
   mute list instead of a record:
 
   - **`--accept` is a flag, never automatic.** Recording a survivor is saying
@@ -536,8 +541,19 @@ Five things are not where a newcomer would guess, all on purpose:
   - **Nothing is ever removed by the tool.** A tag is deleted by deleting a line
     of code, which is a person's job and shows up as one.
   - **A tag that has stopped earning its place is reported.** Today that means a
-    row the suite has learnt to *catch* — good news, and good news nobody is
-    told is exactly how a mute list forms.
+    tag every row of which the suite has learnt to *catch* — good news, and good
+    news nobody is told is exactly how a mute list forms. Spent is judged per
+    *tag*, not per row: one operator covers mutations that need not have the
+    same answer, and `conflicts.somewhere_in`'s range arithmetic is equivalent
+    widened and caught narrowed, so a check that fired on the first caught row
+    reported a live tag as dead on its first real sweep.
+  - **The unfinished ones are counted out loud, every run.** A `TODO` tag
+    silences its row exactly as a written reason does — that is what makes
+    `--accept` usable — so without the count a green sweep is a claim nobody
+    made. As of 2026-08-29 there are 115 of them, all in `tools/mutate.py`,
+    where the pool orchestration and `_Lanes` signal handling resist testing for
+    the reasons four dead ends below already record. That number is debt, not
+    progress; a sweep exits 0 over all of it.
 
   **This replaced a file of sha256 keys (`known-survivors.json`), and the
   reason it was replaced is worth keeping.** It was not kept up to date: twelve
@@ -637,46 +653,19 @@ written down.
 
 ### Gotchas
 
+Thirty-five of them, and each is here because it cost somebody an afternoon.
+Grouped rather than run together: as one flat list of 461 lines this was a
+section a reader scanned past. The entries themselves are unchanged and none
+has been dropped.
+
+#### Python, and the versions this supports
+
 - **`AssertionError: Cannot find component 'X' for 'tupferl.old_module.X'` from
   inside mypy** — moving a name between modules leaves `.mypy_cache` wrong.
   `rm -rf .mypy_cache` and re-run; it is not your change.
 - **`ruff format --check` fails on code you did not touch** — the formatter's
   output changes between versions. The floors in `pyproject.toml` are the
   versions the tree is actually formatted by, not the oldest that would work.
-- **A Hypothesis profile means something different in CI than on your machine.**
-  Hypothesis registers and loads a derandomised profile of its own when it sees
-  `CI` in the environment, and a profile that leaves a field unstated inherits
-  whatever is default when it is registered. That is why every profile in
-  `tests/profiles.py` states every field it cares about. To reproduce a CI-only
-  failure of this shape, run the preflight the way CI does:
-
-  ```sh
-  CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
-  ```
-
-- **`skipUnless` turns the `macos` leg red.** That job runs `--no-skips`, which
-  is exactly what the flag is for -- a leg with every optional tool installed,
-  where a skip means something is missing rather than absent by design -- so a
-  platform-gated test is a failure there rather than a skip. Measured: one
-  `skipUnless(hasattr(os, "sched_getaffinity"))` added in this repository's own
-  review pass took that leg from green to red on the next push.
-
-  A test whose *stronger* half is platform-specific should assert the part that
-  holds everywhere and add the rest under a plain `if`, labelled at the
-  assertion. §2 asks for the label either way; this is the spelling that keeps
-  the leg green.
-
-- **A test that makes `git commit` fail must not do it by removing the git
-  identity.** git falls back to `user@hostname`, and whether that *works*
-  depends on the machine: in a Linux container the hostname is `(none)` and git
-  refuses, on a macOS runner it is a real name and the commit succeeds. Three
-  tests written that way were green on every Linux leg and red on macOS. Use
-  `support.break_commits`, which installs a `pre-commit` hook that exits 1.
-- **A unix socket cannot be bound at an arbitrary path.** `sun_path` is 104
-  bytes on macOS, and a sandbox path plus `.local/share/tupferl/repo/…` exceeds
-  it, so `bind` raises `OSError` and the test errors instead of testing. Use
-  `os.mkfifo` where a "not a regular file" fixture is needed; it is the same
-  class with no length limit.
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.
@@ -689,90 +678,6 @@ written down.
   exposed; `find . -name __pycache__ -not -path './.venv/*' -exec rm -rf {} +`
   settles it. `tools/mutate.py` is not exposed -- it passes `-B` and sets
   `PYTHONDONTWRITEBYTECODE`, and `_clear_bytecode` runs over each sandbox.
-
-- **A test's own timeout must *beat* the harness's, not merely exist.**
-  `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
-  that trips it as `BROKE` — which is never `caught`, so the line it was
-  guarding ends up unguarded. `tests/test_watch.py` bounded each subprocess at
-  30s too, so the two raced and the alarm won: seven mutants of `watch.main`
-  and `watch.alive` came back `BROKE`. Pick a bound above the longest honest
-  wait in the file and comfortably below the alarm, and say both numbers where
-  you write it.
-
-  **Arm it on the class, not around the call.** Measured twice in one sitting,
-  both times the same way: bounding the one test a sweep *named* left its
-  siblings hanging on the identical mutation, because they reach the same line
-  by a different route. `line_starts` was bounded in the helper its class goes
-  through and three of its four rows stayed `BROKE` — the tests that kill them
-  do not call that helper. `TestTheHarnessAnswersBothWays` was bounded in
-  `test_the_walk_catches_what_the_selection_missed` and two of six stayed
-  `BROKE` — `if not walk:` inverted hangs the two tests that pass `walk=False`,
-  which is not the test the bound was written on. Put it in `setUp` behind a
-  `contextlib.ExitStack` (`enterContext` is 3.11 and this project supports
-  3.10), and the whole class is covered whichever row a future sweep finds. **A
-  bound around one call covers that call and reads as though it covered the
-  class.**
-
-  **And the class is not the end of it either.** Two more instances followed:
-  `mutants.py:170`'s killer is `TestWhatIsNeverMutated`, a *different class* from
-  the one the sweep named, reaching the same line through the module-level
-  `mutate()` helper; and the route that actually hung was
-  `TestABoundedCallStillReturns`, which drives a **subprocess**, where no in-process
-  alarm can reach at all. The rule that survives all four: **the killer a sweep
-  reports is one route to the line, not all of them.** Find the callers of the
-  hang-prone function and bound each entry point, rather than bounding the test
-  in the row.
-
-  **A bound is one shot, and `subTest` spends it.** `support.deadline` arms a
-  single alarm; `subTest` *catches* the `TimeoutError` it raises, records a
-  failure and carries on to the next iteration — with nothing armed. Measured:
-  a class-level bound covered the first case of a two-case loop and the second
-  ran past 120s under the very mutation the bound was written for, while its
-  siblings failed in five seconds each. Arm it **inside** the `subTest`, not
-  around the loop.
-
-  **And check what the bound's exception collides with.** `TimeoutError` *is* an
-  `OSError`, so a `deadline` inside an existing `assertRaises(OSError)` is
-  swallowed: the hang is accepted as the error under test and the bound turns
-  one unguarded line into a test that cannot fail, which is worse than the hang
-  it replaced. `tests/test_manage.py`'s fifo test reads the exception type back
-  explicitly for that reason.
-
-  **Write it through `support.bounded`, which knows the alarm actually armed.**
-  Comparing against `mutate.EACH_TEST` is the obvious spelling and it guards
-  only the *default*: `--each-test` is a flag, so a sweep at `--each-test 10`
-  puts a 20s bound back above the alarm and the test written to prevent that
-  cannot see it, because the constant still reads 30. `_run` now passes the
-  armed value to the child in `TUPFERL_MUTATE_EACH_TEST`, and `bounded` takes
-  `SHARE` (two thirds) of it — which is the ratio `PROMPTED` and `EACH_TEST`
-  already had, so stating the rule left every measured number where it was and
-  changed only what happens when the alarm moves. It is a floor, never a
-  ceiling: with nothing armed, or with `--each-test 0`, the fixture's own number
-  stands unchanged, which is every ordinary run of the suite.
-- **A soft rlimit is not a cap: any descendant can raise it back.** `RLIMIT_AS`
-  has a soft and a hard half, and `setrlimit` lets an unprivileged process raise
-  soft up to hard freely. `verdict.cap` used to lower only soft and pass the
-  inherited hard straight back — so under a sweep every probe ran with
-  `soft = 4 GiB, hard = RLIM_INFINITY`, and one `resource.setrlimit(AS, (hard,
-  hard))` anywhere below it bought an unbounded process. `tests/test_verdict.py`
-  did exactly that on purpose, to reach a known state, and its docstring
-  explained why it was safe.
-
-  It was not. Measured, from the kernel log rather than inferred: `Killed
-  process (python) total-vm:63940536kB, anon-rss:54020240kB` — **one process at
-  51.5 GiB** on a 62 GiB machine, during a sweep whose lane ceiling was 4096 MiB.
-  A single process an order of magnitude over the per-lane ceiling is proof that
-  no ceiling was in force, which is what told the two apart: it is *not* lanes
-  adding up, so `_COMMIT` is not the thing to look at, and lowering it would have
-  cost parallelism and prevented nothing.
-
-  `cap` lowers both halves now. Raising a hard limit needs a privilege none of
-  this has, so the ceiling survives every `fork` and `exec` beneath it. The cost
-  is that a descendant cannot undo the cap — which is right, and the one test
-  that wanted to now asks for a **bounded** number instead: "clear the inherited
-  cap" and "have no cap" are different asks and only the second can take a
-  machine with it.
-
 - **`RLIM_INFINITY` is `-1` — a sentinel, not a large number.** So `min(want,
   hard)` against an unlimited ceiling returns `-1` and *raises* the limit to
   unlimited, which is the opposite of the clamp it reads as. It is silent: the
@@ -782,18 +687,6 @@ written down.
   The same sentinel is why a raise is spelled `(hard, hard)` and never
   `(RLIM_INFINITY, hard)`: macOS reports unlimited as `sys.maxsize`, so asking
   for `-1` there is "current limit exceeds maximum limit" and the child dies.
-
-- **A test's bound must cover the *processes* it starts, not just its own
-  thread.** `support.deadline` is a `SIGALRM` in this process and cannot see a
-  child, so a fixture that spawns one needs `subprocess.run(timeout=...)` *and*
-  a memory ceiling in the child. The timeout alone is not enough when the mutant
-  loops **while appending**: the machine is gone before the clock speaks, which
-  is the argument `verdict.cap`'s own docstring makes and which applies to every
-  fixture that spawns a python. `tests/test_mutants.py`'s `returns` sets
-  `RLIMIT_AS` in the generated child for that reason, and its bound is 5s rather
-  than the 20s it was — the honest wait is a spawn, and the bound is paid per
-  test, under a sweep, on a machine already running thirty-eight lanes.
-
 - **`discover` and `loadTestsFromNames` classify a broken module differently**,
   and a fixture written for one proves nothing about the other. `discover`
   wraps everything into `loader.errors`; `loadTestsFromNames` wraps only what
@@ -803,46 +696,6 @@ written down.
   — but two tests in `tests/test_verdict.py` were written with the fixtures
   exactly backwards and failed. `TestABrokenModuleTakesTwoDifferentPaths` holds
   the measured table.
-- **Coverage understates `tools/` badly, and the reason is the tool's own
-  thesis.** `tests/test_verdict.py`, `test_reached.py` and `test_watch.py` all
-  drive their subject as a *subprocess*, which in-process coverage cannot see —
-  so `verdict.py` reads 30% while its classification is exercised end to end.
-  Read the mutation numbers instead; that gap is precisely what
-  `tools/reached.py` was written to repair.
-- **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
-  and a process started that way passes the *ignored* disposition to every
-  descendant — so `tests/test_merge.py`'s stub, which killed itself with SIGHUP
-  to produce an exit status of `-1`, silently exited 0 instead. The sweep's
-  baseline then went red on a file the change never touched, and every verdict
-  in it was void. Use `setsid`, or the shell's own backgrounding with output
-  redirected. The stub restores `SIG_DFL` itself since v0.5, so this particular
-  test no longer cares — but the general hazard stands for any fixture about
-  signals, and a POSIX shell **cannot** reset a signal it inherited as ignored.
-- **A mutation sweep is minutes to hours.** Launch it detached, record the pid,
-  and watch it with `tools/watch.py` — never identify the job by pattern.
-  `pgrep -f` matches the asking shell's own command line, which reported a dead
-  sweep alive twice in one session; and run a moment after `setsid`, it matched
-  a transient pid instead of the sweep's, so a watcher armed with it announced
-  a live sweep dead at 78 of 806 rows. **A pattern is not an identity, and it
-  fails in both directions** — the second is the one that reads as a real
-  failure and sends you looking for a crash that never happened. `setsid …
-  &` does not hand back the sweep's pid in `$!` the way plain `&` does, which is
-  exactly when reaching for `pgrep` is tempting; read the pid out of the sweep's
-  own output or `--json` path instead, and verify `kill -0` on it before
-  trusting a watcher. Point `--done` at `<json>.done`, never at the `--json`
-  report, which under `--batch` and `--all` is rewritten after every file and so
-  exists long before the run ends.
-- **git never starts `receive-pack` for an up-to-date push**, so no hook on the
-  remote can observe one: it compares the ref advertisement first and prints
-  "Everything up-to-date". A `pre-receive` hook counting pushes therefore reports
-  zero whether or not the push was skipped, and the test built on it passed with
-  the code under test disabled. To tell the two apart, point `remote.origin.
-  pushurl` somewhere that does not exist -- `fetch` still uses the real URL, so a
-  sync that decides to push fails and one that skips it does not.
-- **`PATH=""` makes git unfindable; deleting `PATH` does not.** With the variable
-  absent, `subprocess` falls back to `confstr("CS_PATH")` and finds
-  `/usr/bin/git` anyway. The obvious spelling of a "git is not installed" fixture
-  merges successfully and passes for the wrong reason.
 - **Patching `sys.version_info` does not conjure the module.** A test that fakes
   3.11 and then lets the code `import tomllib` fails on a real 3.10 interpreter,
   where that module does not exist -- so it passes on every leg *except* the one
@@ -861,18 +714,6 @@ written down.
   the rest of the file. It bit the sync state machine's *model*, not the code:
   git splits on `\n` alone, so the file under test was right and the expectation
   was wrong. Use `split("\n")` wherever the line count is load-bearing.
-- **`git merge-file` refuses a file with a NUL byte in its first 8000 bytes**,
-  with "Cannot merge binary files" and exit 255 — indistinguishable by exit code
-  from git not being installed. `merge.is_text` asks the same question first, so
-  a binary file both machines changed is reported as one conflict rather than as
-  a broken git. Found by the merge property test on its first run.
-- **A git receiving hook cannot update refs**: "ref updates forbidden inside
-  quarantine environment". `unset GIT_QUARANTINE_PATH` first. Needed by
-  `support.move_on_first_push`, which is the only way to make a push fail
-  *because the remote moved* — pushing beforehand does not work, since a sync
-  fetches before it pushes and would simply merge it.
-- **A ref pushed to a name directly under `refs/` is a "funny refname"** and is
-  rejected. Park a prepared commit under `refs/heads/`.
 - **`tty.setcbreak` behaves differently on 3.10 and 3.12.** Python 3.12 stopped
   clearing `ECHO`, so the same call swallows the keypress on one and echoes it
   on the other. `conflicts.one_key` sets `ICANON` and `ECHO` itself and echoes
@@ -885,18 +726,51 @@ written down.
   loader takes back. `verdict.py` already says why it is recorded separately:
   "a display format is not an API". Asserting `len(noticed)` or that it is
   empty is fine; asserting what is *in* it is not.
-
 - **`TestCase.enterContext` is 3.11.** On the 3.10 leg it is an
   `AttributeError`, so the tests reach for `contextlib.ExitStack` instead. Same
   family as the `tomllib` gotcha above, and the same leg catches it.
-- **A prompt in a test must fail, not block.** `conflicts.ask` loops, so a test
-  that types one fewer key than the prompt asks for reads an empty terminal and
-  waits for ever — a suite that hangs in CI rather than one that goes red. Both
-  fixtures that type keys append `support.FALLBACK` (`s`), so an unexpected
-  extra question is answered "skip", the run exits 1, and the test fails on its
-  own assertion instead. `run_cli`'s subprocess path also passes
-  `communicate(timeout=60)`, because a child that ignores its stdin entirely
-  would otherwise outlive the suite.
+- **`text=True` encodes stdin and argv by different rules.** `subprocess`
+  encodes an argv list with the filesystem encoding and `surrogateescape`, so a
+  path that is not valid UTF-8 goes through; it encodes `input=` with the
+  *stream's* handler, which is strict by default and raises
+  `UnicodeEncodeError`. That is a `ValueError`, so it sails past every `except`
+  arm in `gitrepo.git` — the class of escape #3 exists to close, reintroduced
+  by #3's own fix when `stage` moved its pathspecs to stdin. `git()` passes
+  `errors="surrogateescape"`, which answers the decoding half too. A dotfile
+  name need not be valid UTF-8 on Linux, and `TestAPathThatIsNotUtf8` has both
+  directions.
+
+#### git
+
+- **A test that makes `git commit` fail must not do it by removing the git
+  identity.** git falls back to `user@hostname`, and whether that *works*
+  depends on the machine: in a Linux container the hostname is `(none)` and git
+  refuses, on a macOS runner it is a real name and the commit succeeds. Three
+  tests written that way were green on every Linux leg and red on macOS. Use
+  `support.break_commits`, which installs a `pre-commit` hook that exits 1.
+- **git never starts `receive-pack` for an up-to-date push**, so no hook on the
+  remote can observe one: it compares the ref advertisement first and prints
+  "Everything up-to-date". A `pre-receive` hook counting pushes therefore reports
+  zero whether or not the push was skipped, and the test built on it passed with
+  the code under test disabled. To tell the two apart, point `remote.origin.
+  pushurl` somewhere that does not exist -- `fetch` still uses the real URL, so a
+  sync that decides to push fails and one that skips it does not.
+- **`PATH=""` makes git unfindable; deleting `PATH` does not.** With the variable
+  absent, `subprocess` falls back to `confstr("CS_PATH")` and finds
+  `/usr/bin/git` anyway. The obvious spelling of a "git is not installed" fixture
+  merges successfully and passes for the wrong reason.
+- **`git merge-file` refuses a file with a NUL byte in its first 8000 bytes**,
+  with "Cannot merge binary files" and exit 255 — indistinguishable by exit code
+  from git not being installed. `merge.is_text` asks the same question first, so
+  a binary file both machines changed is reported as one conflict rather than as
+  a broken git. Found by the merge property test on its first run.
+- **A git receiving hook cannot update refs**: "ref updates forbidden inside
+  quarantine environment". `unset GIT_QUARANTINE_PATH` first. Needed by
+  `support.move_on_first_push`, which is the only way to make a push fail
+  *because the remote moved* — pushing beforehand does not work, since a sync
+  fetches before it pushes and would simply merge it.
+- **A ref pushed to a name directly under `refs/` is a "funny refname"** and is
+  rejected. Park a prepared commit under `refs/heads/`.
 - **git writes CRLF conflict markers into a CRLF file.** `split(b"\n")` leaves
   the `\r` attached, so a marker arrives as `b"<<<<<<< … (this computer)\r"` and
   matches nothing spelled without it. That made `conflicts.leftover` inert for
@@ -905,12 +779,6 @@ written down.
   machines, with `sync` exiting 0. `conflicts.bare` is the one place that strips
   it. Every fixture in the suite was LF until the review, which is why the run
   was green with the bug in it.
-- **One keypress can be several bytes.** A press of the Down arrow is `\x1b[B`,
-  and read a byte at a time that is three answers — the last of which is `b`,
-  *keep both*. Reading the whole sequence is not simply `os.read(fd, 8)` either:
-  that returns everything the terminal holds, which includes the key pressed
-  *after* it. `conflicts.rest_of_escape` reads to the end of the sequence and no
-  further.
 - **`=======` has no label, so it cannot be matched the way the other two
   markers can.** A line of a dotfile that is exactly seven equals signs ends the
   local side of a hunk whether it was meant to or not, and the prompt then shows
@@ -945,6 +813,47 @@ written down.
   The general lesson is bigger than the flag: **a guard written for a future
   that has not arrived cannot be tested, and this one was wrong from the day it
   was written.** Nothing could have told the difference on 2.43.
+- **git's merge stages are 1 base, 2 ours, 3 theirs — and "ours" is the branch
+  being merged *into*.** During a `tupferl sync` that is this computer's commits
+  and stage 3 is the repository's, which lines up with `--ours`/`--theirs` by
+  luck rather than by construction: read the wrong way round, every conflict
+  still settles cleanly and silently keeps the side the user asked to discard.
+  `tests/test_sync_commits.py` names the content it expects on both sides —
+  swapping the two constants turns 6 of its 14 tests red.
+- **Read a stage with `cat-file`, not `show`.** `git show :2:path` is porcelain
+  and applies the repository's filters, so a `.gitattributes` with `text=auto`
+  hands back bytes that are not what was committed. And not through
+  `gitrepo.git` at all, which is `text=True` and returns `stdout.strip()` — that
+  decodes a dotfile on the user's behalf and eats its trailing newline and any
+  leading blank line, which is the same loss `merge_file`'s docstring records as
+  its reason for rewriting a file in place rather than using `-p`.
+- **`git merge-file` needs three lines of agreement to call two disagreements
+  two hunks**, and the five-line fixture most of this suite uses has exactly
+  three between its first and last lines. A test about a *count* of conflicts
+  therefore wants a longer file; written on `START` it reports 1 and reads as
+  a bug in the counting.
+
+#### Terminals, signals and processes
+
+- **A unix socket cannot be bound at an arbitrary path.** `sun_path` is 104
+  bytes on macOS, and a sandbox path plus `.local/share/tupferl/repo/…` exceeds
+  it, so `bind` raises `OSError` and the test errors instead of testing. Use
+  `os.mkfifo` where a "not a regular file" fixture is needed; it is the same
+  class with no length limit.
+- **A prompt in a test must fail, not block.** `conflicts.ask` loops, so a test
+  that types one fewer key than the prompt asks for reads an empty terminal and
+  waits for ever — a suite that hangs in CI rather than one that goes red. Both
+  fixtures that type keys append `support.FALLBACK` (`s`), so an unexpected
+  extra question is answered "skip", the run exits 1, and the test fails on its
+  own assertion instead. `run_cli`'s subprocess path also passes
+  `communicate(timeout=60)`, because a child that ignores its stdin entirely
+  would otherwise outlive the suite.
+- **One keypress can be several bytes.** A press of the Down arrow is `\x1b[B`,
+  and read a byte at a time that is three answers — the last of which is `b`,
+  *keep both*. Reading the whole sequence is not simply `os.read(fd, 8)` either:
+  that returns everything the terminal holds, which includes the key pressed
+  *after* it. `conflicts.rest_of_escape` reads to the end of the sequence and no
+  further.
 - **`tcsetattr` with `TCSADRAIN` can block for ever on a pty.** It waits for the
   terminal's pending *output* to drain, and a pty starts with `ECHO` on — so
   every key a fixture types is echoed into an output queue that, in these tests,
@@ -962,47 +871,11 @@ written down.
   flags the user would actually miss — `ICANON` and `ECHO` — and assert
   separately that they really were cleared in between, or "unchanged before and
   after" is trivially true of a function that changes nothing.
-- **git's merge stages are 1 base, 2 ours, 3 theirs — and "ours" is the branch
-  being merged *into*.** During a `tupferl sync` that is this computer's commits
-  and stage 3 is the repository's, which lines up with `--ours`/`--theirs` by
-  luck rather than by construction: read the wrong way round, every conflict
-  still settles cleanly and silently keeps the side the user asked to discard.
-  `tests/test_sync_commits.py` names the content it expects on both sides —
-  swapping the two constants turns 6 of its 14 tests red.
-- **Read a stage with `cat-file`, not `show`.** `git show :2:path` is porcelain
-  and applies the repository's filters, so a `.gitattributes` with `text=auto`
-  hands back bytes that are not what was committed. And not through
-  `gitrepo.git` at all, which is `text=True` and returns `stdout.strip()` — that
-  decodes a dotfile on the user's behalf and eats its trailing newline and any
-  leading blank line, which is the same loss `merge_file`'s docstring records as
-  its reason for rewriting a file in place rather than using `-p`.
 - **The suite must never inherit the developer's stdin.** `sync` asks
   `sys.stdin.isatty()` to decide whether anyone is there to answer a conflict,
   so a test that inherits a terminal *prompts* and blocks, and the same test in
   CI skips silently. `support.run_cli` passes `DEVNULL` and `support.typing`
   patches `sys.stdin`; a real pty is opted into with `keys=`.
-- **A fingerprint of "nothing was written" needs the file's bytes in it.**
-  Path, size and mode is the obvious spelling and it cannot fail here: the edit
-  a sync test makes is usually one line to upper case, so the file before and
-  the file after are the same length with the same mode. `tests/test_status.py`
-  had exactly that, and its *own* second half — run a real `sync` and insist
-  the fingerprint moves — is what caught it. Leave mtime out; a read can move
-  it on some filesystems.
-- **`git merge-file` needs three lines of agreement to call two disagreements
-  two hunks**, and the five-line fixture most of this suite uses has exactly
-  three between its first and last lines. A test about a *count* of conflicts
-  therefore wants a longer file; written on `START` it reports 1 and reads as
-  a bug in the counting.
-- **`text=True` encodes stdin and argv by different rules.** `subprocess`
-  encodes an argv list with the filesystem encoding and `surrogateescape`, so a
-  path that is not valid UTF-8 goes through; it encodes `input=` with the
-  *stream's* handler, which is strict by default and raises
-  `UnicodeEncodeError`. That is a `ValueError`, so it sails past every `except`
-  arm in `gitrepo.git` — the class of escape #3 exists to close, reintroduced
-  by #3's own fix when `stage` moved its pathspecs to stdin. `git()` passes
-  `errors="surrogateescape"`, which answers the decoding half too. A dotfile
-  name need not be valid UTF-8 on Linux, and `TestAPathThatIsNotUtf8` has both
-  directions.
 - **`ARG_MAX` is not a constant, so no fixture may be sized against it.** On
   Linux the whole argv is bounded by `RLIMIT_STACK / 4` — 2 MiB against this
   container's 8 MiB stack, and **larger on a GitHub runner**. Measured the hard
@@ -1020,16 +893,124 @@ written down.
   - And if a test does build many real paths: **macOS's `PATH_MAX` is 1024**, a
     quarter of Linux's 4096, so a component chain sized for Linux cannot be
     *created* on the macos leg and the test errors rather than tests there.
-- **A test that hand-rolls what the code under test does can diverge from it,
-  and only another machine may notice.** A precondition for #15 drove
-  `gitrepo.fetch` then `gitrepo.merge` itself instead of running `sync`; on the
-  runner's git 2.55 that pair left **nothing** unmerged, while the same fixture
-  through `integrate` conflicted exactly as expected — three tests beside it
-  passed in the same run. The mechanism is not established and is not worth
-  guessing at; the lesson is §2's "prefer driving the real thing", now with an
-  instance where the copy and the original disagreed. Where a precondition is
-  wanted, look for one the real path already proves: the refusal message names
-  the path, and nothing but a real conflict could put it there.
+
+#### The mutation harness
+
+- **A test's own timeout must *beat* the harness's, not merely exist.**
+  `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
+  that trips it as `BROKE` — which is never `caught`, so the line it was
+  guarding ends up unguarded. `tests/test_watch.py` bounded each subprocess at
+  30s too, so the two raced and the alarm won: seven mutants of `watch.main`
+  and `watch.alive` came back `BROKE`. Pick a bound above the longest honest
+  wait in the file and comfortably below the alarm, and say both numbers where
+  you write it.
+
+  **Where to arm it is the part that keeps being got wrong — five times, all
+  the same way: the bound went where the sweep pointed, and the hang was
+  somewhere else.** The rule that survives all five is *the killer a sweep
+  reports is one route to the line, not all of them.* So find the callers of
+  the hang-prone function and bound each entry point. The five, because the
+  shapes differ:
+
+  1. **Around the call** rather than the class. `TestTheHarnessAnswersBothWays`
+     was bounded in `test_the_walk_catches_what_the_selection_missed`; two of
+     six rows stayed `BROKE`, because `if not walk:` inverted hangs the two
+     tests that pass `walk=False`.
+  2. **In a helper** rather than the class. `line_starts` was bounded in the
+     helper its class goes through and three of four rows stayed `BROKE` — the
+     tests that kill them do not call that helper.
+  3. **In the class the sweep named**, when the killer is in *another*:
+     `mutants.py:170` is killed by `TestWhatIsNeverMutated`, reaching the same
+     line through a module-level helper.
+  4. **In this process**, when the route that hangs is a **subprocess** —
+     `TestABoundedCallStillReturns` — where no `SIGALRM` here can reach. That
+     one wants `subprocess.run(timeout=…)` *and* a memory ceiling in the
+     child, because a mutant that loops **while appending** takes the machine
+     before any clock speaks — the argument `verdict.cap`'s docstring makes.
+     `tests/test_mutants.py`'s `returns` sets `RLIMIT_AS` in the child it
+     generates and bounds it at 5s rather than 20: the honest wait is a spawn,
+     and the bound is paid per test, under a sweep, on a machine already
+     running thirty-eight lanes.
+  5. **Around a `subTest` loop.** A bound is one shot: `subTest` *catches* the
+     `TimeoutError`, records a failure and carries on with nothing armed.
+     Measured — the first case of a two-case loop was covered and the second ran
+     past 120s under the very mutation the bound was written for. Arm it
+     **inside** the `subTest`.
+
+  For a whole class, `contextlib.ExitStack` entered in `setUp` (`enterContext`
+  is 3.11 and this project supports 3.10). **A bound around one call covers that
+  call and reads as though it covered the class.**
+
+  **And check what the bound's exception collides with.** `TimeoutError` *is* an
+  `OSError`, so a `deadline` inside an existing `assertRaises(OSError)` is
+  swallowed: the hang is accepted as the error under test and the bound turns
+  one unguarded line into a test that cannot fail, which is worse than the hang
+  it replaced. `tests/test_manage.py`'s fifo test reads the exception type back
+  explicitly for that reason.
+
+  **Write it through `support.bounded`, which knows the alarm actually armed.**
+  Comparing against `mutate.EACH_TEST` is the obvious spelling and it guards
+  only the *default*: `--each-test` is a flag, so a sweep at `--each-test 10`
+  puts a 20s bound back above the alarm and the test written to prevent that
+  cannot see it, because the constant still reads 30. `_run` passes the armed
+  value to the child in `TUPFERL_MUTATE_EACH_TEST`, and `bounded` takes `SHARE`
+  (two thirds) of it — the ratio `PROMPTED` and `EACH_TEST` already had, so
+  stating the rule left every measured number where it was and changed only what
+  happens when the alarm moves. It is a floor, never a ceiling: with nothing
+  armed, or with `--each-test 0`, the fixture's own number stands unchanged.
+
+- **A soft rlimit is not a cap: any descendant can raise it back.** `RLIMIT_AS`
+  has a soft and a hard half, and `setrlimit` lets an unprivileged process raise
+  soft up to hard freely. `verdict.cap` used to lower only soft and pass the
+  inherited hard straight back — so under a sweep every probe ran with
+  `soft = 4 GiB, hard = RLIM_INFINITY`, and one `resource.setrlimit(AS, (hard,
+  hard))` anywhere below it bought an unbounded process. `tests/test_verdict.py`
+  did exactly that on purpose, to reach a known state, and its docstring
+  explained why it was safe.
+
+  It was not. Measured, from the kernel log rather than inferred: `Killed
+  process (python) total-vm:63940536kB, anon-rss:54020240kB` — **one process at
+  51.5 GiB** on a 62 GiB machine, during a sweep whose lane ceiling was 4096 MiB.
+  A single process an order of magnitude over the per-lane ceiling is proof that
+  no ceiling was in force, which is what told the two apart: it is *not* lanes
+  adding up, so `_COMMIT` is not the thing to look at, and lowering it would have
+  cost parallelism and prevented nothing.
+
+  `cap` lowers both halves now. Raising a hard limit needs a privilege none of
+  this has, so the ceiling survives every `fork` and `exec` beneath it. The cost
+  is that a descendant cannot undo the cap — which is right, and the one test
+  that wanted to now asks for a **bounded** number instead: "clear the inherited
+  cap" and "have no cap" are different asks and only the second can take a
+  machine with it.
+- **Coverage understates `tools/` badly, and the reason is the tool's own
+  thesis.** `tests/test_verdict.py`, `test_reached.py` and `test_watch.py` all
+  drive their subject as a *subprocess*, which in-process coverage cannot see —
+  so `verdict.py` reads 30% while its classification is exercised end to end.
+  Read the mutation numbers instead; that gap is precisely what
+  `tools/reached.py` was written to repair.
+- **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
+  and a process started that way passes the *ignored* disposition to every
+  descendant — so `tests/test_merge.py`'s stub, which killed itself with SIGHUP
+  to produce an exit status of `-1`, silently exited 0 instead. The sweep's
+  baseline then went red on a file the change never touched, and every verdict
+  in it was void. Use `setsid`, or the shell's own backgrounding with output
+  redirected. The stub restores `SIG_DFL` itself since v0.5, so this particular
+  test no longer cares — but the general hazard stands for any fixture about
+  signals, and a POSIX shell **cannot** reset a signal it inherited as ignored.
+- **A mutation sweep is minutes to hours.** Launch it detached, record the pid,
+  and watch it with `tools/watch.py` — never identify the job by pattern.
+  `pgrep -f` matches the asking shell's own command line, which reported a dead
+  sweep alive twice in one session; and run a moment after `setsid`, it matched
+  a transient pid instead of the sweep's, so a watcher armed with it announced
+  a live sweep dead at 78 of 806 rows. **A pattern is not an identity, and it
+  fails in both directions** — the second is the one that reads as a real
+  failure and sends you looking for a crash that never happened. `setsid …
+  &` does not hand back the sweep's pid in `$!` the way plain `&` does, which is
+  exactly when reaching for `pgrep` is tempting; read the pid out of the sweep's
+  own output or `--json` path instead, and verify `kill -0` on it before
+  trusting a watcher. Point `--done` at `<json>.done`, never at the `--json`
+  report, which under `--batch` and `--all` is rewritten after every file and so
+  exists long before the run ends.
 - **The sweep sizes itself from what is actually free, and says so.**
   `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the
   smaller of that and any cgroup limit, leaves a gibibyte, and divides. So a
@@ -1081,7 +1062,51 @@ written down.
     documented way to say "this machine is mine"; that question is measured
     rather than asked. Reach for it to *reproduce* a small machine, not to
     unlock a large one.
+- **The generated sweep goes last.** Implement, preflight, review and *apply*
+  the review, and only then `python -m tools.mutate --base main`. The table is
+  generated from the lines as they stand, so any edit after it invalidates every
+  row.
 
+#### CI, and fixtures that pass for the wrong reason
+
+- **A Hypothesis profile means something different in CI than on your machine.**
+  Hypothesis registers and loads a derandomised profile of its own when it sees
+  `CI` in the environment, and a profile that leaves a field unstated inherits
+  whatever is default when it is registered. That is why every profile in
+  `tests/profiles.py` states every field it cares about. To reproduce a CI-only
+  failure of this shape, run the preflight the way CI does:
+
+  ```sh
+  CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
+  ```
+- **`skipUnless` turns the `macos` leg red.** That job runs `--no-skips`, which
+  is exactly what the flag is for -- a leg with every optional tool installed,
+  where a skip means something is missing rather than absent by design -- so a
+  platform-gated test is a failure there rather than a skip. Measured: one
+  `skipUnless(hasattr(os, "sched_getaffinity"))` added in this repository's own
+  review pass took that leg from green to red on the next push.
+
+  A test whose *stronger* half is platform-specific should assert the part that
+  holds everywhere and add the rest under a plain `if`, labelled at the
+  assertion. §2 asks for the label either way; this is the spelling that keeps
+  the leg green.
+- **A fingerprint of "nothing was written" needs the file's bytes in it.**
+  Path, size and mode is the obvious spelling and it cannot fail here: the edit
+  a sync test makes is usually one line to upper case, so the file before and
+  the file after are the same length with the same mode. `tests/test_status.py`
+  had exactly that, and its *own* second half — run a real `sync` and insist
+  the fingerprint moves — is what caught it. Leave mtime out; a read can move
+  it on some filesystems.
+- **A test that hand-rolls what the code under test does can diverge from it,
+  and only another machine may notice.** A precondition for #15 drove
+  `gitrepo.fetch` then `gitrepo.merge` itself instead of running `sync`; on the
+  runner's git 2.55 that pair left **nothing** unmerged, while the same fixture
+  through `integrate` conflicted exactly as expected — three tests beside it
+  passed in the same run. The mechanism is not established and is not worth
+  guessing at; the lesson is §2's "prefer driving the real thing", now with an
+  instance where the copy and the original disagreed. Where a precondition is
+  wanted, look for one the real path already proves: the refusal message names
+  the path, and nothing but a real conflict could put it there.
 - **Colour is decided per stream, and a captured stream is not a terminal.**
   `tools/paint.py` asks `isatty` of the stream being written to, so everything
   a test captures — `support.quiet`, a `subprocess` pipe, `> sweep.log` — comes
@@ -1091,10 +1116,6 @@ written down.
   (`f"{painted:9}"` counts the escape bytes as columns) and put the code around
   whole words, never inside one. `support.Screen` is the capture that claims to
   be a terminal, for the half a captured run cannot show.
-- **The generated sweep goes last.** Implement, preflight, review and *apply*
-  the review, and only then `python -m tools.mutate --base main`. The table is
-  generated from the lines as they stand, so any edit after it invalidates every
-  row.
 
 ### Decisions from the plan's open questions (§9)
 
