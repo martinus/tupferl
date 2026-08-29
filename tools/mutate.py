@@ -251,6 +251,24 @@ _BUDGET = "TUPFERL_MUTATE_BUDGET"
 #: machine it can no longer see.
 _TOTAL = "TUPFERL_MUTATE_TOTAL"
 
+#: The per-test alarm this run actually armed, in seconds, for the suite running
+#: under it to read. `EACH_TEST` is only the *default*; `--each-test` overrides
+#: it, and a fixture that bounds itself against the constant is guarding against
+#: a number that may no longer be in force.
+#:
+#: That matters because of which way it fails. A fixture whose own deadline is
+#: longer than the alarm never fires: the alarm wins, the row is filed `BROKE`,
+#: and `BROKE` is never `caught` -- so the line the fixture exists to guard ends
+#: up guarded by nothing, and the summary shows the row in neither of the two
+#: numbers a reader looks at. Measured once already at `PROMPTED = 60` against a
+#: 30s alarm: three of four sweeps filed the row `BROKE` and none caught it.
+#: `--each-test 10` reopens exactly that hole against today's `PROMPTED = 20`.
+#:
+#: An environment variable for the same reason `_BUDGET` is one: it has to
+#: survive `python -c`, and the suite reads it through `tests/support.py`'s
+#: `bounded`, which is the one place the margin is decided.
+_ALARM = "TUPFERL_MUTATE_EACH_TEST"
+
 #: What a run leaves for the operating system and for itself when the machine is
 #: its own. A gibibyte, which is `_LANE` -- the same number, because the thing
 #: being reserved is exactly "room for one more lane's worth of everything else".
@@ -986,10 +1004,14 @@ def _run(
                 # reuses. `_BUDGET` covers the *harness* the suite may spawn: a
                 # row mutating `tools/` runs tests that start this module again,
                 # and without it the inner one sizes itself for the whole host.
+                # `_ALARM` is `each` itself, so that a fixture bounding its own
+                # wait can beat the alarm that is armed rather than the default
+                # one -- see `_ALARM`, and `tests/support.py`'s `bounded`.
                 env={
                     **os.environ,
                     "PYTHONDONTWRITEBYTECODE": "1",
                     _BUDGET: str(memory),
+                    _ALARM: str(each),
                     _PROFILE: _MUTATION_PROFILE,
                 },
                 # A file rather than a pipe, and this is not a style choice. The
@@ -1911,6 +1933,11 @@ def run(
                 paint.ODD,
             )
         )
+        # Before the check rather than after it, and printed either way. See
+        # `_loose_evidence`: a killer that passes untouched is the case with
+        # nothing else to read, and it is the case this run cannot repeat.
+        for line in _loose_evidence(results, loose):
+            print(paint.paint(line, paint.QUIET), flush=True)
         with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
             loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
         if loose_verdict.outcome != "survived":
@@ -2351,6 +2378,57 @@ def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
             and not any(run_tests.selects(result.verdict.killer, only) for only in reachable)
         }
     )
+
+
+def _loose_evidence(results: Sequence[Result], loose: Sequence[str]) -> list[str]:
+    """What each unbaselined killer actually complained about, one row each.
+
+    `Verdict.why` is recorded for every `caught` row and read by nothing but the
+    baseline branch, on the argument that `caught` is the whole answer and two
+    hundred tracebacks are noise. That argument holds for an ordinary row and
+    fails exactly here: an unbaselined killer is a test claiming to have noticed
+    a mutation in code it was not written about, and its *name* cannot say
+    whether that is a real catch through a wide walk or the false one
+    `_unbaselined` exists to find. The traceback can, and it is already in hand.
+
+    Printed whether or not the check that follows comes back green, which is the
+    half that matters. A killer that fails untouched is diagnosed by the check
+    itself; a killer that *passes* untouched and still caught rows leaves nothing
+    to read at all -- and that is the shape of the one unexplained result this
+    repository has recorded. A shuffled outward walk reported 1300 caught / 6
+    SURVIVED where the truth was 1276 / 30, all 24 credited to a single test in
+    `tests/test_mutate.py`, reproducible only inside a full 32-lane sweep and in
+    no smaller setting. Six attempts to reproduce it failed; none of them had
+    this line. CLAUDE.md's "measured dead ends" names it as the missing evidence.
+
+    One row per killer, not one per row it caught: 24 copies of one traceback is
+    the noise the `why` docstring warns about, and the count says the rest. The
+    first in table order, because `results` is sorted by position by the time
+    this is called and "whichever lane finished first" is not a choice anyone
+    made.
+    """
+    lines = []
+    for killer in loose:
+        caught = [row for row in results if row.verdict.killer == killer]
+        if not caught:
+            # Cannot fire from `run`, which passes the `loose` that `_unbaselined`
+            # derived from these same rows. It is here because the function is
+            # total over its two arguments and is driven directly by its tests,
+            # and because a headerless entry for a name with nothing behind it
+            # would attribute the next killer's traceback to this one.
+            continue
+        first = caught[0]
+        lines.append(f"  {killer} caught {len(caught)} row(s), first {first.mutation.label}:")
+        # A `caught` verdict takes `why` from `verdict.py`'s `reasons`, which can
+        # come back empty -- so this is a real state and not a defensive arm. Say
+        # which, rather than printing an empty block that reads as "the test
+        # failed for no reason".
+        lines.append(
+            indent(first.verdict.why.rstrip(), "  | ")
+            if first.verdict.why
+            else "  | (no traceback recorded for this row)"
+        )
+    return lines
 
 
 #: Where the remembered killers live by default, under the directory the

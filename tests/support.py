@@ -51,6 +51,13 @@ from tupferl import manifest, paths
 #: copy is the tree that must be imported.
 ROOT = Path(__file__).resolve().parents[1]
 
+#: The environment variable `tools/mutate.py` sets to the per-test alarm it armed
+#: for this run. Spelled here rather than imported: `support` is the bottom of
+#: the test tree and importing the harness into it to read one string is the
+#: wrong direction. `test_support` asserts the two spellings agree, which is the
+#: same arrangement `CARRIES` already has with `TUPFERL_MUTATE_BUDGET`.
+ALARM = "TUPFERL_MUTATE_EACH_TEST"
+
 #: The only names carried in from the ambient environment, each with a reason:
 #:
 #: - `PATH`: there is no sandbox-relative answer to where `git` and `python` are.
@@ -64,6 +71,8 @@ ROOT = Path(__file__).resolve().parents[1]
 #:   subprocess started here would otherwise drop them.
 #: - `TUPFERL_MUTATE_BUDGET`: how much memory a nested mutation harness may
 #:   assume. Dropping it lets an inner harness size itself for the whole host.
+#: - `TUPFERL_MUTATE_EACH_TEST`: the per-test alarm the harness armed. Dropping
+#:   it lets a subprocess fixture bound itself against the default instead.
 #: - `PYTHONWARNINGS`: CI sets it to `error::DeprecationWarning`, and a sandbox
 #:   that drops it downgrades that guard to a warning *only in the subprocesses*
 #:   -- which is every test that drives the CLI as a user does. Measured before
@@ -77,30 +86,70 @@ CARRIES = (
     "PYTHONPYCACHEPREFIX",
     "PYTHONWARNINGS",
     "TUPFERL_MUTATE_BUDGET",
+    ALARM,
 )
+
+#: How much of the harness's per-test alarm a fixture's own deadline may take.
+#:
+#: The margin is what makes the fixture win the race, and it has to be a *share*
+#: rather than a subtraction: an alarm of 3s and an alarm of 300s want different
+#: absolute headroom and the same proportion of it. Two thirds is not a fresh
+#: judgement -- it is the ratio the two hand-picked numbers below already had
+#: against a 30s alarm, so stating the rule leaves every bound in this file
+#: exactly where measurement put it and only changes what happens when the alarm
+#: moves.
+SHARE = 2 / 3
+
+
+def bounded(seconds: float) -> float:
+    """`seconds`, brought under the per-test alarm this run actually armed.
+
+    **A fixture's own timeout must beat the harness's, not merely exist.** When
+    it does not, the alarm fires first, `tools/mutate.py` files the row `BROKE`,
+    and `BROKE` is never `caught` -- so the line the fixture guards is guarded by
+    nothing while the summary counts the row in neither of the numbers a reader
+    looks at. That is not hypothetical: at `PROMPTED = 60` against a 30s alarm,
+    three of four sweeps filed `conflicts.ask`'s row `BROKE` and none caught it.
+
+    Lowering the constants to beat `EACH_TEST` fixed the sweeps that use its
+    default and nothing else, because `--each-test` is a flag. `--each-test 10`
+    reopens the identical hole against `PROMPTED = 20`, and the test written to
+    prevent it compares against the *constant*, so it cannot see that.
+
+    Absent, empty or unparseable means no alarm is in force and the fixture's own
+    number stands -- which is every ordinary run of the suite, where the value is
+    exactly what it was before this existed. `0` means the same thing: it is what
+    `--each-test 0` asks for and what `verdict.each_test` returns where `SIGALRM`
+    does not exist.
+    """
+    try:
+        armed = float(os.environ.get(ALARM, ""))
+    except ValueError:
+        return seconds
+    return min(seconds, armed * SHARE) if armed > 0 else seconds
+
 
 #: How long a fixture waits for a keyed CLI run to finish -- a child through a
 #: pty, or `typing` in this process. The only thing it bounds is a prompt asking
 #: more times than the fixture answered, and a child killed here still has its
 #: partial output read back, so the failure says what it was doing.
 #:
-#: **It has to beat `tools/mutate.py`'s per-test alarm, not merely exist.** That
-#: alarm is 30s and files whatever trips it as `BROKE`, which is never `caught`
-#: -- so at the 60s this used to be, the two raced and the alarm always won. A
-#: mutation making `conflicts.ask` reject every key came back `BROKE` in three of
-#: four ordered sweeps and `caught` in none, leaving the line it appears to guard
-#: guarded by nothing. 20s is far above the longest honest wait (a driven `sync`
-#: is milliseconds, and its slowest here is under two seconds even under a
-#: 32-lane sweep) and comfortably below 30. `PATIENCE` is the tighter bound for a
-#: single *read*; this one covers a whole command.
-PROMPTED = 20.0
+#: **It has to beat `tools/mutate.py`'s per-test alarm, not merely exist** --
+#: see `bounded`, which is what enforces that against the alarm actually armed
+#: rather than against its default. 20s is the number when nothing is armed: far
+#: above the longest honest wait (a driven `sync` is milliseconds, and its
+#: slowest here is under two seconds even under a 32-lane sweep) and two thirds
+#: of the 30s default, which is where `SHARE` comes from. `PATIENCE` is the
+#: tighter bound for a single *read*; this one covers a whole command.
+PROMPTED = bounded(20.0)
 
 #: How long a fixture will wait for a read from a terminal before calling it a
 #: failure. Five seconds against a suite that runs 500 tests in twelve, so a
 #: legitimate prompt has three orders of magnitude of headroom -- and a mutant
 #: that leaves `one_key` blocking fails in five seconds rather than holding a
-#: mutation lane for the harness's full 30s per-test alarm.
-PATIENCE = 5.0
+#: mutation lane for the harness's full per-test alarm. Through `bounded` too,
+#: so an `--each-test` below about 7.5s brings this down with it.
+PATIENCE = bounded(5.0)
 
 
 @contextmanager

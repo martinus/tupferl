@@ -525,6 +525,12 @@ class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
 
         Asserted against `mutate.EACH_TEST` rather than against a literal, so
         raising the alarm cannot silently re-open the gap.
+
+        **This covers the default alarm and nothing else**, which is the half of
+        the guarantee it was originally mistaken for. `--each-test` is a flag,
+        and a sweep run with a lower one is not visible from here at all --
+        `EACH_TEST` still reads 30 while the alarm in force is 10.
+        `TestBoundingAFixtureAgainstTheAlarmActuallyArmed` is that half.
         """
         self.assertLess(support.PROMPTED, mutate.EACH_TEST, "a whole keyed run")
         self.assertLess(support.PATIENCE, mutate.EACH_TEST, "a single read")
@@ -539,3 +545,101 @@ class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
         """
         with mock.patch.object(support, "PROMPTED", 0.5), support.typing("l"):
             self.assertEqual("l", conflicts.one_key(sys.stdin))
+
+
+class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
+    """`bounded`: the fixture's deadline beats whatever `--each-test` armed.
+
+    The class above pins `PROMPTED` and `PATIENCE` below `mutate.EACH_TEST`, and
+    that was taken for the whole guarantee. It is not: `EACH_TEST` is a
+    *default*, `--each-test` overrides it, and a sweep run with `--each-test 10`
+    puts a 20s `PROMPTED` back above the alarm -- the identical hole that left
+    `conflicts.py:635` filed `BROKE` in three of four sweeps and `caught` in
+    none. The test written to prevent that compares against the constant, so it
+    cannot see it. This is the half it cannot see.
+
+    `_run` sets the armed value in the child's environment, so what the fixture
+    needs is already there; the only question is whether it reads it.
+    """
+
+    def bounded(self, value: float, armed: str | None) -> float:
+        environ = {} if armed is None else {support.ALARM: armed}
+        with mock.patch.dict(os.environ, environ, clear=(armed is None)):
+            return support.bounded(value)
+
+    def test_an_ordinary_run_is_left_exactly_as_it_was(self) -> None:
+        """No harness, no alarm, no change -- and this is most runs of the suite.
+        A rule that moved the bounds when nothing was armed would be paying for
+        the rare case in every developer's preflight."""
+        self.assertEqual(20.0, self.bounded(20.0, None))
+        self.assertEqual(5.0, self.bounded(5.0, None))
+
+    def test_a_tighter_alarm_brings_the_bound_under_it(self) -> None:
+        self.assertLess(self.bounded(20.0, "10"), 10.0)
+
+    def test_every_alarm_a_sweep_can_arm_is_beaten(self) -> None:
+        """The property, rather than one worked example. `--each-test` takes a
+        float and the useful range spans three orders of magnitude, so a single
+        pair proves the arithmetic and not the guarantee.
+
+        Both constants, because they are separate numbers and only one of them
+        was ever wrong -- `PATIENCE` at 5.0 already beat a 10s alarm, so a test
+        that checked `PROMPTED` alone would pass against a `bounded` that
+        returned its argument for anything under 7.5.
+        """
+        for armed in (0.5, 1.0, 3.0, 7.5, 10.0, 30.0, 300.0):
+            with self.subTest(armed=armed):
+                for name in ("PROMPTED", "PATIENCE"):
+                    got = self.bounded(getattr(support, name), str(armed))
+                    self.assertLess(got, armed, name)
+
+    def test_a_disabled_alarm_leaves_the_bound_alone(self) -> None:
+        """`--each-test 0` asks for no alarm, and `verdict.each_test` also
+        returns 0 where `SIGALRM` does not exist. Nothing is racing the fixture
+        then, and scaling by zero would make every bound fire immediately --
+        which turns a run with the alarm *off* into a suite that fails
+        everywhere."""
+        self.assertEqual(20.0, self.bounded(20.0, "0"))
+
+    def test_a_value_that_is_not_a_number_leaves_the_bound_alone(self) -> None:
+        """Nothing writes this but the harness, so a bad value means something
+        else set the name. Erring towards the fixture's own number keeps a
+        strange environment from failing every keyed test at once."""
+        self.assertEqual(20.0, self.bounded(20.0, "soon"))
+        self.assertEqual(20.0, self.bounded(20.0, ""))
+
+    def test_the_harness_and_the_fixture_spell_the_name_the_same(self) -> None:
+        """Two spellings of one variable, and a typo in either is invisible: the
+        harness would set a name nothing reads, `bounded` would find nothing and
+        return its argument, and every assertion above would still pass."""
+        self.assertEqual(mutate._ALARM, support.ALARM)
+
+    def test_the_sandbox_carries_the_name_through(self) -> None:
+        """`support.environment` builds from nothing, so a name not in `CARRIES`
+        is absent in every subprocess a test spawns -- which is where the keyed
+        fixtures with the longest waits actually run."""
+        self.assertIn(support.ALARM, support.CARRIES)
+
+    def test_the_harness_tells_the_child_what_it_armed(self) -> None:
+        """The plumbing half, asserted where it happens rather than inferred
+        from a sweep. `_run` builds the child's environment; watching the spawn
+        and reading its argv and env is the thing that changed, and no alarm has
+        to fire to check it.
+        """
+        seen: dict[str, str] = {}
+
+        def spawn(argv: list[str], **kwargs: Any) -> None:
+            seen.update(kwargs["env"])
+            raise RuntimeError("far enough")
+
+        # An empty directory rather than `support.ROOT`: `_run` clears bytecode
+        # under whatever root it is given, and pointing it at the real tree
+        # would have this test delete the `__pycache__` of every shard running
+        # beside it.
+        with (
+            tempfile.TemporaryDirectory() as box,
+            mock.patch.object(subprocess, "Popen", spawn),
+            self.assertRaises(RuntimeError),
+        ):
+            mutate._run(["tests.test_paths"], Path(box), each=7.5)
+        self.assertEqual("7.5", seen.get(support.ALARM))

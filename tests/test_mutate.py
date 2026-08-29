@@ -1126,6 +1126,10 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
     """
 
     KILLER = "tests.test_config.TestRejectingAnUnknownKey.test_it"
+    #: What the killer complained about. A real `why` is a traceback; the only
+    #: property asserted on is that these bytes reach the reader, so a
+    #: recognisable marker beats a plausible-looking stack.
+    TRACEBACK = "Traceback (most recent call last):\n  AssertionError: dJk9 marker"
 
     def report(self, loose_outcome: mutate.Outcome) -> mutate.Report:
         """One row, caught by a test its selection never named, with the extra
@@ -1141,7 +1145,7 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
             "tests.test_paths",
             operator="branch",
         )
-        caught = mutate.Verdict("caught", "d", self.KILLER)
+        caught = mutate.Verdict("caught", "d", self.KILLER, why=self.TRACEBACK)
 
         def answered(available: Any, tests: Any, *rest: Any) -> mutate.Verdict:
             """Green for the baseline's own shards, `loose_outcome` for the extra
@@ -1203,6 +1207,89 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         do."""
         found = self.report("caught")
         self.assertFalse(found.baseline_red, "one loose test voided the whole run")
+
+    def test_the_killers_traceback_is_printed_when_the_check_is_red(self) -> None:
+        """The diagnosable case, and the easier of the two: the extra shard also
+        says what went wrong, so this is corroboration rather than the only
+        evidence."""
+        self.report("caught")
+        self.assertIn("dJk9 marker", self.said)
+
+    def test_the_killers_traceback_is_printed_when_the_check_is_green(self) -> None:
+        """The case this was written for, and the one with nothing else to read.
+
+        A killer that passes untouched and still caught rows is not corrected by
+        anything -- `run` leaves the verdict alone, by design -- so without the
+        traceback the run says only that a test the baseline never saw claimed a
+        catch, and stops. That is exactly the state the shuffled-walk experiment
+        left behind: 24 rows credited to one green test, reproducible in no
+        setting smaller than a 32-lane sweep, with six attempts failing to
+        narrow it. Printing on the green path is the whole point of the change;
+        printing only on the red one would have told that run nothing.
+        """
+        self.report("survived")
+        self.assertIn("dJk9 marker", self.said)
+        self.assertIn(f"{self.KILLER} caught 1 row(s)", self.said)
+
+
+class TestWhatAnUnbaselinedKillerIsMadeToSay(unittest.TestCase):
+    """`_loose_evidence`: the traceback behind a killer nothing baselined.
+
+    Driven directly rather than through `run`, because the shapes worth pinning
+    are the degenerate ones -- several rows to one killer, a row with no `why`,
+    a name matching nothing -- and arranging each of those through a real run
+    would take five stubbed sweeps to say what four calls say.
+    `TestARowCaughtByAnUnbaselinedTest` covers the wiring.
+    """
+
+    def caught(self, killer: str, label: str, why: str = "boom") -> mutate.Result:
+        return mutate.Result(row(label=label), mutate.Verdict("caught", "d", killer, why=why))
+
+    def test_it_names_the_killer_the_count_and_the_first_row(self) -> None:
+        """All three, because none of them is derivable from the others by a
+        reader: the name says which test, the count says how much of the run
+        rests on it, and the label says where to look first."""
+        rows = [self.caught("t.A.test_x", f"tupferl/sync.py:{n} in f()") for n in (7, 8, 9)]
+        head, _ = mutate._loose_evidence(rows, ["t.A.test_x"])
+        self.assertIn("t.A.test_x", head)
+        self.assertIn("caught 3 row(s)", head)
+        self.assertIn("tupferl/sync.py:7 in f()", head)
+
+    def test_it_prints_one_traceback_and_not_one_per_row(self) -> None:
+        """24 copies of one traceback is the noise `Verdict.why`'s docstring
+        refuses, and the count above already carries the rest."""
+        rows = [self.caught("t.A.test_x", f"tupferl/sync.py:{n} in f()") for n in (7, 8, 9)]
+        said = mutate._loose_evidence(rows, ["t.A.test_x"])
+        self.assertEqual(2, len(said))
+        self.assertEqual(1, "\n".join(said).count("boom"))
+
+    def test_a_row_with_no_traceback_says_so(self) -> None:
+        """A `caught` verdict takes `why` from `verdict.py`'s `reasons`, and that
+        list can come back empty -- so this is a state the tool really reaches
+        rather than a defensive arm. An empty indented block reads as "the test
+        failed for no reason", which is a different claim and a wrong one."""
+        said = mutate._loose_evidence(
+            [self.caught("t.A.test_x", "x:1 in f()", why="")], ["t.A.test_x"]
+        )
+        self.assertIn("no traceback recorded", "\n".join(said))
+        self.assertNotIn("boom", "\n".join(said))
+
+    def test_a_killer_matching_no_row_is_skipped_rather_than_guessed_at(self) -> None:
+        """Unreachable from `run`, which passes the names `_unbaselined` derived
+        from these same rows. Pinned anyway because the alternative -- a header
+        with nothing under it -- would attribute the *next* killer's traceback to
+        this one, which is the exact misreading the block exists to prevent."""
+        rows = [self.caught("t.A.test_x", "x:1 in f()")]
+        self.assertEqual([], mutate._loose_evidence(rows, ["t.B.test_gone"]))
+
+    def test_each_killer_gets_its_own_entry(self) -> None:
+        """Two loose killers is two separate questions. Folding them into one
+        block would attribute one test's traceback to the other's rows."""
+        rows = [self.caught("t.A.test_x", "x:1 in f()"), self.caught("t.B.test_y", "x:2 in g()")]
+        said = mutate._loose_evidence(rows, ["t.A.test_x", "t.B.test_y"])
+        self.assertEqual(4, len(said))
+        self.assertIn("t.A.test_x", said[0])
+        self.assertIn("t.B.test_y", said[2])
 
 
 class TestMovingTheKillerToTheFront(unittest.TestCase):
