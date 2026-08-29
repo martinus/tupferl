@@ -664,6 +664,16 @@ written down.
 - **`tomllib` is 3.11+, and this project supports 3.10.** `tupferl/config.py`
   falls back to `tomli`; the 3.10 CI leg is what proves the fallback is
   reachable, so do not drop that leg to save a minute.
+- **A stale `.pyc` can survive an edit of the same size in the same second.**
+  Python invalidates cached bytecode on mtime *and size*, so rewriting
+  `PROMPTED = 60.0` as `PROMPTED = 20.0` -- identical length -- within one second
+  left the old bytecode in place, and a test read the value the file no longer
+  had. It cost a wrong diagnosis: the constant was correct on disk and wrong in
+  memory. Any script that edits a file, runs the suite and edits it back is
+  exposed; `find . -name __pycache__ -not -path './.venv/*' -exec rm -rf {} +`
+  settles it. `tools/mutate.py` is not exposed -- it passes `-B` and sets
+  `PYTHONDONTWRITEBYTECODE`, and `_clear_bytecode` runs over each sandbox.
+
 - **A test's own timeout must *beat* the harness's, not merely exist.**
   `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
   that trips it as `BROKE` — which is never `caught`, so the line it was
