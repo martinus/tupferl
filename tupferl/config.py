@@ -38,9 +38,10 @@ def toml() -> Any:
     3.10 has no `tomllib`; `tomli` is the library it was taken from, and the
     3.10 CI leg is what proves this branch is reachable.
     """
-    # survivor: boundary -- equivalent, measured: `sys.version_info` on a real 3.11.0 is `(3, 11, 0,
-    #   'final', 0)`, which is already `> (3, 11)`. The two spellings can only differ for a version
-    #   tuple of exactly `(3, 11)`, which no interpreter reports.
+    # survivor: boundary -- tupferl/config.py:41 in toml() -- `>=` becomes `>` -- equivalent,
+    #   measured: `sys.version_info` on a real 3.11.0 is `(3, 11, 0, 'final', 0)`, which is already
+    #   `> (3, 11)`. The two spellings can only differ for a version tuple of exactly `(3, 11)`,
+    #   which no interpreter reports.
     if sys.version_info >= (3, 11):
         import tomllib
 

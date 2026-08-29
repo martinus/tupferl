@@ -118,7 +118,8 @@ def cap(limit: int) -> None:
     in this function can see that, which is why the guard against it is a
     sampler one level up rather than another rlimit here.
     """
-    # survivor: off-by-one -- cosmetic, same as the `-1` mutation on this line.
+    # survivor: off-by-one -- tools/verdict.py:121 in cap() -- `0` becomes `1` -- cosmetic, same as
+    #   the `-1` mutation on this line.
     if limit <= 0:
         # 0 is "no cap", as `--memory 0` promises and as `--limit 0` beside it
         # already means. Guarded here as well as at the CLI because `cap` is
@@ -356,9 +357,10 @@ def every_module(names: list[str]) -> list[str]:
     about.
     """
     found: list[str] = []
-    # survivor: order -- equivalent: this sorts the *packages* the walk visits, and the function
-    #   ends `return sorted(set(found))` -- so the order the names are appended in is not
-    #   observable. The sort on line 346 *is* guarded, by `test_what_it_returns_is_sorted`.
+    # survivor: order -- tools/verdict.py:342 in every_module() -- the ordering is reversed --
+    #   equivalent: this sorts the *packages* the walk visits, and the function ends `return
+    #   sorted(set(found))` -- so the order the names are appended in is not observable. The sort on
+    #   line 346 *is* guarded, by `test_what_it_returns_is_sorted`.
     for package in sorted({name.rpartition(".")[0] for name in names}):
         root = Path(package.replace(".", "/")) if package else Path()
         prefix = f"{package}." if package else ""
@@ -442,24 +444,30 @@ def collect(
     result = build(io.StringIO(), False, 0)
     result.failfast = failfast
     broke: list[str] = []
-    # survivor: branch -- the `first` prefix -- the remembered killer tried ahead of a row. Skipping
-    #   it costs a longer run and cannot change a verdict: the same tests run afterwards as part of
-    #   the selection. That is the whole design of the cache, and `Killers`/`Learned` have their own
-    #   tests for what goes into it.
+    # survivor: branch -- tools/verdict.py:425 in collect() -- the `if` is never taken -- the
+    #   `first` prefix -- the remembered killer tried ahead of a row. Skipping it costs a longer run
+    #   and cannot change a verdict: the same tests run afterwards as part of the selection. That is
+    #   the whole design of the cache, and `Killers`/`Learned` have their own tests for what goes
+    #   into it.
     if first and groups:
         head = unittest.TestLoader()
-        # survivor: drop-call -- same as `verdict.py:425`: the prefix is an ordering optimisation,
-        #   and dropping it changes when a killer is found rather than whether.
+        # survivor: drop-call -- tools/verdict.py:427 in collect() -- the call to
+        #   `ready.append(...)` never happens -- same as `verdict.py:425`: the prefix is an ordering
+        #   optimisation, and dropping it changes when a killer is found rather than whether.
         ready.append(head.loadTestsFromNames(first))
-        # survivor: branch -- a prefix naming a test that will not import. Reachable only from a
-        #   killers cache written by an older tree, which `Killers` already validates once per run
-        #   -- so by the time `collect` sees it, it has been checked.
+        # survivor: branch -- tools/verdict.py:428 in collect() -- the `if` is never taken -- a
+        #   prefix naming a test that will not import. Reachable only from a killers cache written
+        #   by an older tree, which `Killers` already validates once per run -- so by the time
+        #   `collect` sees it, it has been checked.
         if head.errors:
-            # survivor: return-value -- same branch as `verdict.py:428`, and the caller reads an
+            # survivor: return-value -- tools/verdict.py:429 in collect() -- returns `None` instead
+            #   of `_unloadable(head)` -- same branch as `verdict.py:428`, and the caller reads an
             #   absent report as `broke` either way.
             return _unloadable(head)
-    # survivor: drop-call -- `TextTestResult.startTestRun` is a hook with no body in the stdlib, and
-    #   `Verdicts` does not override it. Nothing in the process has anything to do at that point.
+    # survivor: drop-call -- tools/verdict.py:430 in collect() -- the call to
+    #   `result.startTestRun(...)` never happens -- `TextTestResult.startTestRun` is a hook with no
+    #   body in the stdlib, and `Verdicts` does not override it. Nothing in the process has anything
+    #   to do at that point.
     result.startTestRun()
     try:
         for suite in ready:
@@ -492,8 +500,9 @@ def collect(
                     break
                 found(result)
     finally:
-        # survivor: drop-call -- the matching hook, equally empty. Both are called because the
-        #   protocol says to, not because either does anything here.
+        # survivor: drop-call -- tools/verdict.py:462 in collect() -- the call to
+        #   `result.stopTestRun(...)` never happens -- the matching hook, equally empty. Both are
+        #   called because the protocol says to, not because either does anything here.
         result.stopTestRun()
     return {
         "loaded": True,

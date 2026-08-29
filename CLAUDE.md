@@ -30,6 +30,14 @@ Two real examples, both from files shaped like this one:
   for `git checkout --` to tidy up, which is the operation the same rule exists
   to prevent.
 
+  **And then it started being true again.** `--accept` writes `# survivor:`
+  comments into `tupferl/**` and `tools/**`, so the tool does now rewrite your
+  tree — only under that flag, and only by inserting comment lines. Both halves
+  of this example are the same lesson: the claim has to be re-checked against the
+  code, in both directions, whenever either moves. §6 applies to `--accept`
+  exactly as it once did to the sweep: commit first, and never tidy up after it
+  with `git checkout --`.
+
 So: **when you change what the code guarantees, change the claim in the same
 commit.** When you find a claim here that is wrong, fixing it is part of the
 task, not a separate chore — and say in the PR that you did, because a
@@ -317,7 +325,10 @@ paragraph in it.
 each destroyed uncommitted work. There is no reflog for a tree that was never
 committed; the only recovery is writing it again from memory.
 
-- Commit a checkpoint before anything that rewrites files in bulk.
+- Commit a checkpoint before anything that rewrites files in bulk. In this
+  repository that is `python -m tools.mutate --all --accept`, which inserts a
+  `# survivor:` comment above every unread row -- 159 lines across 14 files the
+  first time it ran here.
 - To undo your own edit, **rewrite the text you changed**. Do not discard the
   file. If you must restore, copy the file aside first and restore from the copy.
 - **Tell subagents explicitly when they may not write.** A review agent asked

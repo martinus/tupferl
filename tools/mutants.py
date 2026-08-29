@@ -50,9 +50,12 @@ read as "the tests are good".
 from __future__ import annotations
 
 import ast
+import bisect
 import copy
+import io
 import re
 import subprocess
+import tokenize
 from collections.abc import Callable, Iterator, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -145,6 +148,106 @@ def mutable(path: str) -> bool:
     return path.endswith(".py") and path.startswith(MUTABLE) and not path.startswith(UNMUTABLE)
 
 
+#: A disposition written beside the code it excuses:
+#: `# survivor: <operator>[, <operator>] -- <reason>`. Same shape as `NO_MUTATE`
+#: one constant up, and read out of the same files for the same reason.
+TAGGED = re.compile(r"#\s*survivor:\s*([\w\s,-]+?)\s*--\s*(\S.*?)\s*$")
+
+
+class Tags:
+    """Every `# survivor:` tag in one file, by the line it guards and operator.
+
+    **An index, not a search.** The first version joined the comment block above
+    a line into one string and ran one regex over it, which meant a *second* tag
+    in that block was swallowed into the first one's reason -- so its rows stayed
+    unread for ever and `--accept` stacked an identical `TODO` under them on
+    every run. Reproduced: three runs, three copies, and the row still
+    unexcused. That is the absorption failure the old hash record was replaced
+    for, one layer down.
+
+    **Built from `tokenize`, not from raw lines.** It is the exact answer to
+    "is this a comment" -- a `# survivor:` inside a string literal is not one --
+    and measured on `tools/mutate.py` it costs 5.5ms against `line_starts`' 9.0,
+    so the precise answer is also the cheaper one. Nothing in this tree has such
+    a string today; the point is that nothing has to keep checking.
+
+    A tag on a comment-only line guards the next line that carries code, so a
+    reason may sit above a long statement rather than trailing it. A tag after
+    code guards that line. A block may hold several tags, and a tag may wrap:
+    a line that begins a new `# survivor:` starts one, any other comment line
+    continues the one before it.
+    """
+
+    def __init__(self, source: str) -> None:
+        self._at: dict[int, dict[str, tuple[int, str]]] = {}
+        lines = source.split("\n")
+        for guards, tag_line, text in self._blocks(source, lines):
+            found = TAGGED.search(text)
+            if not found:
+                continue
+            for word in found.group(1).split(","):
+                if operator := word.strip():
+                    self._at.setdefault(guards, {}).setdefault(operator, (tag_line, found.group(2)))
+
+    @staticmethod
+    def _comments(source: str) -> dict[int, int]:
+        """`{line index: column}` for every real comment, from `tokenize`."""
+        found: dict[int, int] = {}
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(source).readline):
+                if token.type == tokenize.COMMENT:
+                    found[token.start[0] - 1] = token.start[1]
+        except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
+            # A file this cannot read excuses nothing, which is the safe
+            # direction: every row in it is reported rather than hidden.
+            return {}
+        return found
+
+    def _blocks(self, source: str, lines: Sequence[str]) -> Iterator[tuple[int, int, str]]:
+        """`(line guarded, line the tag is on, tag text)` for each tag."""
+        comments = self._comments(source)
+        at = 0
+        while at < len(lines):
+            if at not in comments:
+                at += 1
+                continue
+            if lines[at][: comments[at]].strip():
+                # After code: the tag guards the line it trails.
+                yield at, at, lines[at][comments[at] :]
+                at += 1
+                continue
+            block = []
+            while at < len(lines) and at in comments and not lines[at][: comments[at]].strip():
+                block.append((at, lines[at][comments[at] :]))
+                at += 1
+            # The line directly below the block, and **a blank line ends it**.
+            # A comment separated from the code by one is a section header or a
+            # note about what came before at least as often as it is about what
+            # follows, and the safe direction for a record of dispositions is to
+            # excuse nothing rather than the wrong thing. A block at the end of
+            # a file guards nothing either.
+            guards = at
+            if guards >= len(lines) or not lines[guards].strip():
+                continue
+            started: int | None = None
+            text = ""
+            for line, comment in [*block, (-1, "")]:
+                if line < 0 or TAGGED.search(comment):
+                    if started is not None:
+                        yield guards, started, text
+                    started, text = line, comment
+                elif started is not None:
+                    text = f"{text.rstrip()} {comment.lstrip('#').strip()}"
+
+    def excuse(self, line: int, operator: str) -> tuple[int, str] | None:
+        """The tag guarding `line` for `operator`: where it sits, and why."""
+        return self._at.get(line, {}).get(operator)
+
+    def operators(self, line: int) -> set[str]:
+        """Every operator already excused at `line`, so a writer need not repeat one."""
+        return set(self._at.get(line, {}))
+
+
 def line_starts(source: str) -> list[int]:
     """Where each line begins, counting lines the way the *tokenizer* does.
 
@@ -160,19 +263,24 @@ def line_starts(source: str) -> list[int]:
     in a different place from the one the row's label names, reported as `caught`
     or `SURVIVED` about a line nobody touched.
     """
-    # survivor: off-by-one -- equivalent, same argument: no real span is smaller than (0, 1) either,
-    #   since a span's end always exceeds its start.
+    # survivor: off-by-one -- tools/mutants.py:156 in line_starts() -- `0` becomes `1` --
+    #   equivalent, same argument: no real span is smaller than (0, 1) either, since a span's end
+    #   always exceeds its start.
     starts = [0]
     at = 0
     while at < len(source):
         if source[at] == "\r":
-            # survivor: off-by-one -- a test reaches this line and asserts nothing about it Weak
-            #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+            # survivor: off-by-one -- TODO: nobody has decided this one. The sweep's classifier
+            #   said: tools/mutants.py:160 in line_starts() -- `1` becomes `2` -- a test reaches
+            #   this line and asserts nothing about it -- tools/mutants.py:207 in _trimmed() -- `1`
+            #   becomes `2`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
             at += 2 if source[at + 1 : at + 2] == "\n" else 1
             starts.append(at)
         elif source[at] == "\n":
-            # survivor: off-by-one -- a test reaches this line and asserts nothing about it Weak
-            #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+            # survivor: off-by-one -- TODO: nobody has decided this one. The sweep's classifier
+            #   said: tools/mutants.py:160 in line_starts() -- `1` becomes `0` -- a test reaches
+            #   this line and asserts nothing about it -- tools/mutants.py:207 in _trimmed() -- `1`
+            #   becomes `0`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
             at += 1
             starts.append(at)
         else:
@@ -203,6 +311,15 @@ class Offsets:
         end = self._starts[lineno] if lineno < len(self._starts) else len(self._source)
         return self._source[start:end]
 
+    def line_of(self, offset: int) -> int:
+        """Which line an offset falls on, counting from 0.
+
+        The exact inverse of `at`, and written here beside it so the `- 1` on
+        the bisect lives in one place: it was spelled twice in `tools/mutate.py`
+        and the `- 1` is the whole correctness of it.
+        """
+        return bisect.bisect_right(self._starts, offset) - 1
+
     def at(self, lineno: int, col: int) -> int:
         line = self.line(lineno)
         return self._starts[lineno - 1] + len(line.encode("utf-8")[:col].decode("utf-8"))
@@ -217,8 +334,10 @@ class Offsets:
 
 def _trimmed(text: str, width: int) -> str:
     """`text` cut to `width` with an ellipsis. Prose for a label, never a rewrite."""
-    # survivor: arith, boundary, slice -- a test reaches this line and asserts nothing about it Weak
-    #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: arith, boundary, slice -- TODO: nobody has decided this one. The sweep's classifier
+    #   said: a test reaches this line and asserts nothing about it -- tools/mutants.py:207 in
+    #   _trimmed() -- the slice takes everything. Weak fixture or equivalent; from the whole-tree
+    #   sweep of 2026-08.
     return text if len(text) <= width else text[: width - 1] + "\N{HORIZONTAL ELLIPSIS}"
 
 
@@ -328,8 +447,10 @@ def connector(node: ast.AST) -> Iterator[Edit]:
 
     def flip(clone: ast.AST) -> None:
         assert isinstance(clone, ast.BoolOp)
-        # survivor: drop-assign -- a test reaches this line and asserts nothing about it op` is
-        #   never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier said: a
+        #   test reaches this line and asserts nothing about it -- tools/mutants.py:316 in
+        #   connector.flip() -- `clone.op` is never assigned. Weak fixture or equivalent; from the
+        #   whole-tree sweep of 2026-08.
         clone.op = becomes()
 
     yield Edit(node, _rewritten(node, flip), f"`{was}` becomes `{now}`")
@@ -378,34 +499,40 @@ def order(node: ast.AST) -> Iterator[Edit]:
 
         def backwards(clone: ast.AST) -> None:
             assert isinstance(clone, ast.Call)
-            # survivor: drop-assign -- a test reaches this line and asserts nothing about it
-            #   keywords` is never assigned. Weak fixture or equivalent; from the whole-tree sweep
-            #   of 2026-08.
+            # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier
+            #   said: a test reaches this line and asserts nothing about it -- tools/mutants.py:364
+            #   in order.backwards() -- `clone.keywords` is never assigned. Weak fixture or
+            #   equivalent; from the whole-tree sweep of 2026-08.
             clone.keywords = [*clone.keywords, ast.keyword(arg="reverse", value=ast.Constant(True))]
 
         yield Edit(node, _rewritten(node, backwards), "the ordering is reversed")
 
         def unordered(clone: ast.AST) -> None:
             assert isinstance(clone, ast.Call)
-            # survivor: drop-assign -- a test reaches this line and asserts nothing about it func`
-            #   is never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
+            # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier
+            #   said: a test reaches this line and asserts nothing about it -- tools/mutants.py:370
+            #   in order.unordered() -- `clone.func` is never assigned. Weak fixture or equivalent;
+            #   from the whole-tree sweep of 2026-08.
             clone.func = ast.Name(id="list", ctx=ast.Load())
-            # survivor: drop-assign -- a test reaches this line and asserts nothing about it
-            #   keywords` is never assigned. Weak fixture or equivalent; from the whole-tree sweep
-            #   of 2026-08.
+            # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier
+            #   said: a test reaches this line and asserts nothing about it -- tools/mutants.py:371
+            #   in order.unordered() -- `clone.keywords` is never assigned. Weak fixture or
+            #   equivalent; from the whole-tree sweep of 2026-08.
             clone.keywords = []
 
         yield Edit(node, _rewritten(node, unordered), "`sorted` becomes `list`")
     swaps = {"min": "max", "max": "min", "any": "all", "all": "any", "reversed": "list"}
-    # survivor: branch -- equivalent: the guard selects which swap table entry applies, and skipping
-    #   it yields no `Edit` for a name that has one -- a *missing* mutation rather than a wrong one.
-    #   A sweep with fewer rows in it is not something a verdict can see; `test_mutants` asserts the
-    #   operators that are produced, which is the direction that matters.
+    # survivor: branch -- tools/mutants.py:375 in order() -- the `if` is never taken -- equivalent:
+    #   the guard selects which swap table entry applies, and skipping it yields no `Edit` for a
+    #   name that has one -- a *missing* mutation rather than a wrong one. A sweep with fewer rows
+    #   in it is not something a verdict can see; `test_mutants` asserts the operators that are
+    #   produced, which is the direction that matters.
     if name in swaps:
 
         def renamed(clone: ast.AST, to: str = swaps[name]) -> None:
             assert isinstance(clone, ast.Call)
-            # survivor: drop-assign -- the rewrite that turns `min` into `max` and `any` into `all`.
+            # survivor: drop-assign -- tools/mutants.py:379 in order.renamed() -- `clone.func` is
+            #   never assigned -- the rewrite that turns `min` into `max` and `any` into `all`.
             #   Dropping it leaves the call unchanged, so the generated 'mutation' is a no-op row
             #   that every suite reports as SURVIVED -- visible only as a sweep whose survivors are
             #   all of one operator, which no single verdict can show. Guarded indirectly:
@@ -435,11 +562,15 @@ def return_constant(node: ast.AST) -> Iterator[Edit]:
     if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Constant):
         return
     was = node.value.value
-    # survivor: branch, negate -- a test reaches this line and asserts nothing about it Weak fixture
-    #   or equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch, negate -- TODO: nobody has decided this one. The sweep's classifier said: a
+    #   test reaches this line and asserts nothing about it -- tools/mutants.py:404 in
+    #   return_constant() -- `is` becomes `is not`. Weak fixture or equivalent; from the whole-tree
+    #   sweep of 2026-08.
     if was is True or was is False:
-        # survivor: drop-not -- a test reaches this line and asserts nothing about it Weak fixture
-        #   or equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: drop-not -- TODO: nobody has decided this one. The sweep's classifier said: a
+        #   test reaches this line and asserts nothing about it -- tools/mutants.py:405 in
+        #   return_constant() -- the `not` is dropped. Weak fixture or equivalent; from the whole-
+        #   tree sweep of 2026-08.
         yield Edit(node.value, str(not was), f"returns `{not was}` instead of `{was}`")
 
 
@@ -721,8 +852,10 @@ def slice_widened(node: ast.AST) -> Iterator[Edit]:
 
     def widen(clone: ast.AST) -> None:
         assert isinstance(clone, ast.Subscript)
-        # survivor: drop-assign -- a test reaches this line and asserts nothing about it slice` is
-        #   never assigned. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier said: a
+        #   test reaches this line and asserts nothing about it -- tools/mutants.py:652 in
+        #   slice_widened.widen() -- `clone.slice` is never assigned. Weak fixture or equivalent;
+        #   from the whole-tree sweep of 2026-08.
         clone.slice = ast.Slice(lower=None, upper=None, step=None)
 
     yield Edit(node, _rewritten(node, widen), "the slice takes everything")
@@ -739,8 +872,9 @@ def drop_assign(node: ast.AST) -> Iterator[Edit]:
     """
     if isinstance(node, ast.Assign):
         targets = node.targets
-    # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:668 in drop_assign() --
+    #   the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     elif isinstance(node, ast.AugAssign):
         targets = [node.target]
     else:
@@ -921,8 +1055,9 @@ def _chosen(
     """
     known = {op.name for op in OPERATORS}
     asked, skipped = set(operators or ()), set(skip or ())
-    # survivor: order -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: order -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:848 in _chosen() -- the
+    #   ordering is reversed. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     unknown = sorted((asked | skipped) - known)
     if unknown:
         raise SystemExit(
@@ -973,13 +1108,16 @@ def generate(
                 # replacement or emits a different token, so the no-op it would
                 # catch cannot be produced. A mutation removing it survived, and
                 # a guard nothing can reach is a guard nobody can trust.
-                # survivor: branch -- a test reaches this line and asserts nothing about it Weak
-                #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+                # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier
+                #   said: a test reaches this line and asserts nothing about it --
+                #   tools/mutants.py:898 in generate() -- the `if` is never taken. Weak fixture or
+                #   equivalent; from the whole-tree sweep of 2026-08.
                 if (span, edit.new) in seen:
                     continue
-                # survivor: drop-call -- a test reaches this line and asserts nothing about it
-                #   add(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep
-                #   of 2026-08.
+                # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier
+                #   said: a test reaches this line and asserts nothing about it --
+                #   tools/mutants.py:900 in generate() -- the call to `seen.add(...)` never happens.
+                #   Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
                 seen.add((span, edit.new))
                 out.append(
                     Mutation(
@@ -992,8 +1130,9 @@ def generate(
                         operator=operator.name,
                     )
                 )
-    # survivor: connector -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: connector -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:912 in generate() -- `or`
+    #   becomes `and`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     out.sort(key=lambda row: (row.span or (0, 0), row.operator))
     return out
 
@@ -1038,12 +1177,15 @@ def _near_miss(original: str, wanted: str) -> str:
     best, score = "", 0.0
     for line in original.splitlines():
         ratio = SequenceMatcher(None, first[0], line.strip()).ratio()
-        # survivor: boundary -- a test reaches this line and asserts nothing about it Weak fixture
-        #   or equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: boundary -- TODO: nobody has decided this one. The sweep's classifier said: a
+        #   test reaches this line and asserts nothing about it -- tools/mutants.py:956 in
+        #   _near_miss() -- `>` becomes `>=`. Weak fixture or equivalent; from the whole-tree sweep
+        #   of 2026-08.
         if ratio > score:
             best, score = line, ratio
-    # survivor: boundary -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: boundary -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:958 in _near_miss() --
+    #   `<` becomes `<=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     if score < 0.6:
         return ""
     return f"\n\nThe closest line there is:\n    {best.strip()}"
@@ -1060,8 +1202,9 @@ def check(mutation: Mutation) -> None:
     wrong span of a file that still parses.
     """
     original = Path(mutation.path).read_text(encoding="utf-8")
-    # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:974 in check() -- the
+    #   `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     if mutation.span is None:
         found = original.count(mutation.old)
         if found != 1:
@@ -1073,8 +1216,9 @@ def check(mutation: Mutation) -> None:
             )
     else:
         start, end = mutation.span
-        # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-        #   equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+        #   reaches this line and asserts nothing about it -- tools/mutants.py:985 in check() -- the
+        #   `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         if original[start:end] != mutation.old:
             raise SystemExit(
                 f"{mutation.label}: {mutation.path} no longer holds that text at "
@@ -1112,13 +1256,16 @@ def _git(argv: Sequence[str], root: Path) -> str:
 
 def _unquote(target: str) -> str:
     """`+++ b/path`, including the C-quoted form git uses for odd bytes."""
-    # survivor: affix, connector -- a test reaches this line and asserts nothing about it
-    #   endswith(...)` filter accepts everything. Weak fixture or equivalent; from the whole-tree
-    #   sweep of 2026-08.
+    # survivor: affix, connector -- TODO: nobody has decided this one. The sweep's classifier said:
+    #   a test reaches this line and asserts nothing about it -- tools/mutants.py:1022 in _unquote()
+    #   -- the `.endswith(...)` filter accepts everything. Weak fixture or equivalent; from the
+    #   whole-tree sweep of 2026-08.
     if target.startswith('"') and target.endswith('"'):
         target = target[1:-1].encode("ascii", "backslashreplace").decode("unicode_escape")
-    # survivor: affix -- a test reaches this line and asserts nothing about it startswith(...)`
-    #   filter accepts everything. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: affix -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:1024 in _unquote() -- the
+    #   `.startswith(...)` filter accepts everything. Weak fixture or equivalent; from the whole-
+    #   tree sweep of 2026-08.
     return target[2:] if target.startswith(("a/", "b/")) else target
 
 
@@ -1154,16 +1301,19 @@ def parse_hunks(diff: str) -> dict[str, set[int]]:
 def changed_lines(base: str, root: Path) -> dict[str, set[int]]:
     """Every mutable line this branch has touched, working tree included."""
     top = _git(["rev-parse", "--show-toplevel"], root).strip()
-    # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:1059 in changed_lines()
+    #   -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of
+    #   2026-08.
     if Path(top).resolve() != root.resolve():
         raise SystemExit(
             f"run this from the repository root: paths in a diff are relative to {top}, not {root}."
         )
-    # survivor: drop-call -- equivalent given `_git`: the `rev-parse --verify` is an *early* check,
-    #   and a bad ref fails again at the `git diff --merge-base` below, which raises through the
-    #   same guard. What it buys is the message naming the ref rather than the diff invocation --
-    #   worth keeping, not separately observable.
+    # survivor: drop-call -- tools/mutants.py:1063 in changed_lines() -- the call to `_git(...)`
+    #   never happens -- equivalent given `_git`: the `rev-parse --verify` is an *early* check, and
+    #   a bad ref fails again at the `git diff --merge-base` below, which raises through the same
+    #   guard. What it buys is the message naming the ref rather than the diff invocation -- worth
+    #   keeping, not separately observable.
     _git(["rev-parse", "--verify", base], root)
 
     # `--merge-base` with no second commit, so the right-hand side is the
@@ -1207,17 +1357,20 @@ def every_line(root: Path) -> dict[str, set[int]]:
         # `UNMUTABLE`. A guard "nothing can reach" stopped being unreachable
         # without anybody visiting this line, which is how the excluded
         # directory stayed in `--all` after being excluded (woswoar#245).
-        # survivor: order -- `rglob` order is the filesystem's, so `list` gives whatever order the
-        #   directory happens to hold. The result is a dict keyed by path and every caller sorts it
-        #   again -- `generated` iterates `sorted(touched)` and `by_size` re-orders the table -- so
-        #   the walk order does not survive to anything observable.
+        # survivor: order -- tools/mutants.py:1106 in every_line() -- `sorted` becomes `list` --
+        #   `rglob` order is the filesystem's, so `list` gives whatever order the directory happens
+        #   to hold. The result is a dict keyed by path and every caller sorts it again --
+        #   `generated` iterates `sorted(touched)` and `by_size` re-orders the table -- so the walk
+        #   order does not survive to anything observable.
         for path in sorted((root / prefix).rglob("*.py")):
             name = path.relative_to(root).as_posix()
             if not mutable(name):
                 continue
             body = path.read_text(encoding="utf-8").splitlines()
-            # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture
-            #   or equivalent; from the whole-tree sweep of 2026-08.
+            # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a
+            #   test reaches this line and asserts nothing about it -- tools/mutants.py:1111 in
+            #   every_line() -- the `if` is always taken. Weak fixture or equivalent; from the
+            #   whole-tree sweep of 2026-08.
             if body:
                 found[name] = set(range(1, len(body) + 1))
     return found
@@ -1246,8 +1399,9 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     the closure below ran over an empty set. Found by mutation testing: removing
     the closure changed no answer, because it had never produced one.
     """
-    # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:1139 in _imported() --
+    #   the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     if isinstance(node, ast.Import):
         for alias in node.names:
             yield alias.name
@@ -1255,13 +1409,16 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     if not isinstance(node, ast.ImportFrom):
         return
     if node.level:
-        # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-        #   equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+        #   reaches this line and asserts nothing about it -- tools/mutants.py:1146 in _imported()
+        #   -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of
+        #   2026-08.
         if not package:
             return
         base = f"{package}.{node.module}" if node.module else package
-    # survivor: branch -- a test reaches this line and asserts nothing about it Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
+    #   reaches this line and asserts nothing about it -- tools/mutants.py:1149 in _imported() --
+    #   the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     elif node.module:
         base = node.module
     else:
@@ -1287,19 +1444,27 @@ def _statements(tree: ast.Module) -> Iterator[ast.stmt]:
         yield node
         for field in ("body", "orelse", "finalbody", "handlers"):
             for child in getattr(node, field, []):
-                # survivor: branch -- a test reaches this line and asserts nothing about it Weak
-                #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+                # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier
+                #   said: a test reaches this line and asserts nothing about it --
+                #   tools/mutants.py:1174 in _statements() -- the `if` is never taken. Weak fixture
+                #   or equivalent; from the whole-tree sweep of 2026-08.
                 if isinstance(child, ast.stmt):
-                    # survivor: drop-call -- a test reaches this line and asserts nothing about it
-                    #   append(...)` never happens. Weak fixture or equivalent; from the whole-tree
-                    #   sweep of 2026-08.
+                    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's
+                    #   classifier said: a test reaches this line and asserts nothing about it --
+                    #   tools/mutants.py:1175 in _statements() -- the call to `stack.append(...)`
+                    #   never happens. Weak fixture or equivalent; from the whole-tree sweep of
+                    #   2026-08.
                     stack.append(child)
-                # survivor: branch -- a test reaches this line and asserts nothing about it Weak
-                #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+                # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier
+                #   said: a test reaches this line and asserts nothing about it --
+                #   tools/mutants.py:1176 in _statements() -- the `if` is never taken. Weak fixture
+                #   or equivalent; from the whole-tree sweep of 2026-08.
                 elif isinstance(child, ast.ExceptHandler):
-                    # survivor: drop-call -- a test reaches this line and asserts nothing about it
-                    #   extend(...)` never happens. Weak fixture or equivalent; from the whole-tree
-                    #   sweep of 2026-08.
+                    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's
+                    #   classifier said: a test reaches this line and asserts nothing about it --
+                    #   tools/mutants.py:1177 in _statements() -- the call to `stack.extend(...)`
+                    #   never happens. Weak fixture or equivalent; from the whole-tree sweep of
+                    #   2026-08.
                     stack.extend(child.body)
 
 
@@ -1317,7 +1482,8 @@ def importers(root: Path) -> dict[str, set[str]]:
     direct: dict[str, set[str]] = {}
     helpers: dict[str, set[str]] = {}
     uses_helper: dict[str, set[str]] = {}
-    # survivor: order -- same as the `sorted` mutation on this line.
+    # survivor: order -- tools/mutants.py:1194 in importers() -- the ordering is reversed -- same as
+    #   the `sorted` mutation on this line.
     for source in sorted((root / "tests").glob("*.py")):
         # `module_of` rather than the stem, so `tests/__init__.py` indexes as
         # `tests` -- what an import actually spells. The same special case
@@ -1340,12 +1506,14 @@ def importers(root: Path) -> dict[str, set[str]]:
                 # key `tests/__init__.py` is indexed under. Without it a helper
                 # living in the package `__init__` is never linked back to the
                 # tests that import through it.
-                # survivor: affix, branch -- equivalent, and a test asserting otherwise was written
-                #   and removed rather than shipped: `uses_helper` is only ever read against
-                #   `helpers`, which holds the non-`test_` files under `tests/`, so an entry keyed
-                #   by a product module is looked up and never found. The first attempt asserted
-                #   `tupferl.widget` was absent from the index -- it is present, as a key mapping to
-                #   both tests, which is the correct closure. The assertion could not fail.
+                # survivor: affix, branch -- tools/mutants.py:1216 in importers() -- the
+                #   `.startswith(...)` filter accepts everything -- equivalent, and a test asserting
+                #   otherwise was written and removed rather than shipped: `uses_helper` is only
+                #   ever read against `helpers`, which holds the non-`test_` files under `tests/`,
+                #   so an entry keyed by a product module is looked up and never found. The first
+                #   attempt asserted `tupferl.widget` was absent from the index -- it is present, as
+                #   a key mapping to both tests, which is the correct closure. The assertion could
+                #   not fail.
                 if module == "tests" or module.startswith("tests."):
                     uses_helper.setdefault(module, set()).add(name)
         else:

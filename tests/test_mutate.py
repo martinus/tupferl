@@ -1699,7 +1699,7 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         """
         box, broke = self.tagged("y = 2  # survivor: branch -- cannot be answered\n", "y = 2")
         with support.quiet() as said:
-            mutate._summarise([broke], box)
+            mutate._summarise([broke], mutate.sort_survivors([broke], box))
         self.assertNotIn("asked nothing", said.getvalue())
         self.assertIn("1 survivor(s) excused", said.getvalue())
 
@@ -1708,7 +1708,7 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         `_summarise` that prints nothing at all once a root is passed."""
         box, broke = self.tagged("y = 2\n", "y = 2")
         with support.quiet() as said:
-            mutate._summarise([broke], box)
+            mutate._summarise([broke], mutate.sort_survivors([broke], box))
         self.assertIn("1 asked nothing", said.getvalue())
         self.assertIn("tupferl/sync.py:3 in h()", said.getvalue())
 
@@ -3537,7 +3537,7 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
 
         found = mutate.sort_survivors([row("caught"), row("survived")], box)
         self.assertEqual(1, len(found.accepted))
-        self.assertEqual([], found.stale, "a tag still excusing a survivor was called spent")
+        self.assertEqual([], found.spent, "a tag still excusing a survivor was called spent")
 
     def test_a_tag_for_another_operator_does_not_excuse_this_one(self) -> None:
         """**The measurement the format rests on.** Mutations average 2.1 per
@@ -3580,15 +3580,15 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
         found = mutate.sort_survivors(results, box)
         self.assertEqual([], found.fresh)
         self.assertEqual([], found.accepted)
-        self.assertEqual(1, len(found.stale))
-        self.assertIn("now caught", found.stale[0])
+        self.assertEqual(1, len(found.spent))
+        self.assertIn("now caught", found.spent[0])
 
     def test_a_caught_row_with_no_tag_is_simply_not_mentioned(self) -> None:
         """The other half: most rows are caught and have no tag, and a line
         about each would bury the ones that matter."""
         box, results = self.rows("y = 2\n", "y = 2", outcome="caught")
         found = mutate.sort_survivors(results, box)
-        self.assertEqual(([], [], []), (found.fresh, found.accepted, found.stale))
+        self.assertEqual(([], [], []), (found.fresh, found.accepted, found.spent))
 
     def test_a_row_with_no_span_cannot_be_excused(self) -> None:
         """A hand-written row has no span, and guessing a line from its prose
@@ -4036,15 +4036,74 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
     def test_what_it_wrote_is_then_read_back_as_an_excuse(self) -> None:
         """End to end, and the only assertion that proves the two halves agree:
         a writer and a reader that disagree about the format leave every row
-        unread for ever, and each half's own tests would still pass."""
+        unread for ever, and each half's own tests would still pass.
+
+        **The row is rebuilt against the rewritten file**, because inserting a
+        tag moves every offset below it -- so the table in hand is stale the
+        moment `--accept` returns. That is why `main` runs it last, and why the
+        first draft of this test failed against a tag that had been written
+        perfectly well.
+        """
         body = "x = 1\ny = 2\n"
         box = self.tree(body)
-        rows = [self.row(body, "y = 2")]
         with support.quiet():
-            mutate._accept(mutate.Survivors(rows, [], []), box)
-        found = mutate.sort_survivors(rows, box)
+            mutate._accept(mutate.Survivors([self.row(body, "y = 2")], [], []), box)
+        after = (box / "tupferl" / "sync.py").read_text(encoding="utf-8")
+        found = mutate.sort_survivors([self.row(after, "y = 2")], box)
         self.assertEqual([], found.fresh, "what --accept wrote did not excuse the row")
         self.assertIn("TODO", found.accepted[0][1])
+
+    def test_a_second_operator_on_a_tagged_line_gets_its_own_readable_tag(self) -> None:
+        """Two tags in one comment block, both findable.
+
+        The first version joined the block into one string and ran one regex
+        over it, so a second tag was swallowed into the first one's reason --
+        its rows stayed unread and `--accept` stacked an identical `TODO` under
+        them on every run. Reproduced before this was written: three runs, three
+        copies, and the row still unexcused.
+
+        `test_accept_does_not_tag_a_row_that_already_has_one` named that failure
+        in its own docstring and could not see it, because its fixture has one
+        tag per line. This is the fixture that can.
+        """
+        body = "def f(a):\n    # survivor: branch -- the branch operator only.\n    if a > 0:\n"
+        box = self.tree(body)
+        where = box / "tupferl" / "sync.py"
+
+        def boundary(text: str) -> mutate.Result:
+            # Against the file as it stands: inserting a tag moves every offset
+            # below it, so a real second sweep regenerates its table first.
+            at = text.index("if a > 0")
+            return mutate.Result(
+                Mutation(
+                    "tupferl/sync.py:3 in f() -- boundary",
+                    "tupferl/sync.py",
+                    "if a > 0",
+                    "if True",
+                    "tests.test_sync",
+                    span=(at, at + 8),
+                    operator="boundary",
+                ),
+                mutate.Verdict("survived", ""),
+            )
+
+        with support.quiet():
+            mutate._accept(mutate.Survivors([boundary(body)], [], []), box)
+        after = where.read_text(encoding="utf-8")
+        self.assertEqual(1, after.count("TODO"), f"a tag was stacked rather than added\n{after}")
+
+        tags = mutants.Tags(after)
+        line = mutants.Offsets(after).line_of(after.index("if a > 0"))
+        self.assertEqual({"branch", "boundary"}, tags.operators(line))
+        both = (tags.excuse(line, "branch"), tags.excuse(line, "boundary"))
+        self.assertTrue(all(both), "a tag in the block became unreadable")
+        self.assertIn("the branch operator only.", both[0][1] if both[0] else "")
+        self.assertIn("TODO", both[1][1] if both[1] else "")
+
+        # And a second --accept adds nothing, because the row is now excused.
+        with support.quiet():
+            mutate._accept(mutate.Survivors([boundary(after)], [], []), box)
+        self.assertEqual(1, where.read_text(encoding="utf-8").count("TODO"))
 
     def test_the_count_of_excused_rows_is_always_printed(self) -> None:
         """A baseline whose size is invisible is one nobody re-reads: the number
@@ -4054,6 +4113,30 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
         with support.quiet() as said:
             mutate._report_known(mutate.Survivors([], [(row, "read")], []))
         self.assertIn("1 survivor(s) excused", said.getvalue())
+
+    def test_tags_that_still_say_todo_are_counted_out_loud(self) -> None:
+        """A `TODO` tag silences its row exactly as a written reason does -- that
+        is what makes `--accept` usable at all -- so without this line the
+        unfinished ones are invisible and a green sweep is a claim nobody made.
+
+        93 of this tree's 159 tags arrived unfinished from the record they
+        replaced, carrying `reached.py`'s classification ("weak fixture or
+        equivalent") rather than anybody's decision.
+        """
+        row = self.row("y = 2\n", "y = 2")
+        with support.quiet() as said:
+            mutate._report_known(
+                mutate.Survivors([], [(row, "TODO: why?"), (row, "a real reason")], [])
+            )
+        self.assertIn("2 survivor(s) excused", said.getvalue())
+        self.assertIn("1 of those say TODO", said.getvalue())
+
+    def test_a_finished_record_says_nothing_about_todo(self) -> None:
+        """The other half: a line on every clean run trains the eye past it."""
+        row = self.row("y = 2\n", "y = 2")
+        with support.quiet() as said:
+            mutate._report_known(mutate.Survivors([], [(row, "a real reason")], []))
+        self.assertNotIn("TODO", said.getvalue())
 
     def test_a_spent_tag_is_named_rather_than_counted(self) -> None:
         """Few enough to list, and the one way this record becomes a mute list."""

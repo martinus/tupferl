@@ -259,9 +259,10 @@ def resolve(name: PurePosixPath, base: Blob | None, home: Blob | None, stored: B
         return Outcome(name, RESTORED, stored)
     if home == stored:
         return Outcome(name, UNCHANGED, home)
-    # survivor: branch -- equivalent: with `base` `None` the two comparisons inside are `Blob ==
-    #   None`, which is `False` (measured), so the forced branch falls through to exactly the merge
-    #   the unforced code reaches.
+    # survivor: branch -- tupferl/sync.py:233 in resolve() -- the `if` is always taken --
+    #   equivalent: with `base` `None` the two comparisons inside are `Blob == None`, which is
+    #   `False` (measured), so the forced branch falls through to exactly the merge the unforced
+    #   code reaches.
     if base is not None:
         if home == base:
             return Outcome(name, TO_HOME, stored)
@@ -330,9 +331,10 @@ class Backups:
         """Save `blob` under `name`, and return where it went."""
         if self.where is None:
             self.where = self.root / datetime.now().strftime(STAMP)
-            # survivor: drop-kwarg -- unreachable within one run: `self.where` is set once per
-            #   `Backups`, so the directory is created once. Two runs in the same second would
-            #   collide, and no test can produce that without controlling the clock.
+            # survivor: drop-kwarg -- tupferl/sync.py:301 in Backups.take() -- `exist_ok=True` is
+            #   dropped -- unreachable within one run: `self.where` is set once per `Backups`, so
+            #   the directory is created once. Two runs in the same second would collide, and no
+            #   test can produce that without controlling the clock.
             self.where.mkdir(parents=True, exist_ok=True)
             self.forget_old()
         target = self.where / name
@@ -449,10 +451,11 @@ def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflict
             concluded = True
             return coming
     finally:
-        # survivor: branch -- equivalent: after a concluded merge git has cleared `MERGE_HEAD`, so
-        #   the extra `git merge --abort` fails and its `Result` is discarded. The guard stops a
-        #   *successful* merge being undone by its own `finally`, which is a claim about a git that
-        #   behaved differently.
+        # survivor: branch -- tupferl/sync.py:417 in integrate() -- the `if` is always taken --
+        #   equivalent: after a concluded merge git has cleared `MERGE_HEAD`, so the extra `git
+        #   merge --abort` fails and its `Result` is discarded. The guard stops a *successful* merge
+        #   being undone by its own `finally`, which is a claim about a git that behaved
+        #   differently.
         if not concluded:
             gitrepo.abort_merge(repo)
 
@@ -509,9 +512,10 @@ def held(repo: Path, number: int, name: str, modes: dict[int, int]) -> Blob | No
     if number not in modes:
         return None
     data = gitrepo.version(repo, number, name)
-    # survivor: branch -- unreachable without breaking git mid-call: the branch fires when git lists
-    #   a stage and then will not produce it. `held` is called with modes git has just reported, so
-    #   producing the state means killing git between two of its own calls.
+    # survivor: branch -- tupferl/sync.py:473 in held() -- the `if` is never taken -- unreachable
+    #   without breaking git mid-call: the branch fires when git lists a stage and then will not
+    #   produce it. `held` is called with modes git has just reported, so producing the state means
+    #   killing git between two of its own calls.
     if data is None:
         raise TupferlError(
             f"git has a stage {number} for {name} in {repo} but would not produce it; "
@@ -558,9 +562,10 @@ def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
     `integrate`'s `finally`, not this function's: see `undone`.
     """
     left: list[str] = []
-    # survivor: order -- equivalent for the names git can produce, same argument as
-    #   `gitrepo.py:474`: `conflicted`'s dict is built in git's own byte order. The user-facing
-    #   ordering that this feeds is asserted by `TestWhenSeveralFilesCannotBeSettled`.
+    # survivor: order -- tupferl/sync.py:519 in reconcile() -- `sorted` becomes `list` -- equivalent
+    #   for the names git can produce, same argument as `gitrepo.py:474`: `conflicted`'s dict is
+    #   built in git's own byte order. The user-facing ordering that this feeds is asserted by
+    #   `TestWhenSeveralFilesCannotBeSettled`.
     for name, modes in sorted(gitrepo.conflicted(repo).items()):
         if not manifest.mergeable(PurePosixPath(name), repo, host):
             # To `left`, never silently skipped. `integrate` concludes the merge
@@ -570,11 +575,11 @@ def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
             # says nothing about the file that caused it.
             left.append(name)
             continue
-        # survivor: order -- measured and named in the suite:
-        #   `TestWhenOneSideReplacedTheFileWithASymlink`'s docstring records that git splits a type
-        #   change into two paths of one stage each (`{'.config/thing': {3: 0o120000},
-        #   '.config/thing~HEAD': {2: 0o100644}}`), so a file with *mixed* stage kinds cannot be
-        #   built and the two spellings cannot be told apart.
+        # survivor: order -- tupferl/sync.py:528 in reconcile() -- `any` becomes `all` -- measured
+        #   and named in the suite: `TestWhenOneSideReplacedTheFileWithASymlink`'s docstring records
+        #   that git splits a type change into two paths of one stage each (`{'.config/thing': {3:
+        #   0o120000}, '.config/thing~HEAD': {2: 0o100644}}`), so a file with *mixed* stage kinds
+        #   cannot be built and the two spellings cannot be told apart.
         if any(mode not in REGULAR for mode in modes.values()):
             left.append(name)
             continue
@@ -611,9 +616,10 @@ def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
             f"could not stage the settled files: {gitrepo.reason(staged)}; the merge was "
             f"undone, so run `tupferl doctor` and sync again."
         )
-    # survivor: return-value -- equivalent through every caller: `integrate` truth-tests the result
-    #   (`if not left`) and puts it in a message only when it is non-empty, so `None` and `[]` are
-    #   the same answer. A type violation with no reader -- worth a note, not a fixture.
+    # survivor: return-value -- tupferl/sync.py:564 in reconcile() -- returns `None` instead of `[]`
+    #   -- equivalent through every caller: `integrate` truth-tests the result (`if not left`) and
+    #   puts it in a message only when it is non-empty, so `None` and `[]` are the same answer. A
+    #   type violation with no reader -- worth a note, not a fixture.
     return []
 
 
@@ -743,19 +749,21 @@ def looked_at(reading: Reading, reviewer: conflicts.Reviewer) -> Outcome:
     rather than calling it "keep remote".
     """
     stored, found = reading.stored, reading.found
-    # survivor: branch, connector -- the guard is unreachable. `settle` calls this only when
-    #   `pushes(action)`, which is true for `TO_REPO` alone, and `resolve` produces that only with
-    #   both sides present -- so `stored is None or found is None` cannot fire. It is there because
-    #   returning the outcome unchanged is what stays right if a later rule makes it reachable,
-    #   where raising would turn a display decision into a failed sync.
+    # survivor: branch, connector -- tupferl/sync.py:722 in looked_at() -- the `if` is never taken.
+    #   Equivalent: the guard is unreachable. `settle` calls this only when `pushes(action)`, which
+    #   is true for `TO_REPO` alone, and `resolve` produces that only with both sides present -- so
+    #   `stored is None or found is None` cannot fire. It is there because returning the outcome
+    #   unchanged is what stays right if a later rule makes it reachable, where raising would turn a
+    #   display decision into a failed sync.
     if stored is None or found is None:
         # Neither can be `None` for an outbound change -- `pushes` is only true
         # for `TO_REPO`, which needs both sides -- so this is unreachable rather
         # than a case being skipped. Returning the outcome unchanged is what
         # stays right if a later rule makes it reachable, where raising would
         # turn a display decision into a failed sync.
-        # survivor: return-value -- the line is the body of the unreachable guard above. Nothing
-        #   reaches it, so what it returns cannot be observed.
+        # survivor: return-value -- tupferl/sync.py:728 in looked_at() -- returns `None` instead of
+        #   `reading.outcome`. Equivalent: the line is the body of the unreachable guard above.
+        #   Nothing reaches it, so what it returns cannot be observed.
         return reading.outcome
     diff = merge.unified(str(reading.name), found.data, stored.data, reverse=True)
     # **The bytes as well as the action.** `resolve` set `blob` to what `TO_REPO`
@@ -906,15 +914,16 @@ def apply(
         backups.take(outcome.name, found)
 
     wrote = False
-    # survivor: branch -- equivalent, and the reason is an invariant worth stating: every rule
-    #   carries the blob to the side that does *not* already hold it -- `TO_REPO` carries `home`,
-    #   `TO_HOME` carries `stored` -- so writing it to the other side is a no-op and `write` reports
-    #   no change. The backup is gated on `found != outcome.blob`, which is false in exactly those
-    #   cases.
+    # survivor: branch -- tupferl/sync.py:792 in apply() -- the `if` is always taken -- equivalent,
+    #   and the reason is an invariant worth stating: every rule carries the blob to the side that
+    #   does *not* already hold it -- `TO_REPO` carries `home`, `TO_HOME` carries `stored` -- so
+    #   writing it to the other side is a no-op and `write` reports no change. The backup is gated
+    #   on `found != outcome.blob`, which is false in exactly those cases.
     if rule.to_repo:
         wrote |= write(where, outcome.blob)
-    # survivor: branch -- equivalent, same invariant as `sync.py:792`: the blob is always the side
-    #   the other one is missing, so the extra write changes no bytes and takes no backup.
+    # survivor: branch -- tupferl/sync.py:794 in apply() -- the `if` is always taken -- equivalent,
+    #   same invariant as `sync.py:792`: the blob is always the side the other one is missing, so
+    #   the extra write changes no bytes and takes no backup.
     if rule.to_home:
         wrote |= write(target, outcome.blob)
     wrote |= write(snapshot, outcome.blob)

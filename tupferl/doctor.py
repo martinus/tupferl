@@ -184,13 +184,15 @@ def writable(where: Path) -> Check:
         where.mkdir(parents=True, exist_ok=True)
     except OSError as refused:
         return Check(False, "backups", f"cannot create {where} ({refused.strerror}); fix that path")
-    # survivor: branch -- unreachable in CI and locally, both of which run as root: root ignores the
-    #   mode bits, so no directory is unwritable.
+    # survivor: branch -- tupferl/doctor.py:187 in writable() -- the `if` is never taken --
+    #   unreachable in CI and locally, both of which run as root: root ignores the mode bits, so no
+    #   directory is unwritable.
     #   `test_doctor.TestTheBackupCheck.test_a_directory_that_exists_and_cannot_be_written_fails` is
     #   the test, and it skips itself with that reason.
     if not os.access(where, os.W_OK):
-        # survivor: return-value -- same as `doctor.py:187` -- the line only runs for an unwritable
-        #   directory, which root does not have. Its test exists and skips.
+        # survivor: return-value -- tupferl/doctor.py:188 in writable() -- returns `None` instead of
+        #   `Check(False, 'backups', f'{wh…` -- same as `doctor.py:187` -- the line only runs for an
+        #   unwritable directory, which root does not have. Its test exists and skips.
         return Check(False, "backups", f"{where} is not writable; fix its permissions")
     return Check(True, "backups", str(where))
 
@@ -260,9 +262,9 @@ def report(found: list[Check]) -> str:
     command; `tests/test_doctor.py` asserts on it, which is the only reason it is
     a function rather than a loop of `print`.
     """
-    # survivor: off-by-one -- equivalent: `default=0` is used only when `found` is empty, and an
-    #   empty `found` produces no lines for the width to pad. Measured: `'ab'.ljust(-1)` and
-    #   `'ab'.ljust(0)` are both `'ab'`.
+    # survivor: off-by-one -- tupferl/doctor.py:257 in report() -- `0` becomes `1` -- equivalent:
+    #   `default=0` is used only when `found` is empty, and an empty `found` produces no lines for
+    #   the width to pad. Measured: `'ab'.ljust(-1)` and `'ab'.ljust(0)` are both `'ab'`.
     width = max((len(check.title) for check in found), default=0)
     lines = [f"{MARKS[check.ok]} {check.title.ljust(width)}  {check.detail}" for check in found]
     failed = sum(1 for check in found if check.ok is False)
