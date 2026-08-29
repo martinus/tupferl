@@ -168,6 +168,23 @@ Automate this if the project is big enough to justify it (a mutation harness tha
 applies a named edit in a throwaway copy of the tree, rebuilds, and reports
 whether anything went red). **Never hand-roll it with `sed` on the real tree.**
 
+**A hand-written spec proves the row against the selection *you chose*, and the
+sweep will use a different one.** This is the most expensive mistake recorded
+here: four rows across two pull requests were reported fixed on the strength of
+`python -m tools.mutate <spec>.py`, and came back `BROKE` on the next whole-tree
+run — because the generated selection reaches the mutated line by a route the
+chosen one did not, and something on that route hangs or exits before the
+killing test is reached. A spec is the right tool for *iterating*; it is not the
+evidence. Before reporting a row fixed, run it under the selection the generator
+builds:
+
+```sh
+python -m tools.mutate --all --only <the file>      # the selection a sweep uses
+```
+
+The general form, which also governs where a bound goes: **the killer a sweep
+reports is one route to the line, not all of them.**
+
 **Coverage is not the bar.** Coverage says a line ran. It does not say anything
 would have noticed it misbehaving. One suite measured at 88% line coverage
 caught **4 of 24** deliberately injected one-line bugs, and two of those four
@@ -192,7 +209,18 @@ The shapes repeat, so they are worth memorising:
 - a negative assertion whose precondition was never established ("this shares
   nothing" is equally satisfied by "there was nothing to look at");
 - a marker asserted in a shell's stdout that also appears in the harness's echo
-  of the command that was typed.
+  of the command that was typed;
+- **an assertion inside a loop that can iterate zero times.** `for row in
+  produced(...): assertNotEqual(...)` is satisfied by producing nothing, which
+  is exactly what the mutation under test does. Assert the count first;
+- **a textual comparison standing in for a semantic one.** `ast.unparse` adds
+  parentheses, so a clone nobody modified comes back as `(a and b)` against
+  `a and b` — different strings, identical program, six survivors hidden. Compare
+  through `ast.unparse(ast.parse(...))` when the claim is about the code;
+- **a bound whose exception is a subclass of the one under test.** `TimeoutError`
+  *is* an `OSError`, so `support.deadline` inside `assertRaises(OSError)` is
+  swallowed: the hang becomes the error the test was asserting, and one unguarded
+  line becomes a test that cannot fail. Read the type back explicitly.
 
 Of every new assertion, ask: **what would have to be true for this to fail?**
 
@@ -666,6 +694,20 @@ section a reader scanned past. The entries themselves are unchanged and none
 has been dropped.
 
 #### Python, and the versions this supports
+
+- **Backticks inside a double-quoted shell string are executed, and this
+  repository's prose is full of backticks.** Not a `git commit -m` problem: it
+  is every double-quoted argument, and it has silently corrupted content here
+  twice — once eating a line from a commit message, once running `ruff` and
+  `ruff format --check` and splicing their *output* into a source comment,
+  which then read "The line limit  enforces here … and 59 files already
+  formatted stays green after ." Nothing failed; the text was simply wrong.
+
+  Use a quoted heredoc for anything carrying prose — `<<'MSG'` and `<<'PY'`
+  disable substitution entirely — or write the file with Python. Single quotes
+  work too, but this project's sentences contain apostrophes. Since the damage
+  is silent, the check is to read back what landed rather than to trust the
+  exit status.
 
 - **`AssertionError: Cannot find component 'X' for 'tupferl.old_module.X'` from
   inside mypy** — moving a name between modules leaves `.mypy_cache` wrong.
