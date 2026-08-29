@@ -25,6 +25,7 @@ from typing import Any
 
 from tests import support
 from tools import run_tests
+from tools.cpus import usable_cpus
 
 #: A test module that runs one test and then takes its process down mid-batch,
 #: before the report is written. `os._exit` rather than `sys.exit`: the latter
@@ -269,6 +270,65 @@ class TestWhatTheRunSaysAboutItself(Tree):
         self.add("test_healthy.py", HEALTHY)
         done = self.run_it("--jobs", "2")
         self.assertNotIn("FAIL:", done.stdout)
+
+
+class TestHowManyWorkersAndBatchesARunUses(Tree):
+    """The two derived counts, read out of the line the run prints about itself.
+
+    Seven mutants survived here -- `usable_cpus() * 2` and `pack(classes, jobs *
+    2)` in every arithmetic variation, plus `--jobs`' default. Nothing in the
+    file asserted either number, because every test passes `--jobs 2` and then
+    reads the *verdict*, which both counts are deliberately invisible to: the
+    run is correct at any parallelism, and only slower or less overlapped.
+
+    That is what makes them worth pinning rather than shrugging at. Both numbers
+    are measured -- `run_tests` records "jobs=8 beats jobs=4 by ~9%, and jobs=16
+    regresses" for the first, and the second exists so a long batch is overlapped
+    rather than deciding the wall clock alone -- and a measured constant with no
+    test is one an edit silently reverts.
+
+    Read from the printed line rather than by importing `main`: `run_it` drives
+    a real subprocess in a tree of its own, which is this file's whole shape.
+    """
+
+    #: Two classes, written across three modules below, because the batch count
+    #: needs six: `pack` cannot make more batches than there are classes, so
+    #: against the two this file's other trees hold, `jobs * 2`, `jobs * 3` and
+    #: `jobs * 1` all come back as 2 and the assertion pins nothing. The names
+    #: need not vary -- discovery keys a class by its module.
+    MANY = (
+        "import unittest\n\n\nclass T(unittest.TestCase):\n"
+        "    def test_it(self) -> None:\n        self.assertTrue(True)\n"
+        "\n\nclass U(unittest.TestCase):\n"
+        "    def test_it(self) -> None:\n        self.assertTrue(True)\n"
+    )
+
+    def test_the_batch_count_is_twice_the_worker_count(self) -> None:
+        """More batches than workers, so a batch that runs long is overlapped by
+        the others rather than deciding the wall clock on its own. Six classes
+        and two workers, so four batches is a number only `jobs * 2` gives."""
+        for n in range(3):
+            self.add(f"test_many{n}.py", self.MANY)
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("in 4 batches on 2 workers", done.stdout)
+
+    def test_the_default_worker_count_is_twice_the_usable_cpus(self) -> None:
+        """The work is subprocess wait rather than CPU, which is why it is a
+        multiple at all. Asserted against `usable_cpus()` rather than a literal:
+        the number differs per machine and per CI leg, and a literal here would
+        be a test that passes on one runner."""
+        self.add("test_healthy.py", HEALTHY)
+        done = self.run_it()
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn(f"on {usable_cpus() * 2} workers", done.stdout)
+
+    def test_an_explicit_job_count_wins(self) -> None:
+        """`args.jobs or ...`, which needs the default to be falsy. A default of
+        1 makes every run single-batched and says nothing -- the run is still
+        correct, just serial, which is the failure no verdict can show."""
+        self.add("test_healthy.py", HEALTHY)
+        self.assertIn("on 3 workers", self.run_it("--jobs", "3").stdout)
 
 
 class TestWhatABatchReports(unittest.TestCase):

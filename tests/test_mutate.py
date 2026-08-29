@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import itertools
 import json
 import os
@@ -116,6 +117,19 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
     pass `walk=False` and are not the test the bound was written on. A bound
     around one call covers that call and reads as though it covered the class --
     the same mistake `TestLineEndingsThatAreNotNewline` records one file over.
+
+    **`strict=False` everywhere here, and it is not a detail.** A broken walk
+    also produces rows the nested harness cannot answer, and under `strict` it
+    answers those by raising `SystemExit` -- a `BaseException`, so it escapes the
+    test, escapes `suite.run` and kills the probe, which the outer harness files
+    as `BROKE` rather than `caught`. Three rows came back that way after the
+    *hang* had been fixed, because a hang and a crash are two different ways to
+    fail to answer and only the first had been measured.
+
+    `run`'s own docstring draws this line: strict is for a hand-written table,
+    where an unanswerable row is a mistake in the table. Nothing here is that --
+    each of these wants the `Report` back so its own assertion can name what
+    went wrong, which is also a better message than the exit ever gave.
     """
 
     #: `walk=False` throughout this class, and it is not a shortcut. What these
@@ -135,7 +149,12 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
 
     def test_a_deliberate_bug_is_caught(self) -> None:
         report = mutate.run(
-            [UNKNOWN_KEY_GUARD], baseline=True, workers=1, summarise=False, walk=self.WALK
+            [UNKNOWN_KEY_GUARD],
+            baseline=True,
+            workers=1,
+            summarise=False,
+            walk=self.WALK,
+            strict=False,
         )
         self.assertFalse(report.baseline_red, "the untouched tree is not green")
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
@@ -144,7 +163,9 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """The other answer. Without this, `test_a_deliberate_bug_is_caught`
         passes just as well against a harness hard-wired to say `caught` -- the
         assertion that passes against its own mutation, from CLAUDE.md §2."""
-        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK)
+        report = mutate.run(
+            [UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK, strict=False
+        )
         self.assertFalse(report.baseline_red)
         self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
         self.assertFalse(report.widened, "a report that did not walk claimed it had")
@@ -168,7 +189,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         recorded. What that figure actually shows is narrower: the confirmation
         pass never corrected a survivor in them.
         """
-        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, strict=False)
         self.assertFalse(report.baseline_red, "the untouched tree is not green")
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
         killer = report.results[0].verdict.killer
@@ -187,7 +208,14 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """
         where = Path(UNKNOWN_KEY_GUARD.path)
         before = where.read_bytes()
-        mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, walk=self.WALK)
+        mutate.run(
+            [UNKNOWN_KEY_GUARD],
+            baseline=False,
+            workers=1,
+            summarise=False,
+            walk=self.WALK,
+            strict=False,
+        )
         self.assertEqual(before, where.read_bytes())
 
 
@@ -483,7 +511,9 @@ class TestTheKillerIsRecordedAtAll(unittest.TestCase):
     thing rather than asserting on a field."""
 
     def test_a_caught_mutation_names_the_test_in_a_form_unittest_takes_back(self) -> None:
-        found = mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False)
+        found = mutate.run(
+            [UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, strict=False
+        )
         (result,) = found.results
         self.assertEqual("caught", result.verdict.outcome)
         self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
@@ -727,7 +757,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
     """
 
     def test_a_run_measures_the_tests_it_ran(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
+        found = swept_once(baseline=True)
         times = found.times or {}
         self.assertTrue(times, "the run recorded no test timings at all")
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
@@ -738,7 +768,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         self.assertTrue(all(seconds >= 0 for seconds in times.values()))
 
     def test_they_reach_the_cache(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
+        found = swept_once(baseline=True)
         cache = mutate.Killers(None)
         cache.learn(found)
         self.assertEqual(found.times or {}, cache.cost)
@@ -866,7 +896,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
         one = UNKNOWN_KEY_GUARD._replace(
             first="tests.test_config.TestRejectingAnUnknownKey.test_a_typo_is_an_error_rather_than_silence"
         )
-        found = mutate.run([one], baseline=False, workers=1, summarise=False)
+        found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
         self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
 
     def test_a_prefix_that_misses_falls_through_to_the_selection(self) -> None:
@@ -874,7 +904,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
         a prefix that cannot see the mutation must cost one test, not the
         answer."""
         one = UNKNOWN_KEY_GUARD._replace(first="tests.test_paths.TestWhereTheRepositoryGoes")
-        found = mutate.run([one], baseline=False, workers=1, summarise=False)
+        found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
         self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
 
     # The `WHOLE_SUITE` case is *not* driven through `mutate.run` here. It would
@@ -5011,6 +5041,27 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         self.assertIn("2 never timed", said.getvalue())
 
 
+@functools.cache
+def swept_once(baseline: bool = False) -> mutate.Report:
+    """One real sweep of `UNWATCHED`, shared by every test that reads it.
+
+    Each `mutate.run` copies the tree and spawns an interpreter, and the tests
+    that call this assert about the same numbers -- so running it per test
+    bought nothing and cost a `copytree` and a subprocess each time.
+    `functools.cache` rather than a `ClassVar` set in `setUp`: same memo, no
+    `None` state to narrow and no cast, and it is reachable from more than one
+    class. Keyed on `baseline`, because a run with the shards has `times` the
+    row's own selection cannot produce and a run without them is cheaper.
+
+    `strict=False` for the reason `TestTheHarnessAnswersBothWays` gives: an
+    unanswerable row must come back *in the report* rather than as a
+    `SystemExit` that escapes whichever test happened to ask first.
+    """
+    return mutate.run(
+        [UNWATCHED], baseline=baseline, workers=1, summarise=False, walk=False, strict=False
+    )
+
+
 class TestRememberingWhatEachRowCost(unittest.TestCase):
     """The measurement `slowest_first` orders by, end to end.
 
@@ -5024,21 +5075,29 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
     #: tree and spawns an interpreter, and the second test asserts about the
     #: same numbers the first produced -- so running it twice bought nothing and
     #: cost a `copytree` and a subprocess on every suite execution.
-    swept: typing.ClassVar[mutate.Report]
+    #:
+    #: Memoised in a module-level function and taken per test, **not run in
+    #: `setUpClass`**. The saving is the same and the failure is not: a
+    #: `setUpClass` that raises is an `_ErrorHolder`, which `verdict` files as
+    #: `broke` -- no test ran, so nothing answered -- and `broke` is never
+    #: `caught`. Measured: mutating `_Lanes.release` to report memory held by
+    #: every row came back `BROKE` here, on a line the sweep had previously
+    #: reported as guarded. Raised inside a test, the same failure answers.
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.swept = mutate.run([UNWATCHED], baseline=False, workers=1, summarise=False, walk=False)
+    def setUp(self) -> None:
+        self.report = swept_once()
 
     def test_a_real_run_times_the_row_it_ran(self) -> None:
-        (only,) = self.swept.results
+        (only,) = self.report.results
         self.assertGreater(only.verdict.spent, 0.0, "the row was not timed")
 
     def test_the_time_reaches_the_cache_under_the_row_s_key(self) -> None:
         cache = mutate.Killers(None)
-        cache.learn(self.swept)
+        cache.learn(self.report)
         self.assertEqual([mutate._key(UNWATCHED)], list(cache.seconds))
-        self.assertEqual(self.swept.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)])
+        self.assertEqual(
+            self.report.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)]
+        )
 
     def test_a_row_that_was_never_answered_is_timed_too(self) -> None:
         """`broke` and `timeout` rows are the *most* expensive there are -- a
@@ -5133,7 +5192,18 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
 class TestWhatTheFinalBlockSays(unittest.TestCase):
     """The four counts, the denominator, and the refusal on a red baseline."""
 
-    def block(self, outcomes: Sequence[mutate.Outcome], red: bool = False) -> str:
+    #: A run long enough that the rate is an ordinary number. Overridden by the
+    #: two tests that are *about* the rate.
+    PACE = mutate.Pace(10.0, 4, 2 << 30)
+
+    def block(
+        self,
+        outcomes: Sequence[mutate.Outcome],
+        red: bool = False,
+        *,
+        pace: mutate.Pace | None = None,
+        headroom: bool = True,
+    ) -> str:
         results = [
             mutate.Result(
                 mutants.Mutation(f"f{n}.py", "x", "y", f"f{n}.py:1 in f() -- x", "tests.t"),
@@ -5141,9 +5211,10 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
             )
             for n, outcome in enumerate(outcomes)
         ]
-        pace = mutate.Pace(10.0, 4, 2 << 30)
         with support.quiet() as said:
-            mutate._report_stats(results, pace=pace, red=red)
+            mutate._report_stats(
+                results, pace=self.PACE if pace is None else pace, red=red, headroom=headroom
+            )
         return said.getvalue()
 
     def test_all_four_outcomes_are_named_even_at_zero(self) -> None:
@@ -5174,9 +5245,77 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         self.assertIn("over 4 lane(s)", said)
         self.assertIn("/s/lane", said)
 
+    def test_a_run_that_took_no_measurable_time_reports_a_rate_of_zero(self) -> None:
+        """`pace.seconds > 0`, and the guard is not decoration: a one-row table
+        on a fast machine really does land on 0.00s, and dividing by it raises
+        `ZeroDivisionError` out of the block a reader looks at *after* a
+        successful sweep -- so the run's own answer is lost to a crash in the
+        summary of it."""
+        self.assertIn("0.00/s", self.block(["caught"], pace=mutate.Pace(0.0, 4, 2 << 30)))
+
+    def test_a_run_shorter_than_a_second_still_reports_its_rate(self) -> None:
+        """The other side of the same guard, and not a hypothetical: a small
+        table really does finish in a fraction of a second -- these very specs
+        report "0s" beside rates in the tens. A bound that read `> 1` rather
+        than `> 0` would report every such run at 0.00/s, which is the number
+        the guard exists to avoid, arrived at by the other route.
+        """
+        self.assertIn("6.00/s", self.block(["caught"] * 3, pace=mutate.Pace(0.5, 4, 2 << 30)))
+
+    def test_rows_that_went_missing_are_named_and_counted(self) -> None:
+        """The one failure nothing else here would see. An outcome this build
+        has never heard of -- which `_recorded` really can rebuild from a report
+        written by a newer `mutate` -- is counted in `total` and in none of the
+        four lines, so without this line the block silently adds up to less than
+        the table and every number in it reads as complete.
+        """
+        said = self.block(["caught", "caught", typing.cast(mutate.Outcome, "invented")])
+        self.assertIn("2 row(s) accounted for of 3", said)
+        self.assertIn("1 went missing", said)
+
+    def test_a_complete_report_says_nothing_about_missing_rows(self) -> None:
+        """The other half, and the reason there is no tick beside it: a line that
+        always prints is one a reader stops reading, and CLAUDE.md's bar is that
+        the sum be *silent when right and loud when wrong*."""
+        self.assertNotIn("went missing", self.block(["caught", "survived"]))
+
+    def test_a_table_that_answered_nothing_gets_no_score(self) -> None:
+        """`caught / answered` with no answers is a division by zero, and there
+        is nothing to say anyway: a table of nothing but `broke` rows has not
+        put a question, so a percentage would be a claim about no evidence."""
+        said = self.block(["broke", "timeout"])
+        self.assertNotIn("%", said)
+        self.assertNotIn("caught of", said)
+
+    def test_a_table_that_answered_everything_adds_no_caveat(self) -> None:
+        """The clause is conditional for the same reason the missing-rows line
+        is: "; 0 row(s) answered nothing" on every clean sweep trains a reader
+        to skip the sentence that matters on the one sweep it does not."""
+        said = self.block(["caught", "survived"])
+        self.assertIn("1 caught of 2 answered", said)
+        self.assertNotIn("answered nothing", said)
+
+    def test_the_headroom_line_can_be_left_to_the_caller(self) -> None:
+        """`run` reports it itself when it is not summarising, so `main` asks for
+        the block without it. Printed twice it reads as two measurements, and
+        the second would be the one a reader believed."""
+        # Watched rather than read out of the output: `_report_headroom` prints
+        # nothing at all when no lane was sampled, which is the case in this
+        # process, so asserting on the text would pass for both arms and pin
+        # neither. The ceiling it is handed is asserted too -- passing the wrong
+        # one reports a percentage of a number that was never in force.
+        asked: list[int] = []
+        with mock.patch.object(mutate, "_report_headroom", asked.append):
+            self.block(["caught"], headroom=False)
+            self.assertEqual([], asked, "the block reported headroom it was told to skip")
+            self.block(["caught"], headroom=True)
+            self.assertEqual([self.PACE.ceiling], asked)
+
     def test_a_report_with_no_pace_says_nothing_rather_than_zero(self) -> None:
         """A resumed run does not re-run anything, so it has no rate to report.
         Noughts there would be a measurement reported as a result."""
+        # Driven directly rather than through `block`, which uses `pace=None` to
+        # mean "the class default". This is the one case that wants a real None.
         results = [
             mutate.Result(
                 mutants.Mutation("f.py", "x", "y", "f.py:1 in f() -- x", "tests.t"),
@@ -5186,3 +5325,458 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         with support.quiet() as said:
             mutate._report_stats(results, pace=None, red=False)
         self.assertEqual("", said.getvalue())
+
+
+class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
+    """`main`'s `if args.base:` arm -- the one a person actually types.
+
+    Forty-nine of its mutants survived the whole-tree sweep and twenty of those
+    sat on lines **no test executed at all**, which is the largest unreached
+    cluster in the repository. Every test in the class above drives the *spec
+    file* arm instead, so the flag wiring was covered and everything the
+    generated path decides -- what `--all` implies, which errors are refused,
+    what the exit status is, what a watcher can read and when -- was not.
+
+    `generated` and the two runners are stubbed, and nothing else is. What is
+    under test is the sequencing and the answers, not what a mutation does: a
+    real sweep here would cost minutes per assertion to re-prove something
+    `TestTheHarnessAnswersBothWays` already proves once.
+
+    `--no-killers` throughout, or these would read and rewrite the developer's
+    own `sweeps/killers.json` -- a test that edits the machine it runs on.
+    """
+
+    ROW = Mutation(
+        "x:1 in f()", "tupferl/merge.py", "WHOLE_FILE = 1", "WHOLE_FILE = 2", "tests.test_merge"
+    )
+
+    def drive(
+        self,
+        *flags: str,
+        report: mutate.Report | None = None,
+        runner: Any = None,
+    ) -> tuple[int, str, argparse.Namespace]:
+        """`main(flags)`, with the table and the run supplied.
+
+        Hands back the exit status, everything printed, and the `Namespace`
+        `generated` was given -- which is the only way to see what `--all`
+        rewrote before anything ran. Unpacked rather than returned as a
+        maybe-`None`: `main` calls `generated` unconditionally on this path,
+        before `--list` and before `--baseline-only`, so an empty `seen` is a
+        broken fixture and `(args,) = seen` says so where it happens.
+        """
+        seen: list[argparse.Namespace] = []
+
+        def fake_generated(args: argparse.Namespace) -> list[Mutation]:
+            seen.append(args)
+            return [self.ROW]
+
+        run = runner or (lambda *a, **k: report or mutate.Report([]))
+        with (
+            mock.patch.object(mutate, "generated", fake_generated),
+            mock.patch.object(mutate, "sweep", run),
+            mock.patch.object(mutate, "_run_generated", run),
+            support.quiet() as spill,
+        ):
+            status = mutate.main(["--no-killers", *flags])
+        (args,) = seen
+        return status, spill.getvalue(), args
+
+    def refused(self, *flags: str) -> str:
+        """`main` exiting through `parser.error`, and what it said.
+
+        `argparse` writes to stderr and raises `SystemExit(2)`; both halves are
+        asserted, because a message printed on the way to exit 0 would read the
+        same in a terminal and mean the opposite to a script.
+
+        **The table and the runners are stubbed even though nothing should reach
+        them.** That is the point: a mutation removing one of these guards lets
+        `--all --base main` fall through to a *real* whole-tree sweep, and this
+        came back `TIMEOUT` -- never `caught` -- until the stubs were added. A
+        test asserting that something is refused has to fail, not run, when it
+        is not.
+        """
+
+        def nothing(*a: Any, **k: Any) -> mutate.Report:
+            return mutate.Report([])
+
+        with (
+            mock.patch.object(mutate, "generated", lambda args: [self.ROW]),
+            mock.patch.object(mutate, "sweep", nothing),
+            mock.patch.object(mutate, "_run_generated", nothing),
+            # `quiet` takes stderr as well as stdout, which is what argparse
+            # writes to -- so it is both the silencer and the capture, and a
+            # nested `redirect_stderr` would only fight it for the same stream.
+            support.quiet() as said,
+            self.assertRaises(SystemExit) as bad,
+        ):
+            mutate.main([*flags, "--no-killers"])
+        self.assertEqual(2, bad.exception.code)
+        return said.getvalue()
+
+    def test_all_and_base_together_are_refused(self) -> None:
+        """They mean different tables. Taking either silently would run the one
+        the user did not ask for, over a table size that differs by 20x."""
+        self.assertIn("Not both", self.refused("--all", "--base", "main"))
+
+    def test_neither_a_script_nor_a_table_is_refused(self) -> None:
+        self.assertIn("give a spec file", self.refused())
+
+    def test_a_script_and_a_table_together_are_refused(self) -> None:
+        """The same message, and the same `bool(...) == bool(...)` line. Without
+        this the mutation that drops one side of the comparison is invisible:
+        the empty case above still refuses."""
+        self.assertIn("give a spec file", self.refused("spec.py", "--base", "main"))
+
+    def test_all_becomes_a_base_of_its_own(self) -> None:
+        """Downstream asks "generated or a spec file?" and nothing else, so
+        `--all` has to arrive as a `base`. Left unset it falls through to the
+        spec-file arm with no script and raises about a file nobody named."""
+        _, _, args = self.drive("--all")
+        self.assertEqual("--all", args.base)
+
+    def test_all_lifts_the_default_cap(self) -> None:
+        """The cap is sized for a diff. Left on, the documented `--all` ran 200
+        rows of 4451 -- and, because the cap spreads across files, in batches of
+        seven, so batching, incremental `--json` and resume all did nothing."""
+        _, _, args = self.drive("--all")
+        self.assertEqual(0, args.limit)
+
+    def test_an_explicit_cap_survives_all(self) -> None:
+        """The other half. A rule that lifted the cap unconditionally passes the
+        test above and takes `--limit` away from the one command that most needs
+        it -- and says nothing, because the count would look deliberate."""
+        _, _, args = self.drive("--all", "--limit", "5")
+        self.assertEqual(5, args.limit)
+
+    def test_a_base_of_its_own_leaves_the_cap_alone(self) -> None:
+        """`--base` is a diff, which is what the default cap is for."""
+        _, _, args = self.drive("--base", "main")
+        self.assertEqual(mutate.LIMIT, args.limit)
+
+    def test_list_prints_the_table_and_runs_nothing(self) -> None:
+        """`--list` is about the table, not about running it. A version that
+        listed *and* ran would look right on a five-row diff and start an hour
+        of sandboxes on the command a reader types to avoid exactly that."""
+        ran: list[int] = []
+        status, said, _ = self.drive(
+            "--base", "main", "--list", runner=lambda *a, **k: ran.append(1)
+        )
+        self.assertEqual(0, status)
+        self.assertIn("x:1 in f()", said)
+        self.assertEqual([], ran, "--list ran the table")
+
+    def test_baseline_only_answers_with_the_exit_status(self) -> None:
+        """Its whole point: ask in one shard's time the question a sweep asks in
+        an hour, and say so in a way a script can read. Both arms, because a
+        constant return passes either one alone."""
+        for green, expected in ((True, 0), (False, 1)):
+            with self.subTest(green=green):
+                with mock.patch.object(mutate, "_baseline_is_green", lambda *a, _g=green: _g):
+                    status, _, _ = self.drive("--base", "main", "--baseline-only")
+                self.assertEqual(expected, status)
+
+    def test_baseline_only_starts_no_sandbox(self) -> None:
+        """Before the prefix is announced and before any sandbox is built. A
+        version that asked after building them would still answer correctly and
+        would cost a sweep's setup to say it."""
+        ran: list[int] = []
+        with mock.patch.object(mutate, "_baseline_is_green", lambda *a: True):
+            self.drive("--base", "main", "--baseline-only", runner=lambda *a, **k: ran.append(1))
+        self.assertEqual([], ran)
+
+    def test_the_json_pidfile_is_written_before_the_first_row(self) -> None:
+        """A watcher started alongside this one has to have something to read
+        straight away -- and `tools/watch.py` refuses to identify a job by
+        pattern, so the pidfile is the only identity there is. Written *after*
+        the rows it would name a sweep that had already finished."""
+        seen: list[str] = []
+        with tempfile.TemporaryDirectory() as name:
+            where = Path(name) / "r.json"
+
+            def note(*a: Any, **k: Any) -> mutate.Report:
+                seen.append(mutate._pidfile(where).read_text(encoding="utf-8").strip())
+                return mutate.Report([])
+
+            self.drive("--base", "main", "--json", str(where), runner=note)
+        self.assertEqual([str(os.getpid())], seen, "the pidfile named the wrong process, or none")
+
+    def test_the_done_marker_is_cleared_before_the_run_and_set_after(self) -> None:
+        """A resumed sweep points `--json` at a part-written report, and a marker
+        the interrupted run left would tell a watcher that *this* one had
+        finished before it began. Both halves, because clearing alone leaves a
+        run nothing can wait on and setting alone is the stale marker."""
+        seen: list[bool] = []
+        with tempfile.TemporaryDirectory() as name:
+            where = Path(name) / "r.json"
+            mutate._marker(where).touch()
+
+            def note(*a: Any, **k: Any) -> mutate.Report:
+                seen.append(mutate._marker(where).exists())
+                return mutate.Report([])
+
+            self.drive("--base", "main", "--json", str(where), runner=note)
+            self.assertEqual([False], seen, "a stale done marker survived into the run")
+            self.assertTrue(mutate._marker(where).is_file(), "the finished run left no marker")
+
+    def test_listing_a_table_does_not_retract_an_earlier_marker(self) -> None:
+        """`--list` returns before the `--json` block on purpose: listing is not
+        a run, and it must not tell a watcher that a complete run had not
+        happened."""
+        with tempfile.TemporaryDirectory() as name:
+            where = Path(name) / "r.json"
+            mutate._marker(where).touch()
+            self.drive("--base", "main", "--json", str(where), "--list")
+            self.assertTrue(mutate._marker(where).is_file())
+
+    def test_a_clean_run_exits_zero_and_a_survivor_does_not(self) -> None:
+        """Both arms of `_status`. A constant zero is the shape that makes every
+        sweep in CI green, which is the failure this whole tool exists to make
+        impossible."""
+        caught = mutate.Report([mutate.Result(self.ROW, mutate.Verdict("caught", "d", "t.A.b"))])
+        alive = mutate.Report([mutate.Result(self.ROW, mutate.Verdict("survived"))])
+        self.assertEqual(0, self.drive("--base", "main", report=caught)[0])
+        self.assertNotEqual(0, self.drive("--base", "main", report=alive)[0])
+
+    def test_a_red_baseline_remembers_nothing_and_says_so(self) -> None:
+        """A killer recorded from a red tree is a test that fails untouched,
+        which is exactly what must never be run in front of a later row. This is
+        the supply line for the false `caught` the baseline shard guards
+        against, and both ends have to be closed."""
+        red = mutate.Report([], baseline_red=True)
+        learned: list[object] = []
+        with mock.patch.object(mutate.Killers, "learn", lambda self, r: learned.append(r)):
+            _, said, _ = self.drive("--base", "main", report=red)
+        self.assertEqual([], learned, "a red run's killers were remembered")
+        self.assertIn("nothing was remembered", said)
+
+    def test_a_green_run_does_remember(self) -> None:
+        """The other half, without which "never remember" passes the test above
+        and silently turns off the ordering two sweeps were measured to gain."""
+        learned: list[object] = []
+        with mock.patch.object(mutate.Killers, "learn", lambda self, r: learned.append(r)):
+            self.drive("--base", "main")
+        self.assertEqual(1, len(learned))
+
+    def test_only_a_whole_tree_run_counts_as_complete(self) -> None:
+        """`complete` is what lets `--accept` call a recorded key stale, and a
+        stale key is *deleted*. Judged from a narrowed table it would drop
+        reasons nobody had reviewed -- 206 of 210 on the command CLAUDE.md
+        quotes -- and the record would simply come back smaller."""
+        for flags, expected in (
+            (("--all",), True),
+            (("--base", "main"), False),
+            (("--all", "--only", "tupferl/"), False),
+            (("--all", "--operator", "branch"), False),
+            (("--all", "--skip-operator", "branch"), False),
+        ):
+            with self.subTest(flags=flags):
+                seen: list[bool] = []
+                with mock.patch.object(
+                    mutate,
+                    "sort_survivors",
+                    lambda r, a, c, _s=seen: _s.append(c) or mutate.Survivors([], [], []),
+                ):
+                    self.drive(*flags)
+                # Twice, not once: `_summarise` sorts to report and `main` sorts
+                # again to decide the exit status. Both must agree, so this
+                # asserts every call rather than the first -- and that there was
+                # one at all, or an empty list would satisfy `all`.
+                self.assertTrue(seen, "sort_survivors was never asked")
+                self.assertTrue(all(c is expected for c in seen), seen)
+
+
+class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
+    """`_run`'s ladder: which `Verdict` a probe's report becomes.
+
+    Twenty-one of its mutants survived the whole-tree sweep and twelve were on
+    lines **no test executed**, which is the second-largest unreached cluster.
+    The reason is visible from the function: every arm needs a probe that
+    behaved a particular way -- killed for memory, killed before writing,
+    unable to load, having noticed nothing -- and the suite only ever produced
+    the two ordinary ones by running a real mutation.
+
+    So the probe is faked and *everything else is real*: the fake writes a
+    chosen report into the path `_run` gave it on the command line, which is
+    how the real probe communicates, and the ladder reads it exactly as it
+    reads the real one. Nothing here asserts that `_run` calls the functions it
+    calls; each test names an outcome a user would see in a sweep.
+    """
+
+    #: Every key the ladder reads. Required rather than `.get`, deliberately --
+    #: `_probe` runs `verdict.py` out of the same tree, so a missing key is a
+    #: protocol break and not an old probe. Spelling them all out here is what
+    #: makes a *changed* protocol fail these tests rather than pass them.
+    GREEN: typing.ClassVar[dict[str, Any]] = {
+        "loaded": True,
+        "broke": [],
+        "noticed": [],
+        "killers": [],
+        "reasons": [],
+        "times": {},
+        "ran": 3,
+    }
+
+    def verdict(
+        self,
+        written: dict[str, Any] | None = None,
+        *,
+        returncode: int = 0,
+        held: int = 0,
+        stderr: str = "",
+        hang: bool = False,
+    ) -> mutate.Verdict:
+        """`_run` against a probe that behaved as described."""
+
+        class Probe:
+            pid = 4242
+
+            def __init__(self, argv: list[str], **kwargs: Any) -> None:
+                # argv[4] is the report path: `_probe()` is argv[3], and the
+                # first thing it is handed is where to write. Reading it back
+                # off the command line rather than reaching into `_run` is what
+                # keeps this a test of the protocol.
+                self.returncode = returncode
+                Path(kwargs["stderr"].name).write_text(stderr, encoding="utf-8")
+                if written is not None:
+                    Path(argv[4]).write_text(json.dumps(written), encoding="utf-8")
+
+            def wait(self, timeout: float | None = None) -> int:
+                if hang:
+                    raise subprocess.TimeoutExpired("probe", timeout or 0)
+                return self.returncode
+
+        class Watched:
+            def watch(self, pid: int, memory: int) -> None:
+                pass
+
+            def release(self, pid: int) -> int:
+                return held
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(subprocess, "Popen", Probe),
+            mock.patch.object(mutate, "_WATCHED", Watched()),
+            mock.patch.object(mutate, "_end", lambda probe: None),
+        ):
+            return mutate._run(["tests.test_paths"], Path(root), memory=1 << 31)
+
+    def test_a_probe_that_never_answers_is_a_timeout(self) -> None:
+        """Its own outcome, not an exception: a generated mutant can turn a loop
+        bound into one that never fires, and with no limit that holds a lane for
+        the rest of the run."""
+        found = self.verdict(self.GREEN, hang=True)
+        self.assertEqual("timeout", found.outcome)
+        self.assertIn("no answer within", found.detail)
+
+    def test_a_lane_killed_for_memory_broke_rather_than_answered(self) -> None:
+        """And it is read *before* the report, which is the whole subtlety. A
+        killed lane may well have written one -- the kill lands on whichever
+        process is running -- and reading it would report a verdict about a run
+        that was stopped."""
+        found = self.verdict(self.GREEN, held=3 << 30)
+        self.assertEqual("broke", found.outcome)
+        self.assertIn("MiB", found.detail)
+        self.assertIn("killed", found.detail)
+
+    def test_a_lane_killed_for_memory_says_so_even_with_no_report(self) -> None:
+        """The ordering, and the only fixture that can see it.
+
+        A killed lane usually writes *something*, and then both orders agree --
+        measured: moving the `held` check below the report read survives every
+        assertion in this class until the report is missing too. That is the
+        real case: the kill lands on whichever process is running, so the probe
+        often dies before writing at all. Read second, this row reports a
+        signal number, and "killed by SIGKILL" sends a reader looking for a
+        crash instead of at the memory ceiling that caused it.
+        """
+        found = self.verdict(None, returncode=-9, held=3 << 30)
+        self.assertEqual("broke", found.outcome)
+        self.assertIn("MiB", found.detail)
+        self.assertIn("share it was given", found.detail)
+
+    def test_a_probe_that_wrote_nothing_says_what_reached_stderr(self) -> None:
+        """Killed before it could write. A process killed by a signal writes no
+        stderr either, so this row used to print with no reason at all -- and it
+        is exactly what a host OOM-kill produces."""
+        found = self.verdict(None, stderr="Traceback ...\nMemoryError\n")
+        self.assertEqual("broke", found.outcome)
+        self.assertIn("MemoryError", found.detail)
+
+    def test_a_probe_that_wrote_nothing_and_said_nothing_names_the_signal(self) -> None:
+        """The half with no stderr at all, which is the OOM-kill case. Without
+        it the row prints an empty reason, and an empty reason reads as the
+        harness malfunctioning rather than as the machine running out."""
+        found = self.verdict(None, returncode=-9)
+        self.assertEqual("broke", found.outcome)
+        self.assertNotEqual("", found.detail.strip(), "a killed probe explained nothing")
+
+    def test_a_module_that_would_not_load_prefers_the_recorded_reason(self) -> None:
+        """`verdict.main` writes `why` deliberately; `_tail` is whatever happened
+        to reach stderr. Preferring the tail let a stray import-time warning
+        outrank the reason the probe took the trouble to record."""
+        found = self.verdict(
+            {**self.GREEN, "loaded": False, "why": "SyntaxError: bad"},
+            stderr="DeprecationWarning: unrelated\n",
+        )
+        self.assertEqual("broke", found.outcome)
+        self.assertIn("SyntaxError", found.detail)
+        self.assertNotIn("Deprecation", found.detail)
+
+    def test_a_module_that_would_not_load_falls_back_to_stderr(self) -> None:
+        """The other half: `why` can be absent, and then the tail is all there
+        is. Without this, "always take `why`" passes the test above and turns a
+        real failure into a blank line."""
+        found = self.verdict(
+            {**self.GREEN, "loaded": False, "why": ""}, stderr="ImportError: no module\n"
+        )
+        self.assertIn("ImportError", found.detail)
+
+    def test_a_test_that_errored_outside_an_assertion_broke(self) -> None:
+        """`broke` in the report is the probe's own word for "this asked
+        nothing", and it outranks everything below -- a run that errored has not
+        answered, however many tests it also ran."""
+        found = self.verdict({**self.GREEN, "broke": ["it went wrong"], "noticed": ["t.A.b"]})
+        self.assertEqual("broke", found.outcome)
+        self.assertIn("it went wrong", found.detail)
+
+    def test_a_notice_becomes_caught_and_carries_its_killer(self) -> None:
+        """The killer is what `Killers` runs first next time, and it is recorded
+        separately from the display string on purpose: a display format is not
+        an API, and `unittest`'s changed in 3.11."""
+        found = self.verdict(
+            {
+                **self.GREEN,
+                "noticed": ["test_it (t.A.test_it)"],
+                "killers": ["t.A.test_it"],
+                "reasons": ["AssertionError: 1 != 2"],
+                "times": {"t.A.test_it": 0.5},
+            }
+        )
+        self.assertEqual("caught", found.outcome)
+        self.assertEqual("t.A.test_it", found.killer)
+        self.assertIn("AssertionError", found.why)
+        self.assertEqual({"t.A.test_it": 0.5}, found.times)
+
+    def test_a_notice_with_no_remembered_killer_still_counts(self) -> None:
+        """`killers` can be empty where `noticed` is not, and the row is still a
+        catch. Raising instead would turn a real answer into a `broke`."""
+        found = self.verdict({**self.GREEN, "noticed": ["test_it (t.A.test_it)"]})
+        self.assertEqual("caught", found.outcome)
+        self.assertEqual("", found.killer)
+
+    def test_a_selection_that_held_no_tests_broke_rather_than_survived(self) -> None:
+        """The flattering failure, and the one CLAUDE.md opens with: a run that
+        executed nothing notices nothing, and calling that `survived` credits
+        the mutation with beating a suite that never ran."""
+        found = self.verdict({**self.GREEN, "ran": 0})
+        self.assertEqual("broke", found.outcome)
+        self.assertIn("no tests", found.detail)
+
+    def test_a_green_run_that_noticed_nothing_survived(self) -> None:
+        """The ordinary survivor, and the timings come back with it -- a
+        survivor ran its whole selection, so its numbers are the complete ones
+        `slowest_first` orders the next sweep by."""
+        found = self.verdict({**self.GREEN, "times": {"t.A.b": 1.5}})
+        self.assertEqual("survived", found.outcome)
+        self.assertEqual({"t.A.b": 1.5}, found.times)

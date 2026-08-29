@@ -15,9 +15,11 @@ the code: a variable added there is poisoned by this fixture the same day.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -643,3 +645,62 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
         ):
             mutate._run(["tests.test_paths"], Path(box), each=7.5)
         self.assertEqual("7.5", seen.get(support.ALARM))
+
+
+class TestABoundGivesTheHarnessItsAlarmBack(unittest.TestCase):
+    """`deadline` restores the `ITIMER_REAL` it found, rather than clearing it.
+
+    There is one interval timer per process and `tools/mutate.py` arms it around
+    every test, so a bound that zeroed it on the way out left the *rest* of that
+    test unwatched by the harness. A hang afterwards then costs `TIMEOUT`'s 300s
+    instead of `EACH_TEST`'s 30 -- ten times the lane, and filed under the one
+    outcome that names no test.
+
+    It went unnoticed because nothing exercised the interesting shape: a
+    `deadline` around a whole test body has nothing after it to leave unwatched.
+    A bound inside a *helper* that returns mid-test does, and this PR added two.
+    """
+
+    def armed(self) -> float:
+        return signal.getitimer(signal.ITIMER_REAL)[0]
+
+    def setUp(self) -> None:
+        self.addCleanup(signal.setitimer, signal.ITIMER_REAL, 0)
+        self.addCleanup(signal.signal, signal.SIGALRM, signal.getsignal(signal.SIGALRM))
+
+    def test_an_alarm_that_was_armed_is_still_armed_afterwards(self) -> None:
+        signal.signal(signal.SIGALRM, lambda *a: None)
+        signal.setitimer(signal.ITIMER_REAL, 30.0)
+        with support.deadline(1.0, "inner"):
+            pass
+        self.assertGreater(self.armed(), 25.0, "the harness's alarm was cancelled")
+
+    def test_the_time_spent_inside_is_taken_off(self) -> None:
+        """Restoring the *original* 30s rather than what is left would give a
+        test that had already run 29s a fresh half-minute, which is the bound
+        quietly doubling rather than being handed back."""
+        signal.signal(signal.SIGALRM, lambda *a: None)
+        signal.setitimer(signal.ITIMER_REAL, 30.0)
+        with support.deadline(1.0, "inner"):
+            time.sleep(0.2)
+        self.assertLess(self.armed(), 29.95, "the spent time was not deducted")
+
+    def test_nothing_armed_stays_nothing_armed(self) -> None:
+        """Every ordinary run of the suite. Arming a timer that nobody asked for
+        would send `SIGALRM` into whatever handler happened to be installed."""
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        with support.deadline(1.0, "inner"):
+            pass
+        self.assertEqual(0.0, self.armed())
+
+    def test_the_previous_handler_is_back_before_the_alarm_can_fire(self) -> None:
+        """Restored in the other order, a re-armed outer alarm could land in
+        `ring` and be reported as *this* bound -- a timeout blamed on the
+        fixture that had already finished."""
+        outer = signal.signal(signal.SIGALRM, lambda *a: None)
+        self.addCleanup(signal.signal, signal.SIGALRM, outer)
+        mine = signal.getsignal(signal.SIGALRM)
+        signal.setitimer(signal.ITIMER_REAL, 30.0)
+        with support.deadline(1.0, "inner"):
+            pass
+        self.assertIs(mine, signal.getsignal(signal.SIGALRM))

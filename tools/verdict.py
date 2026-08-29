@@ -142,7 +142,23 @@ def cap(limit: int) -> None:
         if soft != resource.RLIM_INFINITY and soft <= ceiling:
             continue
         try:
-            resource.setrlimit(which, (ceiling, hard))
+            # **The hard limit comes down too, and that is the guard rather than
+            # tidiness.** A soft limit alone can be raised back to `hard` by any
+            # descendant, and something in this tree really did: a whole-tree
+            # sweep OOM-killed the host with a single process at 51.5 GiB
+            # resident and 61 GiB of address space -- impossible under the 4 GiB
+            # ceiling every probe is given, and therefore proof that some child
+            # was running with no `RLIMIT_AS` at all. Lowering `hard` makes the
+            # cap survive every `fork` and `exec` below this point, because
+            # raising a hard limit needs a privilege none of this has.
+            #
+            # It costs the ability to *undo* the cap further down, which one
+            # test wanted (`TestTheMemoryCapsArithmetic` spawned children that raised
+            # soft back to hard to reach a known state). That is now bought with
+            # a bounded number instead of an unbounded one, which it should have
+            # been: "clear the inherited cap" and "have no cap" are different
+            # asks, and only the second can take the machine with it.
+            resource.setrlimit(which, (ceiling, ceiling))
         except (OSError, ValueError):  # pragma: no cover - refused
             continue
 

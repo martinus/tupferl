@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import subprocess
 import sys
 import tempfile
@@ -798,94 +797,128 @@ class TestTheMemoryCapsArithmetic(Probe):
     #: to be distinguishable from the unlimited value.
     ASKED = 2 << 30
 
-    def limits(self, limit: int, soft: int | None = None, hard: int | None = None) -> int:
+    #: The "known state" each child starts from: enough room that `cap(ASKED)`
+    #: really is a *lowering*, and finite, so that a child of this suite can
+    #: never be the unbounded process that took a machine down. Twice `ASKED`,
+    #: which is the smallest number that makes the lowering observable.
+    ROOMY = 4 << 30
+
+    def limits(self, limit: int, soft: int | None = None) -> int:
         """`RLIMIT_AS`'s soft limit after `cap(limit)`, from a child that starts
-        from a known state.
+        from a known state. The state it started *from* is left on `self.started`,
+        because one assertion below is about a difference rather than a value.
 
-        **The child clears any inherited cap first, and that is load-bearing.**
-        `verdict.main` calls `cap` before the suite loads, so *during a sweep*
-        the process running these tests already holds a finite `RLIMIT_AS` --
-        `mutate.MEMORY` is 4 GiB. Without the reset, `limits(0)` reads that back
-        instead of `RLIM_INFINITY` and `test_zero_is_no_cap` fails on an
-        unmutated tree: every row of a `tools/verdict.py` sweep then prints
-        `caught` for a reason that has nothing to do with the mutation, and the
-        baseline run voids the lot. Green under a plain `python -m unittest` and
-        red under the harness is the worst shape a test in this file can have.
+        There is no `hard` parameter, and that is a finding rather than an
+        omission -- see `test_a_higher_finite_soft_limit_is_brought_down`.
 
-        The raise is permitted because `cap` never lowers `hard` -- it passes
-        the existing one straight back to `setrlimit` -- so the ceiling this is
-        restoring to is still there.
+        **The child settles its own starting cap first, and that is
+        load-bearing.** `verdict.main` calls `cap` before the suite loads, so
+        *during a sweep* the process running these tests already holds a finite
+        `RLIMIT_AS` -- `mutate.MEMORY` is 4 GiB. Without settling it, `limits(0)`
+        reads that back instead of the fixture's own number and the test below
+        fails on an unmutated tree: every row of a `tools/verdict.py` sweep then
+        prints `caught` for a reason that has nothing to do with the mutation,
+        and the baseline run voids the lot. Green under a plain `python -m
+        unittest` and red under the harness is the worst shape a test in this
+        file can have.
+
+        **It raises to a bounded number, never to `hard`.** `(hard, hard)` was
+        the first spelling and it is how a sweep OOM-killed the host: under the
+        harness `hard` is whatever `cap` left, and `cap` used to leave it
+        `RLIM_INFINITY` -- so "clear the inherited cap" meant "run with no cap",
+        and one process reached 51.5 GiB. `cap` lowers `hard` now, so this can no
+        longer raise past it even by asking; `ROOMY` is the ask, and `min` keeps
+        it legal when the harness's ceiling is lower still.
+
+        Not `RLIM_INFINITY` either, for the reason that spelling was chosen
+        over: macOS reports an unlimited ceiling as `sys.maxsize` rather than as
+        `RLIM_INFINITY` (which is `-1`), so asking for `-1` against that hard
+        limit is "current limit exceeds maximum limit" and the child dies.
         """
-        # `(hard, hard)`, not `(RLIM_INFINITY, hard)`. macOS reports an
-        # unlimited ceiling as `sys.maxsize` rather than as `RLIM_INFINITY`
-        # (which is `-1`), so asking for `-1` against that hard limit is
-        # "current limit exceeds maximum limit" and the child dies. Raising
-        # soft to whatever hard actually says is legal everywhere and clears an
-        # inherited cap just as well.
+        # `RLIM_INFINITY` is `-1` -- a sentinel, not a large number -- so every
+        # comparison against it has to be spelled out rather than left to `min`.
+        # Written once here because getting it wrong is silent: `min(1 GiB, -1)`
+        # is `-1`, which *raises* the limit to unlimited, and the test then reads
+        # back a number `cap` chose rather than the one the fixture set.
         setup = (
+            "def under(want, hard):\n"
+            "    return want if hard == resource.RLIM_INFINITY else min(want, hard)\n"
             "hard = resource.getrlimit(resource.RLIMIT_AS)[1]\n"
-            "resource.setrlimit(resource.RLIMIT_AS, (hard, hard))\n"
+            f"resource.setrlimit(resource.RLIMIT_AS, (under({self.ROOMY}, hard), hard))\n"
         )
         if soft is not None:
-            setup += f"resource.setrlimit(resource.RLIMIT_AS, ({soft}, {hard}))\n"
+            setup += f"resource.setrlimit(resource.RLIMIT_AS, (under({soft}, hard), hard))\n"
         code = (
             "import resource, sys\n"
             f"sys.path.insert(0, {str(ROOT)!r})\n"
             f"{setup}"
+            "before = resource.getrlimit(resource.RLIMIT_AS)[0]\n"
             "from tools import verdict\n"
             f"verdict.cap({limit})\n"
-            "print(resource.getrlimit(resource.RLIMIT_AS)[0])\n"
+            "print(before, resource.getrlimit(resource.RLIMIT_AS)[0])\n"
         )
         done = subprocess.run(
             [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=BOUND
         )
         self.assertEqual(0, done.returncode, done.stderr)
-        return int(done.stdout.strip())
+        started, after = (int(word) for word in done.stdout.split())
+        self.started = started
+        return after
 
     def test_it_lowers_an_unlimited_process_to_what_was_asked(self) -> None:
         self.assertEqual(self.ASKED, self.limits(self.ASKED))
 
     def test_zero_is_no_cap(self) -> None:
         """`--memory 0` promises it, and `setrlimit(..., 0)` would make the
-        sandbox fail every row for a reason no output would explain."""
-        self.assertEqual(resource.RLIM_INFINITY, self.limits(0))
+        sandbox fail every row for a reason no output would explain.
+
+        Asserted as "the limit is exactly what it was", not as "the limit is
+        `RLIM_INFINITY`". The second is what this used to say and it was a claim
+        about the *fixture's* starting state as much as about `cap` -- it only
+        held because the child had raised itself to unlimited first, which is
+        the thing that OOM-killed a machine. Unchanged-from-a-known-state is
+        the same guarantee and does not require the state to be dangerous.
+        """
+        got = self.limits(0)
+        self.assertEqual(self.started, got)
 
     def test_it_never_raises_a_ceiling_somebody_else_set(self) -> None:
         """ "A caller who already sandboxed us meant it." The existing soft limit
         is *below* what is asked, so it must survive untouched."""
         already = self.ASKED // 2
-        self.assertEqual(
-            already, self.limits(self.ASKED, soft=already, hard=resource.RLIM_INFINITY)
-        )
-
-    def test_it_lowers_a_finite_ceiling_rather_than_leaving_it(self) -> None:
-        """`min(limit, hard)`. A process already bounded *above* what is asked
-        must still come down to what is asked.
-
-        An earlier draft of this docstring argued at length that `hard ==
-        RLIM_INFINITY` read as `!=` is an equivalent mutant. **That was wrong,
-        and the sweep had already said so** -- it reports that row `caught`.
-        `resource.RLIM_INFINITY` is `-1`, not a large number, so with the
-        comparison inverted an infinite `hard` gives `min(limit, -1) == -1` and
-        the process is left *uncapped*. The argument assumed infinity sorted
-        above every finite limit; the constant is a sentinel, and reading it as
-        an ordinary value is how the whole paragraph went wrong.
-
-        The genuinely equivalent one on this pair is `soft <= ceiling` read as
-        `soft < ceiling` at the line below, which the sweep does report
-        SURVIVED: it changes the answer only when `soft` is exactly `ceiling`,
-        and setting a limit to the value it already holds is a no-op either way.
-        """
-        hard = self.ASKED * 2
-        self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=hard, hard=hard))
+        self.assertEqual(already, self.limits(self.ASKED, soft=already))
 
     def test_a_higher_finite_soft_limit_is_brought_down(self) -> None:
         """The `soft != RLIM_INFINITY and soft <= ceiling` branch. Read with
         `or`, a finite soft limit *above* the ceiling short-circuits the whole
-        function and the process keeps the larger allowance."""
-        self.assertEqual(
-            self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2, hard=resource.RLIM_INFINITY)
-        )
+        function and the process keeps the larger allowance.
+
+        An earlier draft argued at length that `hard == RLIM_INFINITY` read as
+        `!=` is an equivalent mutant. **That was wrong, and the sweep had
+        already said so** -- it reports that row `caught`. `RLIM_INFINITY` is
+        `-1`, not a large number, so with the comparison inverted an infinite
+        `hard` gives `min(limit, -1) == -1` and the process is left *uncapped*.
+        The argument assumed infinity sorted above every finite limit; the
+        constant is a sentinel, and reading it as an ordinary value is how the
+        whole paragraph went wrong.
+
+        **`min(limit, hard)` itself cannot be observed**, and this test stands
+        where a second one used to try. The kernel refuses `soft > hard`
+        (measured: "current limit exceeds maximum limit"), so whenever `hard` is
+        below `limit` the clamp gives `ceiling == hard` -- and `soft <= ceiling`
+        then holds by that same invariant, so `cap` returns having touched
+        nothing. Dropping the `min` would make it *attempt* a raise of `hard`
+        and swallow the refusal, reaching the identical state by a longer road.
+        No fixture can tell those apart. The test that claimed to was passing a
+        `hard` *above* `limit`, where the `min` picks `limit` either way, so it
+        asserted exactly what this one does.
+
+        The other equivalent here is `soft <= ceiling` read as `soft <
+        ceiling`, which the sweep does report SURVIVED: it changes the answer
+        only when `soft` is exactly `ceiling`, and setting a limit to the value
+        it already holds is a no-op either way.
+        """
+        self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2))
 
 
 class TestTheWalkPastTheSelection(Probe):
