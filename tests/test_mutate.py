@@ -102,6 +102,33 @@ UNWATCHED = UNKNOWN_KEY_GUARD._replace(
 )
 
 
+def run_harness(*args: Any, **kwargs: Any) -> mutate.Report:
+    """`mutate.run`, with its `SystemExit` turned into an ordinary failure.
+
+    **A nested harness that exits takes the whole suite with it.** `run` answers
+    a row it could not apply by raising `SystemExit`, which is right for a CLI
+    and wrong inside a test: `SystemExit` is a `BaseException`, so it escapes the
+    test, escapes `suite.run`, and kills the probe -- and the harness files that
+    as `BROKE`, which is never `caught`. Four rows came back that way on the
+    whole-tree sweep after the *hang* in these same tests had been fixed, so the
+    lines stayed unguarded through two attempts at guarding them.
+
+    Which of the two happens is decided by test order under `failfast`: this
+    class has tests that fail by assertion and tests that died this way, so the
+    same row came back `caught` from a targeted spec and `BROKE` from the sweep.
+    A guard that sometimes guards reads exactly like one that always does.
+
+    A function rather than a `setUp` context manager, and that is forced rather
+    than chosen: a context entered in `setUp` and closed by `addCleanup` runs
+    *after* the body has already raised, so it never sees the exception. The
+    deadline beside it works there only because a signal fires during the body.
+    """
+    try:
+        return mutate.run(*args, **kwargs)
+    except SystemExit as bad:
+        raise AssertionError(f"the harness exited instead of answering: {bad}") from bad
+
+
 class TestTheHarnessAnswersBothWays(unittest.TestCase):
     """The whole loop: copy the tree, apply the edit, run a suite, classify.
 
@@ -135,7 +162,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         stack.enter_context(support.deadline(NESTED, "a nested harness run never finished"))
 
     def test_a_deliberate_bug_is_caught(self) -> None:
-        report = mutate.run(
+        report = run_harness(
             [UNKNOWN_KEY_GUARD], baseline=True, workers=1, summarise=False, walk=self.WALK
         )
         self.assertFalse(report.baseline_red, "the untouched tree is not green")
@@ -145,7 +172,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """The other answer. Without this, `test_a_deliberate_bug_is_caught`
         passes just as well against a harness hard-wired to say `caught` -- the
         assertion that passes against its own mutation, from CLAUDE.md §2."""
-        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK)
+        report = run_harness([UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK)
         self.assertFalse(report.baseline_red)
         self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
         self.assertFalse(report.widened, "a report that did not walk claimed it had")
@@ -169,7 +196,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         recorded. What that figure actually shows is narrower: the confirmation
         pass never corrected a survivor in them.
         """
-        report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False)
+        report = run_harness([UNWATCHED], baseline=True, workers=1, summarise=False)
         self.assertFalse(report.baseline_red, "the untouched tree is not green")
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
         killer = report.results[0].verdict.killer
@@ -188,7 +215,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         """
         where = Path(UNKNOWN_KEY_GUARD.path)
         before = where.read_bytes()
-        mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, walk=self.WALK)
+        run_harness([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, walk=self.WALK)
         self.assertEqual(before, where.read_bytes())
 
 
@@ -484,7 +511,7 @@ class TestTheKillerIsRecordedAtAll(unittest.TestCase):
     thing rather than asserting on a field."""
 
     def test_a_caught_mutation_names_the_test_in_a_form_unittest_takes_back(self) -> None:
-        found = mutate.run([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False)
+        found = run_harness([UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False)
         (result,) = found.results
         self.assertEqual("caught", result.verdict.outcome)
         self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
@@ -728,7 +755,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
     """
 
     def test_a_run_measures_the_tests_it_ran(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
+        found = run_harness([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
         times = found.times or {}
         self.assertTrue(times, "the run recorded no test timings at all")
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
@@ -739,7 +766,7 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         self.assertTrue(all(seconds >= 0 for seconds in times.values()))
 
     def test_they_reach_the_cache(self) -> None:
-        found = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
+        found = run_harness([UNWATCHED], baseline=True, workers=1, summarise=False, walk=False)
         cache = mutate.Killers(None)
         cache.learn(found)
         self.assertEqual(found.times or {}, cache.cost)
@@ -828,7 +855,7 @@ class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
             mock.patch.object(mutate, "_attempt", lambda *a, **k: caught_by),
             support.quiet(),
         ):
-            report = mutate.run([caught], baseline=False, workers=1)
+            report = run_harness([caught], baseline=False, workers=1)
         self.assertTrue(report.widened, "a walked report did not claim the guarantee")
 
     def test_an_empty_selection_behind_a_prefix_still_discovers(self) -> None:
@@ -867,7 +894,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
         one = UNKNOWN_KEY_GUARD._replace(
             first="tests.test_config.TestRejectingAnUnknownKey.test_a_typo_is_an_error_rather_than_silence"
         )
-        found = mutate.run([one], baseline=False, workers=1, summarise=False)
+        found = run_harness([one], baseline=False, workers=1, summarise=False)
         self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
 
     def test_a_prefix_that_misses_falls_through_to_the_selection(self) -> None:
@@ -875,7 +902,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
         a prefix that cannot see the mutation must cost one test, not the
         answer."""
         one = UNKNOWN_KEY_GUARD._replace(first="tests.test_paths.TestWhereTheRepositoryGoes")
-        found = mutate.run([one], baseline=False, workers=1, summarise=False)
+        found = run_harness([one], baseline=False, workers=1, summarise=False)
         self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
 
     # The `WHOLE_SUITE` case is *not* driven through `mutate.run` here. It would
@@ -1191,7 +1218,7 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
             mock.patch.object(mutate, "_borrow", answered),
             support.quiet() as spill,
         ):
-            found = mutate.run([one], baseline=True, workers=1, summarise=False)
+            found = run_harness([one], baseline=True, workers=1, summarise=False)
         # Kept, not discarded. `quiet` hands back what was written for exactly
         # this reason: a test that silences output it never asserts on is one
         # that would pass if the output stopped happening -- and both lines this
@@ -3230,7 +3257,7 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
             for context in patched:
                 stack.enter_context(context)
             spill = stack.enter_context(support.quiet())
-            mutate.run([only], baseline=False, summarise=False)
+            run_harness([only], baseline=False, summarise=False)
         return spill.getvalue()
 
     def test_a_run_starts_from_a_fresh_mark(self) -> None:
@@ -4738,7 +4765,7 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
             answered,
             support.quiet() as spill,
         ):
-            mutate.run([self.ROW], baseline=False, summarise=False)
+            run_harness([self.ROW], baseline=False, summarise=False)
         return spill.getvalue()
 
     #: What `run` asks for here: one row and one shard, so `len(table) + shards`
@@ -4781,7 +4808,7 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
             ),
             support.quiet(),
         ):
-            mutate.run(table, baseline=False, summarise=False)
+            run_harness(table, baseline=False, summarise=False)
         # 20 cores x 2 against a 58-row table: the cores are the smaller, so
         # that is what must come through. A constant of 16 would clip it.
         self.assertEqual([40], asked)
@@ -5025,21 +5052,34 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
     #: tree and spawns an interpreter, and the second test asserts about the
     #: same numbers the first produced -- so running it twice bought nothing and
     #: cost a `copytree` and a subprocess on every suite execution.
-    swept: typing.ClassVar[mutate.Report]
+    #:
+    #: Cached here and taken in `setUp`, **not run in `setUpClass`**. The saving
+    #: is the same and the failure is not: a `setUpClass` that raises is an
+    #: `_ErrorHolder`, which `verdict` files as `broke` -- no test ran, so
+    #: nothing answered -- and `broke` is never `caught`. Measured: mutating
+    #: `_Lanes.release` to report memory held by every row came back `BROKE`
+    #: here, on a line the sweep had previously reported as guarded. In `setUp`
+    #: the same failure belongs to a test and answers.
+    swept: typing.ClassVar[mutate.Report | None] = None
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.swept = mutate.run([UNWATCHED], baseline=False, workers=1, summarise=False, walk=False)
+    def setUp(self) -> None:
+        if type(self).swept is None:
+            type(self).swept = run_harness(
+                [UNWATCHED], baseline=False, workers=1, summarise=False, walk=False
+            )
+        self.report = typing.cast(mutate.Report, type(self).swept)
 
     def test_a_real_run_times_the_row_it_ran(self) -> None:
-        (only,) = self.swept.results
+        (only,) = self.report.results
         self.assertGreater(only.verdict.spent, 0.0, "the row was not timed")
 
     def test_the_time_reaches_the_cache_under_the_row_s_key(self) -> None:
         cache = mutate.Killers(None)
-        cache.learn(self.swept)
+        cache.learn(self.report)
         self.assertEqual([mutate._key(UNWATCHED)], list(cache.seconds))
-        self.assertEqual(self.swept.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)])
+        self.assertEqual(
+            self.report.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)]
+        )
 
     def test_a_row_that_was_never_answered_is_timed_too(self) -> None:
         """`broke` and `timeout` rows are the *most* expensive there are -- a

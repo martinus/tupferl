@@ -52,11 +52,26 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def mutate(
     body: str, lines: set[int] | None = None, operators: list[str] | None = None
 ) -> list[Mutation]:
-    """Every mutant for a snippet, on every line unless told otherwise."""
+    """Every mutant for a snippet, on every line unless told otherwise.
+
+    **Bounded, because `line_starts` is under here and it can loop for ever.**
+    Every arm of its `while` advances `at`, so a mutation that stops one
+    advancing spins, and one that advances backwards grows its list without
+    limit. `TestLineEndingsThatAreNotNewline` arms the same bound on itself for
+    the tests that call `mutants.line_starts` directly -- but the sweep's killer
+    for `mutants.py:170` is `TestWhatIsNeverMutated`, which reaches the same line
+    through here, and that row stayed `BROKE` through a fix that only armed the
+    class the sweep had named.
+
+    That is the point worth carrying: **the killer a sweep reports is one route
+    to the line, not all of them.** Two routes, two bounds, and this is the one
+    every generating test in the file shares.
+    """
     source = textwrap.dedent(body).lstrip()
     if lines is None:
         lines = set(range(1, len(source.splitlines()) + 1))
-    return mutants.generate(source, "tupferl/thing.py", lines, operators=operators)
+    with support.deadline(support.PATIENCE, f"generating mutants never finished for {body!r:.60}"):
+        return mutants.generate(source, "tupferl/thing.py", lines, operators=operators)
 
 
 class TestReadingAHunkHeader(unittest.TestCase):
@@ -1196,21 +1211,42 @@ class TestABoundedCallStillReturns(unittest.TestCase):
 
     #: Above the fraction of a second an honest call takes, and far below
     #: `tools/mutate.py`'s 30s per-test alarm -- see `tests/test_watch.py`'s
-    #: constant of the same name for why both bounds matter.
-    BOUND = 20
+    #: constant of the same name for why both bounds matter. Through
+    #: `support.bounded`, so it stays under the alarm a sweep *armed* rather
+    #: than under the default.
+    #:
+    #: Five rather than the twenty it was. The honest call is a subprocess spawn
+    #: and a few hundred microseconds of work, so twenty was four thousand times
+    #: the wait it bounds -- and the bound is paid per test, under a sweep, on a
+    #: machine already running thirty-eight lanes.
+    BOUND = support.bounded(5.0)
+
+    #: What the child may allocate. The mutants under test do not merely spin,
+    #: they spin *while appending*, so an unbounded child takes memory from the
+    #: whole machine for as long as `BOUND` allows -- and a sweep runs
+    #: thirty-eight of these beside each other. Capped, the same mutant dies with
+    #: `MemoryError` in milliseconds and the test fails on its own assertion
+    #: rather than on a clock. Measured: `mutants.py:170` came back `TIMEOUT` at
+    #: 300s without this, on a line that two other bounds already covered.
+    CEILING = 512 << 20
 
     def returns(self, body: str) -> None:
         """Run `body` against the real module in a child, and insist it ends."""
         script = textwrap.dedent(
             """
-            import sys
+            import resource, sys
+            resource.setrlimit(resource.RLIMIT_AS, ({ceiling}, {ceiling}))
             sys.path.insert(0, {root!r})
             from tools import mutants
             from tools.mutants import Mutation
             {body}
             print("done")
             """
-        ).format(root=str(REPO_ROOT), body=textwrap.indent(textwrap.dedent(body), "").strip())
+        ).format(
+            root=str(REPO_ROOT),
+            ceiling=self.CEILING,
+            body=textwrap.indent(textwrap.dedent(body), "").strip(),
+        )
         done = subprocess.run(
             [sys.executable, "-B", "-c", script],
             capture_output=True,

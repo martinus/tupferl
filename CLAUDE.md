@@ -697,6 +697,16 @@ written down.
   bound around one call covers that call and reads as though it covered the
   class.**
 
+  **And the class is not the end of it either.** Two more instances followed:
+  `mutants.py:170`'s killer is `TestWhatIsNeverMutated`, a *different class* from
+  the one the sweep named, reaching the same line through the module-level
+  `mutate()` helper; and the route that actually hung was
+  `TestTheseLoopsTerminate`, which drives a **subprocess**, where no in-process
+  alarm can reach at all. The rule that survives all four: **the killer a sweep
+  reports is one route to the line, not all of them.** Find the callers of the
+  hang-prone function and bound each entry point, rather than bounding the test
+  in the row.
+
   **And check what the bound's exception collides with.** `TimeoutError` *is* an
   `OSError`, so a `deadline` inside an existing `assertRaises(OSError)` is
   swallowed: the hang is accepted as the error under test and the bound turns
@@ -715,6 +725,51 @@ written down.
   changed only what happens when the alarm moves. It is a floor, never a
   ceiling: with nothing armed, or with `--each-test 0`, the fixture's own number
   stands unchanged, which is every ordinary run of the suite.
+- **A soft rlimit is not a cap: any descendant can raise it back.** `RLIMIT_AS`
+  has a soft and a hard half, and `setrlimit` lets an unprivileged process raise
+  soft up to hard freely. `verdict.cap` used to lower only soft and pass the
+  inherited hard straight back — so under a sweep every probe ran with
+  `soft = 4 GiB, hard = RLIM_INFINITY`, and one `resource.setrlimit(AS, (hard,
+  hard))` anywhere below it bought an unbounded process. `tests/test_verdict.py`
+  did exactly that on purpose, to reach a known state, and its docstring
+  explained why it was safe.
+
+  It was not. Measured, from the kernel log rather than inferred: `Killed
+  process (python) total-vm:63940536kB, anon-rss:54020240kB` — **one process at
+  51.5 GiB** on a 62 GiB machine, during a sweep whose lane ceiling was 4096 MiB.
+  A single process an order of magnitude over the per-lane ceiling is proof that
+  no ceiling was in force, which is what told the two apart: it is *not* lanes
+  adding up, so `_COMMIT` is not the thing to look at, and lowering it would have
+  cost parallelism and prevented nothing.
+
+  `cap` lowers both halves now. Raising a hard limit needs a privilege none of
+  this has, so the ceiling survives every `fork` and `exec` beneath it. The cost
+  is that a descendant cannot undo the cap — which is right, and the one test
+  that wanted to now asks for a **bounded** number instead: "clear the inherited
+  cap" and "have no cap" are different asks and only the second can take a
+  machine with it.
+
+- **`RLIM_INFINITY` is `-1` — a sentinel, not a large number.** So `min(want,
+  hard)` against an unlimited ceiling returns `-1` and *raises* the limit to
+  unlimited, which is the opposite of the clamp it reads as. It is silent: the
+  test then reads back whatever the code under test chose rather than what the
+  fixture set, and passes or fails for reasons unrelated to its name. Written
+  once, as an `under(want, hard)` helper, wherever a fixture composes limits.
+  The same sentinel is why a raise is spelled `(hard, hard)` and never
+  `(RLIM_INFINITY, hard)`: macOS reports unlimited as `sys.maxsize`, so asking
+  for `-1` there is "current limit exceeds maximum limit" and the child dies.
+
+- **A test's bound must cover the *processes* it starts, not just its own
+  thread.** `support.deadline` is a `SIGALRM` in this process and cannot see a
+  child, so a fixture that spawns one needs `subprocess.run(timeout=...)` *and*
+  a memory ceiling in the child. The timeout alone is not enough when the mutant
+  loops **while appending**: the machine is gone before the clock speaks, which
+  is the argument `verdict.cap`'s own docstring makes and which applies to every
+  fixture that spawns a python. `tests/test_mutants.py`'s `returns` sets
+  `RLIMIT_AS` in the generated child for that reason, and its bound is 5s rather
+  than the 20s it was — the honest wait is a spawn, and the bound is paid per
+  test, under a sweep, on a machine already running thirty-eight lanes.
+
 - **`discover` and `loadTestsFromNames` classify a broken module differently**,
   and a fixture written for one proves nothing about the other. `discover`
   wraps everything into `loader.errors`; `loadTestsFromNames` wraps only what
