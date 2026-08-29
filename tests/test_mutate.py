@@ -4436,19 +4436,65 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
         with mock.patch.object(mutate, "_budget", lambda: budget):
             return mutate._share(wanted, memory, pinned)
 
-    def test_the_product_never_exceeds_the_budget(self) -> None:
+    def test_the_product_never_exceeds_what_may_be_committed(self) -> None:
         """woswoar#232 in one line, and the reason the two numbers are chosen
         together rather than separately. Swept across shapes, because a single
-        pair is satisfied by an implementation that happens to fit it."""
+        pair is satisfied by an implementation that happens to fit it.
+
+        The bound is `_COMMIT` times the budget rather than the budget: a
+        ceiling is headroom for a pathological row and peaks do not coincide,
+        which is the argument `_COMMIT` carries. It is still a *bound* -- the
+        pair is chosen together, and that is what #232 was about.
+        """
+        allowed = mutate._COMMIT
         for budget in (2 << 30, 8 << 30, 64 << 30):
             for wanted in (1, 3, 7, 16):
                 with self.subTest(budget=budget >> 20, wanted=wanted):
                     share = self.sharing(budget, wanted, mutate.MEMORY)
                     self.assertLessEqual(
                         share.lanes * share.memory,
-                        budget,
-                        f"{share.lanes} lanes x {share.memory >> 20} MiB exceeds {budget >> 20}",
+                        int(budget * allowed),
+                        f"{share.lanes} lanes x {share.memory >> 20} MiB exceeds "
+                        f"{int(budget * allowed) >> 20} MiB",
                     )
+
+    def test_the_commitment_is_really_more_than_the_machine_has(self) -> None:
+        """Without this, the bound above passes just as well with `_COMMIT` at
+        1.0 -- so the relaxation would be untested and a silent revert to the
+        old rule would cost lanes with nothing going red.
+
+        A 4 GiB machine is the shape that shows it: the lane count comes from
+        `allowed // floor` there, and each lane still gets the floor.
+        """
+        share = self.sharing(4 << 30, 16, mutate.MEMORY)
+        self.assertGreater(
+            share.lanes * share.memory,
+            4 << 30,
+            "the ceilings fit inside the budget, so nothing is being committed",
+        )
+        self.assertLessEqual(share.lanes * share.memory, int((4 << 30) * mutate._COMMIT))
+
+    def test_the_commitment_buys_lanes_rather_than_headroom(self) -> None:
+        """Where the extra allowance is spent, which is the whole point of
+        raising it and is not implied by the two assertions above.
+
+        Applying `_COMMIT` only to the *ceiling* passes both of those: the same
+        two lanes simply get a 3 GiB ceiling instead of 2 GiB, the product still
+        exceeds the budget, and the run is no more parallel than before -- while
+        nothing has ever been killed for reaching a ceiling, so the headroom
+        buys nothing at all. Measured: that mutation survived every other test
+        in this class.
+
+        Stated against the rule being beaten -- what the uncommitted
+        `budget // floor` would have allowed -- rather than against the current
+        arithmetic, which would be a copy of the code.
+        """
+        share = self.sharing(4 << 30, 16, mutate.MEMORY)
+        self.assertGreater(
+            share.lanes,
+            (4 << 30) // mutate._FLOOR,
+            "the commitment went into ceilings nobody reaches instead of into lanes",
+        )
 
     def test_more_memory_never_means_fewer_lanes(self) -> None:
         """Monotonicity. Nothing else here would catch a comparison flipped in
@@ -4561,6 +4607,37 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
         """The other half. Without it, "always print" passes the test above and
         every run carries a line about a limit that did not bind."""
         self.assertNotIn("lane(s)", self.lines(8, mutate.Share(self.WANTED, mutate.MEMORY)))
+
+    def test_nothing_but_the_cores_and_the_table_caps_what_is_asked_for(self) -> None:
+        """A hardcoded `_LANES = 16` used to sit in this expression, with no
+        measurement behind "the most lanes worth running, whatever the machine
+        reports". On a 32-core machine it was the only binding term, and lifting
+        it was worth 30% -- 214s against 303s over 1309 rows, two interleaved
+        pairs.
+
+        Asserted on what `run` *asks* `_share` for, not on what it gets: the
+        cap was in the asking, and a machine that then declines on memory is a
+        different and legitimate answer.
+        """
+        asked: list[int] = []
+
+        def watch(wanted: int, memory: int, pinned: bool = False) -> mutate.Share:
+            asked.append(wanted)
+            return mutate.Share(1, memory)
+
+        table = [self.ROW._replace(new=f"PROBE = {n}") for n in range(2, 60)]
+        with (
+            mock.patch.object(mutate, "_share", watch),
+            mock.patch.object(mutate, "usable_cpus", lambda: 20),
+            mock.patch.object(
+                mutate, "_attempt", lambda *a, **k: mutate.Verdict("caught", "probe")
+            ),
+            support.quiet(),
+        ):
+            mutate.run(table, baseline=False, summarise=False)
+        # 20 cores x 2 against a 58-row table: the cores are the smaller, so
+        # that is what must come through. A constant of 16 would clip it.
+        self.assertEqual([40], asked)
 
 
 class TestHandingRowsOutToLanes(unittest.TestCase):

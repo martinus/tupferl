@@ -1043,6 +1043,53 @@ read this file:
   than failing. A `BROKE` row is never `caught`, so that line is unguarded on
   the runs where it fires.
 
+- **The lane count was held at 16 by a constant, and lifting it was worth
+  30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind
+  its comment ("the most lanes worth running, whatever the machine reports"). On
+  a 32-core machine it was the *only* binding term — `usable_cpus() * 2` gave
+  64 and memory gave 25 — so the tool used half the machine. Measured over the
+  1309 rows of `--only tupferl/`, two interleaved pairs each: **214.1s and
+  214.7s at 32 lanes against 306.8s and 300.8s at 16.**
+
+  Removed. What bounds the ask now is the work there is and the cores there
+  are, and nothing else.
+
+  **And the ceilings may now add up to `_COMMIT` (150%) of the budget.** A
+  ceiling is headroom for a pathological row, not what an honest one spends, so
+  requiring `lanes x ceiling <= budget` prices every lane as though all were
+  pathological at once. The evidence it was already too strict: `--workers 32`
+  had been committing **126%** for dozens of sweeps, whole-tree included, and
+  nothing has ever been killed for memory. On this machine the default goes from
+  16 lanes to 39.
+
+  Three things to keep straight, each a way it could go wrong quietly:
+
+  - **`_COMMIT` is not applied to `_affordable`**, which divides by what a lane
+    is *measured* to use rather than by its ceiling. That number already prices
+    peaks as independent, so scaling it too would spend one allowance twice.
+  - **The allowance must buy lanes, not headroom.** Applying it to the ceiling
+    alone gives the same lane count a bigger ceiling nobody reaches — no more
+    parallel than before, and it passes every obvious assertion. Measured: that
+    mutation survived every other test in the class until
+    `test_the_commitment_buys_lanes_rather_than_headroom` was written for it.
+  - **The number that would justify a figure rather than a judgement is not
+    measured.** `_report_headroom` samples the heaviest *single* lane process;
+    nothing samples the *sum* of lane RSS at one instant, which is what the host
+    feels. "One lane reached 92% of its ceiling" and "the machine was near its
+    limit" are different claims and only the first is in evidence. 150% is
+    calibrated against "126% has never been killed" and no more — **if a sweep
+    is ever OOM-killed, this is the first thing to look at**, and the sampler is
+    the thing to write before arguing about the constant.
+
+  The counter-argument, which is measured and which `slowest_first` makes worse:
+  woswoar#232 was not lanes drifting up independently, it was *three of four
+  lanes running away simultaneously on the same source line*, because a
+  generated table walks a file in order and its expensive rows are adjacent.
+  Peaks are correlated by position, and ordering rows dearest-first concentrates
+  them further — peak lane memory measured 466 MiB unordered against 528 MiB
+  ordered, both trivial against a 3363 MiB ceiling on this table, but the
+  whole-tree figure is 92%.
+
 ### Measured dead ends — do not re-attempt without new evidence
 
 - **Interleaving a mutation table round-robin across files** (#49). Proposed so

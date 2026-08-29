@@ -148,8 +148,32 @@ TIMEOUT = 300.0
 #: a `setUpModule`, or an import. This does not replace it, it makes it rare.
 EACH_TEST = 30.0
 
-#: The most lanes worth running, whatever the machine reports.
-_LANES = 16
+#: How much of the budget the lanes' *ceilings* may add up to. A ceiling is
+#: headroom for a pathological row, not what an honest one spends, and peaks are
+#: not simultaneous -- so requiring `lanes x ceiling <= budget` prices every lane
+#: as though all of them were pathological at once.
+#:
+#: Measured before it was raised: `--workers 32` already committed **126%** of
+#: this machine's budget (32 x 2048 MiB against 52135 MiB) across dozens of
+#: sweeps, whole-tree ones included, and nothing has ever been killed for
+#: memory. The heaviest single lane process ran 14-18% of its ceiling on
+#: `--only tupferl/` and 92% on a whole-tree run.
+#:
+#: **Not applied to `_affordable`**, which divides by what a lane is *measured*
+#: to use rather than by its ceiling. That number already assumes peaks are
+#: independent, so scaling it here would spend the same allowance twice.
+#:
+#: The quantity that would actually justify a number rather than a judgement is
+#: the *sum* of lane RSS at one instant, and nothing samples it --
+#: `_report_headroom` watches the heaviest single process. Until something does,
+#: this is calibrated against "126% has never been killed" and no more.
+_COMMIT = 1.5
+
+#: The budget to assume on a machine that publishes nothing at all -- no
+#: `/proc/meminfo`, no cgroup, no `sysconf`. Sixteen lanes' worth of measured
+#: use, which is a guess and is only ever reached when every real source has
+#: failed.
+_BLIND_LANES = 16
 
 #: Rows a generated table runs before it stops, when nobody said otherwise.
 #: Sized for a diff; `--all` resets it, because a cap meant to keep one
@@ -1336,7 +1360,7 @@ def _visible_memory() -> int:
         limits.append(int(inherited))
     with suppress(AttributeError, OSError, ValueError):  # not POSIX
         limits.append(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    return min(limits) if limits else _LANES * _LANE
+    return min(limits) if limits else _BLIND_LANES * _LANE
 
 
 #: Where the kernel publishes what it can still hand out. A module constant so a
@@ -1595,12 +1619,17 @@ def _share(wanted: int, memory: int, pinned: bool = False) -> Share:
     if memory <= 0:
         return Share(max(1, wanted), memory)
     budget = _budget()
+    # What the ceilings may add up to, which is more than there is: see
+    # `_COMMIT`. `_affordable()` below is deliberately left on the unscaled
+    # budget -- it counts lanes by measured use, which already prices peaks as
+    # independent.
+    allowed = int(budget * _COMMIT)
     # An explicit `--memory` under the floor is the caller's call, not a mistake
     # to correct: they may be reproducing a small machine on purpose. It still
     # sets how many lanes fit.
     floor = min(memory, _FLOOR)
-    lanes = max(1, wanted if pinned else min(wanted, _affordable(), budget // floor))
-    return Share(lanes, min(memory, max(floor, budget // lanes)))
+    lanes = max(1, wanted if pinned else min(wanted, _affordable(), allowed // floor))
+    return Share(lanes, min(memory, max(floor, allowed // lanes)))
 
 
 def run(
@@ -1657,7 +1686,13 @@ def run(
     # regressed). An earlier `cpu // 2` here gave two lanes on a four-core runner
     # and was 1.76x slower than this for eight runs. A sandbox is ~1 ms, so a lane
     # is nearly free.
-    wanted = workers or min(len(table) + len(shards), usable_cpus() * 2, _LANES)
+    # Bounded by the work there is and by the cores there are, and by nothing
+    # else. A hardcoded `_LANES = 16` used to sit here too, with no measurement
+    # behind "the most lanes worth running, whatever the machine reports" -- on a
+    # 32-core machine it was the *only* binding term, and lifting it to 32 was
+    # worth 30%: 214s against 303s over the 1309 rows of `--only tupferl/`,
+    # two interleaved pairs.
+    wanted = workers or min(len(table) + len(shards), usable_cpus() * 2)
     lanes, memory = _share(wanted, memory, pinned=workers is not None)
     if lanes != wanted or memory != asked:
         # Said out loud, for the reason `--limit` says what it dropped: a run
@@ -1668,7 +1703,12 @@ def run(
         print(
             paint.paint(
                 f"{lanes} lane(s) at {memory >> 20} MiB each, from {_budget() >> 20} MiB "
-                f"of usable memory ({_why()}) -- see tools.mutate._share.",
+                f"of usable memory ({_why()}), committing "
+                # Said, never silent. Over-committing is a judgement about
+                # peaks not coinciding, and a reader has to be able to see it
+                # was made -- especially on the run that does get killed.
+                f"{100 * lanes * memory / max(_budget(), 1):.0f}% "
+                f"-- see tools.mutate._share.",
                 paint.QUIET,
             )
         )
