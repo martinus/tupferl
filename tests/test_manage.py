@@ -786,8 +786,24 @@ class TestModes(support.SandboxCase):
         the user asked to manage ends up silently unmanaged."""
         where = self.home / "vanished"
         os.mkfifo(where)
-        with self.assertRaises(OSError) as caught:
+        # `read_bytes()` on a fifo blocks until a writer appears, so a mutation
+        # dropping `copies.read`'s `S_ISREG` guard *hangs* this test rather than
+        # failing it -- and the harness files a hang as `BROKE`, which is never
+        # `caught`, leaving the guard itself unguarded. Measured: that row came
+        # back `BROKE` on the whole-tree sweep before this bound existed.
+        with (
+            self.assertRaises(OSError) as caught,
+            support.deadline(support.PATIENCE, f"copies.store blocked reading {where}"),
+        ):
             copies.store(where, self.tmp / "target")
+        # Read the type back, because `TimeoutError` **is** an `OSError`: the
+        # `assertRaises` above accepts the hang as though it were the error under
+        # test. And the message names the path -- a bound that fires should say
+        # which file -- so the `assertIn` below passes on a hang too. That leaves
+        # this line as the only thing telling the two apart, which is the point:
+        # without it the bound would turn one unguarded line into a test that
+        # cannot fail, and a diagnostic worth having would be what disarmed it.
+        self.assertNotIsInstance(caught.exception, TimeoutError)
         self.assertIn("vanished", str(caught.exception))
 
     def test_executable_by_anyone_counts(self) -> None:

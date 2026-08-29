@@ -70,6 +70,15 @@ BOUND = 20
 #: is up long before it can fire.
 ALARM = 0.5
 
+#: How long a test may wait for a *nested* harness run before calling it a
+#: failure. Its own bound rather than `support.PATIENCE`, because the subject is
+#: a whole `mutate.run` and not one call: measured at 0.66s honestly, so this is
+#: eighteen times the honest wait, and it goes through `support.bounded` so it
+#: stays under whatever `--each-test` the outer sweep armed rather than under the
+#: default alone. The margin is wide on purpose -- under a 39-lane sweep this
+#: runs inside a memory-capped sandbox against 38 other lanes.
+NESTED = support.bounded(12.0)
+
 #: The deliberate bug: `tupferl/config.py` stops refusing keys it does not know.
 #: The same row appears in `tools/mutate.py`'s module docstring as the example,
 #: so a change to either line is caught here rather than by a reader noticing
@@ -93,7 +102,21 @@ UNWATCHED = UNKNOWN_KEY_GUARD._replace(
 
 
 class TestTheHarnessAnswersBothWays(unittest.TestCase):
-    """The whole loop: copy the tree, apply the edit, run a suite, classify."""
+    """The whole loop: copy the tree, apply the edit, run a suite, classify.
+
+    Every test here runs under `NESTED`, because every one of them drives a real
+    `mutate.run` and a broken walk does not stop. Six mutants of
+    `verdict._reached` and `verdict.collect` came back `BROKE` on the whole-tree
+    sweep -- never `caught`, so the widening this class exists to prove was
+    proved by nothing.
+
+    Armed in `setUp` rather than around the one call, which was the first
+    attempt and left two of the six still `BROKE`: `if not walk:` inverted hangs
+    `test_a_deliberate_bug_is_caught` and `test_an_unwatched_bug_survives`, which
+    pass `walk=False` and are not the test the bound was written on. A bound
+    around one call covers that call and reads as though it covered the class --
+    the same mistake `TestLineEndingsThatAreNotNewline` records one file over.
+    """
 
     #: `walk=False` throughout this class, and it is not a shortcut. What these
     #: assert is the *classification* -- caught, survived, and the tree left
@@ -104,6 +127,11 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
     #: another whole-suite run. That is the design working as intended on a
     #: sweep and pure cost inside the harness's own tests.
     WALK = False
+
+    def setUp(self) -> None:
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(NESTED, "a nested harness run never finished"))
 
     def test_a_deliberate_bug_is_caught(self) -> None:
         report = mutate.run(
@@ -4462,7 +4490,15 @@ class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
         sampler holds a lock."""
         looped = self.table((10, 1, 10), (11, 10, 10), (12, 11, 12))
         looped[10] = looped[10]._replace(parent=12)
-        self.assertEqual({10, 11, 12}, mutate._lane(10, looped))
+        # Bounded, or this test cannot fail. Its subject is `seen`, the only
+        # thing stopping the walk revisiting a pid for ever -- so a mutation that
+        # removes it makes this *hang* rather than fail, and the harness files a
+        # hang as `BROKE`, which is never `caught`. Both mutants of those two
+        # lines came back that way on the whole-tree sweep: a test named
+        # "does not hang the sampler" that hung, and read as a guard.
+        with support.deadline(support.PATIENCE, "_lane never finished walking a cycle"):
+            found = mutate._lane(10, looped)
+        self.assertEqual({10, 11, 12}, found)
 
 
 class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
