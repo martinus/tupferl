@@ -1006,6 +1006,43 @@ read this file:
   than comparing URLs, and greps a copy for the template's path so that a *third*
   such file is caught rather than waited for.
 
+- **Ordering each file's rows by what they cost last sweep** (`slowest_first`).
+  Four interleaved pairs over `--only tupferl/`, 1309 rows, one binary and one
+  variable — the control is the same `killers.json` with its `seconds` map
+  stripped, since an empty map makes `slowest_first` a no-op and no second code
+  path is needed:
+
+  | lanes | pair | unordered | slowest-first | |
+  |---|---|---|---|---|
+  | 16 | 1 | 306.81s | 286.97s | −6.5% |
+  | 16 | 2 | 300.83s | 282.90s | −6.0% |
+  | 32 | 1 | 214.06s | 192.42s | −10.1% |
+  | 32 | 2 | 214.68s | 192.64s | −10.3% |
+
+  Median paired difference **−18.9s at 16 lanes and −21.8s at 32** — an almost
+  constant saving, so it is a bigger *share* of a shorter run. That is the
+  mechanism showing itself rather than a coincidence: it predicts, and the runs
+  confirm, that more lanes means more idle capacity for a late 90s row to waste.
+
+  **It thins the tail rather than removing it.** The last survivor finishes dead
+  last in all eight runs; what moves is the median survivor's completion, 1198 →
+  1043 of 1309 at 16 lanes and 1295 → 1189 at 32. The residual is structural:
+  the sort is *within* a file and `by_size` runs the largest file **last**, so
+  that file's survivors are dispatched near the end however well its own rows
+  are ordered. Ordering *files* by predicted cost would reach them and would
+  keep every row contiguous — at the price of #49's reason for smallest-first.
+  Not attempted.
+
+  **And it costs one row, reproducibly.** `tupferl/conflicts.py:635 in ask()`
+  went `caught` in 4 of 4 unordered runs and `BROKE` in 3 of 4 ordered ones,
+  always as `test_b_keeps_both ... did not finish within 30s`. The landmine is
+  pre-existing and is the one CLAUDE.md already names — a prompt in a test must
+  fail, not block — but `Killers.ahead_of` sets `first` identically in both
+  arms, so what differs is `Learned`, whose front is fed by completion order.
+  Reordering changes which test is tried first, and one candidate blocks rather
+  than failing. A `BROKE` row is never `caught`, so that line is unguarded on
+  the runs where it fires.
+
 ### Measured dead ends — do not re-attempt without new evidence
 
 - **Interleaving a mutation table round-robin across files** (#49). Proposed so
@@ -1094,10 +1131,9 @@ read this file:
   **What would justify re-opening it**: nothing about the *scheduler*. Every one
   of the four was an attempt to infer during a run something a previous run
   already knew, so the thing to try instead is recording it — which is what
-  `Killers.seconds` and `slowest_first` do. **That replacement is not yet
-  measured**: one interleaved pair at 16 lanes gave 306.8s against 286.9s, and
-  one pair is not a number. Re-open the scheduler only with a table whose
-  selection count is stated and a mechanism that is not a within-run guess.
+  `Killers.seconds` and `slowest_first` do, measured below. Re-open the
+  scheduler only with a table whose selection count is stated and a mechanism
+  that is not a within-run guess.
 
   Kept from the branch, because they were measured free (236s in the new binary
   against `main`'s 232s and 234s): streaming per-row output with a `[n/total]`
