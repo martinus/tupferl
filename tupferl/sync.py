@@ -331,10 +331,6 @@ class Backups:
         """Save `blob` under `name`, and return where it went."""
         if self.where is None:
             self.where = self.root / datetime.now().strftime(STAMP)
-            # survivor: drop-kwarg -- tupferl/sync.py:301 in Backups.take() -- `exist_ok=True` is
-            #   dropped -- unreachable within one run: `self.where` is set once per `Backups`, so
-            #   the directory is created once. Two runs in the same second would collide, and no
-            #   test can produce that without controlling the clock.
             self.where.mkdir(parents=True, exist_ok=True)
             self.forget_old()
         target = self.where / name

@@ -107,9 +107,9 @@ def tint(line: str, out: TextIO | None = None) -> str:
     stream, and a caller writing somewhere other than stdout -- including a test
     -- must be able to say which.
     """
-    # survivor: off-by-one -- TODO: nobody has decided this one. The sweep's classifier said: a test
-    #   reaches this line and asserts nothing about it -- tools/watch.py:110 in tint() -- `1`
-    #   becomes `2`. Weak fixture or equivalent; from the whole- tree sweep of 2026-08.
+    # survivor: off-by-one -- `line.split(" ", 1)[0]` -- equivalent: `maxsplit` decides how many
+    #   pieces come back, never what the *first* one is, so `[0]` is the same word at 1, 2 or any
+    #   other bound.
     return paint.paint(line, SHOUT.get(line.split(" ", 1)[0].rstrip(":"), ""), out)
 
 
@@ -184,9 +184,6 @@ def counted(log: Path, pattern: re.Pattern[str]) -> int:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    # survivor: off-by-one -- TODO: nobody has decided this one. The sweep's classifier said: a test
-    #   reaches this line and asserts nothing about it -- tools/watch.py:110 in tint() -- `1`
-    #   becomes `2`. Weak fixture or equivalent; from the whole- tree sweep of 2026-08.
     return sum(1 for line in text.splitlines() if pattern.search(line))
 
 
@@ -228,10 +225,9 @@ class Watch:
         #: doubling rather than a repeat. Zero means nothing said yet -- and, as
         #: with `moved`, the opening poll overwrites it before `stalling` can
         #: read it, so this value is the declaration rather than the behaviour.
-        # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier said: a
-        #   test reaches this line and asserts nothing about it -- tools/watch.py:225 in
-        #   Watch.__init__() -- `self.told` is never assigned. Weak fixture or equivalent; from the
-        #   whole-tree sweep of 2026-08.
+        # survivor: drop-assign -- equivalent, and the comment above says why: the opening poll
+        #   assigns `self.told` again (`Watch.poll`) before `stalling` ever reads it, so this line
+        #   declares the attribute rather than deciding anything.
         self.told = 0.0
 
     def minutes(self) -> int:
@@ -280,10 +276,9 @@ class Watch:
         idle = time.monotonic() - self.moved
         # `told * 2` is the doubling. Below `stale` nothing is said at all, and
         # `told` is 0 until the first report, so that term cannot suppress it.
-        # survivor: boundary -- TODO: nobody has decided this one. The sweep's classifier said: a
-        #   test reaches this line and asserts nothing about it -- tools/watch.py:273 in
-        #   Watch.stalling() -- `<` becomes `<=`. Weak fixture or equivalent; from the whole-tree
-        #   sweep of 2026-08.
+        # survivor: boundary -- equivalent in practice: both sides are `time.monotonic()`
+        #   differences, so `<` and `<=` differ only when two floats are bit-identical. A fixture
+        #   that produced that would be pinning the clock, not the rule.
         if idle < self.stale or idle < self.told * 2:
             return None
         self.told = idle
@@ -342,16 +337,15 @@ def _await_pid(where: Path, interval: float, patience: float | None = None) -> i
         try:
             return a_pid(where.read_text(encoding="utf-8").strip())
         except (OSError, ValueError, argparse.ArgumentTypeError) as exc:
-            # survivor: boundary -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   a test reaches this line and asserts nothing about it -- tools/watch.py:331 in
-            #   _await_pid() -- `>=` becomes `>`. Weak fixture or equivalent; from the whole-tree
-            #   sweep of 2026-08.
+            # survivor: boundary -- equivalent in practice: both sides are `time.monotonic()`
+            #   differences, so `<` and `<=` differ only when two floats are bit-identical. A
+            #   fixture that produced that would be pinning the clock, not the rule.
             if time.monotonic() >= deadline:
                 raise SystemExit(f"no usable pid in {where} after {waiting:g}s: {exc}") from None
-        # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said: a
-        #   test reaches this line and asserts nothing about it -- tools/watch.py:333 in
-        #   _await_pid() -- the call to `time.sleep(...)` never happens. Weak fixture or equivalent;
-        #   from the whole-tree sweep of 2026-08.
+        # survivor: drop-call -- costs CPU, not correctness: without the sleep the loop spins
+        #   instead of waiting, and still leaves at the same deadline. Worth keeping and not worth a
+        #   test -- asserting *that the process idled* means timing the watcher, which is the
+        #   flakiest kind of assertion this suite could hold.
         time.sleep(step)
 
 

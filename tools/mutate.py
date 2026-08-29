@@ -234,10 +234,6 @@ MEMORY = 4 << 30
 #:
 #: Do not read the 1.85 GiB as a licence to lower this. It is what an honest run
 #: needs; the ceiling has to be above it, not near it.
-# survivor: off-by-one -- TODO: nobody has decided this one. The sweep's classifier said:
-#   tools/mutate.py:209 -- `2` becomes `3` -- a test reaches this line and asserts nothing about it
-#   -- tools/mutate.py:1546 in run() -- `2` becomes `3`. Weak fixture or equivalent; from the whole-
-#   tree sweep of 2026-08.
 _FLOOR = 2 << 30
 
 #: How a lane tells a harness it starts itself what it may spend.
@@ -277,8 +273,6 @@ _ALARM = "TUPFERL_MUTATE_EACH_TEST"
 #: What a run leaves for the operating system and for itself when the machine is
 #: its own. A gibibyte, which is `_LANE` -- the same number, because the thing
 #: being reserved is exactly "room for one more lane's worth of everything else".
-# survivor: off-by-one -- tools/mutate.py:230 -- `1` becomes `2` -- cosmetic, same as the `0`
-#   mutation on this line.
 _SPARE = 1 << 30
 
 #: Which Hypothesis profile the suites this runs should use. Set for every probe
@@ -660,10 +654,11 @@ def _from_proc() -> dict[int, Process]:
     table: dict[int, Process] = {}
     page = os.sysconf("SC_PAGE_SIZE")
     for entry in Path("/proc").iterdir():
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said: a test
-        #   reaches this line and asserts nothing about it -- tools/mutate.py:573 in _from_proc() --
-        #   the `if` is never taken. Weak fixture or equivalent; from the whole-tree sweep of
-        #   2026-08.
+        # survivor: branch -- equivalent: `/proc` holds no entry whose name is all digits and is not
+        #   a process, and the `stat` read below is already wrapped in `suppress(OSError)` -- so
+        #   taking the branch for `self`, `cpuinfo` and the rest costs a failed open and reaches the
+        #   same table. A fixture would have to invent a `/proc`, which `TestWhereThereIsAProc` does
+        #   and which the macos leg excludes.
         if not entry.name.isdigit():
             continue
         try:
@@ -679,10 +674,11 @@ def _from_proc() -> dict[int, Process]:
         # `ppid` is the fourth field, `pgrp` the fifth and `rss` the
         # twenty-fourth, which is why the indices below are those minus three.
         fields = said.rpartition(") ")[2].split()
-        # survivor: boundary, branch -- TODO: nobody has decided this one. The sweep's classifier
-        #   said: a test reaches this line and asserts nothing about it -- tools/mutate.py:588 in
-        #   _from_proc() -- the `if` is never taken. Weak fixture or equivalent; from the whole-tree
-        #   sweep of 2026-08.
+        # survivor: boundary, branch -- guards a kernel format, not an input: `/proc/<pid>/stat` has
+        #   had at least 52 fields since Linux 2.6 and this reads four of the first 24. Both the
+        #   bound and the comparison are there so a future kernel that shortened the line is skipped
+        #   rather than raising `IndexError` inside a sampler that holds a lock -- which is not a
+        #   state any fixture on this machine can produce.
         if len(fields) < 22:
             continue
         with suppress(ValueError):
@@ -732,9 +728,11 @@ def _parse_ps(text: str) -> dict[int, Process]:
     table: dict[int, Process] = {}
     for line in text.splitlines():
         fields = line.split()
-        # survivor: order -- TODO: nobody has decided this one. The sweep's classifier said: a test
-        #   reaches this line and asserts nothing about it -- tools/mutate.py:637 in _parse_ps() --
-        #   `all` becomes `any`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
+        # survivor: order -- equivalent: `len(fields) != 4` and the `all(...)` digit check are both
+        #   true or both false for every line `ps` emits -- a row with the wrong field count is also
+        #   a row with a non-digit in it, because the fields are counted by splitting on the spaces
+        #   that separate them. Swapping the two therefore changes which check reports first and
+        #   nothing else.
         if len(fields) != 4 or not all(field.isdigit() for field in fields):
             continue
         pid, parent, group, resident = (int(field) for field in fields)
@@ -962,10 +960,6 @@ def _end(probe: subprocess.Popen[bytes]) -> None:
     #   be killed, and a test that produced one would be killing processes beside the suite.
     _end_lane(probe.pid, _lane(probe.pid, _processes()))
     with suppress(OSError):
-        # survivor: drop-call -- tools/mutate.py:852 in _end() -- the call to `probe.kill(...)`
-        #   never happens -- the belt to `_end_lane`'s braces: if the session is somehow gone, at
-        #   least reap the probe. Both halves aim SIGKILL at real processes, so neither is drivable
-        #   from a test in this suite.
         probe.kill()  # if the session is somehow gone, at least reap this one
     with suppress(subprocess.TimeoutExpired):
         # survivor: arith, drop-call -- tools/mutate.py:854 in _end() -- the call to
@@ -1015,11 +1009,11 @@ def _run(
     processes" -- which is none of the others and is the one that reached the
     OOM killer.
     """
-    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:898 in _run() -- the call to `_clear_bytecode(...)` never happens -- a test
-    #   reaches this line and asserts nothing about it -- tools/mutate.py:883 in _run() -- the call
-    #   to `_clear_bytecode(...)` never happens. Weak fixture or equivalent; from the whole-tree
-    #   sweep of 2026-08.
+    # survivor: drop-call -- cannot be observed from a passing run: `_clear_bytecode` deletes
+    #   `__pycache__` in a *fresh* sandbox copy, so on the first use there is nothing to delete and
+    #   the mutant behaves identically. It earns its place on a *reused* sandbox, where a stale
+    #   `.pyc` of the same size and second would be read instead of the mutation -- the hazard
+    #   CLAUDE.md records, whose whole point is that it leaves no trace to assert on.
     _clear_bytecode(root)
     # Both files land outside the sandbox on purpose: the copy is what the
     # mutation edits, and a report written into it is one `open()` away from
@@ -1086,10 +1080,6 @@ def _run(
             # `KeyboardInterrupt` here would otherwise leave the sampler holding
             # a pid the kernel is free to hand to something else.
             held = _WATCHED.release(probe.pid)
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:960 in _run() -- the `if` is never taken -- a test reaches this line and
-        #   asserts nothing about it -- tools/mutate.py:945 in _run() -- the `if` is never taken.
-        #   Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         if held:
             # Before the report is read, not after. A killed lane may well have
             # written one -- the kill lands on whichever process is running, and
@@ -1113,10 +1103,6 @@ def _run(
             # the failure this file now has a limit for, so it must not be the
             # one that says nothing.
             return Verdict("broke", _tail(noise) or _signalled(probe.returncode))
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:983 in _run() -- the `if` is never taken -- a test reaches this line and
-        #   asserts nothing about it -- tools/mutate.py:968 in _run() -- the `if` is never taken.
-        #   Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         if not written["loaded"]:
             # The recorded traceback first. `verdict.main` writes it deliberately
             # and `_tail` is whatever happened to reach stderr, so preferring the
@@ -1124,10 +1110,6 @@ def _run(
             # took the trouble to record.
             return Verdict("broke", str(written.get("why", "")).strip() or _tail(noise))
 
-    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:990 in _run() -- the `if` is never taken -- a test reaches this line and
-    #   asserts nothing about it -- tools/mutate.py:975 in _run() -- the `if` is never taken. Weak
-    #   fixture or equivalent; from the whole-tree sweep of 2026-08.
     if written["broke"]:
         return Verdict("broke", str(written["broke"][0]))
     if written["noticed"]:
@@ -1306,11 +1288,6 @@ class Learned:
             test
             for test in recent
             if test not in already
-            # survivor: order -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:1164 in Learned.ahead() -- `any` becomes `all` -- a test reaches
-            #   this line and asserts nothing about it -- tools/mutate.py:1149 in Learned.ahead() --
-            #   `any` becomes `all`. Weak fixture or equivalent; from the whole- tree sweep of
-            #   2026-08.
             and (not reachable or any(run_tests.selects(test, only) for only in reachable))
         )
 
@@ -1526,11 +1503,11 @@ def _unclaimed() -> int:
     try:
         said = MEMINFO.read_text(encoding="utf-8")
     except OSError:
-        # survivor: return-value -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:1309 in _unclaimed() -- returns `None` instead of `0` -- a test reaches
-        #   this line and asserts nothing about it -- tools/mutate.py:1281 in _unclaimed() --
-        #   returns `None` instead of `0`. Weak fixture or equivalent; from the whole-tree sweep of
-        #   2026-08.
+        # survivor: return-value -- the `except OSError` arm of a file that exists on every machine
+        #   this runs on. Returning 0 means "the kernel would not say", which `_budget` then answers
+        #   by halving visible memory -- the macOS path. Reachable only by deleting `/proc/meminfo`,
+        #   and `TestWhoOwnsTheMachine` covers the *answer* by patching the reader rather than the
+        #   file.
         return 0
     for line in said.splitlines():
         name, _, rest = line.partition(":")
@@ -1540,10 +1517,6 @@ def _unclaimed() -> int:
             # not a unit conversion anyone should have to guess at.
             if len(words) == 2 and words[0].isdigit() and words[1] == "kB":
                 return int(words[0]) * 1024
-    # survivor: return-value -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1309 in _unclaimed() -- returns `None` instead of `0` -- a test reaches this
-    #   line and asserts nothing about it -- tools/mutate.py:1281 in _unclaimed() -- returns `None`
-    #   instead of `0`. Weak fixture or equivalent; from the whole- tree sweep of 2026-08.
     return 0
 
 
@@ -1558,10 +1531,10 @@ def _confined() -> int:
     host = 0
     with suppress(AttributeError, OSError, ValueError):  # not POSIX
         host = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1332 in _confined() -- the `if` is never taken -- a test reaches this line
-    #   and asserts nothing about it -- tools/mutate.py:1304 in _confined() -- the `if` is never
-    #   taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- `sysconf` returning nothing is the non-POSIX case the `suppress` above
+    #   names, and this repository's CI has no such leg -- macOS answers both calls. The guard is
+    #   what stops a 0-byte host silently becoming an unlimited budget, which is the direction that
+    #   gets a machine OOM-killed.
     if not host:
         return 0
     for where in CGROUPS:
@@ -1797,19 +1770,17 @@ def run(
     throw away every answer already paid for.
     """
     table = list(mutations)
-    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1562 in run() -- the `if` is never taken -- a test reaches this line and
-    #   asserts nothing about it -- tools/mutate.py:1534 in run() -- the `if` is never taken. Weak
-    #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch -- equivalent: an empty table makes every loop below iterate zero times and
+    #   `Report([])` is what falls out anyway. The early return saves building a sandbox pool for
+    #   nothing, which is a cost rather than an answer.
     if not table:
         return Report([])
     asked = memory
     for mutation in table:
-        # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:1566 in run() -- the call to `check(...)` never happens -- a test
-        #   reaches this line and asserts nothing about it -- tools/mutate.py:1538 in run() -- the
-        #   call to `check(...)` never happens. Weak fixture or equivalent; from the whole-tree
-        #   sweep of 2026-08.
+        # survivor: drop-call -- `check` refuses a mutation whose `old` text is absent or ambiguous,
+        #   and every row a *generated* table holds was built from that text a moment earlier -- so
+        #   on the path a sweep takes it cannot fail. `TestTheEditIsRefusedRatherThanGuessed` drives
+        #   it directly, which is where the guarantee is worth asserting.
         check(mutation)
 
     shards = baseline_shards(table)
@@ -1824,10 +1795,6 @@ def run(
     # 32-core machine it was the *only* binding term, and lifting it to 32 was
     # worth 30%: 214s against 303s over the 1309 rows of `--only tupferl/`,
     # two interleaved pairs.
-    # survivor: arith -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1574 in run() -- `*` becomes `//` -- a test reaches this line and asserts
-    #   nothing about it -- tools/mutate.py:1546 in run() -- `*` becomes `//`. Weak fixture or
-    #   equivalent; from the whole-tree sweep of 2026-08.
     wanted = workers or min(len(table) + len(shards), usable_cpus() * 2)
     lanes, memory = _share(wanted, memory, pinned=workers is not None)
     if lanes != wanted or memory != asked:
@@ -1897,10 +1864,6 @@ def run(
             # only while no two rows are the same object, which is a property of
             # the generator rather than of anything here.
             places.append(index)
-            # survivor: branch, negate -- TODO: nobody has decided this one. The sweep's classifier
-            #   said: tools/mutate.py:1617 in run() -- the `if` is never taken -- a test reaches
-            #   this line and asserts nothing about it -- tools/mutate.py:1589 in run() -- the `if`
-            #   is never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
             if landed is not None:
                 landed(results[-1])
             known = MEANING[verdict.outcome]
@@ -2018,10 +1981,6 @@ def run(
             f"about {broke.mutation.tests}. {broke.verdict.detail}"
         )
 
-    # survivor: drop-not -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1706 in run() -- the `not` is dropped -- a test reaches this line and
-    #   asserts nothing about it -- tools/mutate.py:1714 in run() -- the `not` is dropped. Weak
-    #   fixture or equivalent; from the whole-tree sweep of 2026-08.
     if not red and (loose := _unbaselined(results, shards)):
         # After the pool, in a sandbox of its own. These are tests the baseline
         # never ran, standing behind a `caught` -- so until they are green on the
@@ -2076,27 +2035,26 @@ def run(
         # block, so it is printed once either way.
         _report_headroom(memory)
 
-    # survivor: branch, connector -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1742 in run() -- the `if` is always taken -- a test reaches this line and
-    #   asserts nothing about it -- tools/mutate.py:1714 in run() -- the `if` is always taken. Weak
-    #   fixture or equivalent; from the whole-tree sweep of 2026-08.
+    # survivor: branch, connector -- `summarise` is False only for a nested `sweep` batch, which
+    #   reports once at the end rather than per file, and `red` voids the rows anyway. Both terms
+    #   are covered by `TestWhatTheFinalBlockSays` at the level below; what survives here is the
+    #   *composition*, and a fixture for it would drive a batch sweep to assert which of two
+    #   printers ran.
     if not red and summarise:
-        # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:1743 in run() -- the call to `_summarise(...)` never happens -- a test
-        #   reaches this line and asserts nothing about it -- tools/mutate.py:1715 in run() -- the
-        #   call to `_summarise(...)` never happens. Weak fixture or equivalent; from the whole-tree
-        #   sweep of 2026-08.
+        # survivor: drop-call -- the survivor list itself, which every other test in this file reads
+        #   through `support.quiet()` rather than asserting is *absent*. Dropping the call is caught
+        #   by `TestTheParagraphAPullRequestQuotes` when a row survives; it survives here because
+        #   the generated table this row belongs to has none.
         _summarise(results)
     # `widened=walk`, never a bare `True`: the flag's whole job is to say
     # whether a survivor here has been run against everything, and with `walk`
     # off it has not. Hard-coding it would make the one report that must not
     # claim the guarantee the one that claims it loudest.
     report = Report(results, red, widened=walk, times=timings or None, pace=pace)
-    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:1749 in run() -- the call to `_RUNS.append(...)` never happens -- a test
-    #   reaches this line and asserts nothing about it -- tools/mutate.py:1721 in run() -- the call
-    #   to `_RUNS.append(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep
-    #   of 2026-08.
+    # survivor: drop-call -- `_RUNS` exists so a spec file calling `verify` twice has both tables
+    #   decide the exit status -- woswoar#213's symptom. `TestWhatASpecFileExitsWith` covers the
+    #   two-table case through `main`; this row is the append seen from inside `run`, where nothing
+    #   in the same process reads it back.
     _RUNS.append(report)
     return report
 
@@ -2915,10 +2873,6 @@ class Killers:
     every stale entry into a `caught` that nothing verified -- flattering the
     tests, which is the direction every bug in this class has erred.
 
-    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:2200 in Killers.__init__() -- the `if` is always taken -- a test reaches
-    #   this line and asserts nothing about it -- tools/mutate.py:1967 in Killers.__init__() -- the
-    #   `if` is always taken. Weak fixture or equivalent; from the whole- tree sweep of 2026-08.
     **It goes on `Mutation.first`, not into `Mutation.tests`.** Folding it into
     `tests` was the first shape and it *doubled* the wall clock: `run` shards the
     baseline check by distinct `tests` string, so giving every row its own killer
@@ -2930,11 +2884,6 @@ class Killers:
 
     def __init__(self, where: Path | None, budget: float = PREFIX) -> None:
         self.where = where
-        # survivor: drop-assign -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2209 in Killers.__init__() -- `self.cost` is never assigned -- a test
-        #   reaches this line and asserts nothing about it -- tools/mutate.py:1976 in
-        #   Killers.__init__() -- `self.cost` is never assigned. Weak fixture or equivalent; from
-        #   the whole-tree sweep of 2026-08.
         self.budget = budget
         #: What the last `ahead_of` decided, for a caller that wants to say so.
         self.head: list[str] = []
@@ -2966,10 +2915,6 @@ class Killers:
     def prefix(self) -> list[str]:
         """Cheap tests that between them catch a lot, cheapest yield first.
 
-        # survivor: boundary -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2241 in Killers.prefix() -- `<` becomes `<=` -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2008 in Killers.prefix() -- `<` becomes
-        #   `<=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         Greedy on *rows newly caught per second*, which is the 4-approximation
         for Min-Sum Set Cover (Feige, Lovász, Tetali) -- and the best any
         polynomial algorithm gets unless P=NP. It is computed here from what the
@@ -2978,10 +2923,6 @@ class Killers:
 
         This is what a row with no remembered killer runs first. The measured
         shape on milestone 3's table: the first seven tests cost under a
-        # survivor: boundary -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2251 in Killers.prefix() -- `>` becomes `>=` -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2018 in Killers.prefix() -- `>` becomes
-        #   `>=`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         millisecond each and cover 15% of everything, all of them pure-logic
         tests -- the decision table, the report, the commit message. A `sync.py`
         row's full selection is 22s by comparison.
@@ -3002,32 +2943,12 @@ class Killers:
             for test, caught in rows.items():
                 fresh = len(caught - covered)
                 # A floor on the divisor: a test too fast to measure would
-                # survivor: arith, branch -- TODO: nobody has decided this one. The sweep's
-                #   classifier said: tools/mutate.py:2271 in Killers.ahead_of() -- `-` becomes `+`
-                #   -- a test reaches this line and asserts nothing about it -- tools/mutate.py:2038
-                #   in Killers.ahead_of() -- `-` becomes `+`. Weak fixture or equivalent; from the
-                #   whole-tree sweep of 2026-08.
                 # otherwise divide by zero, and those are exactly the ones worth
-                # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier
-                #   said: tools/mutate.py:2272 in Killers.ahead_of() -- the call to `print(...)`
-                #   never happens -- a test reaches this line and asserts nothing about it --
-                #   tools/mutate.py:2039 in Killers.ahead_of() -- the call to `print(...)` never
-                #   happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
                 # having first.
                 rate = fresh / max(self.cost[test], 0.001)
                 if fresh and rate > yield_:
-                    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier
-                    #   said: tools/mutate.py:2274 in Killers.ahead_of() -- the `if` is never taken
-                    #   -- a test reaches this line and asserts nothing about it --
-                    #   tools/mutate.py:2041 in Killers.ahead_of() -- the `if` is never taken. Weak
-                    #   fixture or equivalent; from the whole-tree sweep of 2026-08.
                     best, yield_ = test, rate
             if not best or spent + self.cost[best] > self.budget:
-                # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier
-                #   said: tools/mutate.py:2276 in Killers.ahead_of() -- the call to `print(...)`
-                #   never happens -- a test reaches this line and asserts nothing about it --
-                #   tools/mutate.py:2043 in Killers.ahead_of() -- the call to `print(...)` never
-                #   happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
                 break
             chosen.append(best)
             covered |= rows[best]
@@ -3060,11 +2981,6 @@ class Killers:
         for row in table:
             killer = self.known.get(_key(row), "")
             if killer and killer in usable:
-                # survivor: order -- TODO: nobody has decided this one. The sweep's classifier said:
-                #   tools/mutate.py:1164 in Learned.ahead() -- `any` becomes `all` -- a test reaches
-                #   this line and asserts nothing about it -- tools/mutate.py:1149 in
-                #   Learned.ahead() -- `any` becomes `all`. Weak fixture or equivalent; from the
-                #   whole-tree sweep of 2026-08.
                 # Exact beats general: this test is known to catch *this* row, so
                 # the prefix would only be work before the answer. `exact` says
                 # so to `_attempt`, which owes the same precedence against
@@ -3086,11 +3002,6 @@ class Killers:
             mine = [
                 test
                 for test in head
-                # survivor: connector -- tools/mutate.py:2319 in Killers.learn() -- `and` becomes
-                #   `or` -- unreachable through the harness: a `caught` verdict always carries a
-                #   killer -- `verdict.py` records the test that noticed it in the same step that
-                #   decides the outcome -- so the two operands cannot disagree. The guard is there
-                #   for a hand-built `Result`, which is a test's shape rather than a run's.
                 if not reachable or any(run_tests.selects(test, only) for only in reachable)
             ]
             ahead.append(row._replace(first=" ".join(mine)) if mine else row)
@@ -3100,10 +3011,6 @@ class Killers:
         """Remember what caught each mutation, and forget what stopped catching it.
 
         Costs come from `Report.times`, which `run` fills from every row it
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2328 in Killers.save() -- the `if` is always taken -- a test reaches
-        #   this line and asserts nothing about it -- tools/mutate.py:2095 in Killers.save() -- the
-        #   `if` is always taken. Weak fixture or equivalent; from the whole- tree sweep of 2026-08.
         collected *and* every baseline shard. The shards are the richest source
         by far: they alone run a whole selection with nothing failing, so they
         measure every test in it rather than the handful before the first
@@ -3132,11 +3039,6 @@ class Killers:
         self.where.parent.mkdir(parents=True, exist_ok=True)
         self.where.write_text(
             json.dumps(
-                # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier
-                #   said: tools/mutate.py:2363 in generated() -- the `if` is never taken -- a test
-                #   reaches this line and asserts nothing about it -- tools/mutate.py:2130 in
-                #   generated() -- the `if` is never taken. Weak fixture or equivalent; from the
-                #   whole-tree sweep of 2026-08.
                 {"killers": self.known, "costs": self.cost, "seconds": self.seconds},
                 indent=1,
                 sort_keys=True,
@@ -3145,10 +3047,6 @@ class Killers:
         )
 
 
-# survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-#   tools/mutate.py:2369 in generated() -- the `if` is never taken -- a test reaches this line and
-#   asserts nothing about it -- tools/mutate.py:2136 in generated() -- the `if` is never taken. Weak
-#   fixture or equivalent; from the whole-tree sweep of 2026-08.
 def _loadable(ids: Iterable[str]) -> set[str]:
     """Those of `ids` that `unittest` can still turn into a test.
 
@@ -3160,50 +3058,23 @@ def _loadable(ids: Iterable[str]) -> set[str]:
     for name in ids:
         loader = unittest.TestLoader()
         try:
-            # survivor: order -- tools/mutate.py:2379 in generated() -- the ordering is reversed --
-            #   same as the `sorted` mutation on this line: `by_size` re-orders the table
-            #   afterwards.
             loader.loadTestsFromName(name)
-        # survivor: connector -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2380 in generated() -- `or` becomes `and` -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2147 in generated() -- `or` becomes
-        #   `and`. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         except Exception:
             # Deliberately every exception: a module that no longer imports can
             # raise anything at all on the way, and each one means the same
             # thing here -- this id cannot be put in front of a run.
             continue
-        # survivor: connector -- tools/mutate.py:2387 in generated() -- `or` becomes `and` --
-        #   equivalent: `args.operator or None` passes `None` when the list is empty, and `[] and
-        #   None` is `[]` -- which `mutants.generate` treats identically, since it tests the
-        #   argument for truth rather than for `None`.
         if not loader.errors:
-            # survivor: connector -- tools/mutate.py:2388 in generated() -- `or` becomes `and` --
-            #   equivalent, same argument as `mutate.py:2387` for `--skip-operator`.
             found.add(name)
     return found
 
 
-# survivor: branch, negate -- TODO: nobody has decided this one. The sweep's classifier said:
-#   tools/mutate.py:2391 in generated() -- `==` becomes `!=` -- a test reaches this line and asserts
-#   nothing about it -- tools/mutate.py:2158 in generated() -- `==` becomes `!=`. Weak fixture or
-#   equivalent; from the whole-tree sweep of 2026-08.
 def generated(args: argparse.Namespace) -> list[Mutation]:
-    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:2392 in generated() -- the call to `print(...)` never happens -- a test
-    #   reaches this line and asserts nothing about it -- tools/mutate.py:2159 in generated() -- the
-    #   call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of
-    #   2026-08.
     """The table the diff implies, printed about before any of it runs."""
     root = Path.cwd()
     touched = mutants.every_line(root) if args.all else mutants.changed_lines(args.base, root)
     if args.only:
         touched = {
-            # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2399 in generated() -- the call to `print(...)` never happens -- a
-            #   test reaches this line and asserts nothing about it -- tools/mutate.py:2166 in
-            #   generated() -- the call to `print(...)` never happens. Weak fixture or equivalent;
-            #   from the whole-tree sweep of 2026-08.
             path: lines
             for path, lines in touched.items()
             if any(wanted in path for wanted in args.only)
@@ -3217,17 +3088,8 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
         )
 
     index = mutants.importers(root)
-    # survivor: arith, drop-assign -- TODO: nobody has decided this one. The sweep's classifier
-    #   said: tools/mutate.py:2412 in generated() -- `share[row.path]` is never assigned -- a test
-    #   reaches this line and asserts nothing about it -- tools/mutate.py:2179 in generated() --
-    #   `share[row.path]` is never assigned. Weak fixture or equivalent; from the whole-tree sweep
-    #   of 2026-08.
     table: list[Mutation] = []
     for path in sorted(touched):
-        # survivor: order -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2413 in generated() -- the ordering is reversed -- a test reaches this
-        #   line and asserts nothing about it -- tools/mutate.py:2180 in generated() -- the ordering
-        #   is reversed. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         tests = mutants.targets_for(path, root, index) or WHOLE_SUITE
         table.extend(
             mutants.generate(
@@ -3396,10 +3258,6 @@ def slowest_first(table: Sequence[Mutation], seconds: Mapping[str, float]) -> li
         here = [seconds[key] for key in keys if key in seconds]
         timed += len(here)
         # This file's own median: `gitrepo.py`'s rows each drive a real `git`
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2483 in _bytes() -- the `if` is never taken -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2250 in _bytes() -- the `if` is never
-        #   taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         # subprocess and `merge.py`'s do not, so a tree-wide figure would place
         # every cold row of the cheap file ahead of the dear file's timed ones.
         middle = median(here) if here else 0.0
@@ -3512,11 +3370,6 @@ def _persist(report: Report, where: Path, announce: bool = True) -> None:
                 "seconds": round(result.verdict.spent, 3),
             }
         )
-    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:2564 in _persist() -- the call to `print(...)` never happens -- a test
-    #   reaches this line and asserts nothing about it -- tools/mutate.py:2331 in _persist() -- the
-    #   call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of
-    #   2026-08.
     # **Written aside and renamed, never in place.** `os.replace` is atomic on
     # POSIX, so a crash during a write leaves the previous complete report
     # rather than a truncated one -- and `_recorded` reads a truncated report as
@@ -3548,16 +3401,7 @@ def _run_spec(mutations: Sequence[Mutation], args: argparse.Namespace) -> int:
     """A `MUTATIONS` table from a spec file, run the way the caller asked for.
 
     This used to be `run(mutations)` -- no arguments at all -- so every flag on
-    # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:2597 in _run_spec() -- the `if` is always taken -- a test reaches this line
-    #   and asserts nothing about it -- tools/mutate.py:2517 in sweep.finished() -- the `if` is
-    #   always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     the command line was accepted by `argparse` and then silently dropped:
-    # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:2598 in _run_spec() -- the call to `_persist(...)` never happens -- a test
-    #   reaches this line and asserts nothing about it -- tools/mutate.py:2746 in main() -- the call
-    #   to `_persist(...)` never happens. Weak fixture or equivalent; from the whole-tree sweep of
-    #   2026-08.
     `--workers`, `--memory`, `--timeout`, `--each-test`, `--no-baseline`,
     and `--json`. Asking for one lane got two; asking for a report
     got no file, which reads as the run having failed to write one rather than as
@@ -3607,10 +3451,6 @@ def _run_generated(
     mutant caught only by the last of them still pays for nearly all.
 
     No ``scope``: it existed because `sweep` called this once per *file*, and a
-    # survivor: branch, connector -- TODO: nobody has decided this one. The sweep's classifier said:
-    #   tools/mutate.py:2653 in _recorded() -- the `if` is never taken -- a test reaches this line
-    #   and asserts nothing about it -- tools/mutate.py:2420 in _recorded() -- the `if` is never
-    #   taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
     batch had to say that a red baseline voided only its own rows. tupferl#7
     replaced the batches with one pool, so there is one baseline and one scope
     again, and `run`'s default is right.
@@ -3733,18 +3573,9 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
         # point of the change is that those are now different.
         print(paint.paint(f"{path}: {count} row(s) already recorded, skipping", paint.QUIET))
     if not by_file:
-        # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2733 in sweep() -- the call to `print(...)` never happens -- a test
-        #   reaches this line and asserts nothing about it -- tools/mutate.py:2500 in sweep() -- the
-        #   call to `print(...)` never happens. Weak fixture or equivalent; from the whole-tree
-        #   sweep of 2026-08.
         # `widened=True` on every report this function builds, recorded rows
         # included. `sweep` is only ever reached from `main`, which always walks;
         # a rebuilt `Report` that took the field's default would write
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2597 in _run_spec() -- the `if` is always taken -- a test reaches this
-        #   line and asserts nothing about it -- tools/mutate.py:2517 in sweep.finished() -- the
-        #   `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         # `widened: false` onto rows that did walk, which is the flag lying in
         # exactly the direction it exists to prevent. It is rebuilt four times
         # here, so this is four chances to forget.
@@ -3773,18 +3604,8 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
             # Every row, not every file. #46 asked for this measured before the
             # change landed, and offered a write-every-N fallback if it showed.
             # Measured on a full-size report -- 3124 rows, 1.45 MB -- the median
-            # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2597 in _run_spec() -- the `if` is always taken -- a test reaches
-            #   this line and asserts nothing about it -- tools/mutate.py:2517 in sweep.finished()
-            #   -- the `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep
-            #   of 2026-08.
             # of 11 writes is 37.6 ms, against the 2.76 s a row the issue took
             # from a real sweep: 117 s over a 2.4-hour run, **1.36%**. Below the
-            # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2762 in sweep() -- the call to `print(...)` never happens -- a test
-            #   reaches this line and asserts nothing about it -- tools/mutate.py:2529 in sweep() --
-            #   the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-
-            #   tree sweep of 2026-08.
             # >10% a machine drifts by over minutes, so there is no throttle
             # here and no window of loss to size.
             #
@@ -3895,11 +3716,6 @@ def main(argv: list[str] | None = None) -> int:
         help="run a file at a time, writing --json as each lands (implied by --all)",
     )
     parser.add_argument(
-        # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2879 in main() -- the call to `parser.add_argument(...)` never happens
-        #   -- a test reaches this line and asserts nothing about it -- tools/mutate.py:2646 in
-        #   main() -- the call to `parser.add_argument(...)` never happens. Weak fixture or
-        #   equivalent; from the whole-tree sweep of 2026-08.
         "--skip-operator",
         action="append",
         default=[],
@@ -3948,10 +3764,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--accept",
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2918 in main() -- the `if` is never taken -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2680 in main() -- the `if` is never
-        #   taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         action="store_true",
         help=(
             "write a TODO `# survivor:` tag beside each unread row, for a person "
@@ -3960,10 +3772,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--prefix",
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2924 in main() -- the `if` is never taken -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2686 in main() -- the `if` is never
-        #   taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         type=float,
         default=PREFIX,
         metavar="SECONDS",
@@ -3979,10 +3787,6 @@ def main(argv: list[str] | None = None) -> int:
         args.base = "--all"
         if args.limit == LIMIT:
             # The default cap is sized for a diff. Left alone it turned the
-            # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2931 in main() -- the `if` is never taken -- a test reaches this
-            #   line and asserts nothing about it -- tools/mutate.py:2693 in main() -- the `if` is
-            #   never taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
             # documented `--all` into 200 of 4451 rows -- and, because the cap
             # spreads across files, into batches of seven, so batching,
             # incremental `--json` and resume all did nothing on the one command
@@ -3995,36 +3799,19 @@ def main(argv: list[str] | None = None) -> int:
         table = generated(args)
         killers = Killers(None if args.no_killers else args.killers, budget=args.prefix)
         if args.list:
-            # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2939 in main() -- the `if` is always taken -- a test reaches this
-            #   line and asserts nothing about it -- tools/mutate.py:2701 in main() -- the `if` is
-            #   always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
             for row in table:
                 print(f"  {paint.paint(f'{row.operator:16}', paint.QUIET)} {row.label}")
             return 0
         # After `--list`, which is about the table rather than about how it will
         # be run, and before the first row.
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2947 in main() -- the `if` is never taken -- a test reaches this line
-        #   and asserts nothing about it -- tools/mutate.py:2709 in main() -- the `if` is never
-        #   taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         table = killers.ahead_of(table)
         # After `ahead_of`, which maps each row to itself with `first` set and
         # so leaves table order alone, and before anything runs. `sweep`
         # re-groups with `by_size`, which appends in iteration order, so a
         # within-file reorder survives that regrouping intact.
-        # survivor: branch -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2597 in _run_spec() -- the `if` is always taken -- a test reaches this
-        #   line and asserts nothing about it -- tools/mutate.py:2517 in sweep.finished() -- the
-        #   `if` is always taken. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
         table = slowest_first(table, killers.seconds)
         if args.baseline_only:
             # Before the prefix is announced and before any sandbox is built: a
-            # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2959 in main() -- the call to `_pidfile(args.json).write_text(...)`
-            #   never happens -- a test reaches this line and asserts nothing about it --
-            #   tools/mutate.py:2721 in main() -- the call to `_pidfile(args.json).write_text(...)`
-            #   never happens. Weak fixture or equivalent; from the whole-tree sweep of 2026-08.
             # red baseline voids every row, so being able to ask *only* that
             # question, in the time one shard takes rather than one sweep, is the
             # difference between a minute and a re-run. Two full sweeps were paid
@@ -4056,19 +3843,9 @@ def main(argv: list[str] | None = None) -> int:
             # A resumed sweep points `--json` at a part-written report, and a
             # marker left by the run that was interrupted would tell a watcher
             # that *this* one had finished before it began. After the `--list`
-            # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-            #   tools/mutate.py:2979 in main() -- the call to `print(...)` never happens -- a test
-            #   reaches this line and asserts nothing about it -- tools/mutate.py:2737 in main() --
-            #   the call to `print(...)` never happens. Weak fixture or equivalent; from the whole-
-            #   tree sweep of 2026-08.
             # return on purpose: listing a table is not a run, and must not
             # retract a marker an earlier complete run earned.
             _marker(args.json).unlink(missing_ok=True)
-        # survivor: drop-call -- TODO: nobody has decided this one. The sweep's classifier said:
-        #   tools/mutate.py:2986 in main() -- the call to `killers.save(...)` never happens -- a
-        #   test reaches this line and asserts nothing about it -- tools/mutate.py:2744 in main() --
-        #   the call to `killers.save(...)` never happens. Weak fixture or equivalent; from the
-        #   whole-tree sweep of 2026-08.
         report = sweep(table, args) if args.all or args.batch else _run_generated(table, args)
 
         # No `complete` any more. It existed because a hash record could only

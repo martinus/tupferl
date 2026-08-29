@@ -386,15 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     # measured on four cores, jobs=8 beats jobs=4 by ~9%, and jobs=16 regresses.
     # `tools/cpus.py` says why the count is not `os.cpu_count()`, and why the
     # doubling stays here rather than moving in with it.
-    # survivor: arith, off-by-one -- tools/run_tests.py:366 in main() -- `2` becomes `3` --
-    #   equivalent observably: batch granularity only.
     jobs = args.jobs or usable_cpus() * 2
     # More batches than workers, so a batch that runs long is overlapped by the
     # others rather than deciding the wall clock on its own.
-    # survivor: arith -- tools/run_tests.py:369 in main() -- `*` becomes `//` -- equivalent
-    #   observably: this decides how finely the classes are split across batches. Every class is
-    #   still placed exactly once -- `test_every_class_is_placed_exactly_once` -- and every test
-    #   still runs.
     batches = pack(classes, jobs * 2)
 
     with tempfile.TemporaryDirectory(prefix="tupferl-batches-") as tmp:

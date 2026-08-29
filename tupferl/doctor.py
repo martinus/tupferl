@@ -184,15 +184,7 @@ def writable(where: Path) -> Check:
         where.mkdir(parents=True, exist_ok=True)
     except OSError as refused:
         return Check(False, "backups", f"cannot create {where} ({refused.strerror}); fix that path")
-    # survivor: branch -- tupferl/doctor.py:187 in writable() -- the `if` is never taken --
-    #   unreachable in CI and locally, both of which run as root: root ignores the mode bits, so no
-    #   directory is unwritable.
-    #   `test_doctor.TestTheBackupCheck.test_a_directory_that_exists_and_cannot_be_written_fails` is
-    #   the test, and it skips itself with that reason.
     if not os.access(where, os.W_OK):
-        # survivor: return-value -- tupferl/doctor.py:188 in writable() -- returns `None` instead of
-        #   `Check(False, 'backups', f'{wh…` -- same as `doctor.py:187` -- the line only runs for an
-        #   unwritable directory, which root does not have. Its test exists and skips.
         return Check(False, "backups", f"{where} is not writable; fix its permissions")
     return Check(True, "backups", str(where))
 

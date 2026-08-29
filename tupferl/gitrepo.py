@@ -173,10 +173,6 @@ def git(
         # multiply. Not the arguments themselves: this is a list that was too
         # long to hand to a kernel, and printing it at a terminal is the same
         # mistake one layer up.
-        # survivor: off-by-one -- tupferl/gitrepo.py:176 in git() -- `1` becomes `2` -- equivalent:
-        #   the code is read only through `Result.ok` (`code != 0`) and `gitrepo.reason`, neither of
-        #   which distinguishes 1 from 2. Nothing in the package branches on a particular non-zero
-        #   status.
         size = sum(len(arg) + 1 for arg in args)
         return Result(
             "",
