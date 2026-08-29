@@ -46,6 +46,12 @@ correction here is usually more valuable than the code change that prompted it.
 Prefer claims a reader can check. "Measured 2.4× on a 174k-file tree" survives
 contact with reality; "this is faster" does not.
 
+**Everything here describes the tree as it is, except where an entry opens
+`Historical —`.** Those describe code that has been removed, kept because the
+argument for removing it is worth more than the code was; the names in them will
+not resolve. Nothing else should read as retrospective, and if it does that is a
+claim to fix rather than a tense to admire.
+
 ---
 
 ## 1. Landing a change
@@ -555,8 +561,9 @@ Five things are not where a newcomer would guess, all on purpose:
     the reasons four dead ends below already record. That number is debt, not
     progress; a sweep exits 0 over all of it.
 
-  **This replaced a file of sha256 keys (`known-survivors.json`), and the
-  reason it was replaced is worth keeping.** It was not kept up to date: twelve
+  **Historical — this replaced a file of sha256 keys
+  (`known-survivors.json`), and none of the names below still exists.** The
+  reason it was replaced is what is worth keeping: It was not kept up to date: twelve
   equivalences proved in one sitting went into commit messages instead, because
   editing a JSON blob keyed on a hash was further away than writing a sentence
   nobody would read again. Seventeen of its 213 entries had come to match
@@ -1130,7 +1137,8 @@ read this file:
 
 ### Measured, and kept
 
-- **The two-machine fixture is copied, not built** (#19). `support.template()`
+- **Copy the two-machine fixture rather than building it — 120.4ms to 4.3ms,
+  24% off the serial suite** (#19). `support.template()`
   builds the tree once per *process* and `two_machines` copies it; 146 of the
   suite's tests across 40 classes inherit it.
 
@@ -1154,7 +1162,8 @@ read this file:
   than comparing URLs, and greps a copy for the template's path so that a *third*
   such file is caught rather than waited for.
 
-- **Ordering each file's rows by what they cost last sweep** (`slowest_first`).
+- **Order each file's rows by what they cost last sweep — 6% at 16 lanes, 10%
+  at 32** (`slowest_first`).
   Four interleaved pairs over `--only tupferl/`, 1309 rows, one binary and one
   variable — the control is the same `killers.json` with its `seconds` map
   stripped, since an empty map makes `slowest_first` a no-op and no second code
@@ -1191,8 +1200,8 @@ read this file:
   than failing. A `BROKE` row is never `caught`, so that line is unguarded on
   the runs where it fires.
 
-- **The lane count was held at 16 by a constant, and lifting it was worth
-  30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind
+- **Historical — the lane count was held at 16 by a constant (`_LANES`, now
+  removed), and lifting it was worth 30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind
   its comment ("the most lanes worth running, whatever the machine reports"). On
   a 32-core machine it was the *only* binding term — `usable_cpus() * 2` gave
   64 and memory gave 25 — so the tool used half the machine. Measured over the
@@ -1238,8 +1247,8 @@ read this file:
   ordered, both trivial against a 3363 MiB ceiling on this table, but the
   whole-tree figure is 92%.
 
-- **Two "run these first" mechanisms met in the wrong order, and swapping them
-  is worth 3.9%.** `Killers.ahead_of` puts the test recorded as catching *this
+- **Run a row's recorded killer *before* the learned front, not after: worth
+  3.9%.** `Killers.ahead_of` puts the test recorded as catching *this
   row* on `Mutation.first`; `Learned` (#43) is move-to-front over the last 8
   killers seen during the run. `_attempt` composed them as
   `f"{ahead} {mutation.first}"` — so up to `LEARNED - 1` general tests ran ahead
@@ -1283,8 +1292,9 @@ read this file:
 
 ### Measured dead ends — do not re-attempt without new evidence
 
-- **Sorting the whole table by cost, across files** rather than within each
-  one. Tried twice, for two different reasons, and it lost both times.
+- **Sorting the whole table by cost across files loses to sorting within each
+  one — 205.2s and 204.2s against 185.0s and 185.5s, on identical total work.** Tried twice, for two
+  different reasons, and it lost both times.
 
   The first attempt rested on two beliefs, both wrong. That `sweep` counted a
   file down to zero before writing its `--json` -- untrue since #46 made that
@@ -1313,7 +1323,8 @@ read this file:
   start as well as its finish and look at where lanes actually idle. Without it
   any further attempt is the same guess again.
 
-- **Shuffling the outward walk to break up the survivor herd.** Every lane
+- **Shuffling the outward walk to break up the survivor herd is 12.7% slower
+  *and* reported 24 false `caught` verdicts.** Every lane
   resolves the same module list through the same loader, so survivors dispatched
   together march through the suite in lockstep -- all in the same module at the
   same instant. The effect is real and measured: bunching them costs 3040 ->
@@ -1362,7 +1373,8 @@ read this file:
   So the walk order is load-bearing for *correctness* and not only for speed,
   by a route not yet understood. 1.6% was never going to pay for that.
 
-- **Interleaving a mutation table round-robin across files** (#49). Proposed so
+- **Interleaving a mutation table round-robin across files cuts `Learned`'s hit
+  rate from 72.7% to 27.3%, and nothing fails to say so** (#49). Proposed so
   that an interrupted sweep would have partial coverage of every file rather
   than complete coverage of some. It breaks `Learned` (#43), whose docstring
   states the premise it rests on: rows arrive sorted by file and line, so
