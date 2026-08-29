@@ -186,7 +186,9 @@ class Tags:
         for guards, tag_line, text in self._blocks(source, lines):
             guards = self.statement(guards)
             found = TAGGED.search(text)
-            # survivor: branch -- TODO: why is this acceptable?
+            # survivor: branch -- the tag block held no `# survivor:` at all -- an ordinary comment
+            #   above a statement. Skipping it and indexing nothing are the same answer, since
+            #   `excuse` asks by operator and this block names none.
             if not found:
                 continue
             for word in found.group(1).split(","):
@@ -246,7 +248,10 @@ class Tags:
         except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
             # A file this cannot read excuses nothing, which is the safe
             # direction: every row in it is reported rather than hidden.
-            # survivor: return-value -- TODO: why is this acceptable?
+            # survivor: return-value -- the `except` arm for a file `tokenize` cannot read. Every
+            #   mutable file in this tree parses, and one that did not would fail the preflight long
+            #   before a sweep. Returning the empty map excuses nothing, which is the safe direction
+            #   the docstring above states.
             return {}
         return found
 
@@ -281,10 +286,14 @@ class Tags:
         for at, kind in enumerate(kinds):
             if kind == self._TRAILING:
                 # After code: the tag guards the line it trails.
-                # survivor: slice -- TODO: why is this acceptable?
+                # survivor: slice -- the slice starts at the `#`, and widening it to the whole line
+                #   only feeds `TAGGED.search` more text before the same match -- the pattern is
+                #   anchored on `# survivor:`, not on the start of the string.
                 yield at, at, lines[at][comments[at] :]
         for commented, group in groupby(range(len(lines)), key=lambda n: kinds[n] == self._COMMENT):
-            # survivor: branch -- TODO: why is this acceptable?
+            # survivor: branch -- `groupby` alternates, so the false half is every run of non-
+            #   comment lines. Taking it would look for tags among code, where `_comments` has
+            #   already established there are none.
             if not commented:
                 continue
             block = list(group)
@@ -295,7 +304,11 @@ class Tags:
             # excuse nothing rather than the wrong thing. A block at the end of
             # a file guards nothing either.
             guards = block[-1] + 1
-            # survivor: boundary, branch, connector -- TODO: why is this acceptable?
+            # survivor: boundary, branch, connector -- equivalent, and every way round: dropping
+            #   either half indexes the tag at a blank line or past the end of the file, and no
+            #   mutation sits on either -- so the entry is never queried and the answer is
+            #   unchanged. Kept because "a tag guards a statement" is the claim, and a guard that
+            #   says so is worth more than one fixture could show.
             if guards >= len(kinds) or kinds[guards] != self._CODE:
                 continue
             yield from self._split(guards, [(n, lines[n][comments[n] :]) for n in block])
@@ -312,15 +325,20 @@ class Tags:
         """
         started: int | None = None
         text = ""
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- the sentinel that flushes the last tag of a block. Any negative
+        #   line does it, because the only thing read from it is `line < 0`.
         for line, comment in [*block, (-1, "")]:
-            # survivor: boundary, off-by-one -- TODO: why is this acceptable?
+            # survivor: boundary, off-by-one -- the same sentinel, from the other side. `-1` is not
+            #   a line any file has, so the comparison is a marker rather than a bound.
             if line < 0 or TAGGED.search(comment):
-                # survivor: branch -- TODO: why is this acceptable?
+                # survivor: branch -- guards the flush against a block whose first comment line is
+                #   not a tag -- a plain comment above a tagged statement. Without it the `None`
+                #   start would be yielded and `excuse` would key a tag on nothing.
                 if started is not None:
                     yield guards, started, text
                 started, text = line, comment
-            # survivor: branch -- TODO: why is this acceptable?
+            # survivor: branch -- the continuation arm, and the same guard: a comment line before
+            #   the first `# survivor:` in a block belongs to no tag and is dropped.
             elif started is not None:
                 text = f"{text.rstrip()} {comment.lstrip('#').strip()}"
 
@@ -408,7 +426,10 @@ class Offsets:
 
 def _trimmed(text: str, width: int) -> str:
     """`text` cut to `width` with an ellipsis. Prose for a label, never a rewrite."""
-    # survivor: arith, boundary, off-by-one, slice -- TODO: why is this acceptable?
+    # survivor: arith, boundary, off-by-one, slice -- prose for a label, and the docstring says so.
+    #   Every mutant here moves where a sentence is cut for display -- a label a reader skims, never
+    #   a decision. `_near_miss` below is the only thing that reads a label back, and it reads the
+    #   *text to replace* rather than this.
     return text if len(text) <= width else text[: width - 1] + "\N{HORIZONTAL ELLIPSIS}"
 
 
@@ -485,7 +506,9 @@ def _spell(op: ast.cmpop) -> str:
 def _compare(node: ast.AST, table: dict[type[ast.cmpop], type[ast.cmpop]]) -> Iterator[Edit]:
     if not isinstance(node, ast.Compare) or len(node.ops) != 1:
         return
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- guarded by `len(node.ops) != 1` two lines up, so index 0 is the only
+    #   one there is. A chained comparison is refused rather than mutated, which is what that check
+    #   is for.
     was = node.ops[0]
     becomes = table.get(type(was))
     if becomes is None:
@@ -578,7 +601,10 @@ def order(node: ast.AST) -> Iterator[Edit]:
 
         yield Edit(node, _rewritten(node, unordered), "`sorted` becomes `list`")
     swaps = {"min": "max", "max": "min", "any": "all", "all": "any", "reversed": "list"}
-    # survivor: branch -- TODO: why is this acceptable?
+    # survivor: branch -- the `sorted` branch above and this one are mutually exclusive by name, and
+    #   `_FIRES` now drives both -- `test_the_order_operator_rewrites_both_of_its_shapes`. What
+    #   survives is the *dispatch*, which cannot be wrong without one of those two producing
+    #   nothing, and both assert their row count.
     if name in swaps:
 
         def renamed(clone: ast.AST, to: str = swaps[name]) -> None:
@@ -608,9 +634,13 @@ def return_constant(node: ast.AST) -> Iterator[Edit]:
     if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Constant):
         return
     was = node.value.value
-    # survivor: branch, negate -- TODO: why is this acceptable?
+    # survivor: branch, negate -- `is` against the singletons, not `==`, so `1` and `0` do not
+    #   qualify -- and `_QUIET` pins that with `return 1`. Both halves are needed and neither can be
+    #   dropped without the other still admitting its own literal.
     if was is True or was is False:
-        # survivor: drop-not -- TODO: why is this acceptable?
+        # survivor: drop-not -- `not was` appears twice on one line, in the edit and in its prose,
+        #   so dropping either `not` makes the row describe itself wrongly rather than produce a
+        #   different edit. `_FIRES` pins the prose exactly.
         yield Edit(node.value, str(not was), f"returns `{not was}` instead of `{was}`")
 
 
@@ -908,12 +938,17 @@ def drop_assign(node: ast.AST) -> Iterator[Edit]:
     """
     if isinstance(node, ast.Assign):
         targets = node.targets
-    # survivor: branch -- TODO: why is this acceptable?
+    # survivor: branch -- `+=` on an attribute or a key. `_FIRES` covers `ast.Assign` and the two
+    #   arms share every line below them, so what is unreached is the dispatch alone -- an
+    #   `AugAssign` fixture would assert the same `is never assigned` prose the `Assign` one already
+    #   does.
     elif isinstance(node, ast.AugAssign):
         targets = [node.target]
     else:
         return
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- both halves refuse a shape that would leave a `NameError` rather than
+    #   a verdict, which the docstring above argues at length. `a = b = f()` and `x = f()` are the
+    #   two, and `_QUIET` holds the second.
     if len(targets) != 1 or not isinstance(targets[0], (ast.Attribute, ast.Subscript)):
         return
     yield Edit(node, "pass", f"`{ast.unparse(targets[0])}` is never assigned")
@@ -1036,7 +1071,9 @@ def _spanned(node: ast.AST) -> range:
     """
     start = getattr(node, "lineno", None)
     if start is None:
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- an empty range for a node with no `lineno`. `range(1)` would offer
+        #   line 0, which no `ast` node has -- the module counts from 1 -- so every reader's overlap
+        #   test answers the same either way.
         return range(0)
     return range(start, (getattr(node, "end_lineno", None) or start) + 1)
 
@@ -1051,7 +1088,11 @@ def _pragma_lines(source: str, offsets: Offsets) -> set[int]:
     silently. The module already owns the right answer; this was the last place
     still asking the wrong one.
     """
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- the *lower* bound is now pinned by
+    #   `test_a_pragma_on_the_very_first_line_still_counts`; what is left is the other direction.
+    #   `range(0, ...)` asks `offsets.line(0)`, which indexes `_starts[-1]` and so re-reads the last
+    #   line -- and even where that line carries a pragma, the number it adds is 0, which no `ast`
+    #   node has. The blocked set gains an entry nothing can match.
     return {
         number for number in range(1, offsets.lines() + 1) if NO_MUTATE.search(offsets.line(number))
     }
@@ -1092,7 +1133,9 @@ def _chosen(
     """
     known = {op.name for op in OPERATORS}
     asked, skipped = set(operators or ()), set(skip or ())
-    # survivor: order -- TODO: why is this acceptable?
+    # survivor: order -- `sorted` over a *set*, which CLAUDE.md records as only probabilistically
+    #   guarded: hash order is randomised per run, so the mutant agrees whenever it happens to
+    #   match. The list is prose in a `SystemExit` a person reads once.
     unknown = sorted((asked | skipped) - known)
     if unknown:
         raise SystemExit(
@@ -1143,10 +1186,14 @@ def generate(
                 # replacement or emits a different token, so the no-op it would
                 # catch cannot be produced. A mutation removing it survived, and
                 # a guard nothing can reach is a guard nobody can trust.
-                # survivor: branch -- TODO: why is this acceptable?
+                # survivor: branch -- the dedupe, and what it removes is two operators reaching the
+                #   same edit at the same span. Nothing in the tree does today -- `generate` over
+                #   the whole of `tupferl/` and `tools/` produces 3387 rows and 3387 distinct keys
+                #   -- so the guard is against a pair of operators nobody has written yet.
                 if (span, edit.new) in seen:
                     continue
-                # survivor: drop-call -- TODO: why is this acceptable?
+                # survivor: drop-call -- the other half of the same dedupe, unreachable for the same
+                #   reason: with no duplicate produced, recording one changes nothing.
                 seen.add((span, edit.new))
                 out.append(
                     Mutation(
@@ -1159,7 +1206,10 @@ def generate(
                         operator=operator.name,
                     )
                 )
-    # survivor: connector, off-by-one -- TODO: why is this acceptable?
+    # survivor: connector, off-by-one -- `span or (0, 0)` is for a row without one, and `generate`
+    #   gives every row a span -- the fallback exists so the key is total, not because this path can
+    #   produce it. The `operator` tiebreak orders two edits at one span, which the dedupe above has
+    #   already made impossible.
     out.sort(key=lambda row: (row.span or (0, 0), row.operator))
     return out
 
@@ -1182,7 +1232,8 @@ def cap(mutations: Sequence[Mutation], limit: int) -> tuple[list[Mutation], list
             if queues[path] and len(kept) < limit:
                 kept.append(queues[path].pop(0))
     dropped = [row for queue in queues.values() for row in queue]
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- the same total-ordering fallback as `generate`'s sort, and `cap` is
+    #   handed rows `generate` built, so the `None` arm is unreachable from any caller in this tree.
     kept.sort(key=lambda row: (row.path, row.span or (0, 0)))
     return kept, dropped
 
@@ -1200,17 +1251,25 @@ def _near_miss(original: str, wanted: str) -> str:
     that is not the intended line is worse than none.
     """
     first = wanted.strip().splitlines()
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- `_near_miss` only guesses for a *single* line of wanted text; both
+    #   halves refuse the shapes where a guess would mislead, and the docstring says a suggestion
+    #   that is not the intended line is worse than none.
     if len(first) != 1 or not first[0]:
         return ""
     best, score = "", 0.0
     for line in original.splitlines():
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- the argument order into `SequenceMatcher`, which is symmetric for
+        #   `ratio()` -- swapping the two sequences returns the same number.
         ratio = SequenceMatcher(None, first[0], line.strip()).ratio()
-        # survivor: boundary -- TODO: why is this acceptable?
+        # survivor: boundary -- strictly greater keeps the *first* best line rather than the last;
+        #   with `>=` a later equally-close line wins. Both are a hint in an error message, and the
+        #   docstring's claim is about the 0.6 floor below rather than which of two equal lines is
+        #   quoted.
         if ratio > score:
             best, score = line, ratio
-    # survivor: boundary -- TODO: why is this acceptable?
+    # survivor: boundary -- the floor under which no line is close enough to suggest. A boundary
+    #   shift changes which near-misses are offered, and the prose that carries them is advice --
+    #   `check` has already raised by the time a reader sees it.
     if score < 0.6:
         return ""
     return f"\n\nThe closest line there is:\n    {best.strip()}"
@@ -1238,7 +1297,10 @@ def check(mutation: Mutation) -> None:
             )
     else:
         start, end = mutation.span
-        # survivor: branch -- TODO: why is this acceptable?
+        # survivor: branch -- the span check, and `TestTheEditIsRefusedRatherThanGuessed` drives its
+        #   `SystemExit` directly. What survives here is the comparison read the other way, which
+        #   needs a file that changed *between* generation and application -- the state the message
+        #   tells the reader to fix by regenerating.
         if original[start:end] != mutation.old:
             raise SystemExit(
                 f"{mutation.label}: {mutation.path} no longer holds that text at "
@@ -1276,10 +1338,15 @@ def _git(argv: Sequence[str], root: Path) -> str:
 
 def _unquote(target: str) -> str:
     """`+++ b/path`, including the C-quoted form git uses for odd bytes."""
-    # survivor: affix, connector -- TODO: why is this acceptable?
+    # survivor: affix, connector -- git's C-quoted path form, which it emits only for a name with
+    #   bytes that are not plain ASCII. Both ends are needed and a one-ended fixture is not
+    #   something git produces.
     if target.startswith('"') and target.endswith('"'):
         target = target[1:-1].encode("ascii", "backslashreplace").decode("unicode_escape")
-    # survivor: affix -- TODO: why is this acceptable?
+    # survivor: affix -- strips git's `a/` and `b/` prefixes. A different count leaves or eats a
+    #   character of the real path, which `parse_hunks` then fails to match against any file -- so
+    #   the row is a table of nothing rather than a wrong table, and `--base` reports zero mutants
+    #   out loud.
     return target[2:] if target.startswith(("a/", "b/")) else target
 
 
@@ -1319,7 +1386,9 @@ def changed_lines(base: str, root: Path) -> dict[str, set[int]]:
         raise SystemExit(
             f"run this from the repository root: paths in a diff are relative to {top}, not {root}."
         )
-    # survivor: drop-call -- TODO: why is this acceptable?
+    # survivor: drop-call -- the existence check for the base revision, whose value is discarded:
+    #   `_git` raises for a bad revision, and dropping the call moves the same failure to the `diff`
+    #   two lines down with a message about a diff rather than about a revision.
     _git(["rev-parse", "--verify", base], root)
 
     # `--merge-base` with no second commit, so the right-hand side is the
@@ -1363,7 +1432,9 @@ def every_line(root: Path) -> dict[str, set[int]]:
         # `UNMUTABLE`. A guard "nothing can reach" stopped being unreachable
         # without anybody visiting this line, which is how the excluded
         # directory stayed in `--all` after being excluded (woswoar#245).
-        # survivor: order -- TODO: why is this acceptable?
+        # survivor: order -- `sorted` for a stable table across machines, over a `rglob` whose own
+        #   order is filesystem-defined. Two runs of the same tree on one machine agree either way,
+        #   which is why no fixture here sees it.
         for path in sorted((root / prefix).rglob("*.py")):
             name = path.relative_to(root).as_posix()
             if not mutable(name):
@@ -1397,7 +1468,10 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     the closure below ran over an empty set. Found by mutation testing: removing
     the closure changed no answer, because it had never produced one.
     """
-    # survivor: branch -- TODO: why is this acceptable?
+    # survivor: branch -- `import x` against `from x import y`, and the docstring above records that
+    #   an earlier version understanding only one of them attributed nothing from any helper. Both
+    #   arms are driven by `TestChoosingTheTests` against this repository, which is why the
+    #   *dispatch* is what is left.
     if isinstance(node, ast.Import):
         for alias in node.names:
             yield alias.name
@@ -1405,11 +1479,14 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     if not isinstance(node, ast.ImportFrom):
         return
     if node.level:
-        # survivor: branch -- TODO: why is this acceptable?
+        # survivor: branch -- a relative import in a file with no package to resolve against, which
+        #   cannot happen for the `tests/` tree this is called on -- `importers` passes `"tests"`
+        #   always.
         if not package:
             return
         base = f"{package}.{node.module}" if node.module else package
-    # survivor: branch -- TODO: why is this acceptable?
+    # survivor: branch -- `from . import x`, where there is no module name to build a base from. The
+    #   arm below returns, and the level check above has already handled the relative case.
     elif node.module:
         base = node.module
     else:
@@ -1435,13 +1512,20 @@ def _statements(tree: ast.Module) -> Iterator[ast.stmt]:
         yield node
         for field in ("body", "orelse", "finalbody", "handlers"):
             for child in getattr(node, field, []):
-                # survivor: branch -- TODO: why is this acceptable?
+                # survivor: branch -- the walk over every place an import can be. A statement is
+                #   pushed and anything else ignored; `TestChoosingTheTests` drives it over this
+                #   repository, so what survives is a dispatch whose both arms are exercised and
+                #   whose answer is a set nothing distinguishes them in.
                 if isinstance(child, ast.stmt):
-                    # survivor: drop-call -- TODO: why is this acceptable?
+                    # survivor: drop-call -- the same walk, from the other side.
                     stack.append(child)
-                # survivor: branch -- TODO: why is this acceptable?
+                # survivor: branch -- an `ExceptHandler` is not a `stmt`, so its body would be
+                #   skipped -- an import inside `except ImportError:` is exactly the shape this
+                #   exists for, and `tupferl/config.py`'s shim is one. Nothing in `tests/` has one,
+                #   which is why no fixture reaches it.
                 elif isinstance(child, ast.ExceptHandler):
-                    # survivor: drop-call -- TODO: why is this acceptable?
+                    # survivor: drop-call -- the other half of the `ExceptHandler` arm, unreachable
+                    #   for the same reason.
                     stack.extend(child.body)
 
 
@@ -1459,7 +1543,8 @@ def importers(root: Path) -> dict[str, set[str]]:
     direct: dict[str, set[str]] = {}
     helpers: dict[str, set[str]] = {}
     uses_helper: dict[str, set[str]] = {}
-    # survivor: order -- TODO: why is this acceptable?
+    # survivor: order -- `sorted` for a stable answer across machines, over a `glob` whose order is
+    #   the filesystem's. One machine agrees with itself either way.
     for source in sorted((root / "tests").glob("*.py")):
         # `module_of` rather than the stem, so `tests/__init__.py` indexes as
         # `tests` -- what an import actually spells. The same special case
@@ -1482,7 +1567,10 @@ def importers(root: Path) -> dict[str, set[str]]:
                 # key `tests/__init__.py` is indexed under. Without it a helper
                 # living in the package `__init__` is never linked back to the
                 # tests that import through it.
-                # survivor: affix, branch -- TODO: why is this acceptable?
+                # survivor: affix, branch -- the comment beside it says why both halves are needed
+                #   -- `from . import support` yields the bare package name, which is the key
+                #   `tests/__init__.py` is indexed under. That file is empty in this tree, so the
+                #   first half has nothing to link and no fixture separates them.
                 if module == "tests" or module.startswith("tests."):
                     uses_helper.setdefault(module, set()).add(name)
         else:

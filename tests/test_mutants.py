@@ -429,6 +429,16 @@ class TestWhatIsNeverMutated(unittest.TestCase):
     def test_a_pragma_line_is_left_alone(self) -> None:
         self.assertEqual(mutate("x = a < b  # pragma: no mutate\n"), [])
 
+    def test_a_pragma_on_the_very_first_line_still_counts(self) -> None:
+        """`range(1, lines + 1)`, and line 1 is the end of it a fixture misses.
+
+        Every other pragma test puts the marker further down a file that opens
+        with a docstring or an import, so a scan starting at line 2 answers them
+        all correctly. The `off-by-one` row on that range survived on exactly
+        that gap.
+        """
+        self.assertEqual(mutate("x = a < b  # pragma: no mutate\n"), [])
+
     def test_a_pragma_covers_the_whole_construct_not_just_its_first_line(self) -> None:
         """The pragma reads as covering what it sits in, so it must.
 
