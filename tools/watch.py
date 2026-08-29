@@ -84,9 +84,11 @@ from tools import paint
 #: So the print site reads the first word back. An unrecognised one is simply not
 #: painted: a wording change then costs a colour, where a wrong colour would cost
 #: a reader looking at an hour-long job and seeing green where it said DIED.
-# survivor: arith -- TODO: why is this acceptable?
-# survivor: arith -- TODO: why is this acceptable?
-# survivor: arith -- TODO: why is this acceptable?
+# survivor: arith -- `TypeError` every time, and not generated on purpose where the tool can tell:
+#   these are `paint.GOOD + paint.HEAD`, two *attributes*, so `mutants.py`'s refusal -- which fires
+#   on a string *literal* -- cannot see them. Proving them string-valued means resolving a name
+#   across a module boundary, which is a type checker rather than a guard. CLAUDE.md records the
+#   trade: refusing too strictly stops mutating real arithmetic and nothing would report it.
 SHOUT = {
     "FINISHED": paint.GOOD + paint.HEAD,
     "DIED": paint.BAD + paint.HEAD,
@@ -168,7 +170,11 @@ def alive(pid: int) -> bool:
     if pid <= 0:
         raise ValueError(f"{pid} names a process group, not a process")
     try:
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- signal 0 asks whether a process exists; signal 1 is SIGHUP. A
+        #   fixture that let this run would send SIGHUP to the pid under test -- which in this suite
+        #   is usually the test process itself, so the mutant kills the run rather than being
+        #   noticed by it. That is why the row is `BROKE` and not `SURVIVED`, and why no honest
+        #   fixture makes it otherwise.
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
@@ -216,7 +222,9 @@ class Watch:
         #: -1 rather than 0, so a job that is already at zero rows still gets its
         #: first "working" line. Starting at 0 would make the opening silence
         #: indistinguishable from a job that never starts.
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- equivalent: the comment above says the value is "-1 rather than
+        #   0", and any negative number carries that meaning -- a first count of 0 is still an
+        #   increase, so the opening "working" line still prints.
         self.last = -1
         #: When the count last moved. `began` rather than 0, because nothing has
         #: moved yet and "since we started watching" is what that means. In
@@ -431,7 +439,10 @@ def main(argv: list[str] | None = None) -> int:
             print(tint(line), flush=True)
             if status >= 0:
                 return status
-        # survivor: drop-call -- TODO: why is this acceptable?
+        # survivor: drop-call -- costs CPU, not correctness -- the same argument as the sleep in
+        #   `_await_pid`. Without it the poll spins instead of waiting and reports the identical
+        #   lines at the identical points. Asserting that a process *idled* means timing the
+        #   watcher, which is the flakiest assertion this suite could hold.
         time.sleep(args.interval)
 
 

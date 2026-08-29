@@ -248,7 +248,8 @@ def somewhere_in(run: list[bytes], whole: list[bytes]) -> bool:
     #   equivalent: the extra iterations slice past the end of `whole` and produce lists shorter
     #   than `run`, which cannot equal it. Measured: a run that is absent stays absent with the
     #   wider range.
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- equivalent, and the same argument as the `-`/`+` row above: one extra
+    #   starting offset, whose slice is a shorter list than `run` and so cannot equal it.
     return any(whole[at : at + len(run)] == run for at in range(len(whole) - len(run) + 1))
 
 

@@ -343,7 +343,10 @@ def stage(repo: Path, paths: list[Path]) -> Result:
         # possible reading is still what git does by default with a list a caller
         # built and got wrong. A caller that means "everything" says so by
         # passing `repo` itself, which `sync` does.
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- equivalent: `Result.ok` is `self.code == 0`, and every reader of
+        #   this result asks `ok`. Any non-zero code says the same thing here. The number matters
+        #   for `merge_file`, where it is git's conflict count -- this one is a refusal, and
+        #   refusals have no count.
         return Result("", f"nothing to stage in {repo}", code=1)
     relative = [str(path.relative_to(repo)) for path in paths]
     return git(

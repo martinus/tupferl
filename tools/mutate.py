@@ -1135,8 +1135,6 @@ def _run(
         remembered = written["killers"]
         reasons = written["reasons"]
         # survivor: off-by-one -- TODO: why is this acceptable?
-        # survivor: off-by-one -- TODO: why is this acceptable?
-        # survivor: off-by-one -- TODO: why is this acceptable?
         return Verdict(
             "caught",
             str(written["noticed"][0]),
@@ -3186,7 +3184,6 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
     # survivor: order -- TODO: why is this acceptable?
     for path in sorted(touched):
         tests = mutants.targets_for(path, root, index) or WHOLE_SUITE
-        # survivor: connector -- TODO: why is this acceptable?
         # survivor: connector -- TODO: why is this acceptable?
         table.extend(
             mutants.generate(

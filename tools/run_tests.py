@@ -188,7 +188,9 @@ def pack(classes: dict[str, list[str]], bins: int) -> list[list[str]]:
     before calling this.
     """
     batches: list[list[str]] = [[] for _ in range(max(1, min(bins, len(classes))))]
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- equivalent: `weights.index(min(weights))` picks the lightest bin, and
+    #   adding the same constant to every bin leaves that comparison exactly where it was. The zero
+    #   is the natural spelling of "nothing packed yet", not an arithmetic the packing depends on.
     weights = [0] * len(batches)
     for name in sorted(classes, key=lambda n: (-len(classes[n]), n)):
         light = weights.index(min(weights))
@@ -207,7 +209,10 @@ def shard_of(spec: str) -> tuple[int, int]:
     if not sep or not index.strip().isdigit() or not total.strip().isdigit():
         raise ValueError(f"--shard wants I/N, got {spec!r}")
     got, count = int(index), int(total)
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- equivalent because the second term already covers it: with `count` at
+    #   0, `1 <= got <= 0` is false for every `got`, so `not ...` raises regardless of what the
+    #   first term says. `count < 1` is the sentence a reader wants -- "N at least 1" -- rather than
+    #   a check the range test needs.
     if count < 1 or not 1 <= got <= count:
         raise ValueError(f"--shard {spec} is out of range: I must be 1..N and N at least 1")
     return got - 1, count
@@ -252,7 +257,9 @@ def run_batch(names: list[str], out: Path) -> int:
     # Tracebacks go to stderr, where they interleave with the tests' own output
     # and a human reads them in context. Only ids travel back to the parent:
     # shipping the traceback too would print every failure twice.
-    # survivor: off-by-one -- TODO: why is this acceptable?
+    # survivor: off-by-one -- verbosity decides how much a *worker* prints to its own stderr, and
+    #   the comment above says why only ids travel back to the parent. Changing it moves noise in a
+    #   log, never a verdict.
     result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1, resultclass=_Recorder).run(
         suite
     )
