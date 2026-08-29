@@ -23,6 +23,7 @@ import contextlib
 import itertools
 import json
 import os
+import queue
 import re
 import shutil
 import signal
@@ -332,6 +333,28 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         (ahead,) = cached.ahead_of([one])
         self.assertEqual(REAL, ahead.first)
         self.assertEqual("tests.test_sync", ahead.tests)
+
+    def test_a_remembered_test_is_marked_as_exact(self) -> None:
+        """The flag `_attempt` reads to decide whether this goes in front of the
+        learned front or behind it. Without it every row takes the `else` arm
+        and the ordering silently reverts -- nothing fails, the sweep is just
+        slower, which is the failure mode this whole area keeps producing.
+
+        Measured: dropping `exact=True` here survived every other test of the
+        ordering, because those construct the flag by hand.
+        """
+        one = row()
+        (ahead,) = self.cache({mutate._key(one): REAL}).ahead_of([one])
+        self.assertTrue(ahead.exact, "a remembered killer was not marked exact")
+
+    def test_the_cheap_prefix_is_not_marked_as_exact(self) -> None:
+        """The other half. The prefix is what a row with *no* remembered killer
+        falls back on -- tests that catch a lot per second across the table,
+        which is a claim about the suite and not about this row -- so it must
+        not claim the precedence an exact killer has earned."""
+        with support.quiet():
+            (ahead,) = mutate.Killers(None).ahead_of([row()])
+        self.assertFalse(ahead.exact, "the general prefix claimed to be exact")
 
     def test_the_whole_selection_is_kept_behind_it(self) -> None:
         """The safety argument, asserted rather than assumed. Substituting the
@@ -4638,6 +4661,85 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
         # 20 cores x 2 against a 58-row table: the cores are the smaller, so
         # that is what must come through. A constant of 16 would clip it.
         self.assertEqual([40], asked)
+
+
+class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
+    """An exact killer goes ahead of the learned front; a general prefix behind.
+
+    Two "run these first" mechanisms meet in `_attempt`, and until this was
+    measured they met in the wrong order: `Learned`'s up-to-8 recently-successful
+    tests ran *before* the one test recorded as catching this very row, on 1105
+    of a 1309-row table.
+
+    `Killers.ahead_of` already makes the argument one function away -- it drops
+    the cheap prefix entirely for a row whose killer is known, because "exact
+    beats general, the prefix would only be work before the answer". `Learned`
+    is general in the same way: it is what caught the *previous* rows, a proxy
+    for what catches this one, and for these rows the thing being proxied is
+    already in hand.
+
+    Driven through `_attempt` with `_run` watched, rather than by asserting on
+    the pieces: the string those two are composed into is the whole of what
+    changed, and each half is correct on its own.
+    """
+
+    KILLER = "tests.test_sync.TestTheDecisionTable.test_it"
+    FRONT = "tests.test_sync.TestSomethingElse.test_other"
+
+    def first_for(self, mutation: Mutation) -> str:
+        """What `_attempt` hands `_run` as its `first`, for one row."""
+        seen: list[str] = []
+
+        def watch(*args: object, **kw: object) -> mutate.Verdict:
+            seen.append(str(kw["first"]))
+            return mutate.Verdict("caught", "probe", killer=self.KILLER)
+
+        learned = mutate.Learned()
+        learned.saw(self.FRONT)
+        available: queue.Queue[Path] = queue.Queue()
+        with tempfile.TemporaryDirectory() as box:
+            root = Path(box)
+            (root / "tupferl").mkdir()
+            (root / mutation.path).write_text(mutation.old, encoding="utf-8")
+            available.put(root)
+            with mock.patch.object(mutate, "_run", watch):
+                mutate._attempt(mutation, available, True, 60.0, 0, 30.0, True, learned)
+        return seen[0]
+
+    def row(self, **kw: object) -> Mutation:
+        return mutants.Mutation(
+            "tupferl/sync.py:1 in f() -- x",
+            "tupferl/sync.py",
+            "x",
+            "y",
+            "tests.test_sync",
+            **kw,  # type: ignore[arg-type]
+        )
+
+    def test_a_recorded_killer_runs_before_the_learned_front(self) -> None:
+        """The row this exists for. `exact` is what `Killers.ahead_of` sets when
+        it found this row's own killer."""
+        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        self.assertEqual([self.KILLER, self.FRONT], got)
+
+    def test_a_general_prefix_runs_after_it(self) -> None:
+        """The other half, and without it "always put `first` in front" passes
+        the test above. The cheap prefix is *not* about this row -- it is the
+        tests that catch a lot per second across the table -- so the learned
+        front, which is at least about this row's neighbours, precedes it."""
+        got = self.first_for(self.row(first=self.KILLER, exact=False)).split()
+        self.assertEqual([self.FRONT, self.KILLER], got)
+
+    def test_the_learned_front_still_follows_a_killer_rather_than_being_dropped(
+        self,
+    ) -> None:
+        """A recorded killer can be stale -- the code moved and the test no
+        longer sees the mutation -- and the learned front is then the next
+        guess before the whole selection. It costs nothing when the killer is
+        right, because the killer has already answered by then.
+        """
+        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        self.assertIn(self.FRONT, got, "the learned front was dropped, not demoted")
 
 
 class TestHandingRowsOutToLanes(unittest.TestCase):

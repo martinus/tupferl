@@ -1298,6 +1298,28 @@ def _attempt(
             # `run` submits the whole table to the pool at once, so at submit
             # time no verdict exists yet and there is nothing to have learned.
             ahead = learned.ahead(mutation) if learned is not None else ""
+            # **The exact killer goes in front of the learned front, not
+            # behind it.** `Killers.ahead_of` already drops the cheap prefix
+            # for a row whose killer is known -- "exact beats general, the
+            # prefix would only be work before the answer" -- and `Learned` is
+            # general in exactly the same way: it is what caught the *previous*
+            # rows, which is a proxy for what catches this one, and here the
+            # thing being proxied is already in hand.
+            #
+            # It was the other way round until measured, so up to
+            # `LEARNED` - 1 tests ran ahead of the one test known to catch the
+            # row, on 1105 of this table's 1309 rows.
+            #
+            # `Learned` still follows, rather than being skipped: a recorded
+            # killer can be stale -- the code moved and the test no longer sees
+            # it -- and then the learned front is the next best guess before
+            # the full selection. That costs nothing when the killer is right,
+            # because the killer has already answered.
+            first = (
+                f"{mutation.first} {ahead}".strip()
+                if mutation.exact
+                else f"{ahead} {mutation.first}".strip()
+            )
             began = time.monotonic()
             verdict = _run(
                 mutation.tests.split(),
@@ -1306,7 +1328,7 @@ def _attempt(
                 timeout=timeout,
                 memory=memory,
                 each=each,
-                first=f"{ahead} {mutation.first}".strip() if ahead else mutation.first,
+                first=first if ahead else mutation.first,
                 walk=walk,
             )
             verdict = verdict._replace(spent=time.monotonic() - began)
@@ -2660,8 +2682,10 @@ class Killers:
             killer = self.known.get(_key(row), "")
             if killer and killer in usable:
                 # Exact beats general: this test is known to catch *this* row, so
-                # the prefix would only be work before the answer.
-                ahead.append(row._replace(first=killer))
+                # the prefix would only be work before the answer. `exact` says
+                # so to `_attempt`, which owes the same precedence against
+                # `Learned` and for the same reason.
+                ahead.append(row._replace(first=killer, exact=True))
                 continue
             # Nothing remembered -- a new row, or one whose killer stopped
             # working. Cut to what this row can reach: a test in a module that

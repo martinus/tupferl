@@ -1090,6 +1090,49 @@ read this file:
   ordered, both trivial against a 3363 MiB ceiling on this table, but the
   whole-tree figure is 92%.
 
+- **Two "run these first" mechanisms met in the wrong order, and swapping them
+  is worth 3.9%.** `Killers.ahead_of` puts the test recorded as catching *this
+  row* on `Mutation.first`; `Learned` (#43) is move-to-front over the last 8
+  killers seen during the run. `_attempt` composed them as
+  `f"{ahead} {mutation.first}"` — so up to `LEARNED - 1` general tests ran ahead
+  of the one test known to catch the row, on **1105 of a 1309-row table**.
+
+  `Killers.ahead_of` already argues the opposite one function away: it drops the
+  cheap prefix entirely for a row whose killer is known, because "exact beats
+  general, the prefix would only be work before the answer". `Learned` is
+  general in the same way — what caught the *previous* rows is a proxy for what
+  catches this one, and here the thing being proxied is in hand.
+
+  Measured over `--only tupferl/`, 1309 rows, warm cache, 32 lanes:
+
+  | ordering | wall |
+  |---|---|
+  | none | 215.09s |
+  | by recorded cost, `Learned` first | 192.42s / 192.64s |
+  | by recorded cost, **killer first** | **184.98s / 185.46s** |
+
+  The mechanism is visible per row, which is what the recorded `spent` is for:
+  the median **caught** row falls from 0.67s to 0.33s and caught work from 1711
+  to 1137 lane-seconds, while survivor cost is unchanged (3040 → 3089). That is
+  the shape to expect — a survivor runs everything by construction, so nothing
+  about `first` can reach it.
+
+  **`Learned` follows the killer rather than being dropped.** A recorded killer
+  can be stale — the code moved, the test no longer sees the mutation — and the
+  learned front is then the next guess before the whole selection. It costs
+  nothing when the killer is right, because the killer has already answered. And
+  removing `Learned` outright would gut the sweep that matters most: its own
+  docstring is right that `Killers.known` "misses by construction on `--base
+  main`", whose rows are new text, so on a diff sweep the move-to-front is the
+  only adaptive ordering there is.
+
+  **`Mutation.exact` is what carries the distinction**, because `first` holds
+  either kind and they are indistinguishable once written into one string. The
+  flag's *producer* needs its own test: dropping `exact=True` from
+  `Killers.ahead_of` sends every row down the `else` arm and silently restores
+  the old order — measured, that mutation survived every test written against
+  the composition itself.
+
 ### Measured dead ends — do not re-attempt without new evidence
 
 - **Interleaving a mutation table round-robin across files** (#49). Proposed so
