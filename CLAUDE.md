@@ -596,6 +596,21 @@ Five things are not where a newcomer would guess, all on purpose:
   is written here rather than only beside `tests/test_config.py`'s `box`
   fixture, because it binds every module Phase B has yet to convert and nobody
   writing one of those will read that docstring first.
+- **A converted test class keeps `@pytest.mark.usefixtures("...")` for its
+  sandbox even when no test in it names the fixture.** A test can depend on a
+  base class for a *side effect* and never mention it: `SandboxCase.setUp`
+  patches `os.environ`, so a test that sets `PATH` and reads the result looks,
+  in its own text, like a test needing nothing. Converted by giving each test
+  the fixtures its body mentions, that test gets none -- and runs against the
+  developer's real environment, which is the failure `tests/support.py`'s
+  docstring exists to prevent, arriving by a new route. Measured in B3: it
+  broke `PATH` for the rest of the process and took nine later tests with it,
+  which was luck. A test that merely *read* `$HOME` would have passed.
+
+  So the decorator goes on the class and is the load-bearing statement -- *this
+  class runs in a sandbox* -- rather than an inference from whether some method
+  still happens to use the value. B4a, B4b and B5 convert nine more such
+  classes.
 - **Every `raise TupferlError` is checked by a test, not by habit.**
   `tests/test_errors.py` reads them all out with `ast` and asserts plan §5's
   shape: one semicolon (what happened; what to do next), one full stop, one

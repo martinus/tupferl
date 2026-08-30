@@ -13,8 +13,9 @@ broken install as a finding.
 from __future__ import annotations
 
 import argparse
-import unittest
 from unittest import mock
+
+import pytest
 
 from tests import support
 from tupferl import __version__, paths
@@ -31,13 +32,17 @@ COMMANDS = ("init", "add", "remove", "sync", "status", "doctor")
 ARGUMENTS = {"init": ["git@example.invalid:dotfiles"], "add": ["~/.bashrc"], "remove": [".bashrc"]}
 
 
-class TestTheCommandSet(unittest.TestCase):
-    def test_every_command_in_the_plan_parses(self) -> None:
+def parse(argv: list[str]) -> argparse.Namespace:
+    """`build_parser().parse_args`, with argparse's own output swallowed."""
+    with support.quiet():
+        return build_parser().parse_args(argv)
+
+
+class TestTheCommandSet:
+    @pytest.mark.parametrize("command", COMMANDS)
+    def test_every_command_in_the_plan_parses(self, command: str) -> None:
         """Through the public parser, one verb at a time."""
-        for command in COMMANDS:
-            with self.subTest(command=command):
-                args = build_parser().parse_args([command, *ARGUMENTS.get(command, [])])
-                self.assertEqual(command, args.command)
+        assert parse([command, *ARGUMENTS.get(command, [])]).command == command
 
     def test_nothing_else_is_registered(self) -> None:
         """The other direction, which parsing cannot show: a verb nobody planned.
@@ -53,30 +58,29 @@ class TestTheCommandSet(unittest.TestCase):
             if isinstance(action, argparse._SubParsersAction)
             for name in action.choices
         }
-        self.assertEqual(set(COMMANDS), registered)
+        assert registered == set(COMMANDS)
 
-    def test_the_help_names_them_all(self) -> None:
+    @pytest.mark.parametrize("command", COMMANDS)
+    def test_the_help_names_them_all(self, command: str) -> None:
         """What a stranger sees. `--help` is the discovery path for the whole
         tool, so an unregistered verb is invisible even if it works."""
-        text = build_parser().format_help()
-        for command in COMMANDS:
-            self.assertIn(command, text)
+        assert command in build_parser().format_help()
 
     def test_no_command_is_a_usage_error(self) -> None:
         """`required=True` on the subparsers: without it a bare `tupferl`
         returns 0 having done nothing, which any script reads as success."""
-        with support.quiet() as said, self.assertRaises(SystemExit) as caught:
+        with support.quiet() as said, pytest.raises(SystemExit) as caught:
             main([])
-        self.assertEqual(2, caught.exception.code)
-        self.assertIn("required", said.getvalue())
+        assert caught.value.code == 2
+        assert "required" in said.getvalue()
 
     def test_an_unknown_command_is_a_usage_error(self) -> None:
-        with support.quiet() as said, self.assertRaises(SystemExit):
+        with support.quiet() as said, pytest.raises(SystemExit):
             main(["nonesuch"])
-        self.assertIn("invalid choice", said.getvalue())
+        assert "invalid choice" in said.getvalue()
 
 
-class TestEveryVerbIsWired(support.SandboxCase):
+class TestEveryVerbIsWired:
     """Plan §4's eight verbs all reach code, and a ninth would say so.
 
     This replaced `TestTheUnbuiltCommands` when milestone 6 built the last two.
@@ -93,7 +97,9 @@ class TestEveryVerbIsWired(support.SandboxCase):
     one establishes it by registering a verb `main` has no branch for.
     """
 
-    def test_no_planned_verb_falls_through(self) -> None:
+    @pytest.mark.parametrize("command", COMMANDS)
+    @pytest.mark.usefixtures("sandbox")
+    def test_no_planned_verb_falls_through(self, command: str) -> None:
         """Every one of the eight, driven for real in an empty sandbox.
 
         Most of them fail -- there is no repository -- and that is fine: the
@@ -101,11 +107,11 @@ class TestEveryVerbIsWired(support.SandboxCase):
         repository at ..." is them being wired; either reaching `NOT_WIRED`
         would not be.
         """
-        for command in COMMANDS:
-            with self.subTest(command=command), support.quiet() as said:
-                main([command, *ARGUMENTS.get(command, [])])
-            self.assertNotIn(NOT_WIRED, said.getvalue())
+        with support.quiet() as said:
+            main([command, *ARGUMENTS.get(command, [])])
+        assert NOT_WIRED not in said.getvalue()
 
+    @pytest.mark.usefixtures("sandbox")
     def test_a_verb_with_no_branch_says_so(self) -> None:
         """The precondition for the test above: the guard can fire.
 
@@ -123,12 +129,12 @@ class TestEveryVerbIsWired(support.SandboxCase):
 
         with mock.patch("tupferl.__main__.build_parser", ninth), support.quiet() as said:
             status = main(["nonesuch"])
-        self.assertEqual(2, status)
-        self.assertIn(NOT_WIRED, said.getvalue())
-        self.assertIn("tupferl nonesuch", said.getvalue())
+        assert status == 2
+        assert NOT_WIRED in said.getvalue()
+        assert "tupferl nonesuch" in said.getvalue()
 
 
-class TestTheFlags(unittest.TestCase):
+class TestTheFlags:
     """Plan §4's flags, each parsed once.
 
     Registering a verb is not registering its flags, and nothing else in this
@@ -136,44 +142,40 @@ class TestTheFlags(unittest.TestCase):
     was reached with the right arguments or refused for the wrong ones.
     """
 
-    def parse(self, argv: list[str]) -> argparse.Namespace:
-        with support.quiet():
-            return build_parser().parse_args(argv)
-
     def test_add_takes_several_paths_and_the_host_flag(self) -> None:
-        args = self.parse(["add", "--host", "~/.bashrc", "~/.gitconfig"])
-        self.assertTrue(args.host)
-        self.assertEqual(["~/.bashrc", "~/.gitconfig"], args.paths)
+        args = parse(["add", "--host", "~/.bashrc", "~/.gitconfig"])
+        assert args.host
+        assert args.paths == ["~/.bashrc", "~/.gitconfig"]
 
     def test_add_without_the_host_flag_is_the_shared_version(self) -> None:
-        self.assertFalse(self.parse(["add", "~/.bashrc"]).host)
+        assert not parse(["add", "~/.bashrc"]).host
 
     def test_remove_takes_one_path_and_the_host_flag(self) -> None:
         """The same flag name as `add`, meaning the same thing: this machine's
         overlay rather than the shared tree."""
-        args = self.parse(["remove", "--host", "~/.gitconfig"])
-        self.assertTrue(args.host)
-        self.assertEqual("~/.gitconfig", args.path)
+        args = parse(["remove", "--host", "~/.gitconfig"])
+        assert args.host
+        assert args.path == "~/.gitconfig"
 
     def test_remove_without_the_host_flag_parses_as_false(self) -> None:
-        self.assertFalse(self.parse(["remove", "~/.gitconfig"]).host)
+        assert not parse(["remove", "~/.gitconfig"]).host
 
     def test_sync_takes_the_scripted_resolution_flags(self) -> None:
-        self.assertTrue(self.parse(["sync", "--ours"]).ours)
-        self.assertTrue(self.parse(["sync", "--theirs"]).theirs)
-        self.assertTrue(self.parse(["sync", "--no-input"]).no_input)
+        assert parse(["sync", "--ours"]).ours
+        assert parse(["sync", "--theirs"]).theirs
+        assert parse(["sync", "--no-input"]).no_input
 
     def test_ours_and_theirs_cannot_both_be_given(self) -> None:
         """ "Keep mine" and "keep theirs" cannot both be the answer, and a run
         that silently honoured the last one would resolve real conflicts the
         wrong way round."""
-        with support.quiet(), self.assertRaises(SystemExit):
+        with support.quiet(), pytest.raises(SystemExit):
             build_parser().parse_args(["sync", "--ours", "--theirs"])
 
     def test_status_takes_an_optional_path(self) -> None:
-        self.assertIsNone(self.parse(["status"]).path)
-        self.assertEqual(".bashrc", self.parse(["status", ".bashrc"]).path)
-        self.assertEqual(".bashrc", self.parse(["status", "--diff", ".bashrc"]).path)
+        assert parse(["status"]).path is None
+        assert parse(["status", ".bashrc"]).path == ".bashrc"
+        assert parse(["status", "--diff", ".bashrc"]).path == ".bashrc"
 
     def test_the_two_folded_verbs_are_flags_and_default_off(self) -> None:
         """`diff` and `list` were their own commands until they were folded in:
@@ -181,68 +183,68 @@ class TestTheFlags(unittest.TestCase):
         to learn about one answer. Asserted off by default, because a `status`
         that showed every file or every diff without being asked would be the
         fold done badly rather than done."""
-        plain = self.parse(["status"])
-        self.assertFalse(plain.all)
-        self.assertFalse(plain.diff)
-        self.assertTrue(self.parse(["status", "--all"]).all)
-        self.assertTrue(self.parse(["status", "--diff"]).diff)
+        plain = parse(["status"])
+        assert not plain.all
+        assert not plain.diff
+        assert parse(["status", "--all"]).all
+        assert parse(["status", "--diff"]).diff
 
-    def test_the_old_verbs_are_gone_rather_than_hidden(self) -> None:
+    @pytest.mark.parametrize("gone", ["diff", "list"])
+    def test_the_old_verbs_are_gone_rather_than_hidden(self, gone: str) -> None:
         """No aliases. A verb that still works but is absent from `--help` is a
         third state -- neither supported nor removed -- and the whole point of
         the fold is that there are six commands to learn."""
-        for gone in ("diff", "list"):
-            with self.subTest(command=gone), support.quiet(), self.assertRaises(SystemExit):
-                build_parser().parse_args([gone])
+        with support.quiet(), pytest.raises(SystemExit):
+            build_parser().parse_args([gone])
 
 
-class TestTheRealProcess(support.SandboxCase):
-    def test_version_prints_the_package_version(self) -> None:
+class TestTheRealProcess:
+    def test_version_prints_the_package_version(self, sandbox: support.Sandbox) -> None:
         """One version, from one declaration -- `pyproject.toml` reads the same
         string, so this also catches the two disagreeing."""
-        done = support.run_cli(["--version"], self.env)
-        self.assertEqual(0, done.returncode)
-        self.assertEqual(f"tupferl {__version__}", done.stdout.strip())
+        done = support.run_cli(["--version"], sandbox.env)
+        assert done.returncode == 0
+        assert done.stdout.strip() == f"tupferl {__version__}"
 
-    def test_doctor_on_a_bare_machine_reports_and_exits_one(self) -> None:
-        done = support.run_cli(["doctor"], self.env)
-        self.assertEqual(1, done.returncode)
-        self.assertIn("✘", done.stdout)
-        self.assertIn("tupferl init", done.stdout)
+    def test_doctor_on_a_bare_machine_reports_and_exits_one(
+        self, sandbox: support.Sandbox
+    ) -> None:
+        done = support.run_cli(["doctor"], sandbox.env)
+        assert done.returncode == 1
+        assert "✘" in done.stdout
+        assert "tupferl init" in done.stdout
 
-    def test_doctor_on_a_healthy_machine_exits_zero(self) -> None:
+    def test_doctor_on_a_healthy_machine_exits_zero(self, sandbox: support.Sandbox) -> None:
         """The other answer, so the test above is not satisfied by a `doctor`
         that always fails."""
-        remote = support.make_remote(self.tmp / "remote.git", self.env)
-        support.make_repo(paths.repo_dir(), self.env, remote=remote)
-        done = support.run_cli(["doctor"], self.env)
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertNotIn("✘", done.stdout)
+        remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
+        support.make_repo(paths.repo_dir(), sandbox.env, remote=remote)
+        done = support.run_cli(["doctor"], sandbox.env)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "✘" not in done.stdout
 
-    def test_a_misconfigured_environment_is_reported_not_traced(self) -> None:
+    def test_a_misconfigured_environment_is_reported_not_traced(
+        self, sandbox: support.Sandbox
+    ) -> None:
         """A relative `TUPFERL_DIR` raises inside `paths.repo_dir`, which
         `doctor` calls before it prints anything. It must arrive as the one
         sentence and exit 2 -- "tupferl could not run" -- rather than as a
         traceback, and rather than as `doctor`'s own exit 1, which would say a
         check failed when no check ever ran.
         """
-        done = support.run_cli(["doctor"], {**self.env, "TUPFERL_DIR": "relative/path"})
-        self.assertEqual(2, done.returncode)
-        self.assertIn("absolute", done.stderr)
-        self.assertNotIn("Traceback", done.stderr)
-        self.assertEqual("", done.stdout)
+        done = support.run_cli(["doctor"], {**sandbox.env, "TUPFERL_DIR": "relative/path"})
+        assert done.returncode == 2
+        assert "absolute" in done.stderr
+        assert "Traceback" not in done.stderr
+        assert done.stdout == ""
 
-    def test_it_runs_from_anywhere(self) -> None:
+    def test_it_runs_from_anywhere(self, sandbox: support.Sandbox) -> None:
         """The repository is found from the environment, not from the current
         directory -- so a `cd` must not change what `doctor` looks at."""
-        remote = support.make_remote(self.tmp / "remote.git", self.env)
-        support.make_repo(paths.repo_dir(), self.env, remote=remote)
-        elsewhere = self.tmp / "elsewhere"
+        remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
+        support.make_repo(paths.repo_dir(), sandbox.env, remote=remote)
+        elsewhere = sandbox.tmp / "elsewhere"
         elsewhere.mkdir()
-        done = support.run_cli(["doctor"], self.env, cwd=elsewhere)
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertIn(str(paths.repo_dir()), done.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        done = support.run_cli(["doctor"], sandbox.env, cwd=elsewhere)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert str(paths.repo_dir()) in done.stdout

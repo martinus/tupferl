@@ -16,55 +16,57 @@ import os
 import subprocess
 import tempfile
 import time
-import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from tests import support
 from tupferl import doctor, gitrepo
 
 
-class TestTheEnvironment(unittest.TestCase):
+class TestTheEnvironment:
     """`env()` is what stops git asking a human a question nobody will answer."""
 
     def test_the_terminal_prompt_is_off(self) -> None:
         with mock.patch.dict(os.environ, {"GIT_TERMINAL_PROMPT": "1"}):
-            self.assertEqual("0", gitrepo.env()["GIT_TERMINAL_PROMPT"])
+            assert gitrepo.env()["GIT_TERMINAL_PROMPT"] == "0"
 
     def test_ssh_is_put_in_batch_mode(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIn("BatchMode=yes", gitrepo.env()["GIT_SSH_COMMAND"])
+            assert "BatchMode=yes" in gitrepo.env()["GIT_SSH_COMMAND"]
 
     def test_a_users_own_ssh_command_wins(self) -> None:
         """Someone who named their own ssh command said something more specific
         than this default, and overriding it breaks the one configuration that
         was chosen deliberately."""
         with mock.patch.dict(os.environ, {"GIT_SSH_COMMAND": "ssh -F /my/config"}):
-            self.assertEqual("ssh -F /my/config", gitrepo.env()["GIT_SSH_COMMAND"])
+            assert gitrepo.env()["GIT_SSH_COMMAND"] == "ssh -F /my/config"
 
     def test_the_rest_of_the_environment_is_carried(self) -> None:
         """Not a fresh environment: git needs the user's `HOME` to find their
         `.gitconfig`, which is the whole reason for driving the real binary."""
         with mock.patch.dict(os.environ, {"HOME": "/somewhere"}):
-            self.assertEqual("/somewhere", gitrepo.env()["HOME"])
+            assert gitrepo.env()["HOME"] == "/somewhere"
 
 
-class TestWhenGitCannotAnswer(unittest.TestCase):
+class TestWhenGitCannotAnswer:
     def test_a_call_that_hangs_is_reported_as_a_timeout(self) -> None:
         """Produced with a git alias that sleeps, so the wait is real and local:
         no network, and nothing to be flaky about except the machine being 500ms
         slower than the timeout, which is why the alias sleeps ten times it.
         """
         found = gitrepo.git(["-c", "alias.wait=!sleep 5", "wait"], timeout=0.5)
-        self.assertFalse(found.ok)
-        self.assertTrue(found.timed_out)
-        self.assertIn("did not answer", found.err)
+        assert not found.ok
+        assert found.timed_out
+        assert "did not answer" in found.err
 
     def test_the_timeout_message_names_the_command_not_a_flag(self) -> None:
         """`args[0]` is `-c` as often as it is the subcommand, and "git -c did
         not answer" sends the reader looking for a command by that name."""
         found = gitrepo.git(["-c", "alias.wait=!sleep 5", "wait"], timeout=0.5)
-        self.assertIn("wait", found.err)
+        assert "wait" in found.err
 
     def test_the_module_timeout_is_read_at_call_time(self) -> None:
         """`TIMEOUT` as a default argument is evaluated once, at import, so it
@@ -80,9 +82,9 @@ class TestWhenGitCannotAnswer(unittest.TestCase):
             started = time.monotonic()
             found = gitrepo.git(["-c", "alias.wait=!sleep 5", "wait"])
             waited = time.monotonic() - started
-        self.assertTrue(found.timed_out)
-        self.assertLess(waited, 3, "the module constant was ignored")
-        self.assertIn("0.5s", found.err)
+        assert found.timed_out
+        assert waited < 3, "the module constant was ignored"
+        assert "0.5s" in found.err
 
     def test_a_missing_git_is_reported_rather_than_raised(self) -> None:
         """`FileNotFoundError` out of `subprocess` would reach the user as a
@@ -90,9 +92,9 @@ class TestWhenGitCannotAnswer(unittest.TestCase):
         ordinary answer."""
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
             found = gitrepo.git(["--version"])
-        self.assertFalse(found.ok)
-        self.assertFalse(found.timed_out, "not answering and not being there are different")
-        self.assertIn("not installed", found.err)
+        assert not found.ok
+        assert not found.timed_out, "not answering and not being there are different"
+        assert "not installed" in found.err
 
     def test_a_missing_working_directory_says_so(self) -> None:
         """Not "git is not installed", which is what `subprocess` makes it look
@@ -100,9 +102,9 @@ class TestWhenGitCannotAnswer(unittest.TestCase):
         missing binary. `doctor` on a machine with no repository reported the
         wrong one of the two until this was checked before spawning."""
         found = gitrepo.git(["--version"], cwd=Path("/nonexistent-directory"))
-        self.assertFalse(found.ok)
-        self.assertIn("not a directory", found.err)
-        self.assertNotIn("not installed", found.err)
+        assert not found.ok
+        assert "not a directory" in found.err
+        assert "not installed" not in found.err
 
     def test_a_plain_file_as_the_working_directory_says_so(self) -> None:
         """The other half, and the one that used to be a traceback:
@@ -111,26 +113,26 @@ class TestWhenGitCannotAnswer(unittest.TestCase):
             where = Path(box) / "file"
             where.write_text("x", encoding="utf-8")
             found = gitrepo.git(["--version"], cwd=where)
-        self.assertFalse(found.ok)
-        self.assertIn("not a directory", found.err)
+        assert not found.ok
+        assert "not a directory" in found.err
 
     def test_a_real_directory_still_runs(self) -> None:
         """The precondition: the guard must not refuse the ordinary case, which
         is every other call in this project."""
         with tempfile.TemporaryDirectory() as box:
-            self.assertTrue(gitrepo.git(["--version"], cwd=Path(box)).ok)
+            assert gitrepo.git(["--version"], cwd=Path(box)).ok
 
     def test_a_failing_call_is_not_a_timeout(self) -> None:
         """The precondition for the two above: `timed_out` must distinguish, not
         just be set whenever something went wrong."""
         with tempfile.TemporaryDirectory() as box:
             found = gitrepo.git(["rev-parse", "--show-toplevel"], cwd=Path(box))
-        self.assertFalse(found.ok)
-        self.assertFalse(found.timed_out)
-        self.assertIn("not a git repository", found.err)
+        assert not found.ok
+        assert not found.timed_out
+        assert "not a git repository" in found.err
 
 
-class TestTheReasonGitGives(unittest.TestCase):
+class TestTheReasonGitGives:
     """Which line of git's stderr a user is shown.
 
     Two wrong answers shipped before this function existed, in opposite
@@ -167,79 +169,72 @@ class TestTheReasonGitGives(unittest.TestCase):
 
     def test_progress_on_stderr_is_not_the_reason(self) -> None:
         found = self.reason(self.CLONE)
-        self.assertEqual("fatal: Could not read from remote repository.", found)
-        self.assertNotIn("Cloning into", found)
+        assert found == "fatal: Could not read from remote repository."
+        assert "Cloning into" not in found
 
     def test_the_trailing_advice_is_not_either(self) -> None:
-        self.assertNotIn("repository exists", self.reason(self.CLONE))
+        assert "repository exists" not in self.reason(self.CLONE)
 
     def test_the_first_fatal_line_wins_when_there_are_two(self) -> None:
         """The specific one, not the generic follow-up. Every other transcript
         here has a single `fatal:`, where first and last are the same string —
         so without this fixture the choice between them is untested."""
         found = self.reason(self.TWO_FATALS)
-        self.assertEqual("fatal: '/tmp/absent.git' does not appear to be a git repository", found)
+        assert found == "fatal: '/tmp/absent.git' does not appear to be a git repository"
 
     def test_a_single_line_failure_is_itself(self) -> None:
-        self.assertEqual(self.MISSING.strip(), self.reason(self.MISSING))
+        assert self.reason(self.MISSING) == self.MISSING.strip()
 
     def test_the_credential_case(self) -> None:
-        self.assertEqual(self.PROMPTS.strip(), self.reason(self.PROMPTS))
+        assert self.reason(self.PROMPTS) == self.PROMPTS.strip()
 
     def test_the_first_speaking_line_wins_when_none_is_fatal(self) -> None:
         """Two lines, neither marked. The fallback takes the first for the same
         reason the `fatal:` rule does — git leads with the specific complaint —
         and with a one-line fixture that choice is untested."""
         found = self.reason("error: pathspec 'x' did not match\nerror: see git help\n")
-        self.assertEqual("error: pathspec 'x' did not match", found)
+        assert found == "error: pathspec 'x' did not match"
 
     def test_a_failure_with_no_fatal_line_still_says_something(self) -> None:
         """Not every git command marks its complaint. The fallback is the first
         line that is neither blank nor progress."""
-        self.assertEqual(
-            "error: pathspec 'x' did not match", self.reason("error: pathspec 'x' did not match\n")
+        assert (
+            self.reason("error: pathspec 'x' did not match\n")
+            == "error: pathspec 'x' did not match"
         )
 
     def test_empty_stderr_does_not_raise(self) -> None:
         """A killed process leaves nothing. A message about something going
         wrong must not itself be an `IndexError`."""
-        self.assertEqual("no reason given", self.reason(""))
+        assert self.reason("") == "no reason given"
 
     def test_progress_alone_does_not_raise(self) -> None:
         """The pathological case the two filters make possible: every line was
         dropped."""
-        self.assertEqual("no reason given", self.reason("Cloning into 'x'...\n"))
+        assert self.reason("Cloning into 'x'...\n") == "no reason given"
 
 
-class TestIsRepository(unittest.TestCase):
-    def setUp(self) -> None:
-        box = tempfile.TemporaryDirectory(prefix="tupferl-gitrepo-")
-        self.addCleanup(support.discard, box)
-        self.box = Path(box.name)
-        self.home = self.box / "home"
-        self.home.mkdir()
-        support.seed_home(self.home)
-        self.env = support.sandbox_env(self.home)
-        patched = mock.patch.dict(os.environ, self.env, clear=True)
-        patched.start()
-        self.addCleanup(patched.stop)
+class TestIsRepository:
+    """Through the shared `sandbox` fixture, which is what this class used to
+    build by hand: eleven lines of `TemporaryDirectory`, `seed_home`,
+    `sandbox_env` and a `mock.patch.dict`, all of it now one parameter."""
 
-    def test_the_top_of_a_working_tree(self) -> None:
-        repo = support.make_repo(self.box / "repo", self.env)
-        self.assertTrue(gitrepo.is_repository(repo))
+    def test_the_top_of_a_working_tree(self, sandbox: support.Sandbox) -> None:
+        repo = support.make_repo(sandbox.tmp / "repo", sandbox.env)
+        assert gitrepo.is_repository(repo)
 
-    def test_not_a_subdirectory_of_one(self) -> None:
-        repo = support.make_repo(self.box / "repo", self.env)
+    def test_not_a_subdirectory_of_one(self, sandbox: support.Sandbox) -> None:
+        repo = support.make_repo(sandbox.tmp / "repo", sandbox.env)
         inside = repo / ".config"
         inside.mkdir()
-        self.assertFalse(gitrepo.is_repository(inside))
+        assert not gitrepo.is_repository(inside)
 
-    def test_not_a_plain_directory(self) -> None:
-        plain = self.box / "plain"
+    def test_not_a_plain_directory(self, sandbox: support.Sandbox, plain: Path) -> None:
+        plain = sandbox.tmp / "plain"
         plain.mkdir()
-        self.assertFalse(gitrepo.is_repository(plain))
+        assert not gitrepo.is_repository(plain)
 
-    def test_a_git_that_cannot_run_answers_no(self) -> None:
+    def test_a_git_that_cannot_run_answers_no(self, sandbox: support.Sandbox, plain: Path) -> None:
         """Without the `if not found.ok` guard this returns *true* for the
         current directory: `--show-toplevel` printed nothing, `Path("")`
         resolves to the working directory, and the comparison then holds.
@@ -248,16 +243,63 @@ class TestIsRepository(unittest.TestCase):
         path would return false either way and the guard would look tested
         while nothing had exercised it.
         """
-        plain = self.box / "plain"
+        plain = sandbox.tmp / "plain"
         plain.mkdir()
         here = os.getcwd()
         os.chdir(plain)
-        self.addCleanup(os.chdir, here)
-        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
-            self.assertFalse(gitrepo.is_repository(Path.cwd()))
+        try:
+            with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+                assert not gitrepo.is_repository(Path.cwd())
+        finally:
+            # Restored here rather than in a fixture: a working directory left
+            # moved would break every later test in the process, and the undo
+            # belongs where a reader can see it happen.
+            os.chdir(here)
 
 
-class TestReadingAConflictedIndex(support.SandboxCase):
+#: The three sides of the conflict the fixture below leaves in the index. Given
+#: distinct content for the reason every fixture in milestone 4 is: symmetric
+#: inputs make "which side was written" unobservable.
+OURS = b"from the local branch\nshared\n"
+THEIRS = b"from the remote branch\nshared\n"
+BASE = b"from neither\nshared\n"
+
+
+@dataclass(frozen=True)
+class Conflict:
+    """A repository left mid-merge over `.bashrc`, and the way to add to it."""
+
+    box: support.Sandbox
+    repo: Path
+
+    @property
+    def env(self) -> dict[str, str]:
+        return self.box.env
+
+    def commit(self, content: bytes, message: str) -> None:
+        (self.repo / ".bashrc").write_bytes(content)
+        support.git(["add", "-A"], cwd=self.repo, env=self.env)
+        support.git(["commit", "-m", message], cwd=self.repo, env=self.env)
+
+
+@pytest.fixture
+def conflict(sandbox: support.Sandbox) -> Conflict:
+    """Two branches that changed the same line, merged into a dirty index."""
+    repo = support.make_repo(sandbox.home / "repo", sandbox.env)
+    sandbox.write(repo / ".gitignore", "")  # something to commit onto
+    made = Conflict(sandbox, repo)
+    made.commit(BASE, "the base")
+    support.git(["branch", "other"], cwd=repo, env=sandbox.env)
+    made.commit(OURS, "ours")
+    support.git(["checkout", "other"], cwd=repo, env=sandbox.env)
+    made.commit(THEIRS, "theirs")
+    support.git(["checkout", support.BRANCH], cwd=repo, env=sandbox.env)
+    # Left to fail: that is what puts the three stages in the index.
+    gitrepo.merge(repo, "other")
+    return made
+
+
+class TestReadingAConflictedIndex:
     """`gitrepo.version`, and which stage is which side.
 
     **The numbering is the point.** git's stage 2 is the branch being merged
@@ -272,78 +314,58 @@ class TestReadingAConflictedIndex(support.SandboxCase):
     unobservable.
     """
 
-    OURS = b"from the local branch\nshared\n"
-    THEIRS = b"from the remote branch\nshared\n"
-    BASE = b"from neither\nshared\n"
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.repo = support.make_repo(self.home / "repo", self.env)
-        self.write(self.repo / ".gitignore", "")  # something to commit onto
-        self.conflict()
-
-    def commit(self, content: bytes, message: str) -> None:
-        (self.repo / ".bashrc").write_bytes(content)
-        support.git(["add", "-A"], cwd=self.repo, env=self.env)
-        support.git(["commit", "-m", message], cwd=self.repo, env=self.env)
-
-    def conflict(self) -> None:
-        """Two branches that changed the same line, merged into a dirty index."""
-        self.commit(self.BASE, "the base")
-        support.git(["branch", "other"], cwd=self.repo, env=self.env)
-        self.commit(self.OURS, "ours")
-        support.git(["checkout", "other"], cwd=self.repo, env=self.env)
-        self.commit(self.THEIRS, "theirs")
-        support.git(["checkout", support.BRANCH], cwd=self.repo, env=self.env)
-        # Left to fail: that is what puts the three stages in the index.
-        gitrepo.merge(self.repo, "other")
-
-    def test_the_fixture_really_left_a_conflicted_index(self) -> None:
+    def test_the_fixture_really_left_a_conflicted_index(self, conflict: Conflict) -> None:
         """Every assertion below is vacuous against a merge that succeeded."""
-        self.assertEqual([".bashrc"], gitrepo.unmerged(self.repo))
+        assert gitrepo.unmerged(conflict.repo) == [".bashrc"]
 
-    def test_stage_two_is_the_branch_being_merged_into(self) -> None:
-        self.assertEqual(self.OURS, gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"))
+    def test_stage_two_is_the_branch_being_merged_into(self, conflict: Conflict) -> None:
+        assert gitrepo.version(conflict.repo, gitrepo.OURS, ".bashrc") == OURS
 
-    def test_stage_three_is_the_branch_being_merged_in(self) -> None:
-        self.assertEqual(self.THEIRS, gitrepo.version(self.repo, gitrepo.THEIRS, ".bashrc"))
+    def test_stage_three_is_the_branch_being_merged_in(self, conflict: Conflict) -> None:
+        assert gitrepo.version(conflict.repo, gitrepo.THEIRS, ".bashrc") == THEIRS
 
-    def test_stage_one_is_the_merge_base(self) -> None:
-        self.assertEqual(self.BASE, gitrepo.version(self.repo, gitrepo.BASE, ".bashrc"))
+    def test_stage_one_is_the_merge_base(self, conflict: Conflict) -> None:
+        assert gitrepo.version(conflict.repo, gitrepo.BASE, ".bashrc") == BASE
 
-    def test_a_stage_that_is_not_there_is_none(self) -> None:
+    def test_a_stage_that_is_not_there_is_none(self, conflict: Conflict) -> None:
         """A path nothing conflicts over has no stages at all."""
-        self.assertIsNone(gitrepo.version(self.repo, gitrepo.OURS, ".gitignore"))
+        assert gitrepo.version(conflict.repo, gitrepo.OURS, ".gitignore") is None
 
-    def test_bytes_come_back_exactly(self) -> None:
+    def test_bytes_come_back_exactly(self, conflict: Conflict) -> None:
         """The reason this does not go through `gitrepo.git`, which returns
         `stdout.strip()`: a dotfile's trailing newline and any leading blank line
         are content, and stripping them corrupts the file on its way to the
         prompt."""
-        gitrepo.abort_merge(self.repo)
-        self.commit(b"\n\nleading and trailing blank lines\n\n", "spacey")
-        support.git(["branch", "-D", "other"], cwd=self.repo, env=self.env)
-        support.git(["checkout", "-b", "other", "HEAD~1"], cwd=self.repo, env=self.env)
-        self.commit(b"\n\nthe other side\n\n", "spacey too")
-        support.git(["checkout", support.BRANCH], cwd=self.repo, env=self.env)
-        gitrepo.merge(self.repo, "other")
-        self.assertEqual(
-            b"\n\nleading and trailing blank lines\n\n",
-            gitrepo.version(self.repo, gitrepo.OURS, ".bashrc"),
+        gitrepo.abort_merge(conflict.repo)
+        conflict.commit(b"\n\nleading and trailing blank lines\n\n", "spacey")
+        support.git(["branch", "-D", "other"], cwd=conflict.repo, env=conflict.env)
+        support.git(["checkout", "-b", "other", "HEAD~1"], cwd=conflict.repo, env=conflict.env)
+        conflict.commit(b"\n\nthe other side\n\n", "spacey too")
+        support.git(["checkout", support.BRANCH], cwd=conflict.repo, env=conflict.env)
+        gitrepo.merge(conflict.repo, "other")
+        assert (
+            gitrepo.version(conflict.repo, gitrepo.OURS, ".bashrc")
+            == b"\n\nleading and trailing blank lines\n\n"
         )
 
 
-class ConflictedIndex(support.SandboxCase):
-    """A repository left mid-merge, for the two classes that read its index.
+@dataclass(frozen=True)
+class Diverging:
+    """A repository and the two ways to put a conflict in it.
 
-    Not a `Test...` class and holding no tests of its own: subclassing one that
-    *does* makes every test in it run again under the subclass's name, which is
-    six duplicate runs and six names for `--exclude` to have to know about.
+    A fixture rather than a base class, which is what this was. The old comment
+    is worth keeping because the hazard it names is a `unittest` one that pytest
+    removes: a base holding tests makes every test run again under each
+    subclass's name. A fixture cannot do that -- there is nothing to inherit --
+    so the rule that had to be remembered is now unstateable.
     """
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.repo = support.make_repo(self.home / "r", self.env)
+    box: support.Sandbox
+    repo: Path
+
+    @property
+    def env(self) -> dict[str, str]:
+        return self.box.env
 
     def commit(self, name: str, text: bytes, mode: int = 0o644) -> None:
         where = self.repo / name
@@ -366,7 +388,12 @@ class ConflictedIndex(support.SandboxCase):
         )
 
 
-class TestReadingTheStagesOfAConflict(ConflictedIndex):
+@pytest.fixture
+def index(sandbox: support.Sandbox) -> Diverging:
+    return Diverging(sandbox, support.make_repo(sandbox.home / "r", sandbox.env))
+
+
+class TestReadingTheStagesOfAConflict:
     """`gitrepo.conflicted`, asked directly.
 
     It had no test of its own: everything reached it through `sync`, which is why
@@ -376,7 +403,7 @@ class TestReadingTheStagesOfAConflict(ConflictedIndex):
     asking about here rather than three layers up.
     """
 
-    def test_two_conflicted_files_come_back_in_a_settled_order(self) -> None:
+    def test_two_conflicted_files_come_back_in_a_settled_order(self, index: Diverging) -> None:
         """`unmerged` sorts, and one conflicted file cannot show it.
 
         The name the user is told to go and resolve comes from here, and a list
@@ -398,87 +425,111 @@ class TestReadingTheStagesOfAConflict(ConflictedIndex):
         is the real claim; that no fixture can break it is a property of git.
         """
         for name in (".zshrc", ".bashrc"):
-            self.commit(name, b"base\n")
-        support.git(["branch", "other"], cwd=self.repo, env=self.env)
+            index.commit(name, b"base\n")
+        support.git(["branch", "other"], cwd=index.repo, env=index.env)
         for name in (".zshrc", ".bashrc"):
-            self.commit(name, b"ours\n")
-        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
+            index.commit(name, b"ours\n")
+        support.git(["checkout", "-q", "other"], cwd=index.repo, env=index.env)
         for name in (".zshrc", ".bashrc"):
-            self.commit(name, b"theirs\n")
-        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+            index.commit(name, b"theirs\n")
+        support.git(["checkout", "-q", support.BRANCH], cwd=index.repo, env=index.env)
         subprocess.run(
-            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+            ["git", "merge", "other"],
+            cwd=index.repo,
+            env=index.env,
+            capture_output=True,
+            check=False,
         )
-        self.assertEqual([".bashrc", ".zshrc"], gitrepo.unmerged(self.repo))
+        assert gitrepo.unmerged(index.repo) == [".bashrc", ".zshrc"]
 
-    def test_a_clean_repository_has_nothing_conflicted(self) -> None:
+    def test_a_clean_repository_has_nothing_conflicted(self, index: Diverging) -> None:
         """The empty answer, which every caller reads as "nothing to settle"."""
-        self.commit(".bashrc", b"one\n")
-        self.assertEqual({}, gitrepo.conflicted(self.repo))
+        index.commit(".bashrc", b"one\n")
+        assert gitrepo.conflicted(index.repo) == {}
 
-    def test_all_three_stages_with_their_modes(self) -> None:
-        self.diverge(".bashrc", b"ours\n", b"theirs\n")
-        found = gitrepo.conflicted(self.repo)[".bashrc"]
-        self.assertEqual({1: 0o100644, 2: 0o100644, 3: 0o100644}, found)
+    def test_all_three_stages_with_their_modes(self, index: Diverging) -> None:
+        index.diverge(".bashrc", b"ours\n", b"theirs\n")
+        found = gitrepo.conflicted(index.repo)[".bashrc"]
+        assert found == {1: 0o100644, 2: 0o100644, 3: 0o100644}
 
-    def test_the_executable_bit_is_carried_per_stage(self) -> None:
+    def test_the_executable_bit_is_carried_per_stage(self, index: Diverging) -> None:
         """Asymmetric, so the answer cannot be right by accident: equal modes
         pass against a function that returns the same number for every stage."""
-        self.commit(".sh", b"base\n", 0o755)
-        support.git(["branch", "other"], cwd=self.repo, env=self.env)
-        self.commit(".sh", b"ours\n", 0o755)
-        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
-        self.commit(".sh", b"theirs\n", 0o644)
-        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        index.commit(".sh", b"base\n", 0o755)
+        support.git(["branch", "other"], cwd=index.repo, env=index.env)
+        index.commit(".sh", b"ours\n", 0o755)
+        support.git(["checkout", "-q", "other"], cwd=index.repo, env=index.env)
+        index.commit(".sh", b"theirs\n", 0o644)
+        support.git(["checkout", "-q", support.BRANCH], cwd=index.repo, env=index.env)
         subprocess.run(
-            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+            ["git", "merge", "other"],
+            cwd=index.repo,
+            env=index.env,
+            capture_output=True,
+            check=False,
         )
-        found = gitrepo.conflicted(self.repo)[".sh"]
-        self.assertEqual(0o100755, found[gitrepo.OURS])
-        self.assertEqual(0o100644, found[gitrepo.THEIRS])
+        found = gitrepo.conflicted(index.repo)[".sh"]
+        assert found[gitrepo.OURS] == 0o100755
+        assert found[gitrepo.THEIRS] == 0o100644
 
-    def test_a_side_that_deleted_the_file_has_no_stage(self) -> None:
+    def test_a_side_that_deleted_the_file_has_no_stage(self, index: Diverging) -> None:
         """What `sync.held` reads to tell "that side has none" from "git would
         not answer" -- two very different things it used to conflate."""
-        self.commit(".bashrc", b"base\n")
-        support.git(["branch", "other"], cwd=self.repo, env=self.env)
-        self.commit(".bashrc", b"ours\n")
-        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
-        (self.repo / ".bashrc").unlink()
-        support.git(["add", "-A"], cwd=self.repo, env=self.env)
-        support.git(["commit", "-m", "gone"], cwd=self.repo, env=self.env)
-        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        index.commit(".bashrc", b"base\n")
+        support.git(["branch", "other"], cwd=index.repo, env=index.env)
+        index.commit(".bashrc", b"ours\n")
+        support.git(["checkout", "-q", "other"], cwd=index.repo, env=index.env)
+        (index.repo / ".bashrc").unlink()
+        support.git(["add", "-A"], cwd=index.repo, env=index.env)
+        support.git(["commit", "-m", "gone"], cwd=index.repo, env=index.env)
+        support.git(["checkout", "-q", support.BRANCH], cwd=index.repo, env=index.env)
         subprocess.run(
-            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+            ["git", "merge", "other"],
+            cwd=index.repo,
+            env=index.env,
+            capture_output=True,
+            check=False,
         )
-        found = gitrepo.conflicted(self.repo)[".bashrc"]
-        self.assertIn(gitrepo.OURS, found)
-        self.assertNotIn(gitrepo.THEIRS, found)
+        found = gitrepo.conflicted(index.repo)[".bashrc"]
+        assert gitrepo.OURS in found
+        assert gitrepo.THEIRS not in found
 
-    def test_a_symlink_is_reported_with_its_own_mode(self) -> None:
+    def test_a_symlink_is_reported_with_its_own_mode(self, index: Diverging) -> None:
         """`0o120000`, which is what `sync.reconcile` refuses on. Without the
         mode it would look like a plain file and be written *through*."""
-        (self.repo / "link").symlink_to(self.home / "target")
-        support.git(["add", "-A"], cwd=self.repo, env=self.env)
-        support.git(["commit", "-m", "link"], cwd=self.repo, env=self.env)
-        support.git(["branch", "other"], cwd=self.repo, env=self.env)
-        (self.repo / "link").unlink()
-        (self.repo / "link").symlink_to(self.home / "elsewhere")
-        support.git(["add", "-A"], cwd=self.repo, env=self.env)
-        support.git(["commit", "-m", "relink"], cwd=self.repo, env=self.env)
-        support.git(["checkout", "-q", "other"], cwd=self.repo, env=self.env)
-        (self.repo / "link").unlink()
-        (self.repo / "link").symlink_to(self.home / "third")
-        support.git(["add", "-A"], cwd=self.repo, env=self.env)
-        support.git(["commit", "-m", "relink again"], cwd=self.repo, env=self.env)
-        support.git(["checkout", "-q", support.BRANCH], cwd=self.repo, env=self.env)
+        (index.repo / "link").symlink_to(index.box.home / "target")
+        support.git(["add", "-A"], cwd=index.repo, env=index.env)
+        support.git(["commit", "-m", "link"], cwd=index.repo, env=index.env)
+        support.git(["branch", "other"], cwd=index.repo, env=index.env)
+        (index.repo / "link").unlink()
+        (index.repo / "link").symlink_to(index.box.home / "elsewhere")
+        support.git(["add", "-A"], cwd=index.repo, env=index.env)
+        support.git(["commit", "-m", "relink"], cwd=index.repo, env=index.env)
+        support.git(["checkout", "-q", "other"], cwd=index.repo, env=index.env)
+        (index.repo / "link").unlink()
+        (index.repo / "link").symlink_to(index.box.home / "third")
+        support.git(["add", "-A"], cwd=index.repo, env=index.env)
+        support.git(["commit", "-m", "relink again"], cwd=index.repo, env=index.env)
+        support.git(["checkout", "-q", support.BRANCH], cwd=index.repo, env=index.env)
         subprocess.run(
-            ["git", "merge", "other"], cwd=self.repo, env=self.env, capture_output=True, check=False
+            ["git", "merge", "other"],
+            cwd=index.repo,
+            env=index.env,
+            capture_output=True,
+            check=False,
         )
-        self.assertEqual(0o120000, gitrepo.conflicted(self.repo)["link"][gitrepo.OURS])
+        assert gitrepo.conflicted(index.repo)["link"][gitrepo.OURS] == 0o120000
 
 
-class TestWhenGitWillNotAnswerAboutConflicts(support.SandboxCase):
+@pytest.fixture
+def plain(sandbox: support.Sandbox) -> Path:
+    """A directory that is not a repository."""
+    where = sandbox.home / "not-a-repo"
+    where.mkdir()
+    return where
+
+
+class TestWhenGitWillNotAnswerAboutConflicts:
     """The two ways `conflicted` gets no answer, and the empty dict both give.
 
     Both matter because of what the caller does with the result: `sync.reconcile`
@@ -492,19 +543,14 @@ class TestWhenGitWillNotAnswerAboutConflicts(support.SandboxCase):
     conflict, where git always answers.
     """
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.plain = self.home / "not-a-repo"
-        self.plain.mkdir()
-
-    def test_a_directory_that_is_not_a_repository_has_nothing_conflicted(self) -> None:
+    def test_a_directory_that_is_not_a_repository_has_nothing_conflicted(self, plain: Path) -> None:
         """git exits non-zero with "not a git repository". The precondition is
         asserted first: run against a real repository this is vacuous, because a
         clean repository answers `{}` too."""
-        self.assertFalse((self.plain / ".git").exists(), "the fixture is a repository")
-        self.assertEqual({}, gitrepo.conflicted(self.plain))
+        assert not (plain / ".git").exists(), "the fixture is a repository"
+        assert gitrepo.conflicted(plain) == {}
 
-    def test_a_git_that_cannot_be_run_at_all_has_nothing_conflicted(self) -> None:
+    def test_a_git_that_cannot_be_run_at_all_has_nothing_conflicted(self, plain: Path) -> None:
         """The `OSError` arm, which is a different line from the exit-status one.
 
         `PATH=""`, never `del PATH`: with the variable *absent* `subprocess`
@@ -513,10 +559,10 @@ class TestWhenGitWillNotAnswerAboutConflicts(support.SandboxCase):
         the wrong reason.
         """
         with mock.patch.dict(os.environ, {"PATH": ""}):
-            self.assertEqual({}, gitrepo.conflicted(self.plain))
+            assert gitrepo.conflicted(plain) == {}
 
 
-class TestAPathThatIsNotUtf8(ConflictedIndex):
+class TestAPathThatIsNotUtf8:
     """A conflicted path whose name is not valid UTF-8.
 
     **Linux only, and the CI job says so rather than this file skipping.** APFS
@@ -535,13 +581,13 @@ class TestAPathThatIsNotUtf8(ConflictedIndex):
     half-finished merge. A latin-1 dotfile name needs no hostile input.
     """
 
-    def test_a_path_that_is_not_utf8_does_not_raise(self) -> None:
-        self.diverge("caf\udce9rc", b"ours\n", b"theirs\n")
-        found = gitrepo.conflicted(self.repo)
-        self.assertEqual(1, len(found))
-        self.assertEqual(3, len(next(iter(found.values()))))
+    def test_a_path_that_is_not_utf8_does_not_raise(self, index: Diverging) -> None:
+        index.diverge("caf\udce9rc", b"ours\n", b"theirs\n")
+        found = gitrepo.conflicted(index.repo)
+        assert len(found) == 1
+        assert len(next(iter(found.values()))) == 3
 
-    def test_such_a_name_can_be_staged(self) -> None:
+    def test_such_a_name_can_be_staged(self, index: Diverging, plain: Path) -> None:
         """The same hazard mirrored, and it is a regression this class caught.
 
         `stage` sends its pathspecs on git's *stdin* since #3, and `git()` runs
@@ -555,14 +601,50 @@ class TestAPathThatIsNotUtf8(ConflictedIndex):
         Not through `diverge`: this wants an ordinary file staged, not a
         conflict, so it builds the smallest thing that shows it.
         """
-        odd = self.repo / "caf\udce9-plain"
+        odd = index.repo / "caf\udce9-plain"
         odd.write_bytes(b"x\n")
-        answered = gitrepo.stage(self.repo, [odd])
-        self.assertTrue(answered.ok, answered.err)
-        self.assertTrue(gitrepo.staged(self.repo))
+        answered = gitrepo.stage(index.repo, [odd])
+        assert answered.ok, answered.err
+        assert gitrepo.staged(index.repo)
 
 
-class TestHowFarApartTwoRefsAre(support.SandboxCase):
+@dataclass(frozen=True)
+class Clone:
+    """A clone that has pushed once, and its remote-tracking ref."""
+
+    box: support.Sandbox
+    remote: Path
+    repo: Path
+    there: str
+
+    @property
+    def tmp(self) -> Path:
+        return self.box.tmp
+
+    @property
+    def env(self) -> dict[str, str]:
+        return self.box.env
+
+    def commit(self, text: str, where: Path | None = None) -> None:
+        root = self.repo if where is None else where
+        (root / "file").write_text(text, encoding="utf-8")
+        support.git(["add", "file"], cwd=root, env=self.env)
+        support.git(["commit", "-m", text], cwd=root, env=self.env)
+
+
+@pytest.fixture
+def clone(sandbox: support.Sandbox) -> Clone:
+    remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
+    repo = sandbox.tmp / "clone"
+    support.git(["clone", str(remote), str(repo)], cwd=sandbox.tmp, env=sandbox.env)
+    made = Clone(sandbox, remote, repo, "")
+    made.commit("first")
+    support.git(["push", "origin", "HEAD"], cwd=repo, env=sandbox.env)
+    support.git(["fetch", "origin"], cwd=repo, env=sandbox.env)
+    return Clone(sandbox, remote, repo, f"origin/{gitrepo.branch(repo)}")
+
+
+class TestHowFarApartTwoRefsAre:
     """`distance`, which is the only thing `status` knows about the remote.
 
     Driven against a real clone and a real push rather than a canned string,
@@ -572,54 +654,39 @@ class TestHowFarApartTwoRefsAre(support.SandboxCase):
     `(behind, ahead)`, so no fixture here has one.
     """
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.remote = support.make_remote(self.tmp / "remote.git", self.env)
-        self.repo = self.tmp / "clone"
-        support.git(["clone", str(self.remote), str(self.repo)], cwd=self.tmp, env=self.env)
-        self.commit("first")
-        support.git(["push", "origin", "HEAD"], cwd=self.repo, env=self.env)
-        support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
-        self.there = f"origin/{gitrepo.branch(self.repo)}"
+    def test_two_refs_that_agree_are_zero_apart(self, clone: Clone) -> None:
+        assert gitrepo.distance(clone.repo, "HEAD", clone.there) == (0, 0)
 
-    def commit(self, text: str, where: Path | None = None) -> None:
-        root = self.repo if where is None else where
-        (root / "file").write_text(text, encoding="utf-8")
-        support.git(["add", "file"], cwd=root, env=self.env)
-        support.git(["commit", "-m", text], cwd=root, env=self.env)
-
-    def test_two_refs_that_agree_are_zero_apart(self) -> None:
-        self.assertEqual((0, 0), gitrepo.distance(self.repo, "HEAD", self.there))
-
-    def test_commits_only_here_are_the_first_number(self) -> None:
+    def test_commits_only_here_are_the_first_number(self, clone: Clone) -> None:
         """Two of them, against nothing on the other side -- so a function that
         returned the pair the wrong way round answers `(0, 2)` and fails."""
-        self.commit("second")
-        self.commit("third")
-        self.assertEqual((2, 0), gitrepo.distance(self.repo, "HEAD", self.there))
+        clone.commit("second")
+        clone.commit("third")
+        assert gitrepo.distance(clone.repo, "HEAD", clone.there) == (2, 0)
 
-    def test_commits_only_there_are_the_second_number(self) -> None:
-        other = self.tmp / "elsewhere"
-        support.git(["clone", str(self.remote), str(other)], cwd=self.tmp, env=self.env)
-        self.commit("from elsewhere", where=other)
-        support.git(["push", "origin", "HEAD"], cwd=other, env=self.env)
-        support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
-        self.assertEqual((0, 1), gitrepo.distance(self.repo, "HEAD", self.there))
+    def test_commits_only_there_are_the_second_number(self, clone: Clone) -> None:
+        other = clone.tmp / "elsewhere"
+        support.git(["clone", str(clone.remote), str(other)], cwd=clone.tmp, env=clone.env)
+        clone.commit("from elsewhere", where=other)
+        support.git(["push", "origin", "HEAD"], cwd=other, env=clone.env)
+        support.git(["fetch", "origin"], cwd=clone.repo, env=clone.env)
+        assert gitrepo.distance(clone.repo, "HEAD", clone.there) == (0, 1)
 
-    def test_both_directions_at_once_are_two_different_numbers(self) -> None:
+    def test_both_directions_at_once_are_two_different_numbers(self, clone: Clone) -> None:
         """The fixture that makes the two tests above more than a coincidence:
         with 2 here and 1 there, every wrong answer -- swapped, doubled, one
         side counted twice -- is a different pair from the right one."""
-        other = self.tmp / "elsewhere"
-        support.git(["clone", str(self.remote), str(other)], cwd=self.tmp, env=self.env)
-        self.commit("from elsewhere", where=other)
-        support.git(["push", "origin", "HEAD"], cwd=other, env=self.env)
-        self.commit("second")
-        self.commit("third")
-        support.git(["fetch", "origin"], cwd=self.repo, env=self.env)
-        self.assertEqual((2, 1), gitrepo.distance(self.repo, "HEAD", self.there))
+        other = clone.tmp / "elsewhere"
+        support.git(["clone", str(clone.remote), str(other)], cwd=clone.tmp, env=clone.env)
+        clone.commit("from elsewhere", where=other)
+        support.git(["push", "origin", "HEAD"], cwd=other, env=clone.env)
+        clone.commit("second")
+        clone.commit("third")
+        support.git(["fetch", "origin"], cwd=clone.repo, env=clone.env)
+        assert gitrepo.distance(clone.repo, "HEAD", clone.there) == (2, 1)
 
-    def test_output_that_is_not_two_numbers_is_unknown(self) -> None:
+    @pytest.mark.parametrize("out", ["", "1", "1 2 3", "one two", "1 -2"])
+    def test_output_that_is_not_two_numbers_is_unknown(self, clone: Clone, out: str) -> None:
         """The format guard, which real git cannot reach: `rev-list --count`
         either fails -- caught one line earlier -- or prints two integers.
 
@@ -630,20 +697,18 @@ class TestHowFarApartTwoRefsAre(support.SandboxCase):
         for anything a user meets. Each spelling below breaks a different half
         of the condition.
         """
-        for out in ("", "1", "1 2 3", "one two", "1 -2"):
-            with self.subTest(out=out):
-                fake = gitrepo.Result(out=out, err="", code=0)
-                with mock.patch("tupferl.gitrepo.git", return_value=fake):
-                    self.assertIsNone(gitrepo.distance(self.repo, "HEAD", self.there))
+        fake = gitrepo.Result(out=out, err="", code=0)
+        with mock.patch("tupferl.gitrepo.git", return_value=fake):
+            assert gitrepo.distance(clone.repo, "HEAD", clone.there) is None
 
-    def test_a_ref_that_does_not_resolve_is_unknown_rather_than_equal(self) -> None:
+    def test_a_ref_that_does_not_resolve_is_unknown_rather_than_equal(self, clone: Clone) -> None:
         """`None`, not `(0, 0)`. The difference is the whole reason the return
         type is optional: `(0, 0)` would have `status` print "is exactly what
         this computer has" about a remote it could not read."""
-        self.assertIsNone(gitrepo.distance(self.repo, "HEAD", "origin/nonesuch"))
+        assert gitrepo.distance(clone.repo, "HEAD", "origin/nonesuch") is None
 
 
-class TestNoSpawnFailureEscapes(unittest.TestCase):
+class TestNoSpawnFailureEscapes:
     """#3: `git()` answers rather than raising, for every way a spawn can fail.
 
     Two of the three arms already existed because two failures had reached a
@@ -685,12 +750,12 @@ class TestNoSpawnFailureEscapes(unittest.TestCase):
         """No mock, and no dependence on a limit that differs per machine."""
         with tempfile.TemporaryDirectory() as box:
             answered = gitrepo.git(["status", "x" * self.ONE_HUGE], cwd=Path(box))
-        self.assertFalse(answered.ok)
-        self.assertIn("could not run `git status`", answered.err)
+        assert not answered.ok
+        assert "could not run `git status`" in answered.err
         # The exact total, because `ARG_MAX` bounds bytes and a count would
         # leave the reader to multiply.
-        self.assertIn(f"totalling {self.HUGE_BYTES} bytes", answered.err)
-        self.assertIn("2 arguments", answered.err)
+        assert f"totalling {self.HUGE_BYTES} bytes" in answered.err
+        assert "2 arguments" in answered.err
 
     def test_it_is_a_result_rather_than_a_traceback(self) -> None:
         """The whole point, stated on its own: the caller gets an answer.
@@ -701,17 +766,18 @@ class TestNoSpawnFailureEscapes(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as box:
             answered = gitrepo.git(["status", "x" * self.ONE_HUGE], cwd=Path(box))
-        self.assertIsInstance(answered, gitrepo.Result)
-        self.assertIsNone(answered.code)
+        assert isinstance(answered, gitrepo.Result)
+        assert answered.code is None
 
-    def test_other_spawn_failures_are_answered_too(self) -> None:
+    @pytest.mark.parametrize(
+        ("number", "name"), [(12, "Cannot allocate memory"), (13, "Permission denied")]
+    )
+    def test_other_spawn_failures_are_answered_too(self, number: int, name: str) -> None:
         """The arm is a catch-all on purpose, so the next errno needs no code."""
-        for number, name in ((12, "Cannot allocate memory"), (13, "Permission denied")):
-            with self.subTest(errno=number):
-                with mock.patch("subprocess.run", side_effect=OSError(number, name)):
-                    answered = gitrepo.git(["status"])
-                self.assertFalse(answered.ok)
-                self.assertIn(name, answered.err)
+        with mock.patch("subprocess.run", side_effect=OSError(number, name)):
+            answered = gitrepo.git(["status"])
+        assert not answered.ok
+        assert name in answered.err
 
     def test_a_missing_git_still_gets_its_own_sentence(self) -> None:
         """`FileNotFoundError` is an `OSError`, so its arm has to come first.
@@ -719,17 +785,19 @@ class TestNoSpawnFailureEscapes(unittest.TestCase):
         `git status` (No such file or directory)" -- true, and useless."""
         with mock.patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file")):
             answered = gitrepo.git(["status"])
-        self.assertEqual("git is not installed, or not on PATH", answered.err)
+        assert answered.err == "git is not installed, or not on PATH"
 
 
-class TestStagingPastTheArgumentLimit(support.SandboxCase):
+@pytest.fixture
+def staging(sandbox: support.Sandbox) -> Path:
+    """An empty repository to stage into."""
+    return support.make_repo(sandbox.tmp / "repo", sandbox.env)
+
+
+class TestStagingPastTheArgumentLimit:
     """#3: the pathspecs go on stdin, so `ARG_MAX` does not apply to `add`."""
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.repo = support.make_repo(self.tmp / "repo", self.env)
-
-    def test_the_pathspecs_never_reach_the_command_line(self) -> None:
+    def test_the_pathspecs_never_reach_the_command_line(self, staging: Path) -> None:
         """The claim, stated so that no kernel limit is involved in checking it.
 
         This replaced a fixture that built 4 600 real paths and asserted the
@@ -745,25 +813,27 @@ class TestStagingPastTheArgumentLimit(support.SandboxCase):
         independent: argv holds four fixed flags, and the paths ride on stdin
         NUL-separated. Asserted by watching the one call `stage` makes.
         """
-        many = [self.repo / f"file-{number}.conf" for number in range(3)]
+        many = [staging / f"file-{number}.conf" for number in range(3)]
         for where in many:
             where.write_text("x", encoding="utf-8")
 
         with mock.patch.object(gitrepo, "git", wraps=gitrepo.git) as watched:
-            answered = gitrepo.stage(self.repo, many)
-        self.assertTrue(answered.ok, answered.err)
+            answered = gitrepo.stage(staging, many)
+        assert answered.ok, answered.err
 
         # One call, not several. `manage.record` commits under a message naming
         # every path, so a `stage` that batched could leave a partial set staged
         # and commit it as the whole -- which is why batching is refused.
         watched.assert_called_once()
         argv = watched.call_args.args[0]
-        self.assertEqual(["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"], argv)
+        assert argv == ["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"]
         for where in many:
-            self.assertNotIn(where.name, " ".join(argv))
-        self.assertEqual("file-0.conf\0file-1.conf\0file-2.conf\0", watched.call_args.kwargs["fed"])
+            assert where.name not in " ".join(argv)
+        assert watched.call_args.kwargs["fed"] == "file-0.conf\0file-1.conf\0file-2.conf\0"
 
-    def test_many_files_really_do_stage_in_one_call(self) -> None:
+    def test_many_files_really_do_stage_in_one_call(
+        self, sandbox: support.Sandbox, staging: Path
+    ) -> None:
         """The end-to-end half, and it claims only what it can show.
 
         4 600 files through the real git, so the stdin path is exercised at a
@@ -771,79 +841,84 @@ class TestStagingPastTheArgumentLimit(support.SandboxCase):
         they are all staged, not that a limit was exceeded, because whether it
         was depends on the machine's stack rlimit.
         """
-        deep = self.repo / ("d" * 90) / ("e" * 90) / ("f" * 90)
+        deep = staging / ("d" * 90) / ("e" * 90) / ("f" * 90)
         deep.mkdir(parents=True)
         many = []
         for number in range(4600):
             where = deep / f"{number:05d}-{'g' * 200}.conf"
             where.write_text("x", encoding="utf-8")
             many.append(where)
-        answered = gitrepo.stage(self.repo, many)
-        self.assertTrue(answered.ok, answered.err)
-        listed = support.git(["diff", "--cached", "--name-only"], cwd=self.repo, env=self.env)
-        self.assertEqual(4600, len(listed.splitlines()))
+        answered = gitrepo.stage(staging, many)
+        assert answered.ok, answered.err
+        listed = support.git(["diff", "--cached", "--name-only"], cwd=staging, env=sandbox.env)
+        assert len(listed.splitlines()) == 4600
 
-    def test_a_name_beginning_with_a_dash_is_a_path_not_an_option(self) -> None:
+    def test_a_name_beginning_with_a_dash_is_a_path_not_an_option(
+        self, sandbox: support.Sandbox, staging: Path
+    ) -> None:
         """What the `--` separator used to guarantee. A pathspec read from a
         file is never parsed as an option, so the guarantee survives its
         removal -- and this is what says so."""
-        odd = self.repo / "-oddly-named"
+        odd = staging / "-oddly-named"
         odd.write_text("x", encoding="utf-8")
-        answered = gitrepo.stage(self.repo, [odd])
-        self.assertTrue(answered.ok, answered.err)
-        self.assertIn(
-            "-oddly-named",
-            support.git(["diff", "--cached", "--name-only"], cwd=self.repo, env=self.env),
+        answered = gitrepo.stage(staging, [odd])
+        assert answered.ok, answered.err
+        assert "-oddly-named" in support.git(
+            ["diff", "--cached", "--name-only"], cwd=staging, env=sandbox.env
         )
 
-    def test_a_name_with_a_newline_in_it_survives_nul_separation(self) -> None:
+    def test_a_name_with_a_newline_in_it_survives_nul_separation(self, staging: Path) -> None:
         """Why `--pathspec-file-nul` rather than newline separation. A managed
         filename may contain a newline, and split on newlines this becomes two
         pathspecs, neither of which exists."""
-        odd = self.repo / "two\nlines"
+        odd = staging / "two\nlines"
         odd.write_text("x", encoding="utf-8")
-        answered = gitrepo.stage(self.repo, [odd])
-        self.assertTrue(answered.ok, answered.err)
-        self.assertTrue(gitrepo.staged(self.repo))
+        answered = gitrepo.stage(staging, [odd])
+        assert answered.ok, answered.err
+        assert gitrepo.staged(staging)
 
-    def test_an_empty_list_still_refuses_rather_than_staging_everything(self) -> None:
+    def test_an_empty_list_still_refuses_rather_than_staging_everything(
+        self, staging: Path
+    ) -> None:
         """Measured for the *new* mechanism, because a change of mechanism is
         exactly what could have altered it: empty stdin makes `git add --all`
         stage the whole repository, the same as an empty argv pathspec. So the
         guard is still the only thing between a caller's empty list and the most
         dangerous reading git has."""
-        (self.repo / "untracked.txt").write_text("x", encoding="utf-8")
-        answered = gitrepo.stage(self.repo, [])
-        self.assertFalse(answered.ok)
-        self.assertIn("nothing to stage", answered.err)
-        self.assertFalse(gitrepo.staged(self.repo))
+        (staging / "untracked.txt").write_text("x", encoding="utf-8")
+        answered = gitrepo.stage(staging, [])
+        assert not answered.ok
+        assert "nothing to stage" in answered.err
+        assert not gitrepo.staged(staging)
 
 
-class TestReadingGitsVersion(unittest.TestCase):
+class TestReadingGitsVersion:
     """`doctor.version_of`, over the shapes real gits actually print."""
 
-    def test_the_shapes_vendors_print(self) -> None:
-        for said, want in (
+    @pytest.mark.parametrize(
+        ("said", "want"),
+        [
             ("git version 2.43.0", (2, 43, 0)),
             ("git version 2.39.5 (Apple Git-154)", (2, 39, 5)),
             ("git version 2.45.2.windows.1", (2, 45, 2)),
             ("git version 2.25", (2, 25)),
-        ):
-            with self.subTest(said=said):
-                self.assertEqual(want, doctor.version_of(said))
+        ],
+    )
+    def test_the_shapes_vendors_print(self, said: str, want: tuple[int, ...]) -> None:
+        assert doctor.version_of(said) == want
 
     def test_a_string_with_no_version_is_unknown_rather_than_ancient(self) -> None:
         """`None`, not `(0,)`. A tuple of zeros compares below the floor, so a
         vendor string this cannot read would be reported as a git too old to
         run -- refusing to work on a guess about a string."""
-        self.assertIsNone(doctor.version_of("git version unknown"))
-        self.assertIsNone(doctor.version_of(""))
+        assert doctor.version_of("git version unknown") is None
+        assert doctor.version_of("") is None
 
     def test_the_floor_is_where_pathspec_from_file_arrives(self) -> None:
         """Written out rather than imported: `assertEqual(OLDEST_GIT,
         doctor.OLDEST_GIT)` is a copy of the code and cannot fail. 2.25 is
         January 2020, and `git add --pathspec-from-file` is what needs it."""
-        self.assertEqual((2, 25), doctor.OLDEST_GIT)
+        assert doctor.OLDEST_GIT == (2, 25)
 
     def said(self, version: str) -> doctor.Check:
         """`doctor.git_present` against a git that reports `version`.
@@ -857,9 +932,9 @@ class TestReadingGitsVersion(unittest.TestCase):
 
     def test_a_git_below_the_floor_fails_the_check(self) -> None:
         found = self.said("git version 2.24.0")
-        self.assertFalse(found.ok)
-        self.assertIn("2.25", found.detail)
-        self.assertIn("upgrade git", found.detail)
+        assert not found.ok
+        assert "2.25" in found.detail
+        assert "upgrade git" in found.detail
 
     def test_a_git_at_exactly_the_floor_passes(self) -> None:
         """The boundary, and it has to be spelled `2.25` rather than `2.25.0`.
@@ -871,19 +946,15 @@ class TestReadingGitsVersion(unittest.TestCase):
         True, so this one fails against `<=` and would refuse the oldest git
         that actually works.
         """
-        self.assertTrue(self.said("git version 2.25").ok)
+        assert self.said("git version 2.25").ok
 
     def test_a_git_one_patch_above_the_floor_passes(self) -> None:
         """The ordinary reading of "2.25 or newer", kept beside the boundary
         because the boundary above is deliberately the unusual spelling."""
-        self.assertTrue(self.said("git version 2.25.1").ok)
+        assert self.said("git version 2.25.1").ok
 
     def test_a_version_it_cannot_read_passes_and_says_so(self) -> None:
         found = self.said("git version huh")
-        self.assertTrue(found.ok)
-        self.assertIn("could not read a version", found.detail)
-        self.assertIn("2.25", found.detail)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert found.ok
+        assert "could not read a version" in found.detail
+        assert "2.25" in found.detail

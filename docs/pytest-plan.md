@@ -1,9 +1,10 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1 and B2** with them, which converted the first twelve modules.
-**Of 35 test modules, 23 still run through pytest's `unittest` adapter** — 21 of
-those convert in B3–B6. The other two never do, and are **not** arrears:
+and **clusters B1, B2 and B3** with them, which converted the first seventeen
+modules.
+**Of 35 test modules, 18 still run through pytest's `unittest` adapter** — 16 of
+those convert in B4a–B6. The other two never do, and are **not** arrears:
 `tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
 its subject, and `tests/test_sync_properties.py` is converted but exposes a
 class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
@@ -30,7 +31,8 @@ differently from what it says below is in
 [Phase A as built](#phase-a-as-built--2026-08-30),
 [Phase A2 as built](#phase-a2-as-built--2026-08-30),
 [B1 as built](#b1-as-built--2026-08-30) and
-[B2 as built](#b2-as-built--2026-08-30). **Read every "as built" section before
+[B2 as built](#b2-as-built--2026-08-30) and
+[B3 as built](#b3-as-built--2026-08-31). **Read every "as built" section before
 the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
@@ -1354,7 +1356,7 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 |---|---|---|---|
 | B1 | **Done** — see [B1 as built](#b1-as-built--2026-08-30). `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) — **not done, deliberately**; see B1 as built | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
 | B2 | **Done** — see [B2 as built](#b2-as-built--2026-08-30). `test_config_properties`, `test_merge_properties`, `test_sync_properties`, `test_profiles` | none new | Hypothesis-native. Delete the `__module__`/`__name__`/`__qualname__` dunder hack in `test_sync_properties.py` (it existed for unittest id round-trip in sharding; pytest nodeids come from collection) — keep the `X = Machine.TestCase` assignments, which are the pytest-idiomatic spelling. `profiles.py` untouched. The pyproject mypy-override list stays valid (module names unchanged). |
-| B3 | `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
+| B3 | **Done** — see [B3 as built](#b3-as-built--2026-08-31). `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
 | B4a | `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture (copytree of the cached template + remote-url repair; the `template()`/`two_machines()` functions themselves unchanged) | the overlay both-copies rule and `TestTheSnapshotIsWrittenLast` transfer as-is. |
 | B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
@@ -1920,6 +1922,121 @@ depends on them -- and the 1030-row table is at present the noisiest in the tree
   compares are the right answers -- and sharing one subprocess run would make it
   assert about the run the first test already made. 0.1s is not worth turning a
   precondition into a restatement.
+
+## B3 as built — 2026-08-31
+
+Five modules, 3556 lines, 61 classes, **506 assertions** -- more than B1 and B2
+together, and the first cluster where the machinery moved rather than the tests
+alone. 303 collected items before, 350 after; **every one of the 303 distinct
+test names survives**, and the growth is `subTest` loops becoming `parametrize`.
+
+| module | before | after |
+|---|---:|---:|
+| `test_conflicts` | 119 | 123 |
+| `test_gitrepo` | 63 | 71 |
+| `test_manifest` | 60 | 77 |
+| `test_doctor` | 40 | 42 |
+| `test_cli` | 21 | 37 |
+
+### The machinery landed first, on its own, and that was the right call
+
+`support.SandboxCase` has **nine users left** in B4a and B4b, so it cannot be
+deleted here -- and a `sandbox` fixture written beside it would have been a
+second hand-maintained copy of what a sandbox *is*, free to drift for exactly as
+long as it takes nobody to notice.
+
+So `support.sandbox()` is the definition now and both are adapters over it:
+`SandboxCase` holds no setup of its own, and `tests/conftest.py` yields the same
+`Sandbox`. Landed as its own commit with **no test module touched** and the
+suite green at 1781, which is what makes it checkable as behaviour-neutral
+rather than merely believed to be.
+
+`tests/conftest.py` arrives here rather than in B1, for the reason B1 gave when
+it declined to create it empty: this is the first cluster where a fixture is
+genuinely shared. A `sandbox_on` fixture for naming the host was written and
+deleted before committing -- no module in B3 needs a non-default host, and that
+file's own docstring forbids a fixture written for a caller that does not exist.
+
+### The conversion hazard this cluster found, and it is the one to carry forward
+
+**A test can depend on a base class for a side effect and never name it.**
+`SandboxCase.setUp` patches `os.environ`; a test that only calls
+`os.environ["PATH"] = "/nonexistent"` and asserts on the result reads, in its own
+text, as needing nothing at all.
+
+Converted by giving each test the fixtures its body mentions, such a test gets
+**none** -- and then runs against the developer's real environment. That is
+exactly the failure `tests/support.py`'s docstring is about, arriving by a new
+route: "a test that writes there is not a flaky test, it is a lost afternoon".
+Here it was loud (`PATH` stayed broken and nine later tests could not find git),
+but it is loud by luck; a test that merely *read* `$HOME` would have passed.
+
+**The rule that follows, and it is cheap: mark the class, not the method.**
+Every class that was a sandbox case carries
+`@pytest.mark.usefixtures("box")`, whether or not its tests take the parameter.
+The decorator is the load-bearing statement -- *this class runs in a sandbox* --
+and it survives somebody later deleting the last `box.` reference from the last
+test in it. B4a, B4b and B5 convert nine more such classes and should do the
+same.
+
+### What a fixture removed that a base class could not
+
+Three notes worth keeping, because they are the argument for the conversion
+rather than a description of it:
+
+- `test_gitrepo.TestIsRepository` built its own sandbox in eleven lines --
+  `TemporaryDirectory`, `seed_home`, `sandbox_env`, `mock.patch.dict` and two
+  `addCleanup`s. It is one parameter now, and it was the *only* place with a
+  second implementation of the sandbox.
+- `ConflictedIndex`'s docstring warned that it must hold no tests of its own,
+  "because subclassing one that *does* makes every test in it run again under
+  the subclass's name". A fixture has nothing to inherit, so the rule that had
+  to be remembered is now unstateable. The comment is kept, restated as history.
+- `blank_before(case, text, marker)` took a `TestCase` purely so it could call
+  `assertGreater` on it. Plain `assert` needs no such thing. That parameter
+  existed only to reach the framework, and it is the clearest small win here.
+
+### The assertion rewriting was mechanical, and checked as such
+
+506 assertions is past what is honest to claim was hand-edited, and CLAUDE.md
+forbids sed over the real tree for good reasons. What was done instead: a
+throwaway rewriter that finds each `self.assertX(...)` by **scanning balanced
+parentheses** rather than by regex -- a regex cannot match a nested call -- splits
+arguments at top-level commas respecting strings and brackets, and **refuses
+anything it does not recognise** rather than guessing, printing what it left.
+
+It was tried on a copy first and read there, and it left 7 calls by hand (the
+`assertRaises` context managers). The two things that make this not-a-sed: it
+cannot silently half-convert, because anything unrecognised is reported and
+still says `self.assert`, which does not run; and the whole diff was read
+afterwards, which is where the four real mistakes below were caught.
+
+It is deliberately **not committed**. B4a onwards will want it, and that is an
+argument for keeping it in `/tmp` rather than in `tools/`: a committed converter
+invites running it and trusting it, and every defect this cluster found came
+from a step the converter could not check.
+
+### Four mistakes the rewriting made, all found by running the tests
+
+Recorded because each is a shape the next cluster will meet:
+
+1. **A blanket `self.X` -> `box.X` reaches inside the fixture class too.**
+   `Managed.refusal` calls `self.check`, where `self` is the dataclass and not
+   a test; rewritten, it looked for a fixture from inside the object the fixture
+   returns.
+2. **Detecting "which fixture does this test need" by searching the method text
+   matches prose.** Four tests in `test_doctor` were given a `repository`
+   fixture because the word appears in their docstrings, and one was given it
+   because `found["repository"]` is a dict key. Strip docstrings first, and
+   prefer `box.` with the dot over the bare name.
+3. **A helper method that reached the terminal through `self` needs the fixture
+   passed to it**, and the tests that call it need the parameter as well --
+   which is only visible after the helper is fixed, so the parameter pass has to
+   run twice.
+4. **A decorator can land on the wrong test.** A `parametrize` written for the
+   loop in `test_output_that_is_not_two_numbers_is_unknown` was attached to the
+   test above it, which then failed with `NameError` on the parameter. Loud, and
+   only because the parameter was read.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
