@@ -1546,9 +1546,73 @@ green. CLAUDE.md has the general rule.
 
 ### Gate
 
-Preflight green -- 1737 tests, 0 failures. The mutation check is in the PR body: `--all --only <src>` for
-every source file whose sweep selection includes one of the eight modules,
-against the last whole-tree sweep.
+Preflight green -- 1737 tests, 0 failures.
+
+The mutation check ran `--all --only <src>` over the **13 source files whose
+sweep selection includes one of the eight converted modules**, computed from
+`mutants.targets_for`/`importers`. Three have no mutable rows
+(`tools/__init__.py`, `tupferl/__init__.py`, `tupferl/errors.py`);
+`tests.test_ci` and `tests.test_release` are reached by no source file at all,
+because what they test is YAML.
+
+**B1 changes no source, so the comparison against the last whole-tree sweep is
+exact for every file that sweep's commit shares with this branch.**
+
+| files | rows | result |
+|---|---:|---|
+| `conflicts.py`, `copies.py`, `gitrepo.py` | 409 | **0 newly not-caught**; one improvement, `copies.py:104` BROKE -> caught; 8 survivors, all tag-excused |
+| `config.py`, `manifest.py`, `merge.py`, `paths.py`, `__main__.py`, `tools/cpus.py` | 230 | 0 newly not-caught |
+| `tools/mutate.py` | 975 | 2 groups where caught fell, both explained below; broke 9 -> 2, timeout 8 -> 6, caught 744 -> 755 |
+
+Baseline green on every run -- checked for the `BASELINE NOT GREEN` line, not
+inferred from the verdicts.
+
+**The two `tools/mutate.py` groups, and neither is B1's:**
+
+- `connector: looked.outcome == "survived" or red` came back `broke` with
+  `killed by SIGKILL`. A memory artefact -- see below.
+- `drop-call: self._ceilings.pop(group, None) -> pass` came back `survived`
+  where the baseline caught it. A/B'd the way step 1a's finding was: the
+  mutation applied to a `main` worktree **and** to this branch, both run against
+  the row's own generated selection. **426 passed on both.** So it survives on
+  `main` too, and moved somewhere between the baseline sweep's commit
+  (`b95db93`) and `main` -- step 1a and A2 rewrote that file heavily. It already
+  carries a `# survivor: drop-call -- TODO` tag.
+
+Nine further not-caught groups have **no baseline row at all**: they are
+`_collected`, `_loadable`'s `_layer()` branch and `_report_headroom`, i.e. code
+Phase A and step 1a added after the baseline sweep ran. They are that work's
+debt, not this cluster's.
+
+### The sweep OOM-killed the machine, and that is the first recorded instance
+
+`tools/mutate.py`'s table was run three times before it was believed, and the
+reason is CLAUDE.md's `_COMMIT` entry coming true:
+
+| lanes | ceiling each | allowance | result |
+|---|---|---|---|
+| 40 | 2065 MiB | 83 GiB | 12 BROKE, all `SIGKILL`; closing line said the heaviest lane held **100% of its ceiling** |
+| 20 | 4096 MiB | 82 GiB | clean where it ran; heaviest lane 14% |
+| 28 | 2808 MiB | 79 GiB | **took the desktop session with it** |
+| 6 | -- | -- | clean; finished the remainder |
+
+The machine has 62 GiB. `_COMMIT` is 150%, so every one of those allowances is
+over it by design -- the design being that lane peaks do not coincide. On this
+table they do: it runs *nested* harnesses, and `slowest_first` dispatches its
+expensive rows adjacently, which is exactly the correlation woswoar#232
+measured and this file's "Measured, and kept" section already records.
+
+CLAUDE.md said what to do about it before it happened -- "if a sweep is ever
+OOM-killed, this is the first thing to look at, and the sampler is the thing to
+write before arguing about the constant" -- so the finding is that the entry was
+right, and the sampler (sum of lane RSS at one instant, which is what the host
+feels) is now owed. Nothing about it is changed here; a lane count was chosen
+by hand instead.
+
+**Reading the ceiling line is not optional.** The first pass printed `heaviest
+lane process held 2065 MiB of its 2065 MiB ceiling (100%)` and 12 `BROKE` rows,
+and the two facts are one fact. Diagnosing the rows without reading the line
+would have produced a guard against a conversion regression that never happened.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
