@@ -662,7 +662,14 @@ def main(argv: list[str]) -> None:
     # survivor: negate -- `argv[5] == "1"` against `!=` flips whether the walk runs, and every test
     #   that could see it drives a nested harness -- the same family as the walk rows above, and
     #   unanswered for the same reason.
-    first, walk, names = [n for n in argv[4].split() if n], argv[5] == "1", argv[6:]
+    # JSON, the same slot `tools/verdict.py` reads, because `mutate._run` builds
+    # one command line for whichever layer it was told to use. Splitting on
+    # spaces here is what this file did when it was the only backend, and it
+    # made `TUPFERL_MUTATE_VERDICT=unittest` report every row `broke`: the empty
+    # prefix arrives as the two characters `[]`, which is a module name to a
+    # loader. Nothing went red, because the tests below drove this file with the
+    # argv it used to be given rather than the one it is now given.
+    first, walk, names = list(json.loads(argv[4])), argv[5] == "1", argv[6:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))

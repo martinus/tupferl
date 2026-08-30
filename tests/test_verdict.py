@@ -32,6 +32,7 @@ changes are the interesting part:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -130,6 +131,7 @@ def address_space_caps() -> bool:
 CAPS = address_space_caps()
 
 
+@functools.cache
 def pytest_needs() -> int:
     """The address space one pytest run occupies here, measured by taking one.
 
@@ -150,6 +152,13 @@ def pytest_needs() -> int:
     `/proc` is Linux-only and so is an enforced `RLIMIT_AS`. The one class that
     reads this is gated on `CAPS` and named in the macOS job's `--exclude`, so
     the `0` below is unreachable from any test.
+
+    **Cached and called from the one test that reads it, not bound at import.**
+    Measured at 109 ms -- it starts a real pytest -- and it was a module-level
+    constant, so every import paid it: `tests/test_mutate.py` alone drove it
+    fifteen times through nested `mutate.run` calls, 1.65 s. `CAPS` above has to
+    stay at module scope because `skipUnless` reads it when the class is
+    defined; this has no such excuse.
     """
     child = (
         "import pytest\n"
@@ -172,10 +181,6 @@ def pytest_needs() -> int:
             return int(done.stdout.strip().splitlines()[-1])
         except (OSError, ValueError, IndexError, subprocess.SubprocessError):
             return 0  # pragma: no cover - a platform without /proc
-
-
-#: Computed once, for the reason `CAPS` is, and only where it can be enforced.
-NEEDED = pytest_needs() if CAPS else 0
 
 
 class Probe(unittest.TestCase):
@@ -655,9 +660,9 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
     """
 
     #: Enough for a pytest run to start and not enough for the fixture's 320 MiB,
-    #: added to `NEEDED` rather than written down. The margin is half the
+    #: added to `pytest_needs()` rather than written down. The margin is half the
     #: allocation, so both halves have the same slack: a machine whose floor
-    #: `NEEDED` under-reads by less than this still refuses the allocation, and
+    #: the measurement under-reads by less than this still refuses the allocation, and
     #: one it over-reads by less than this still starts.
     HEADROOM = 160 * 1024 * 1024
 
@@ -685,7 +690,7 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
                         held.append(bytearray(8 * 1024 * 1024))
             """,
         )
-        found = self.verdict("test_a", memory=NEEDED + self.HEADROOM)
+        found = self.verdict("test_a", memory=pytest_needs() + self.HEADROOM)
         self.assertEqual([], found["noticed"], "an out-of-memory test was credited")
         self.assertEqual(1, len(found["broke"]))
         self.assertIn("out of memory", found["broke"][0])
@@ -1170,15 +1175,23 @@ class TestTheWalkPastTheSelection(Probe):
     def test_what_it_walks_into_comes_from_the_configuration(self) -> None:
         """The genericity requirement, and the half that fails silently.
 
-        `*_test.py` is pytest's *other* default `python_files` pattern, and a
-        walk that globbed `test_*.py` because this project spells them that way
-        would never reach it. A module the walk misses turns a caught row into a
+        **A pattern this project would never write, and neither of pytest's own
+        defaults.** The first version of this test used `beside_test.py`, which
+        is pytest's *other* built-in `python_files` entry -- so a `Watcher` with
+        the two defaults hardcoded passed it identically, and it distinguished
+        nothing. Writing a `pytest.ini` and asserting the walk follows
+        `check_*.py` is a test only `config.getini("python_files")` can pass.
+
+        What it guards: a module the walk misses turns a caught row into a
         reported survivor -- the flattering direction -- with nothing anywhere
         going red.
         """
-        self.sandboxed(selected_notices=False, beside="beside_test")
+        (self.sandbox / "pytest.ini").write_text(
+            "[pytest]\npython_files = check_*.py test_chosen.py\n", encoding="utf-8"
+        )
+        self.sandboxed(selected_notices=False, beside="check_beside")
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        self.assertEqual(["beside_test.py::Beside::test_it"], found["killers"])
+        self.assertEqual(["check_beside.py::Beside::test_it"], found["killers"])
 
     def test_it_stops_once_the_selection_itself_notices(self) -> None:
         """The cost half, and the one that makes the walk affordable: a caught

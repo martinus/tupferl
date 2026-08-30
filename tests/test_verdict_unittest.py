@@ -43,6 +43,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from tests import support
+
 #: The repository root, so a child can import `tools` after chdir-free launch.
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -76,7 +78,14 @@ SLEPT = 0.2
 #: Seconds one `python -c <verdict source>` run may take before the test calls
 #: it hung -- the same reasoning as `tests/test_watch.py`'s constant of the same
 #: name, and the same two bounds it has to sit between.
-BOUND = 20
+#:
+#: Through `support.bounded`, which is the rule CLAUDE.md states: the number has
+#: to beat the alarm this run *actually armed*, not the constant the default
+#: happens to be. It was a bare `20` here while `tests/test_verdict.py` used
+#: `bounded(20.0)` -- so under `--each-test 10` this file's bound sat *above*
+#: the armed alarm, which is precisely the hole `bounded` closes. Two copies of
+#: one fixture drifting is what CLAUDE.md means by a claim rotting.
+BOUND = support.bounded(20.0)
 
 
 def address_space_caps() -> bool:
@@ -159,13 +168,13 @@ class Probe(unittest.TestCase):
         failfast: bool = False,
         memory: int = 0,
         each: float = 0.0,
-        first: str = "",
+        first: tuple[str, ...] = (),
         walk: bool = False,
     ) -> dict[str, Any]:
         """Run the tool and return the report it wrote.
 
         The argv layout is `verdict.main`'s, positionally: report, failfast,
-        memory cap, per-test seconds, the space-joined `first` selection,
+        memory cap, per-test seconds, the JSON-encoded `first` selection,
         whether to walk past the selection, then the test names. Spelled out
         here rather than in each test, because a wrong position is the kind of
         mistake that still produces a plausible report.
@@ -184,7 +193,7 @@ class Probe(unittest.TestCase):
                 "1" if failfast else "0",
                 str(memory),
                 str(each),
-                first,
+                json.dumps(list(first)),
                 "1" if walk else "0",
                 *names,
             ],
@@ -683,7 +692,7 @@ class TestWhichTestsGetRun(Probe):
                         pass
                 """,
             )
-        found = self.verdict(first="test_a.T.test_it")
+        found = self.verdict(first=("test_a.T.test_it",))
         self.assertEqual(4, found["ran"], "the prefix replaced the suite instead of preceding it")
 
     def test_first_really_runs_before_the_rest(self) -> None:
@@ -713,7 +722,7 @@ class TestWhichTestsGetRun(Probe):
         # failfast answer and the ordering is unobservable -- measured:
         # building the suite as [chosen, first] instead of [first, chosen]
         # leaves the whole selection green when the prefix is `test_a`.
-        found = self.verdict(failfast=True, first="test_b.T.test_it")
+        found = self.verdict(failfast=True, first=("test_b.T.test_it",))
         self.assertEqual(1, found["ran"])
         self.assertEqual(["test_b.T.test_it"], found["killers"])
 

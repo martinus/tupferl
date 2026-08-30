@@ -99,6 +99,7 @@ before concluding that a surviving mutation means a weak test.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -313,6 +314,22 @@ _VERDICT = "TUPFERL_MUTATE_VERDICT"
 #: What each accepted value names, next to this file. Read out loud in the error
 #: below, so a typo names its alternatives instead of failing as a missing file.
 _LAYERS = {"pytest": "verdict.py", "unittest": "verdict_unittest.py"}
+
+#: The environment every pytest this module starts runs under, written once
+#: because it is a *contract* and two spellings of it are two contracts. `_run`
+#: spreads it into a probe's environment and `_collected` into its own, so what
+#: a sweep is graded against and what its cache is validated against cannot
+#: drift apart. `tests/test_mutate.py` asserts the keys literally rather than
+#: importing this, which is the difference between checking a claim and
+#: restating it.
+SANDBOX = {"PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+
+#: The two exit statuses that mean pytest listed what it could -- `ExitCode.OK`
+#: and `ExitCode.NO_TESTS_COLLECTED`. Written as numbers rather than imported:
+#: this module never runs pytest in-process, it shells out, and `import pytest`
+#: costs 68 ms at every import of `tools.mutate` for two integers that have not
+#: moved since pytest 5.
+_OK, _NONE = 0, 5
 
 #: Names never copied into a mutation's sandbox. ``.git`` because it is large and
 #: nothing under test reads it; the caches because a stale one is the trap this
@@ -552,7 +569,12 @@ _RUNS: list[Report] = []
 
 
 def _layer() -> str:
-    """Which verdict source a probe is graded by, or a loud refusal.
+    """Which backend a probe is graded by, or a loud refusal.
+
+    The *name*, not the filename: `_probe` needs the file and `_loadable` needs
+    to know which validation to use, and answering the second by comparing
+    filenames would make renaming `verdict_unittest.py` silently change a branch
+    about cache validity.
 
     Refused rather than defaulted, because the two backends are the instrument
     the conversion is being measured with: a mistyped `_VERDICT` that quietly
@@ -565,7 +587,7 @@ def _layer() -> str:
             f"{_VERDICT}={chosen!r} names no verdict layer; unset it, or set it to "
             f"one of {', '.join(sorted(_LAYERS))}."
         )
-    return _LAYERS[chosen]
+    return chosen
 
 
 def _probe() -> str:
@@ -578,7 +600,7 @@ def _probe() -> str:
     own exam. See that module's docstring for why the classification lives there
     and not in a string constant here.
     """
-    return (Path(__file__).resolve().with_name(_layer())).read_text(encoding="utf-8")
+    return (Path(__file__).resolve().with_name(_LAYERS[_layer()])).read_text(encoding="utf-8")
 
 
 def _clear_bytecode(root: Path) -> None:
@@ -1113,8 +1135,7 @@ def _run(
                 # than a constant then -- `docs/pytest-plan.md`, Phase D.
                 env={
                     **os.environ,
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                    **SANDBOX,
                     _BUDGET: str(memory),
                     _ALARM: str(each),
                     _PROFILE: _MUTATION_PROFILE,
@@ -3107,12 +3128,14 @@ class Killers:
     def ahead_of(self, table: Sequence[Mutation]) -> list[Mutation]:
         """The same table, with each remembered killer moved to the front.
 
-        Only ids that still load are used, and they are resolved once for the
-        whole table rather than per mutant. That is not thrift: an id that no
-        longer exists makes `unittest`'s loader record an error, which
-        `tools/verdict.py` correctly classifies as `broke` -- so one renamed
+        Only ids that still resolve are used, and they are resolved once for the
+        whole table rather than per mutant. That is not thrift: pytest refuses
+        the *whole invocation* for a single name it cannot find, so one renamed
         test would turn every mutant that remembered it into a non-answer, and
-        the sweep would report a wall of `BROKE` rows for a rename.
+        the sweep would report a wall of `BROKE` rows for a rename. (Under the
+        retired backend the mechanism was gentler -- `unittest`'s loader
+        recorded an error for that one name -- and the consequence was the
+        same.)
         """
         head = self.prefix()
         wanted = {self.known[_key(row)] for row in table if _key(row) in self.known} | set(head)
@@ -3221,9 +3244,11 @@ def _dotted(name: str) -> str:
     path, _, rest = name.partition("::")
     if not path.endswith(".py"):
         return name
-    return ".".join(
-        [path.removesuffix(".py").replace("/", "."), *(part for part in rest.split("::") if part)]
-    )
+    # `mutants.module_of` rather than a second `replace("/", ".")`: it also
+    # collapses a package's `__init__`, and its docstring records why that is
+    # not cosmetic. Two spellings of one translation, only one of which knows
+    # that, is how the bug it describes comes back.
+    return ".".join([mutants.module_of(path), *(part for part in rest.split("::") if part)])
 
 
 def _reaches(test: str, only: str) -> bool:
@@ -3231,11 +3256,12 @@ def _reaches(test: str, only: str) -> bool:
     return run_tests.selects(_dotted(test), _dotted(only))
 
 
-def _collected() -> set[str]:
-    """Every test pytest can name in this tree, asked of pytest itself.
+@functools.cache
+def _collected(where: str) -> frozenset[str]:
+    """Every test pytest can name in the tree at `where`, asked of pytest itself.
 
-    A subprocess, and one for the whole run rather than one per id. Both halves
-    are deliberate:
+    A subprocess, and one per tree rather than one per id. Both halves are
+    deliberate:
 
     - `--collect-only` imports every test module, and this runs in the *harness*
       process, which under a sweep of `tools/` is itself running inside the
@@ -3243,6 +3269,17 @@ def _collected() -> set[str]:
       do for a cache hint;
     - one pass costs 500 ms against 116 ms for a single module, so asking per id
       loses after five of them, and a warm cache holds hundreds.
+
+    **Memoised, and keyed on the directory rather than on nothing.** The
+    docstring above argued "one pass for the whole run" and nothing enforced it:
+    production calls `ahead_of` once, so the leak was invisible there, while
+    `tests/test_mutate.py` drives it fifteen times -- measured at **7.73 s, 17.4%
+    of that module's 44.54 s**. A bare `functools.cache` would be wrong: `_run`
+    spawns probes with `cwd=<sandbox>`, and a nested `mutate.run` inside a test
+    is asking about a different tree. The key is the cost of that being right.
+
+    What the memo cannot see is a tree that changes inside one process, which
+    nothing in production does -- a sandbox is built before its probe starts.
 
     An empty answer is the safe one: `ahead_of` then puts nothing in front of
     anything and the sweep runs at the speed it had before the cache existed.
@@ -3255,21 +3292,22 @@ def _collected() -> set[str]:
             capture_output=True,
             text=True,
             timeout=TIMEOUT,
-            env={
-                **os.environ,
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-            },
+            cwd=where,
+            env={**os.environ, **SANDBOX},
         )
     except (OSError, subprocess.SubprocessError) as why:
         print(f"pytest could not be asked what it collects ({why}), so nothing is run first.")
-        return set()
+        return frozenset()
     # `--collect-only -q` prints one nodeid per line and then a blank line and a
-    # count, so the nodeids are the lines that name a node. Read rather than
-    # inferred from the exit status: a tree with one unimportable module still
-    # lists every other test, and dropping the lot for that would be the
-    # expensive answer to a small problem.
-    return {line.strip() for line in done.stdout.splitlines() if "::" in line}
+    # count, so the nodeids are the lines that name a node. The *lines* rather
+    # than the exit status, because a tree with one unimportable module still
+    # lists every other test and dropping the lot for that would be the
+    # expensive answer to a small problem -- but a status pytest itself calls a
+    # usage error means it listed nothing at all, and silence there would drop
+    # every remembered test with nothing to read. Said, not inferred.
+    if done.returncode not in (_OK, _NONE) and not done.stdout.strip():
+        print(f"pytest could not collect this tree (exit {done.returncode}); nothing is run first.")
+    return frozenset(line.strip() for line in done.stdout.splitlines() if "::" in line)
 
 
 def _loadable(ids: Iterable[str]) -> set[str]:
@@ -3285,8 +3323,8 @@ def _loadable(ids: Iterable[str]) -> set[str]:
     if not wanted:
         # Nothing to ask about, and under pytest asking costs a subprocess.
         return set()
-    if _layer() != _LAYERS["unittest"]:
-        return wanted & _collected()
+    if _layer() != "unittest":
+        return wanted & _collected(os.getcwd())
     found = set()
     for name in wanted:
         loader = unittest.TestLoader()

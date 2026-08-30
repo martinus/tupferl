@@ -553,11 +553,15 @@ class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
             return mutate._layer()
 
     def test_pytest_is_what_a_sweep_uses(self) -> None:
-        self.assertEqual("verdict.py", self.layer(None))
-        self.assertEqual("verdict.py", self.layer("pytest"))
+        """The backend's *name*. Which file holds it is
+        `test_the_source_handed_over_is_the_one_named`'s claim, and keeping the
+        two apart is why renaming that file cannot change a branch about
+        cache validity."""
+        self.assertEqual("pytest", self.layer(None))
+        self.assertEqual("pytest", self.layer("pytest"))
 
     def test_the_classifier_it_replaced_can_still_be_asked_for(self) -> None:
-        self.assertEqual("verdict_unittest.py", self.layer("unittest"))
+        self.assertEqual("unittest", self.layer("unittest"))
 
     def test_a_name_that_is_neither_is_refused_rather_than_defaulted(self) -> None:
         with self.assertRaises(SystemExit) as caught:
@@ -575,6 +579,38 @@ class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
             self.assertIn("unittest.TextTestResult", mutate._probe())
         with mock.patch.dict(os.environ, {mutate._VERDICT: "pytest"}):
             self.assertIn("pytest_runtest_makereport", mutate._probe())
+
+    def test_either_layer_can_actually_grade_a_row(self) -> None:
+        """Which file is read is not the claim; that `_run` can drive it is.
+
+        **This is the test that was missing, and its absence cost the switch.**
+        `_run` gained a JSON `first` slot and only one of the two layers was
+        taught to read it, so `TUPFERL_MUTATE_VERDICT=unittest` answered
+        `broke` -- with `Failed to import test module: []` -- for every row
+        including the baseline. The assertion above passed throughout: it reads
+        the source and never runs it, which is CLAUDE.md §8's "a passing check
+        and a real check are different things".
+
+        Driven through the real `_run`, on a real mutation, once per layer.
+        `strict=False` because a hand-built table must not stop at a row a layer
+        cannot answer -- and answering is exactly what is being asserted.
+        """
+        for layer in sorted(mutate._LAYERS):
+            with self.subTest(layer=layer), mock.patch.dict(os.environ, {mutate._VERDICT: layer}):
+                found = mutate.run(
+                    [UNKNOWN_KEY_GUARD],
+                    baseline=False,
+                    workers=1,
+                    summarise=False,
+                    strict=False,
+                )
+                (result,) = found.results
+                self.assertEqual(
+                    "caught",
+                    result.verdict.outcome,
+                    f"{layer} could not grade a row: {result.verdict.detail}",
+                )
+                self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
 
 
 class TestTwoSpellingsOfTheSameTest(unittest.TestCase):
@@ -668,33 +704,17 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine(unittest.TestCase):
     """
 
     def spawn(self, **how: Any) -> tuple[list[str], dict[str, str]]:
-        seen: dict[str, Any] = {}
+        """The argv and environment `_run` built, through the one `Popen` fake.
 
-        class Probe:
-            pid = 4242
-            returncode = 0
-
-            def __init__(self, argv: list[str], **kwargs: Any) -> None:
-                seen["argv"], seen["env"] = argv, kwargs["env"]
-                Path(kwargs["stderr"].name).write_text("", encoding="utf-8")
-
-            def wait(self, timeout: float | None = None) -> int:
-                return 0
-
-        class Watched:
-            def watch(self, pid: int, memory: int) -> None:
-                pass
-
-            def release(self, pid: int) -> int:
-                return 0
-
-        with (
-            tempfile.TemporaryDirectory() as root,
-            mock.patch.object(subprocess, "Popen", Probe),
-            mock.patch.object(mutate, "_WATCHED", Watched()),
-        ):
-            mutate._run(["tests.test_paths"], Path(root), **how)
-        return list(seen["argv"]), dict(seen["env"])
+        Borrowed from `TestHowOneRunsOutcomeIsClassified` rather than copied:
+        this class asks what the spawn *looked like* where that one asks what
+        the report *became*, and the two questions share a stand-in for the same
+        protocol. Written twice, the second copy had already lost the `_end`
+        patch and pinned `returncode` where the first sets it.
+        """
+        holder = TestHowOneRunsOutcomeIsClassified()
+        holder.verdict(holder.GREEN, **how)
+        return list(holder.spawned["argv"]), dict(holder.spawned["env"])
 
     def test_the_prefix_travels_as_json_rather_than_space_joined(self) -> None:
         """A pytest nodeid can hold a space the moment anything is parametrized,
@@ -5894,8 +5914,18 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
         held: int = 0,
         stderr: str = "",
         hang: bool = False,
+        **how: Any,
     ) -> mutate.Verdict:
-        """`_run` against a probe that behaved as described."""
+        """`_run` against a probe that behaved as described.
+
+        The spawn itself is recorded on `self.spawned` as well, because
+        `TestWhatEveryProbeIsHandedOnItsCommandLine` asks a different question of
+        the same fake -- what argv and environment `_run` built -- and a second
+        copy of this `Popen` stand-in was already drifting from this one within a
+        single change.
+        """
+        spawned: dict[str, Any] = {}
+        self.spawned = spawned
 
         class Probe:
             pid = 4242
@@ -5906,6 +5936,7 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
                 # off the command line rather than reaching into `_run` is what
                 # keeps this a test of the protocol.
                 self.returncode = returncode
+                spawned["argv"], spawned["env"] = list(argv), dict(kwargs["env"])
                 Path(kwargs["stderr"].name).write_text(stderr, encoding="utf-8")
                 if written is not None:
                     Path(argv[4]).write_text(json.dumps(written), encoding="utf-8")
@@ -5928,7 +5959,10 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
             mock.patch.object(mutate, "_WATCHED", Watched()),
             mock.patch.object(mutate, "_end", lambda probe: None),
         ):
-            return mutate._run(["tests.test_paths"], Path(root), memory=1 << 31)
+            # `how` is whatever the caller wants `_run` itself told -- `first`,
+            # `walk`, `failfast`. Nothing here reads them; they are how
+            # `TestWhatEveryProbeIsHandedOnItsCommandLine` varies the spawn.
+            return mutate._run(["tests.test_paths"], Path(root), memory=1 << 31, **how)
 
     def test_a_probe_that_never_answers_is_a_timeout(self) -> None:
         """Its own outcome, not an exception: a generated mutant can turn a loop

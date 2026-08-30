@@ -817,6 +817,19 @@ for the reason the acceptance-gate section above now gives.
 
 Both read from the baseline *line*, not the row colours.
 
+**The wall-clock column is not an A/B and must not be quoted as one.** The two
+runs differ in table size (3410 against 3599 rows), in row ordering (the control
+had no `killers.json` at all, so no `slowest_first`; the branch had the recorded
+costs but no prefix and no exact killers, since every cached id was dropped), and
+in machine load — a browser, Steam, and an OOM event that took seven lanes.
+CLAUDE.md §5 asks for interleaved runs and this was two sequential ones. So the
++136% here is **not** evidence that pytest is 2.4× slower, and Phase 0's S1
+estimate of about +2% is not refuted by it: the two have not been compared under
+conditions that would let them disagree. **A2 must not inherit this as a
+measurement.** Answering it honestly needs an interleaved pair on one tree with
+one cache state, which is a day of wall clock and is not the question this gate
+was run to ask.
+
 **Comparable rows: 2246.** `tupferl/**` is **1298 rows with 0 differences** —
 the package the harness exists to measure is graded identically by both
 backends. `tools/**` is 948 rows with 13 differences, every one of them
@@ -875,6 +888,12 @@ that is not new to pytest. It is the first evidence bearing on `_COMMIT`'s
 recorded here as an observation rather than a proposal: the sum-of-lane-RSS
 sampler CLAUDE.md asks for first still does not exist, and the machine was also
 running a browser and Steam.
+
+**What keeping the retired backend costs, measured, so Phase C knows what it
+buys back.** `tools/verdict_unittest.py` generates **155 mutation rows** of its
+own, and `tests/test_verdict_unittest.py` takes the verdict layer's share of a
+whole-suite walk from 3.18 s to 12.97 s — which every survivor pays by
+construction. Not a reason to remove it early; a reason to remove it on time.
 
 ## Phase A2 — Port `tools/run_tests.py` to drive pytest
 
@@ -947,7 +966,12 @@ that same PR).
 1. Before editing: record the module's collected item count and test list
    (`python -m pytest --collect-only -q tests/test_X.py`).
 1a. **Before the first `parametrize` lands, make `Mutation.first`,
-   `Killers.known` and `Learned.recent` hold sequences.** Phase A closed the
+   `Killers.known`, `Learned.recent` and `baseline_shards`' extra shard hold
+   sequences.** The fourth is the one that bites hardest and is easiest to
+   miss: `baseline_shards` space-joins every remembered `first` into one shard
+   *string*, which `run` re-splits before handing it to `_run` — so a
+   parametrized killer shreds a *baseline shard* rather than a selection, and a
+   baseline shard that selects nothing comes back green. Phase A closed the
    argv half of this — `mutate._run` JSON-encodes `first` because a
    parametrized nodeid can contain spaces — and deliberately left the three
    in-harness fields space-joined, because nothing in the tree produced such an

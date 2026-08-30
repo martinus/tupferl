@@ -289,17 +289,20 @@ def _stated(longrepr: object) -> str:
     return (rest if head == "E" else spoken[-1]).strip()
 
 
-def _said(call: pytest.CallInfo[None], report: pytest.TestReport) -> str:
+def _said(call: pytest.CallInfo[None]) -> str:
     """What a phase failure was, in one line.
 
     `exconly` is the exception as Python spells it -- ``RuntimeError: setUpClass
     blew up`` -- rather than the traceback that led to it, and it is the first
-    line of that in case the message is a paragraph. The rendering is the
-    fallback for a report that failed with no exception recorded, which no
-    fixture here produces and which must still say something.
+    line of that in case the message is a paragraph.
+
+    A failed report with no exception recorded says so rather than falling back
+    to `_stated`, which is documented as taking a *collection* rendering and
+    would be handed a forty-line `ExceptionGroup` here. No fixture produces this
+    and something still has to be said.
     """
     if call.excinfo is None:  # pragma: no cover - a failure with nothing raised
-        return _stated(report.longrepr)
+        return "the phase failed with nothing raised"
     return call.excinfo.exconly().splitlines()[0].strip()
 
 
@@ -367,9 +370,6 @@ class Watcher:
         #: "the prefix instead of everything". `mutate._run` reads only whether
         #: it is zero.
         self.ran = 0
-        #: Whether anything at all failed, which is what `failfast` stops on --
-        #: `broke` included, exactly as `unittest`'s `shouldStop` did.
-        self.failed = False
         #: Whether the run fell over rather than reporting: a module that would
         #: not import, or a selection pytest refused. No later group can change
         #: that answer, so the walk ends here.
@@ -465,7 +465,6 @@ class Watcher:
         `PluginValidationError` at registration for anything else.
         """
         if report.outcome == "failed":
-            self.failed = True
             self.stopped = True
             self.broke.append(f"{report.nodeid or 'collection'}: {_stated(report.longrepr)}")
 
@@ -473,7 +472,6 @@ class Watcher:
 
     def answered(self, nodeid: str, call: pytest.CallInfo[None], report: pytest.TestReport) -> None:
         """Record one failure, in whichever of the two buckets it belongs to."""
-        self.failed = True
         # The two limits first, and by exception type rather than by phase,
         # because by phase they are a test noticing. See `_carrier`.
         if reason := _carrier(nodeid, call.excinfo, self.each):
@@ -483,7 +481,7 @@ class Watcher:
             # `setUpClass`, `setUpModule` and their teardowns. Nothing in them
             # evaluated an assertion, so crediting the mutation to them would
             # be crediting a test that never ran.
-            self.broke.append(f"{nodeid}: {call.when} failed -- {_said(call, report)}")
+            self.broke.append(f"{nodeid}: {call.when} failed -- {_said(call)}")
             return
         self.noticed.append(nodeid)
         if not self.reasons:
@@ -547,7 +545,6 @@ class Watcher:
         # `mutate` sends that stream to `DEVNULL`. Without this the report would
         # say "nothing ran" and the row would be filed as holding no tests.
         self.stopped = True
-        self.failed = True
         if len(self.broke) == said:
             over = " ".join(group) or "everything"
             self.broke.append(f"pytest exited {_named(code)} over {over}")
@@ -595,7 +592,7 @@ def collect(
     names: Sequence[str],
     failfast: bool,
     each: float = 0.0,
-    first: Sequence[str] | None = None,
+    first: Sequence[str] = (),
     walk: bool = False,
 ) -> dict[str, Any]:
     """What the suite said, walking outward until something notices.
@@ -617,7 +614,7 @@ def collect(
     `WHOLE_SUITE` for a walking table.
     """
     watcher = Watcher(each_test(each))
-    for group in _groups(names, first or [], walk, watcher):
+    for group in _groups(names, first, walk, watcher):
         watcher.over(group, failfast)
         # Three ways to stop, and they are not the same question. `stopped` is
         # "no later group can change this answer". `failed` under `failfast` is
@@ -626,7 +623,8 @@ def collect(
         # one test has, and which a hand table must not be subjected to: there
         # `failfast` being off is the request, and stopping at the first red
         # module would report one shard of a broken tree as the whole story.
-        if watcher.stopped or (failfast and watcher.failed) or (walk and watcher.noticed):
+        answered = watcher.noticed or watcher.broke
+        if watcher.stopped or (failfast and answered) or (walk and watcher.noticed):
             break
     return {
         "loaded": True,
