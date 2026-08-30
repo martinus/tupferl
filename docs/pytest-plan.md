@@ -1642,7 +1642,9 @@ that were running, on a 62 GiB machine that showed 55 GiB free afterwards.
 What survives unchanged is the *reading* rule, which is why the section stays:
 `broke` fell 12 -> 2 -> 0 as lanes came down on identical rows, so a `SIGKILL`
 row is a question rather than an answer. What does not survive is blaming
-`_COMMIT`; see #90, now downgraded to "unmeasured" rather than "unsafe".
+`_COMMIT`, which #90 has since **measured and cleared**: the lanes hold
+5.1-5.7 GiB between them against 80 GiB of ceilings, 15x headroom. The
+rows that do fail are #96, the sweep mutating its own memory guard.
 
 ### The lane arithmetic, as it was recorded at the time
 

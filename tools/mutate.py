@@ -171,17 +171,31 @@ EACH_TEST = 30.0
 #: 8 lanes**, so ~3.2 GiB at the 28 that killed the session, on a 62 GiB machine
 #: that showed 55 GiB free afterwards. No exhaustion anywhere near it.
 #:
-#: So this constant is **not** known to be wrong. It is known to be unmeasured,
-#: which is what #90 is now about and what the line below finally prints.
+#: **And it is measured now (#90, closed).** Three whole-table runs at 40 lanes,
+#: ceilings summing to 80 GiB on a 62 GiB machine: the lanes held **5.1-5.7 GiB
+#: between them at peak**, 7-10% of budget, with `MemAvailable` never below
+#: 47 GiB on an independent watchdog. Fifteen times the headroom the commitment
+#: assumes, on the table where peaks were argued to correlate most.
+#:
+#: Both instruments sample -- this one every second -- so a sub-second spike is
+#: invisible to them. What is established is that no *sustained* aggregate
+#: pressure exists, which is the claim this constant rests on.
 #:
 #: **Not applied to `_affordable`**, which divides by what a lane is *measured*
 #: to use rather than by its ceiling. That number already assumes peaks are
 #: independent, so scaling it here would spend the same allowance twice.
 #:
-#: The quantity that would actually justify a number rather than a judgement is
-#: the *sum* of lane RSS at one instant, and nothing samples it --
-#: `_report_headroom` watches the heaviest single process. Until something does,
-#: this is calibrated against "126% has never been killed" and no more.
+#: The quantity that justifies a number rather than a judgement is the *sum* of
+#: lane RSS at one instant, which `_report_crowding` samples and every run
+#: prints -- `_report_headroom` beside it watches the heaviest single process,
+#: which is a different question and answers nothing about the host.
+#:
+#: **A lane at 100% of its ceiling says nothing about this constant.** It reads
+#: like a starved lane and #94 was filed on that reading; the A/B refuted it,
+#: because the ceiling was raised 2048 -> 3072 MiB and the heaviest lane came
+#: back at 100% of both while `BROKE` went 3 -> 8. A runaway fills whatever
+#: bound it is given. Those rows are #96 -- the sweep mutating its own guard --
+#: and no ceiling reaches them.
 _COMMIT = 1.5
 
 #: The budget to assume on a machine that publishes nothing at all -- no
