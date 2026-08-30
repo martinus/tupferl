@@ -130,6 +130,54 @@ def address_space_caps() -> bool:
 CAPS = address_space_caps()
 
 
+def pytest_needs() -> int:
+    """The address space one pytest run occupies here, measured by taking one.
+
+    **A measurement, not a constant, because the constants did not travel.**
+    512 MiB and 256 MiB were calibrated against this machine's 278 MiB floor and
+    turned four CI legs red on the first push: a runner's interpreter and
+    site-packages are leaner, so a cap this machine cannot start under is one
+    the runner starts fine under, and an allocation this machine refuses is one
+    the runner grants. That is `mutate._FLOOR`'s recorded mistake -- a figure
+    measured elsewhere arriving "with the word *here* attached" -- in a new
+    place.
+
+    `VmPeak` rather than a binary search for the smallest cap that works: one
+    child instead of five, and it is the same quantity `RLIMIT_AS` bounds.
+    Measured here at 267 MiB against the search's 278, so it reads slightly
+    *under* the true floor -- the safe direction, since the caller adds headroom.
+
+    `/proc` is Linux-only and so is an enforced `RLIMIT_AS`. The one class that
+    reads this is gated on `CAPS` and named in the macOS job's `--exclude`, so
+    the `0` below is unreachable from any test.
+    """
+    child = (
+        "import pytest\n"
+        'pytest.main(["-q", "-p", "no:cacheprovider", "test_trivial.py"])\n'
+        'print(next(int(line.split()[1]) * 1024 for line in open("/proc/self/status")'
+        ' if line.startswith("VmPeak:")))\n'
+    )
+    body = "import unittest\nclass T(unittest.TestCase):\n    def test_it(self):\n        pass\n"
+    with tempfile.TemporaryDirectory(prefix="tupferl-floor-") as box:
+        Path(box, "test_trivial.py").write_text(body, encoding="utf-8")
+        try:
+            done = subprocess.run(
+                [sys.executable, "-B", "-c", child],
+                cwd=box,
+                capture_output=True,
+                text=True,
+                env={**os.environ, **PROBE_ENV},
+                timeout=60,
+            )
+            return int(done.stdout.strip().splitlines()[-1])
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return 0  # pragma: no cover - a platform without /proc
+
+
+#: Computed once, for the reason `CAPS` is, and only where it can be enforced.
+NEEDED = pytest_needs() if CAPS else 0
+
+
 class Probe(unittest.TestCase):
     """A sandbox of throwaway test modules, and one run of the tool over them."""
 
@@ -593,17 +641,25 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
     `TestACarrierThatDidNotAssert`, which need no such thing. `--no-skips` exists
     to catch a suite quietly doing nothing, so a suite that *cannot* run
     somewhere is named in the workflow rather than opting itself out.
+
+    **`main`'s outer `except BaseException` is not tested here, and that is a
+    decision rather than an omission.** The only thing that reaches it honestly
+    is a cap too small for pytest to reach collection at all -- measured, on
+    this machine, between about 190 and 270 MiB -- and that band is a property
+    of one interpreter's address space, not of this code. A fixture aimed at it
+    passes here and fails on a leaner runner, which is exactly what the first
+    version of this class did. The portable half of the same claim is
+    `TestWhenTheToolItselfCannotRun.test_a_report_is_always_written`: whatever
+    happens, a report exists and says whether it loaded, which is what
+    `mutate._run` reads.
     """
 
-    #: A cap comfortably above what a pytest run needs to start -- measured at
-    #: 278 MiB against `unittest`'s 242 -- and comfortably below that plus the
-    #: 320 MiB the fixture asks for, so the allocation really is refused.
-    ROOM = 512 * 1024 * 1024
-
-    #: A cap comfortably *below* it, so the run cannot begin. Not lower: under
-    #: about 190 MiB the process dies before it can write a report at all, and
-    #: this class is about the report that gets written.
-    STARVED = 256 * 1024 * 1024
+    #: Enough for a pytest run to start and not enough for the fixture's 320 MiB,
+    #: added to `NEEDED` rather than written down. The margin is half the
+    #: allocation, so both halves have the same slack: a machine whose floor
+    #: `NEEDED` under-reads by less than this still refuses the allocation, and
+    #: one it over-reads by less than this still starts.
+    HEADROOM = 160 * 1024 * 1024
 
     def test_a_test_that_exhausts_the_cap_is_broken_not_caught(self) -> None:
         """A `MemoryError` raised inside a test arrives at the ``call`` phase
@@ -629,34 +685,10 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
                         held.append(bytearray(8 * 1024 * 1024))
             """,
         )
-        found = self.verdict("test_a", memory=self.ROOM)
+        found = self.verdict("test_a", memory=NEEDED + self.HEADROOM)
         self.assertEqual([], found["noticed"], "an out-of-memory test was credited")
         self.assertEqual(1, len(found["broke"]))
         self.assertIn("out of memory", found["broke"][0])
-
-    def test_a_cap_below_what_pytest_needs_reports_rather_than_vanishes(self) -> None:
-        """`main`'s outer `except BaseException`, and the only honest way to
-        fire it.
-
-        The belt is there for a typo in `verdict.py` itself, which no fixture
-        can produce -- the source under test is the source being read. This is
-        the other thing that reaches it: below about 278 MiB pytest cannot get
-        as far as collecting, so the `MemoryError` lands outside every hook and
-        `collect` never returns. Without the belt the caller would see an absent
-        report, which is what a *killed* lane looks like -- two different
-        problems with byte-identical output, in a tool whose whole thesis is
-        that those must be told apart.
-
-        Measured on this machine, and the three regimes are why the numbers
-        here are not round: at 512 MiB and up the classification happens per
-        test (the test above); at 256 MiB and below the run cannot start and
-        this fires; under about 190 MiB the process dies before writing
-        anything at all, which is the `mutate` behaviour that predates the belt.
-        """
-        self.passing("test_a")
-        found = self.verdict("test_a", memory=self.STARVED)
-        self.assertFalse(found["loaded"], "a run that never collected reported that it had")
-        self.assertIn("MemoryError", found["why"])
 
 
 class TestWhatTheBaselineNeeds(Probe):

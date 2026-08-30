@@ -851,6 +851,19 @@ accounted for:
   memory'" under the old runner. The class bound added here improves it (5 of 6
   where the control had 1 of 1) rather than fixing it.
 
+**And CI caught one thing the sweep could not.** The memory-cap class was
+written with two constants calibrated against this machine's measured 278 MiB
+pytest floor, and four legs went red on the first push: a runner's interpreter
+and site-packages are leaner, so a cap this machine cannot start under is one
+the runner starts fine under, and an allocation this machine refuses is one it
+grants. `tests/test_verdict.py` measures the floor now (`VmPeak` of one real
+pytest run, 267 MiB here) and derives its cap from it, and the test aimed at
+`main`'s outer belt is **gone** rather than re-tuned -- the only honest trigger
+for it is a cap inside a band that is a property of one interpreter's address
+space. Its portable half, "a report always exists and says whether it loaded",
+is asserted instead. Same shape as `mutate._FLOOR`'s recorded mistake, in a new
+place.
+
 **One caveat on the branch sweep's own summary.** Seven of its 21 `BROKE` rows
 are void: the host OOM killer took seven consecutive lanes at 09:53, in the same
 event that killed the desktop session, and each reports *"the probe was killed by
