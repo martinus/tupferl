@@ -1485,10 +1485,24 @@ read this file:
     measured.** `_report_headroom` samples the heaviest *single* lane process;
     nothing samples the *sum* of lane RSS at one instant, which is what the host
     feels. "One lane reached 92% of its ceiling" and "the machine was near its
-    limit" are different claims and only the first is in evidence. 150% is
-    calibrated against "126% has never been killed" and no more — **if a sweep
-    is ever OOM-killed, this is the first thing to look at**, and the sampler is
-    the thing to write before arguing about the constant.
+    limit" are different claims and only the first is in evidence.
+
+    **A sweep has now been OOM-killed, so this is no longer hypothetical
+    (#90).** `--all --only tools/mutate.py` at 28 lanes summed its ceilings to
+    79 GiB on a 62 GiB machine and the host's OOM killer took the developer's
+    desktop session; the same table at 40 lanes returned 12 `BROKE` rows, all
+    `killed by SIGKILL`, with the closing line reporting the heaviest lane at
+    **100%** of its ceiling. `broke` fell 12 → 2 → 0 as lanes came down, on
+    identical rows — so a `BROKE` row on a memory-starved sweep says nothing
+    about the line it appears to guard. **Read the headroom line before the
+    verdicts**: at 100% those two facts are one fact, and diagnosing the rows
+    without it buys a permanent guard against something that never happened.
+
+    That table is the exception rather than the rule, and mechanically so: its
+    rows run *nested* harnesses, and `slowest_first` dispatches a file's dearest
+    rows adjacently — the same correlation woswoar#232 measured. Pass
+    `--workers` by hand for it. The sampler is still the thing to write before
+    arguing about the constant.
 
   The counter-argument, which is measured and which `slowest_first` makes worse:
   woswoar#232 was not lanes drifting up independently, it was *three of four

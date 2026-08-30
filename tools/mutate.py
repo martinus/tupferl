@@ -157,9 +157,22 @@ EACH_TEST = 30.0
 #:
 #: Measured before it was raised: `--workers 32` already committed **126%** of
 #: this machine's budget (32 x 2048 MiB against 52135 MiB) across dozens of
-#: sweeps, whole-tree ones included, and nothing has ever been killed for
-#: memory. The heaviest single lane process ran 14-18% of its ceiling on
-#: `--only tupferl/` and 92% on a whole-tree run.
+#: sweeps, whole-tree ones included. The heaviest single lane process ran 14-18%
+#: of its ceiling on `--only tupferl/` and 92% on a whole-tree run.
+#:
+#: **That calibration has since been falsified, and this constant is now known
+#: to be unsafe on one table -- see #90.** `--all --only tools/mutate.py` at 28
+#: lanes let the ceilings sum to 79 GiB on a 62 GiB machine and the host's OOM
+#: killer took the developer's desktop session; at 40 lanes the same table
+#: returned 12 `BROKE` rows, every one `killed by SIGKILL`, with the closing
+#: line reporting the heaviest lane at **100%** of its ceiling. `broke` fell
+#: 12 -> 2 -> 0 as lanes came down, on identical rows.
+#:
+#: The reason it is that table and not `--only tupferl/` is mechanical: its rows
+#: run *nested* harnesses, and `slowest_first` dispatches a file's dearest rows
+#: adjacently -- so the peaks this constant assumes are independent are, there,
+#: in flight together. Until the sampler below exists, pass `--workers` by hand
+#: for it.
 #:
 #: **Not applied to `_affordable`**, which divides by what a lane is *measured*
 #: to use rather than by its ceiling. That number already assumes peaks are
