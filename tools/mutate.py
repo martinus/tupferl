@@ -894,6 +894,11 @@ def _born_from_proc() -> dict[int, float]:
     """`_born` where there is a `/proc`. Field 22 of `proc(5)`, in clock ticks."""
     found: dict[int, float] = {}
     for entry in Path("/proc").iterdir():
+        # survivor: branch -- equivalent, and for `_from_proc`'s reason: `/proc` holds no
+        #   all-digit entry that is not a process, the `stat` read below is wrapped in
+        #   `suppress(OSError)`, and the `int(entry.name)` that would raise on `cpuinfo` is inside
+        #   `suppress(ValueError)`. Taking the branch anyway costs a failed open and reaches the
+        #   same table.
         if not entry.name.isdigit():
             continue
         try:
@@ -904,6 +909,11 @@ def _born_from_proc() -> dict[int, float]:
         # index arithmetic is `_from_proc`'s: counting from `pid`, `starttime`
         # is the twenty-second field, hence twenty-two minus three.
         fields = said.rpartition(") ")[2].split()
+        # survivor: boundary, branch -- guards a kernel format, not an input, exactly as
+        #   `_from_proc`'s own length check does: `/proc/<pid>/stat` has had at least 52 fields
+        #   since Linux 2.6 and this reads one of the first 22. Both the bound and the comparison
+        #   exist so a future kernel that shortened the line is skipped rather than raising
+        #   `IndexError` inside a kill path -- not a state any fixture on this machine can produce.
         if len(fields) < 20:
             continue
         with suppress(ValueError):
@@ -956,6 +966,11 @@ def _parse_lstart(text: str) -> dict[int, float]:
     found: dict[int, float] = {}
     for line in text.splitlines():
         pid, _, when = line.strip().partition(" ")
+        # survivor: branch -- equivalent: everything the guard protects is already inside the
+        #   `suppress` below. Without it a header line reaches `strptime`, which refuses it, and a
+        #   non-numeric pid reaches `int`, which refuses it -- both `ValueError`, both swallowed,
+        #   same empty answer. The guard is here to say which lines are expected, not to prevent a
+        #   raise.
         if not pid.isdigit():
             continue
         # `%c`-shaped and locale-dependent, so a line that will not parse is
