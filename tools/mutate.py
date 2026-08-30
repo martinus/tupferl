@@ -4021,6 +4021,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Before any sandbox is built and before a spec file is loaded. `_probe`
+    # asks the same question once per row, from a lane thread, where a
+    # `SystemExit` is somebody else's problem; asking it here is what makes a
+    # mistyped `TUPFERL_MUTATE_VERDICT` one line on stderr instead of a wall of
+    # `BROKE`.
+    _layer()
+
     if args.all and args.base:
         parser.error("--all is every line; --base is what changed. Not both.")
     if args.all:

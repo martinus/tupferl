@@ -282,7 +282,11 @@ def _stated(longrepr: object) -> str:
     spoken = [line for line in str(longrepr).splitlines() if line.strip()]
     if not spoken:
         return "collection failed and said nothing"
-    return spoken[-1].removeprefix("E").strip()
+    # The marker is stripped only when it really is one -- `removeprefix("E")`
+    # turns a line beginning "Errno" into one beginning "rrno", quietly, in the
+    # one message a reader has to act on.
+    head, _, rest = spoken[-1].partition(" ")
+    return (rest if head == "E" else spoken[-1]).strip()
 
 
 def _said(call: pytest.CallInfo[None], report: pytest.TestReport) -> str:
@@ -362,7 +366,7 @@ class Watcher:
         #: `tests.test_mutate` reads to tell "the prefix *and* everything" from
         #: "the prefix instead of everything". `mutate._run` reads only whether
         #: it is zero.
-        self.started = 0
+        self.ran = 0
         #: Whether anything at all failed, which is what `failfast` stops on --
         #: `broke` included, exactly as `unittest`'s `shouldStop` did.
         self.failed = False
@@ -394,7 +398,7 @@ class Watcher:
         test whose *setup* dies too -- which `unittest` also counted as a test
         that started, and which is a `broke` that must not read as "nothing
         ran"."""
-        self.started += 1
+        self.ran += 1
 
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_protocol(
@@ -438,8 +442,19 @@ class Watcher:
         the tests that use `subTest` look dearer than they are to the ordering
         that reads this. Recognised by carrying a ``context``, which is what
         pytest hangs the subtest's parameters on -- not by its class name.
+
+        ``setup`` starts the sum again rather than adding to it, so a test named
+        in `first` and then reached again by the selection is charged for one
+        run instead of two. That is what the layer before this did, where one
+        assignment per test meant the last run won -- and it matters because
+        `Killers.prefix` divides rows-caught by cost, so a remembered killer
+        that looked twice as dear as it is would drop out of the cheap prefix.
         """
-        if getattr(report, "context", None) is None:
+        if getattr(report, "context", None) is not None:
+            return
+        if report.when == "setup":
+            self.times[report.nodeid] = report.duration
+        else:
             self.times[report.nodeid] = self.times.get(report.nodeid, 0.0) + report.duration
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
@@ -510,7 +525,7 @@ class Watcher:
         # the same sweep is a cache that never warms.
         return sorted(found - chosen)
 
-    def ran(self, group: Sequence[str], failfast: bool) -> None:
+    def over(self, group: Sequence[str], failfast: bool) -> None:
         """One `pytest.main`, plus whatever its exit status says that no hook did.
 
         The flags are the ones Phase 0 measured. ``-p no:cacheprovider`` is what
@@ -603,7 +618,7 @@ def collect(
     """
     watcher = Watcher(each_test(each))
     for group in _groups(names, first or [], walk, watcher):
-        watcher.ran(group, failfast)
+        watcher.over(group, failfast)
         # Three ways to stop, and they are not the same question. `stopped` is
         # "no later group can change this answer". `failed` under `failfast` is
         # the caller's request. `noticed` under `walk` is the walk's own
@@ -615,7 +630,7 @@ def collect(
             break
     return {
         "loaded": True,
-        "ran": watcher.started,
+        "ran": watcher.ran,
         "noticed": watcher.noticed,
         "killers": watcher.noticed,
         "reasons": watcher.reasons,

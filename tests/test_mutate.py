@@ -535,6 +535,199 @@ class TestTheKillerIsRecordedAtAll(unittest.TestCase):
         self.assertEqual({result.verdict.killer}, mutate._loadable([result.verdict.killer]))
 
 
+class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
+    """`TUPFERL_MUTATE_VERDICT`: two classifiers, and a typo that must be loud.
+
+    The acceptance gate for the pytest conversion is two whole-tree sweeps of
+    the same command line differing only in this variable, so a mistyped value
+    that fell back to the default would report the pair as agreeing when only
+    one of them ever ran. That is CLAUDE.md §8's shape exactly, which is why
+    the refusal is asserted rather than the fallback.
+    """
+
+    def layer(self, value: str | None) -> str:
+        env = {name: held for name, held in os.environ.items() if name != mutate._VERDICT}
+        if value is not None:
+            env[mutate._VERDICT] = value
+        with mock.patch.dict(os.environ, env, clear=True):
+            return mutate._layer()
+
+    def test_pytest_is_what_a_sweep_uses(self) -> None:
+        self.assertEqual("verdict.py", self.layer(None))
+        self.assertEqual("verdict.py", self.layer("pytest"))
+
+    def test_the_classifier_it_replaced_can_still_be_asked_for(self) -> None:
+        self.assertEqual("verdict_unittest.py", self.layer("unittest"))
+
+    def test_a_name_that_is_neither_is_refused_rather_than_defaulted(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            self.layer("pytst")
+        # The alternatives are in the message, so a typo answers itself rather
+        # than sending the reader to this file.
+        self.assertIn("pytest", str(caught.exception))
+        self.assertIn("unittest", str(caught.exception))
+
+    def test_the_source_handed_over_is_the_one_named(self) -> None:
+        """The two backends are two files, not two branches inside one -- so a
+        row diagnosed under `unittest` really is graded by the code that was
+        here before, rather than by today's with a flag set."""
+        with mock.patch.dict(os.environ, {mutate._VERDICT: "unittest"}):
+            self.assertIn("unittest.TextTestResult", mutate._probe())
+        with mock.patch.dict(os.environ, {mutate._VERDICT: "pytest"}):
+            self.assertIn("pytest_runtest_makereport", mutate._probe())
+
+
+class TestTwoSpellingsOfTheSameTest(unittest.TestCase):
+    """`_dotted` and `_reaches`: a killer's nodeid meeting a dotted selection.
+
+    A selection is dotted under either backend -- `mutants.targets_for` builds
+    it out of module names -- while a killer under pytest is a nodeid. The two
+    meet in three reachability filters, and a mismatch there is invisible:
+    `run_tests.selects` anchors at a dot, so a nodeid compared as it stands
+    matches *nothing*, every remembered and learned test is dropped, and the
+    sweep loses the orderings measured at 3.9% and 6-10% with nothing red.
+    """
+
+    def test_a_nodeid_becomes_the_dotted_id(self) -> None:
+        self.assertEqual(
+            "tests.test_sync.TestX.test_y", mutate._dotted("tests/test_sync.py::TestX::test_y")
+        )
+
+    def test_a_file_with_no_node_parts_is_still_a_module(self) -> None:
+        self.assertEqual("tests.test_sync", mutate._dotted("tests/test_sync.py"))
+
+    def test_an_id_that_is_already_dotted_is_left_alone(self) -> None:
+        """Both spellings reach these filters while both backends exist, and
+        translating twice would be as wrong as not translating at all."""
+        self.assertEqual(
+            "tests.test_sync.TestX.test_y", mutate._dotted("tests.test_sync.TestX.test_y")
+        )
+
+    def test_a_selection_covers_a_killer_in_either_spelling(self) -> None:
+        for killer in (
+            "tests/test_sync.py::TestX::test_y",
+            "tests.test_sync.TestX.test_y",
+        ):
+            with self.subTest(killer=killer):
+                self.assertTrue(mutate._reaches(killer, "tests.test_sync"))
+
+    def test_it_still_refuses_a_neighbour_whose_name_is_a_prefix(self) -> None:
+        """`selects` anchors at a dot so `--only tests.test_sync` does not drag
+        `tests/test_sync_chunks.py` under the same policy. Translating the
+        spellings must not lose that -- and a substring match would."""
+        self.assertFalse(
+            mutate._reaches("tests/test_sync_chunks.py::T::test_it", "tests.test_sync")
+        )
+
+
+class TestWhichRememberedIdsStillResolve(unittest.TestCase):
+    """`_loadable`: what may be put in front of a run.
+
+    An id that no longer names a test is not a slow cache, it is a wall of
+    `BROKE`: pytest refuses the whole invocation for one name it cannot find,
+    so every row that remembered a renamed test would answer nothing.
+    """
+
+    def test_a_real_nodeid_survives_and_a_renamed_one_does_not(self) -> None:
+        found = mutate._loadable([REAL, "tests/test_mutate.py::TestNothing::test_gone"])
+        self.assertEqual({REAL}, found)
+
+    def test_a_cache_from_the_other_backend_is_dropped_rather_than_handed_over(self) -> None:
+        """`sweeps/killers.json` written before the conversion holds dotted ids,
+        and the file is machine-local and gitignored -- so the first sweep after
+        it simply runs at yesterday's speed. Handed to pytest instead, those
+        ids are a usage error that refuses the run."""
+        self.assertEqual(set(), mutate._loadable([_dotted_form(REAL)]))
+
+    def test_asking_about_nothing_asks_pytest_nothing(self) -> None:
+        """`ahead_of` calls this with an empty set on every fresh cache, and
+        asking pytest what it collects is a subprocess and half a second."""
+        with mock.patch.object(subprocess, "run") as never:
+            self.assertEqual(set(), mutate._loadable([]))
+        never.assert_not_called()
+
+
+def _dotted_form(nodeid: str) -> str:
+    """`REAL` as the backend before this one would have written it.
+
+    Spelled out here rather than through `mutate._dotted`, so that this file
+    does not check one function with another.
+    """
+    path, _, rest = nodeid.partition("::")
+    return ".".join([path.removesuffix(".py").replace("/", "."), *rest.split("::")])
+
+
+class TestWhatEveryProbeIsHandedOnItsCommandLine(unittest.TestCase):
+    """The sandbox contract: which argv slot is which, and the environment.
+
+    Read off the spawn rather than asserted inside `_run`, because it *is* a
+    protocol -- `tools/verdict.py` reads these positions out of `sys.argv`, and
+    the two files only ever ship together. A slot that quietly moved shows up as
+    every row coming back `BROKE` at once, which no single fixture diagnoses
+    better than the first sweep does; these say which slot instead.
+    """
+
+    def spawn(self, **how: Any) -> tuple[list[str], dict[str, str]]:
+        seen: dict[str, Any] = {}
+
+        class Probe:
+            pid = 4242
+            returncode = 0
+
+            def __init__(self, argv: list[str], **kwargs: Any) -> None:
+                seen["argv"], seen["env"] = argv, kwargs["env"]
+                Path(kwargs["stderr"].name).write_text("", encoding="utf-8")
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+        class Watched:
+            def watch(self, pid: int, memory: int) -> None:
+                pass
+
+            def release(self, pid: int) -> int:
+                return 0
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(subprocess, "Popen", Probe),
+            mock.patch.object(mutate, "_WATCHED", Watched()),
+        ):
+            mutate._run(["tests.test_paths"], Path(root), **how)
+        return list(seen["argv"]), dict(seen["env"])
+
+    def test_the_prefix_travels_as_json_rather_than_space_joined(self) -> None:
+        """A pytest nodeid can hold a space the moment anything is parametrized,
+        and a space-joined slot shreds one name into several that select
+        nothing -- silently, because selecting nothing is not an error to
+        pytest."""
+        argv, _ = self.spawn(first=["a.py::T::test_one[a b]", "b.py::T::test_two"])
+        self.assertEqual(["a.py::T::test_one[a b]", "b.py::T::test_two"], json.loads(argv[8]))
+
+    def test_an_empty_prefix_is_still_a_list(self) -> None:
+        """`verdict.main` reads the slot with `json.loads` unconditionally, so
+        an empty prefix has to be `[]` rather than the empty string it was."""
+        argv, _ = self.spawn()
+        self.assertEqual([], json.loads(argv[8]))
+
+    def test_the_selection_comes_after_the_walk_flag_and_not_inside_it(self) -> None:
+        """The trap `first`'s own slot exists for: an empty selection *means*
+        the whole suite, so anything that slid into it would turn "run
+        everything" into "run these"."""
+        argv, _ = self.spawn(first=["a.py::T::test_one"], walk=True)
+        self.assertEqual("1", argv[9])
+        self.assertEqual(["tests.test_paths"], argv[10:])
+
+    def test_the_suite_runs_with_pytest_plugin_autoload_off(self) -> None:
+        """Measured at 79.5 ms a probe, and it belongs here rather than in the
+        verdict layer because it decides what the *suite* runs under: the
+        sandbox contract is `mutate`'s to own, and a host project that needs an
+        autoloaded plugin changes it in one place."""
+        _, env = self.spawn()
+        self.assertEqual("1", env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"])
+        self.assertEqual("1", env["PYTHONDONTWRITEBYTECODE"])
+
+
 #: A test module that hangs on a blocking read, and one that does not. Written
 #: to a throwaway directory rather than kept in `tests/`, because `run_tests`
 #: discovers everything here and a permanently-hanging test in the tree is the

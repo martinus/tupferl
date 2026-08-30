@@ -170,7 +170,7 @@ class Probe(unittest.TestCase):
                 """,
             )
 
-    def run_probe(
+    def verdict(
         self,
         *names: str,
         failfast: bool = False,
@@ -178,16 +178,21 @@ class Probe(unittest.TestCase):
         each: float = 0.0,
         first: tuple[str, ...] = (),
         walk: bool = False,
-    ) -> subprocess.CompletedProcess[str]:
-        """The probe, spelled positionally the way `mutate._run` spells it.
+    ) -> dict[str, Any]:
+        """Run the tool and return the report it wrote.
 
-        Written out here rather than built from a helper shared with `mutate`,
-        because the point of this file is to hold the *other* end of a protocol:
-        when `first` gained its own slot, an earlier version of this helper let
-        the selection slide into it and a module ran twice with nothing failing.
-        A shared builder cannot notice that.
+        The argv is positional and spelled out here rather than built from a
+        helper shared with `mutate`, because the point of this file is to hold
+        the *other* end of a protocol: when `first` gained its own slot, an
+        earlier version of this helper let the selection slide into it and a
+        module ran twice with nothing failing. A shared builder cannot notice
+        that.
+
+        ``walk`` defaults off, which is a *baseline*'s shape. Most tests here are
+        about what one named selection reports, and a walk would run every other
+        module in the sandbox inside each of them.
         """
-        return subprocess.run(
+        done = subprocess.run(
             [
                 sys.executable,
                 "-B",
@@ -207,15 +212,6 @@ class Probe(unittest.TestCase):
             text=True,
             timeout=BOUND,
         )
-
-    def verdict(self, *names: str, **how: Any) -> dict[str, Any]:
-        """Run the tool and return the report it wrote.
-
-        ``walk`` defaults off, which is a *baseline*'s shape. Most tests here are
-        about what one named selection reports, and a walk would run every other
-        module in the sandbox inside each of them.
-        """
-        done = self.run_probe(*names, **how)
         self.assertTrue(
             self.report.is_file(),
             f"no report was written.\nstdout: {done.stdout}\nstderr: {done.stderr}",
