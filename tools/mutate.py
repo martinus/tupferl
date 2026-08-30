@@ -99,6 +99,7 @@ before concluding that a surviving mutation means a weak test.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -289,6 +290,46 @@ _PROFILE = "TUPFERL_HYPOTHESIS_PROFILE"
 #: registered raises inside the probe, where it surfaces as `BROKE` on every row
 #: rather than as the typo it is.
 _MUTATION_PROFILE = "mutation"
+
+#: Which verdict layer grades a probe. ``pytest`` is what a sweep uses;
+#: ``unittest`` selects `tools/verdict_unittest.py`, the classifier that was here
+#: before the conversion, so that a row the two disagree about can be graded by
+#: the old one rather than argued about. It is deleted with that file at
+#: `docs/pytest-plan.md`'s Phase C.
+#:
+#: An environment variable rather than a flag because it has to survive
+#: ``python -c`` into a nested harness, the way `_BUDGET` and `_ALARM` do.
+#:
+#: **It will not give you a green whole-tree run, and that is not a defect to
+#: fix.** `tests/test_mutate.py` asserts the shape of a killer id -- it has to,
+#: since a cache full of ids nothing can select is a wall of `BROKE` -- so under
+#: the old classifier those assertions fail and the baseline is red. Use it for
+#: one row at a time, ``--no-baseline --only <file>``, and read the row rather
+#: than the summary; and prefer a caught row to a survivor, because a survivor
+#: walks outward far enough to reach those same failing tests and comes back
+#: falsely `caught`. The whole-tree control for this conversion was the tree
+#: *before* it, which is where the old classifier is the one the tests expect.
+_VERDICT = "TUPFERL_MUTATE_VERDICT"
+
+#: What each accepted value names, next to this file. Read out loud in the error
+#: below, so a typo names its alternatives instead of failing as a missing file.
+_LAYERS = {"pytest": "verdict.py", "unittest": "verdict_unittest.py"}
+
+#: The environment every pytest this module starts runs under, written once
+#: because it is a *contract* and two spellings of it are two contracts. `_run`
+#: spreads it into a probe's environment and `_collected` into its own, so what
+#: a sweep is graded against and what its cache is validated against cannot
+#: drift apart. `tests/test_mutate.py` asserts the keys literally rather than
+#: importing this, which is the difference between checking a claim and
+#: restating it.
+SANDBOX = {"PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+
+#: The two exit statuses that mean pytest listed what it could -- `ExitCode.OK`
+#: and `ExitCode.NO_TESTS_COLLECTED`. Written as numbers rather than imported:
+#: this module never runs pytest in-process, it shells out, and `import pytest`
+#: costs 68 ms at every import of `tools.mutate` for two integers that have not
+#: moved since pytest 5.
+_OK, _NONE = 0, 5
 
 #: Names never copied into a mutation's sandbox. ``.git`` because it is large and
 #: nothing under test reads it; the caches because a stale one is the trap this
@@ -527,8 +568,30 @@ _RUNS: list[Report] = []
 #: the good news.
 
 
+def _layer() -> str:
+    """Which backend a probe is graded by, or a loud refusal.
+
+    The *name*, not the filename: `_probe` needs the file and `_loadable` needs
+    to know which validation to use, and answering the second by comparing
+    filenames would make renaming `verdict_unittest.py` silently change a branch
+    about cache validity.
+
+    Refused rather than defaulted, because the two backends are the instrument
+    the conversion is being measured with: a mistyped `_VERDICT` that quietly
+    fell back to the default would report the sweep pair as agreeing when only
+    one of them ever ran, which is §8's shape exactly.
+    """
+    chosen = os.environ.get(_VERDICT, "pytest")
+    if chosen not in _LAYERS:
+        raise SystemExit(
+            f"{_VERDICT}={chosen!r} names no verdict layer; unset it, or set it to "
+            f"one of {', '.join(sorted(_LAYERS))}."
+        )
+    return chosen
+
+
 def _probe() -> str:
-    """`tools/verdict.py`, read from *this* tree rather than the sandbox's copy.
+    """The verdict layer, read from *this* tree rather than the sandbox's copy.
 
     Handed to ``python -c``, which is what puts the sandbox on ``sys.path`` so its
     test modules import at all. Reading it from `__file__`'s directory is the
@@ -537,7 +600,7 @@ def _probe() -> str:
     own exam. See that module's docstring for why the classification lives there
     and not in a string constant here.
     """
-    return (Path(__file__).resolve().with_name("verdict.py")).read_text(encoding="utf-8")
+    return (Path(__file__).resolve().with_name(_LAYERS[_layer()])).read_text(encoding="utf-8")
 
 
 def _clear_bytecode(root: Path) -> None:
@@ -988,7 +1051,7 @@ def _run(
     timeout: float = TIMEOUT,
     memory: int = MEMORY,
     each: float = EACH_TEST,
-    first: str = "",
+    first: Sequence[str] = (),
     walk: bool = False,
 ) -> Verdict:
     """What the suite concluded about one mutation, and by which route.
@@ -1044,7 +1107,12 @@ def _run(
                     "1" if failfast else "0",
                     str(memory),
                     str(each),
-                    first,
+                    # JSON rather than a space-joined slot. A pytest nodeid can
+                    # contain spaces the moment anything is parametrized, and
+                    # splitting on them shreds one name into several that select
+                    # nothing -- silently, since a selection that matches no test
+                    # is not an error to pytest.
+                    json.dumps(list(first)),
                     "1" if walk else "0",
                     *tests,
                 ],
@@ -1058,9 +1126,16 @@ def _run(
                 # `_ALARM` is `each` itself, so that a fixture bounding its own
                 # wait can beat the alarm that is armed rather than the default
                 # one -- see `_ALARM`, and `tests/support.py`'s `bounded`.
+                # `PYTEST_DISABLE_PLUGIN_AUTOLOAD` is the sandbox contract
+                # rather than the verdict layer's business, which is why it is
+                # here: it decides what the *suite* runs under, and measured, it
+                # takes 79.5ms off every probe. It is right for this project and
+                # would be wrong for one whose tests need an autoloaded plugin,
+                # so it becomes a setting when the harness is extracted rather
+                # than a constant then -- `docs/pytest-plan.md`, Phase D.
                 env={
                     **os.environ,
-                    "PYTHONDONTWRITEBYTECODE": "1",
+                    **SANDBOX,
                     _BUDGET: str(memory),
                     _ALARM: str(each),
                     _PROFILE: _MUTATION_PROFILE,
@@ -1306,7 +1381,7 @@ class Learned:
             test
             for test in recent
             if test not in already
-            and (not reachable or any(run_tests.selects(test, only) for only in reachable))
+            and (not reachable or any(_reaches(test, only) for only in reachable))
         )
 
 
@@ -1399,10 +1474,21 @@ def _attempt(
             # it -- and then the learned front is the next best guess before
             # the full selection. That costs nothing when the killer is right,
             # because the killer has already answered.
+            #
+            # Split on spaces here, and that is the *remaining* half of the
+            # nodeid hazard `_run`'s JSON slot closes. `Mutation.first`,
+            # `Killers.known` and `Learned.recent` all hold ids space-joined
+            # into one string, so a nodeid containing a space is shredded before
+            # it ever reaches argv. Nothing in this tree produces one -- every
+            # test is a `TestCase` method, and pytest names those
+            # `file.py::Class::method` -- so the first pytest-native
+            # `@pytest.mark.parametrize` to land is what makes these three
+            # fields have to hold sequences. `docs/pytest-plan.md`'s Phase B
+            # says so where that would happen.
             first = (
-                f"{mutation.first} {ahead}".strip()
+                f"{mutation.first} {ahead}".split()
                 if mutation.exact
-                else f"{ahead} {mutation.first}".strip()
+                else f"{ahead} {mutation.first}".split()
             )
             began = time.monotonic()
             verdict = _run(
@@ -2575,7 +2661,7 @@ def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
             for result in results
             if result.verdict.outcome == "caught"
             and result.verdict.killer
-            and not any(run_tests.selects(result.verdict.killer, only) for only in reachable)
+            and not any(_reaches(result.verdict.killer, only) for only in reachable)
         }
     )
 
@@ -3042,12 +3128,14 @@ class Killers:
     def ahead_of(self, table: Sequence[Mutation]) -> list[Mutation]:
         """The same table, with each remembered killer moved to the front.
 
-        Only ids that still load are used, and they are resolved once for the
-        whole table rather than per mutant. That is not thrift: an id that no
-        longer exists makes `unittest`'s loader record an error, which
-        `tools/verdict.py` correctly classifies as `broke` -- so one renamed
+        Only ids that still resolve are used, and they are resolved once for the
+        whole table rather than per mutant. That is not thrift: pytest refuses
+        the *whole invocation* for a single name it cannot find, so one renamed
         test would turn every mutant that remembered it into a non-answer, and
-        the sweep would report a wall of `BROKE` rows for a rename.
+        the sweep would report a wall of `BROKE` rows for a rename. (Under the
+        retired backend the mechanism was gentler -- `unittest`'s loader
+        recorded an error for that one name -- and the consequence was the
+        same.)
         """
         head = self.prefix()
         wanted = {self.known[_key(row)] for row in table if _key(row) in self.known} | set(head)
@@ -3091,7 +3179,7 @@ class Killers:
             mine = [
                 test
                 for test in head
-                if not reachable or any(run_tests.selects(test, only) for only in reachable)
+                if not reachable or any(_reaches(test, only) for only in reachable)
             ]
             ahead.append(row._replace(first=" ".join(mine)) if mine else row)
         return ahead
@@ -3139,15 +3227,106 @@ class Killers:
         )
 
 
-def _loadable(ids: Iterable[str]) -> set[str]:
-    """Those of `ids` that `unittest` can still turn into a test.
+def _dotted(name: str) -> str:
+    """A test id in the dotted spelling, whichever spelling it arrived in.
 
-    Asked of the loader rather than by checking that the file exists: a renamed
-    *method* leaves its module in place, and that is the common way a remembered
-    id goes stale.
+    The two backends name a test differently -- `tests.test_sync.TestX.test_y`
+    against `tests/test_sync.py::TestX::test_y` -- while a *selection* is dotted
+    under both, because `mutants.targets_for` builds it from module names. So
+    every comparison between the two has to agree on one spelling first.
+
+    It matters because of how it fails. `run_tests.selects` anchors at a dot, so
+    a nodeid compared as it stands matches no selection at all: the reachability
+    filters below would quietly drop every remembered and every learned test,
+    which costs a sweep its whole ordering and turns nothing red. Measured in
+    reverse, the ordering those filters feed is worth 3.9% and 6-10%.
     """
+    path, _, rest = name.partition("::")
+    if not path.endswith(".py"):
+        return name
+    # `mutants.module_of` rather than a second `replace("/", ".")`: it also
+    # collapses a package's `__init__`, and its docstring records why that is
+    # not cosmetic. Two spellings of one translation, only one of which knows
+    # that, is how the bug it describes comes back.
+    return ".".join([mutants.module_of(path), *(part for part in rest.split("::") if part)])
+
+
+def _reaches(test: str, only: str) -> bool:
+    """Whether the selection ``only`` covers ``test``, in either spelling."""
+    return run_tests.selects(_dotted(test), _dotted(only))
+
+
+@functools.cache
+def _collected(where: str) -> frozenset[str]:
+    """Every test pytest can name in the tree at `where`, asked of pytest itself.
+
+    A subprocess, and one per tree rather than one per id. Both halves are
+    deliberate:
+
+    - `--collect-only` imports every test module, and this runs in the *harness*
+      process, which under a sweep of `tools/` is itself running inside the
+      suite. Importing 33 test modules into it a second time is not something to
+      do for a cache hint;
+    - one pass costs 500 ms against 116 ms for a single module, so asking per id
+      loses after five of them, and a warm cache holds hundreds.
+
+    **Memoised, and keyed on the directory rather than on nothing.** The
+    docstring above argued "one pass for the whole run" and nothing enforced it:
+    production calls `ahead_of` once, so the leak was invisible there, while
+    `tests/test_mutate.py` drives it fifteen times -- measured at **7.73 s, 17.4%
+    of that module's 44.54 s**. A bare `functools.cache` would be wrong: `_run`
+    spawns probes with `cwd=<sandbox>`, and a nested `mutate.run` inside a test
+    is asking about a different tree. The key is the cost of that being right.
+
+    What the memo cannot see is a tree that changes inside one process, which
+    nothing in production does -- a sandbox is built before its probe starts.
+
+    An empty answer is the safe one: `ahead_of` then puts nothing in front of
+    anything and the sweep runs at the speed it had before the cache existed.
+    That is why a failure here is reported and not raised.
+    """
+    flags = ["--collect-only", "-q", "-p", "no:cacheprovider"]
+    try:
+        done = subprocess.run(
+            [sys.executable, "-B", "-m", "pytest", *flags],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+            cwd=where,
+            env={**os.environ, **SANDBOX},
+        )
+    except (OSError, subprocess.SubprocessError) as why:
+        print(f"pytest could not be asked what it collects ({why}), so nothing is run first.")
+        return frozenset()
+    # `--collect-only -q` prints one nodeid per line and then a blank line and a
+    # count, so the nodeids are the lines that name a node. The *lines* rather
+    # than the exit status, because a tree with one unimportable module still
+    # lists every other test and dropping the lot for that would be the
+    # expensive answer to a small problem -- but a status pytest itself calls a
+    # usage error means it listed nothing at all, and silence there would drop
+    # every remembered test with nothing to read. Said, not inferred.
+    if done.returncode not in (_OK, _NONE) and not done.stdout.strip():
+        print(f"pytest could not collect this tree (exit {done.returncode}); nothing is run first.")
+    return frozenset(line.strip() for line in done.stdout.splitlines() if "::" in line)
+
+
+def _loadable(ids: Iterable[str]) -> set[str]:
+    """Those of `ids` the suite can still be asked for.
+
+    Asked of the framework rather than by checking that the file exists: a
+    renamed *method* leaves its module in place, and that is the common way a
+    remembered id goes stale. It is also what drops a cache written by the other
+    backend -- `sweeps/killers.json` is machine-local and disposable, and its
+    ids simply do not appear in the answer the current one gives.
+    """
+    wanted = set(ids)
+    if not wanted:
+        # Nothing to ask about, and under pytest asking costs a subprocess.
+        return set()
+    if _layer() != "unittest":
+        return wanted & _collected(os.getcwd())
     found = set()
-    for name in ids:
+    for name in wanted:
         loader = unittest.TestLoader()
         try:
             loader.loadTestsFromName(name)
@@ -3888,6 +4067,13 @@ def main(argv: list[str] | None = None) -> int:
         help=f"budget for the cheap-tests-first prefix, 0 to disable (default {PREFIX:g})",
     )
     args = parser.parse_args(argv)
+
+    # Before any sandbox is built and before a spec file is loaded. `_probe`
+    # asks the same question once per row, from a lane thread, where a
+    # `SystemExit` is somebody else's problem; asking it here is what makes a
+    # mistyped `TUPFERL_MUTATE_VERDICT` one line on stderr instead of a wall of
+    # `BROKE`.
+    _layer()
 
     if args.all and args.base:
         parser.error("--all is every line; --base is what changed. Not both.")

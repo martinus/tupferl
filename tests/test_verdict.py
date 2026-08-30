@@ -1,29 +1,38 @@
 """`tools/verdict.py`: which kind of failure a suite produced.
 
-Issue #4 put this module first and called it a port. There is nothing to port --
-`martinus/woswoar` has no `tests/test_verdict.py`; its classification is
-exercised indirectly through a 117 KB `test_mutate.py`. And `tools/verdict.py`
-is the *most* diverged of the ported tools (262 lines there against 410 here,
-190 changed), so a port would have been the wrong shape anyway. This is written
-against the code that is here.
+**Why it is the first thing tested.** `mutate` reports `caught` when a test
+method noticed and `broke` when the run merely fell over, and both exit non-zero
+leaving a plausible count of tests behind. Every other number the harness
+produces is downstream of that line being drawn correctly, and drawn *wrongly*
+it errs towards `caught` -- flattering the tests, which CLAUDE.md §8 names as
+the direction every bug in this class has taken.
 
-**Why it is first regardless.** `mutate` reports `caught` when a test method
-noticed and `broke` when the run merely fell over, and both exit non-zero
-leaving a plausible `Ran N` behind. Every other number the harness produces is
-downstream of that line being drawn correctly, and drawn *wrongly* it errs
-towards `caught` -- flattering the tests, which CLAUDE.md §8 names as the
-direction every bug in this class has taken.
+**Driven the way `mutate` drives it**: the module's source handed to
+``python -c`` with a sandbox as the working directory, throwaway test modules
+inside it, and the report written outside. Not by importing `verdict` and
+calling `collect` in this process -- `cap` sets an address-space rlimit and the
+alarm installs a `SIGALRM` handler, so an in-process test would be configuring
+the suite that is running it. The four classes at the end that *do* import it
+touch neither, and say so.
 
-**Driven the way `mutate` drives it**: the module's source handed to `python -c`
-with a sandbox as the working directory, throwaway test modules inside it, and
-the report written outside. Not by importing `verdict` and calling `collect` in
-this process -- `cap` sets an address-space rlimit and the alarm installs a
-`SIGALRM` handler, so an in-process test would be configuring the suite that is
-running it.
+This file states the same claims `tests/test_verdict_unittest.py` states about
+the backend that came before, against pytest. Three of them change, and the
+changes are the interesting part:
+
+- a dead fixture is `broke` because of the *phase* pytest reports it in, not
+  because of an `isinstance` against a private `unittest` class. That mapping is
+  measured rather than documented, so `TestWhatThisAssumesOfPytest` asserts it;
+- a broken module is classified identically whether it was named or discovered.
+  Under `unittest` those were two different code paths that classified it
+  differently, and a fixture written for one proved nothing about the other;
+- a failed `subTest` reaches the classifier *before* pytest splits it out, so
+  the owner is what gets recorded with no unwrapping. The trap it replaces is
+  worse than the one it removes, and has its own test.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -34,29 +43,29 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-#: The repository root, so a child can import `tools` after chdir-free launch.
+from tests import support
+
+#: The repository root, so a child can import `tools` without a chdir.
 ROOT = Path(__file__).resolve().parent.parent
 
 #: The tool's own source, read the way `mutate._probe` reads it -- from this
 #: tree, never from the sandbox. A copy under test could otherwise decide its
 #: own verdict, which is the property `verdict.py`'s docstring opens with.
-SOURCE = (Path(__file__).resolve().parent.parent / "tools" / "verdict.py").read_text(
-    encoding="utf-8"
-)
+SOURCE = (ROOT / "tools" / "verdict.py").read_text(encoding="utf-8")
+
+#: What a probe's environment is, copied from `mutate._run` rather than left to
+#: chance. Autoload off is what the probe really runs with, and a plugin that
+#: loaded here and not there would make every one of these tests evidence about
+#: a configuration no sweep uses.
+PROBE_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
 
 #: How long a sandbox test sleeps when it is standing in for one that hangs.
 #:
-#: This was 30, which reproduced in this file the exact defect the same branch
-#: fixed in `tests/test_watch.py`. `tools/mutate.py`'s `EACH_TEST` is 30.0, so a
-#: mutant that disables the alarm -- dropping the `not` in `each_test`, or the
-#: `setitimer` call -- left these three tests running 30.11s each and tripping
-#: the harness first. Measured on a copy: 90.5s for the class, and three `BROKE`
-#: rows where `caught` was the whole point, since `BROKE` is never `caught`.
-#: The docstring here used to claim "fails the suite in seconds", which was
-#: wrong by two orders of magnitude.
-#:
 #: 8 is comfortably longer than the 0.5s alarm these tests arm and comfortably
-#: shorter than `BOUND`, which is itself well under `EACH_TEST`.
+#: shorter than `BOUND`, which is itself well under the harness's own alarm. It
+#: was 30 once, which reproduced here the exact defect CLAUDE.md records for
+#: `tests/test_watch.py`: the harness's 30s alarm fired first, the rows came
+#: back `BROKE`, and `BROKE` is never `caught`.
 FOREVER = 8
 
 #: What the one timed test sleeps for, so its duration is an interval rather
@@ -64,10 +73,16 @@ FOREVER = 8
 #: that it is not felt.
 SLEPT = 0.2
 
-#: Seconds one `python -c <verdict source>` run may take before the test calls
-#: it hung -- the same reasoning as `tests/test_watch.py`'s constant of the same
-#: name, and the same two bounds it has to sit between.
-BOUND = 20
+#: Seconds one ``python -c <verdict source>`` run may take before the test calls
+#: it hung.
+#:
+#: Through `support.bounded`, which is the rule CLAUDE.md states: a fixture's own
+#: timeout must beat the alarm this run *actually armed*, not the constant the
+#: default happens to be. 20 is the number when nothing is armed -- far above the
+#: longest honest wait here (a pytest probe over two throwaway modules is under a
+#: second; Phase 0 measured pytest's fixed per-probe overhead at 113.6 ms against
+#: unittest's 42.5 ms) and two thirds of the 30s default.
+BOUND = support.bounded(20.0)
 
 
 def address_space_caps() -> bool:
@@ -82,12 +97,11 @@ def address_space_caps() -> bool:
       for -- which `tools/verdict.py`'s own docstring records CI discovering
       rather than the documentation.
 
-    The first draft of this asked only "did the probe exit non-zero", which is
-    true of a refused `setrlimit` as well as of a refused *allocation* -- so on
-    macOS it answered "enforced" and let five tests through to fail. A probe
-    that cannot tell its own failure from the failure it is probing for is the
-    §8 shape in miniature, so this one prints a marker and the caller looks for
-    exactly that.
+    Asking only "did the probe exit non-zero" is true of a refused `setrlimit`
+    as well as of a refused *allocation*, so on macOS it answers "enforced" and
+    lets the gated tests through to fail. A probe that cannot tell its own
+    failure from the failure it is probing for is the §8 shape in miniature, so
+    this one prints a marker and the caller looks for exactly that.
 
     Asked by trying rather than by reading `sys.platform`: the guarantee is then
     tested wherever it really holds and skipped where it does not.
@@ -117,6 +131,58 @@ def address_space_caps() -> bool:
 CAPS = address_space_caps()
 
 
+@functools.cache
+def pytest_needs() -> int:
+    """The address space one pytest run occupies here, measured by taking one.
+
+    **A measurement, not a constant, because the constants did not travel.**
+    512 MiB and 256 MiB were calibrated against this machine's 278 MiB floor and
+    turned four CI legs red on the first push: a runner's interpreter and
+    site-packages are leaner, so a cap this machine cannot start under is one
+    the runner starts fine under, and an allocation this machine refuses is one
+    the runner grants. That is `mutate._FLOOR`'s recorded mistake -- a figure
+    measured elsewhere arriving "with the word *here* attached" -- in a new
+    place.
+
+    `VmPeak` rather than a binary search for the smallest cap that works: one
+    child instead of five, and it is the same quantity `RLIMIT_AS` bounds.
+    Measured here at 267 MiB against the search's 278, so it reads slightly
+    *under* the true floor -- the safe direction, since the caller adds headroom.
+
+    `/proc` is Linux-only and so is an enforced `RLIMIT_AS`. The one class that
+    reads this is gated on `CAPS` and named in the macOS job's `--exclude`, so
+    the `0` below is unreachable from any test.
+
+    **Cached and called from the one test that reads it, not bound at import.**
+    Measured at 109 ms -- it starts a real pytest -- and it was a module-level
+    constant, so every import paid it: `tests/test_mutate.py` alone drove it
+    fifteen times through nested `mutate.run` calls, 1.65 s. `CAPS` above has to
+    stay at module scope because `skipUnless` reads it when the class is
+    defined; this has no such excuse.
+    """
+    child = (
+        "import pytest\n"
+        'pytest.main(["-q", "-p", "no:cacheprovider", "test_trivial.py"])\n'
+        'print(next(int(line.split()[1]) * 1024 for line in open("/proc/self/status")'
+        ' if line.startswith("VmPeak:")))\n'
+    )
+    body = "import unittest\nclass T(unittest.TestCase):\n    def test_it(self):\n        pass\n"
+    with tempfile.TemporaryDirectory(prefix="tupferl-floor-") as box:
+        Path(box, "test_trivial.py").write_text(body, encoding="utf-8")
+        try:
+            done = subprocess.run(
+                [sys.executable, "-B", "-c", child],
+                cwd=box,
+                capture_output=True,
+                text=True,
+                env={**os.environ, **PROBE_ENV},
+                timeout=60,
+            )
+            return int(done.stdout.strip().splitlines()[-1])
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return 0  # pragma: no cover - a platform without /proc
+
+
 class Probe(unittest.TestCase):
     """A sandbox of throwaway test modules, and one run of the tool over them."""
 
@@ -126,7 +192,7 @@ class Probe(unittest.TestCase):
     def fresh(self) -> None:
         """A new sandbox and a new report path.
 
-        Separate from `setUp` because two tests below run the same broken module
+        Separate from `setUp` because a test below runs the same broken module
         twice, once named and once discovered, and the second needs a sandbox
         the first has not written to. Calling `setUp` again would work and would
         read as a mistake; this says what it is doing. Each call registers its
@@ -135,7 +201,7 @@ class Probe(unittest.TestCase):
         box = tempfile.TemporaryDirectory(prefix="tupferl-verdict-test-")
         self.addCleanup(box.cleanup)
         self.sandbox = Path(box.name)
-        # Outside the sandbox, for the reason `mutate.probe` gives: a report
+        # Outside the sandbox, for the reason `mutate._run` gives: a report
         # written inside is one `open()` away from being the suite's to write.
         out = tempfile.TemporaryDirectory(prefix="tupferl-verdict-out-")
         self.addCleanup(out.cleanup)
@@ -144,26 +210,40 @@ class Probe(unittest.TestCase):
     def module(self, name: str, body: str) -> None:
         (self.sandbox / f"{name}.py").write_text(textwrap.dedent(body), encoding="utf-8")
 
+    def passing(self, *names: str) -> None:
+        """One trivially green module per name, where only the count matters."""
+        for name in names:
+            self.module(
+                name,
+                """
+                import unittest
+                class T(unittest.TestCase):
+                    def test_it(self):
+                        pass
+                """,
+            )
+
     def verdict(
         self,
         *names: str,
         failfast: bool = False,
         memory: int = 0,
         each: float = 0.0,
-        first: str = "",
+        first: tuple[str, ...] = (),
         walk: bool = False,
     ) -> dict[str, Any]:
         """Run the tool and return the report it wrote.
 
-        The argv layout is `verdict.main`'s, positionally: report, failfast,
-        memory cap, per-test seconds, the space-joined `first` selection,
-        whether to walk past the selection, then the test names. Spelled out
-        here rather than in each test, because a wrong position is the kind of
-        mistake that still produces a plausible report.
+        The argv is positional and spelled out here rather than built from a
+        helper shared with `mutate`, because the point of this file is to hold
+        the *other* end of a protocol: when `first` gained its own slot, an
+        earlier version of this helper let the selection slide into it and a
+        module ran twice with nothing failing. A shared builder cannot notice
+        that.
 
         ``walk`` defaults off, which is a *baseline*'s shape. Most tests here are
-        about what one named selection reports, and a walk would run this
-        repository's whole suite inside each of them.
+        about what one named selection reports, and a walk would run every other
+        module in the sandbox inside each of them.
         """
         done = subprocess.run(
             [
@@ -175,11 +255,12 @@ class Probe(unittest.TestCase):
                 "1" if failfast else "0",
                 str(memory),
                 str(each),
-                first,
+                json.dumps(list(first)),
                 "1" if walk else "0",
                 *names,
             ],
             cwd=self.sandbox,
+            env={**os.environ, **PROBE_ENV},
             capture_output=True,
             text=True,
             timeout=BOUND,
@@ -209,13 +290,12 @@ class TestATestThatNoticed(Probe):
         self.assertEqual(1, len(found["noticed"]))
         self.assertEqual(1, found["ran"])
 
-    def test_the_killer_is_recorded_as_unittest_takes_it_back(self) -> None:
-        """`noticed` is for a human and `killers` is fed straight to a loader.
-
-        The display string is `test_it (test_a.T.test_it)`, which no loader
-        accepts. Asserting the id can be *loaded* rather than just matching a
-        shape is the point -- a format that merely looks right is what this
-        field exists to avoid.
+    def test_the_killer_is_recorded_as_pytest_takes_it_back(self) -> None:
+        """The id `mutate` writes into its cache is fed straight back to pytest
+        as a selection on a later run, so "it looks like a nodeid" is not the
+        claim -- "pytest selects exactly this test with it" is. The round trip
+        is the proof, and a format that merely looks right is what it guards
+        against.
         """
         self.module(
             "test_a",
@@ -227,15 +307,14 @@ class TestATestThatNoticed(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.T.test_it"], found["killers"])
+        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
 
         again = self.verdict(*found["killers"])
-        self.assertEqual(1, again["ran"], "the recorded id did not load back")
+        self.assertEqual(1, again["ran"], "the recorded id did not select back")
 
     def test_an_unexpected_exception_is_also_an_answer(self) -> None:
-        """`addError` on a real `TestCase`, which is a test noticing just as
-        much as `addFailure` -- a mutation that makes the code raise is caught,
-        not broken."""
+        """A mutation that makes the code raise is caught, not broken: the test
+        body is where it happened, and the body is the test."""
         self.module(
             "test_a",
             """
@@ -249,14 +328,41 @@ class TestATestThatNoticed(Probe):
         self.assertEqual([], found["broke"])
         self.assertEqual(1, len(found["noticed"]))
 
+    def test_a_dead_teardown_belongs_to_the_test_it_ran_after(self) -> None:
+        """The half of the phase mapping that must *not* read as `broke`.
+
+        An instance's own `tearDown` is part of that one test, and `unittest`
+        reported its failure against a real `TestCase` -- so the backend before
+        this one credited it, and equivalence demands this one does too. pytest
+        agrees by putting it in the ``call`` phase, which is measured in
+        `TestWhatThisAssumesOfPytest` rather than assumed here. Read the other
+        way it would be a `broke`, and a mutation only a `tearDown` can see
+        would be reported as surviving.
+        """
+        self.module(
+            "test_a",
+            """
+            import unittest
+            class T(unittest.TestCase):
+                def test_it(self):
+                    pass
+                def tearDown(self):
+                    raise RuntimeError("the mutation broke the cleanup")
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual([], found["broke"], "a test's own tearDown was filed as a broken run")
+        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
+
 
 class TestAFixtureThatDied(Probe):
     """`BROKE` is never `caught` -- the single most load-bearing rule here.
 
-    A `setUpClass` failure arrives through `addError` carrying a
-    `unittest.suite._ErrorHolder`, which is deliberately *not* a `TestCase`. No
-    assertion in it was ever evaluated, so crediting it would report that the
-    tests noticed a mutation they never reached.
+    A `setUpClass` or `setUpModule` failure happens *around* the tests rather
+    than inside one, so no assertion in it was ever evaluated and crediting it
+    would report that the tests noticed a mutation they never reached. pytest
+    says which by the phase: ``setup`` and ``teardown`` are the fixture's,
+    ``call`` is the test's.
     """
 
     def test_a_dead_setupclass_is_not_an_answer(self) -> None:
@@ -276,6 +382,7 @@ class TestAFixtureThatDied(Probe):
         self.assertEqual([], found["noticed"], "a dead fixture was credited as a test")
         self.assertEqual([], found["killers"])
         self.assertEqual(1, len(found["broke"]))
+        self.assertIn("setup failed", found["broke"][0])
 
     def test_a_dead_setupmodule_is_not_an_answer(self) -> None:
         self.module(
@@ -293,115 +400,95 @@ class TestAFixtureThatDied(Probe):
         self.assertEqual([], found["noticed"])
         self.assertEqual(1, len(found["broke"]))
 
+    def test_a_dead_teardownclass_is_not_an_answer_either(self) -> None:
+        """The far side of the same line, and the one that has no counterpart in
+        the backend before this: `unittest` reported it through the same
+        `_ErrorHolder` as `setUpClass`, while pytest reports it in a phase of
+        its own. A class-scoped teardown ran after every assertion in the class
+        had already passed, so it cannot be one of them noticing.
+        """
+        self.module(
+            "test_a",
+            """
+            import unittest
+            class T(unittest.TestCase):
+                @classmethod
+                def tearDownClass(cls):
+                    raise RuntimeError("died after every test")
+                def test_it(self):
+                    pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual([], found["noticed"], "a class-scoped teardown was credited as a test")
+        self.assertEqual(1, len(found["broke"]))
+        self.assertIn("teardown failed", found["broke"][0])
+
     def test_a_module_that_will_not_import_is_not_an_answer(self) -> None:
         """And the suite must not be *run* at all.
 
-        `loadTestsFromNames` hands back a synthetic `unittest.loader._FailedTest`
-        for an unimportable module, and that one **is** a `TestCase` -- so
-        running it would surface through `addError` and read as a test noticing.
-        `loader.errors` is checked first, which is why `ran` is 0.
-
-        A missing import rather than a syntax error, and that is not
-        interchangeable -- see `TestABrokenModuleTakesTwoDifferentPaths`. The
-        first draft of this test used a syntax error and failed, because that
-        one never reaches `loader.errors` at all.
+        pytest reports it through `pytest_collectreport` before any test starts,
+        which is why `ran` is 0. It is the one bucket where the message has to be
+        built out of a rendered traceback rather than out of an exception, so the
+        content is asserted as well as the count.
         """
         self.module("test_a", "import a_module_that_does_not_exist_xyz\n")
         found = self.verdict("test_a")
         self.assertTrue(found["loaded"])
-        self.assertEqual(0, found["ran"], "the suite ran despite a load error")
+        self.assertEqual(0, found["ran"], "the suite ran despite a collection error")
         self.assertEqual([], found["noticed"])
         self.assertEqual(1, len(found["broke"]))
         self.assertIn("test_a", found["broke"][0])
+        self.assertIn("ModuleNotFoundError", found["broke"][0])
 
 
-class TestABrokenModuleTakesTwoDifferentPaths(Probe):
-    """The same broken module is classified differently by name and by
-    discovery, and a fixture written for one proves nothing about the other.
+class TestABrokenModuleIsClassifiedTheSameWayTwice(Probe):
+    """Named and discovered are one path now, and that is worth a test.
 
-    `tools/mutate.py`'s docstring already records the shape -- "the only fixture
-    guarding it used a *syntax* error, which `unittest.loader` does not wrap and
-    which therefore takes a different path entirely, so the check passed while
-    the case it was named for went unasked". Measured here for both paths:
+    Under `unittest` they were two: `discover` wrapped everything into
+    `TestLoader.errors` while `loadTestsFromNames` wrapped only what derived
+    from `Exception`, so a syntax error escaped one and not the other and came
+    back `loaded: False` instead of `broke`. Both refused to credit a test,
+    which was the only thing that mattered -- but two tests in the old file were
+    written with the fixtures exactly backwards and failed, and CLAUDE.md still
+    carries the measured table.
 
-    | module | named | discovered |
-    |---|---|---|
-    | `import missing_xyz` | `loader.errors` | `loader.errors` |
-    | a syntax error | escapes to `main` | `loader.errors` |
-    | `raise SystemExit(...)` | escapes to `main` | `loader.errors` |
-
-    `discover` wraps everything; `loadTestsFromNames` wraps only what derives
-    from `Exception`. **What matters is the invariant across all six cells: no
-    test is ever credited.** That is asserted below rather than left implied,
-    because it is the only thing a caller needs to be true.
+    pytest collects the same way whichever it was given, so the two agree. This
+    asserts that they do, on the fixture that used to separate them: a
+    difference reappearing would be a difference in what a *walk* concludes,
+    where every group past the first is discovered rather than named.
     """
 
-    #: The three ways a module can fail to give up its tests, and whether a
-    #: *named* load still reaches `loader.errors` for it. Discovery reaches it
-    #: for all three, so that column is not stored.
-    #:
-    #: This is the docstring's table as data. Storing the expected value rather
-    #: than branching on the observed one is the difference between a test that
-    #: pins six cells and a test that agrees with whatever happened -- the first
-    #: draft did the latter, and would have passed against a `verdict.py` where
-    #: *every* case escaped to `main`.
-    BROKEN = (
-        ("a missing import", "import a_module_that_does_not_exist_xyz\n", True),
-        ("a syntax error", "this is not python at all !!!\n", False),
-        ("a module that exits", "raise SystemExit('gone')\n", False),
-    )
+    BROKEN = "this is not python at all !!!\n"
 
-    def test_no_broken_module_is_ever_credited_as_a_test_noticing(self) -> None:
-        """The invariant first, unconditionally, then the cell.
-
-        `.get(..., [])` rather than `[...]`: a report that did not load carries
-        no `noticed` key at all, and the point of asserting it anyway is that
-        this line holds for all six cells rather than for the four that happen
-        to have the key.
-        """
-        for what, body, loads_when_named in self.BROKEN:
-            for named in (True, False):
-                with self.subTest(what=what, named=named):
-                    self.fresh()
-                    self.module("test_a", body)
-                    found = self.verdict("test_a") if named else self.verdict()
-
-                    self.assertEqual([], found.get("noticed", []), "a broken module was credited")
-                    self.assertEqual([], found.get("killers", []))
-                    self.assertEqual(0, found.get("ran", 0))
-
-                    self.assertEqual(
-                        loads_when_named if named else True,
-                        found["loaded"],
-                        f"{what} took the other path",
-                    )
-                    if found["loaded"]:
-                        self.assertTrue(found["broke"])
-                    else:
-                        # The tool said so rather than leaving an absent file,
-                        # which is the distinction `main`'s handler exists for.
-                        self.assertIn("why", found)
-
-    def test_discovery_wraps_what_a_named_load_lets_through(self) -> None:
-        """The asymmetry itself, so the table above cannot quietly stop being
-        true. A syntax error is the cell that differs."""
-        self.module("test_a", "this is not python at all !!!\n")
-        self.assertFalse(self.verdict("test_a")["loaded"], "a named syntax error was wrapped")
-
+    def test_a_syntax_error_is_reported_the_same_way_named_or_found(self) -> None:
+        self.module("test_a", self.BROKEN)
+        named = self.verdict("test_a")
         self.fresh()
-        self.module("test_a", "this is not python at all !!!\n")
-        found = self.verdict()
-        self.assertTrue(found["loaded"], "a discovered syntax error escaped")
-        self.assertEqual(0, found["ran"])
+        self.module("test_a", self.BROKEN)
+        discovered = self.verdict()
+        self.assertEqual(named["broke"], discovered["broke"])
+        self.assertTrue(named["loaded"] and discovered["loaded"])
+        self.assertIn("SyntaxError", named["broke"][0])
+
+    def test_neither_route_credits_a_test_with_noticing(self) -> None:
+        """The claim that survives whatever pytest does with the two routes, and
+        the only one that would corrupt a sweep if it stopped holding."""
+        self.module("test_a", self.BROKEN)
+        for found in (self.verdict("test_a"), self.verdict()):
+            self.assertEqual([], found["noticed"])
+            self.assertEqual([], found["killers"])
+            self.assertEqual(0, found["ran"])
 
 
 class TestASubTestIsARealAnswer(Probe):
-    """`unittest.case._SubTest` is a `TestCase` whose module is `unittest.case`.
+    """A `subTest` assertion is a test noticing, and pytest hides that twice.
 
-    The obvious classification -- "is this class defined under `unittest.`?" --
-    files a `subTest` assertion as "the suite broke", and with a strict table
-    that aborts the run. This project uses `subTest` in many places, so the
-    whole sweep would have been wrong.
+    First by the count: a failing `subTest` produces an extra report object, so
+    a run of 1505 tests emits 1940 reports. Second, and much worse, by the
+    outcome: the owning test's *own* report reads ``passed``. This project uses
+    `subTest` in 77 tests, so a classifier that read finished reports would
+    report a large fraction of its real catches as survivors.
     """
 
     def test_a_failing_subtest_is_caught(self) -> None:
@@ -421,9 +508,9 @@ class TestASubTestIsARealAnswer(Probe):
         self.assertEqual(1, len(found["noticed"]))
 
     def test_the_owner_is_recorded_and_not_the_carrier(self) -> None:
-        """A `_SubTest`'s `id()` carries the parameters in brackets, and
-        `unittest` cannot load that back. Recording the owning test is what
-        keeps the id usable, and the round trip is the proof."""
+        """The parameters must not reach the id: pytest hangs them on the
+        report's ``context``, and a `first` slot carrying them would select
+        nothing. The round trip is the proof."""
         self.module(
             "test_a",
             """
@@ -435,15 +522,43 @@ class TestASubTestIsARealAnswer(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.T.test_it"], found["killers"])
+        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
         self.assertNotIn("[", found["killers"][0])
         self.assertEqual(1, self.verdict(*found["killers"])["ran"])
+
+    def test_a_subtest_failure_is_the_only_thing_that_says_so(self) -> None:
+        """The trap, stated as a fixture rather than as a warning.
+
+        The owner passes and the whole *module* is otherwise green, so nothing
+        but the subtest's own failure distinguishes this run from a clean one.
+        A classifier reading the owner's report -- which is the obvious port of
+        `addSubTest` -- would call this "nothing noticed" and report the
+        mutation SURVIVED. That is the flattering direction, and it is why the
+        classification happens at `pytest_runtest_makereport`, before pytest
+        splits the failure out.
+        """
+        self.module(
+            "test_a",
+            """
+            import unittest
+            class T(unittest.TestCase):
+                def test_it(self):
+                    with self.subTest(n=1):
+                        self.fail("only the subtest failed")
+                def test_other(self):
+                    pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual(2, found["ran"])
+        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
+        self.assertIn("only the subtest failed", found["reasons"][0])
 
 
 class TestACarrierThatDidNotAssert(Probe):
     """A hung test and a test that ran out of memory both raise *inside* a real
-    `TestCase`, so by protocol they are indistinguishable from that test
-    noticing. Filed as answers they credit a test that asserted nothing."""
+    test, at the ``call`` phase, so by phase they are indistinguishable from that
+    test noticing. Filed as answers they credit a test that asserted nothing."""
 
     def test_a_test_that_runs_past_its_share_is_broken_not_caught(self) -> None:
         self.module(
@@ -480,10 +595,13 @@ class TestACarrierThatDidNotAssert(Probe):
         found = self.verdict("test_a", each=0.5)
         self.assertEqual([], found["noticed"])
         self.assertEqual(1, len(found["broke"]))
+        self.assertIn("did not finish", found["broke"][0])
 
     def test_a_hung_subtest_is_also_broken_not_caught(self) -> None:
-        """The `addSubTest` path has its own copy of the carrier check, and the
-        docstring records that this copy once had no test at all."""
+        """`with self.subTest(...)` catches `BaseException`, so the alarm
+        arrives as a failed subtest -- which every other test in this file
+        treats as a real answer. The carrier check runs before that
+        classification for exactly this row."""
         self.module(
             "test_a",
             f"""
@@ -498,44 +616,69 @@ class TestACarrierThatDidNotAssert(Probe):
         self.assertEqual([], found["noticed"], "a hung subTest was credited with an answer")
         self.assertEqual(1, len(found["broke"]))
 
+    def test_the_alarm_does_not_end_the_run(self) -> None:
+        """A hung test costs its own bound and nothing else. If the alarm
+        escaped the item, the tests after it would never start and a walk would
+        report a survivor because it stopped rather than because nothing
+        noticed."""
+        self.module(
+            "test_a",
+            f"""
+            import time, unittest
+            class T(unittest.TestCase):
+                def test_a_hangs(self):
+                    time.sleep({FOREVER})
+                def test_b_notices(self):
+                    self.fail("still reached")
+            """,
+        )
+        found = self.verdict("test_a", each=0.5)
+        self.assertEqual(2, found["ran"], "the run stopped at the hung test")
+        self.assertEqual(["test_a.py::T::test_b_notices"], found["killers"])
+
 
 @unittest.skipUnless(CAPS, "RLIMIT_AS is not usable here")
 class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
     """The `_carrier` arm that needs the cap *enforced* rather than merely set.
 
-    Its own class so that a runner where `RLIMIT_AS` does not work can name
-    it to `--exclude` without losing the three tests beside it in
-    `TestACarrierThatDidNotAssert`, which need no such thing. `--no-skips`
-    exists to catch a suite quietly doing nothing, so a suite that *cannot*
-    run somewhere is named in the workflow rather than opting itself out --
-    the convention `tests/test_gitrepo.py`'s non-UTF-8 class already set.
+    Its own class so that a runner where `RLIMIT_AS` does not work can name it
+    to `--exclude` without losing the four tests beside it in
+    `TestACarrierThatDidNotAssert`, which need no such thing. `--no-skips` exists
+    to catch a suite quietly doing nothing, so a suite that *cannot* run
+    somewhere is named in the workflow rather than opting itself out.
+
+    **`main`'s outer `except BaseException` is not tested here, and that is a
+    decision rather than an omission.** The only thing that reaches it honestly
+    is a cap too small for pytest to reach collection at all -- measured, on
+    this machine, between about 190 and 270 MiB -- and that band is a property
+    of one interpreter's address space, not of this code. A fixture aimed at it
+    passes here and fails on a leaner runner, which is exactly what the first
+    version of this class did. The portable half of the same claim is
+    `TestWhenTheToolItselfCannotRun.test_a_report_is_always_written`: whatever
+    happens, a report exists and says whether it loaded, which is what
+    `mutate._run` reads.
     """
 
-    def test_a_test_that_exhausts_the_cap_is_broken_not_caught(self) -> None:
-        """`cap` bounds address space, and a `MemoryError` raised inside a test
-        arrives at `addError` looking exactly like an assertion.
+    #: Enough for a pytest run to start and not enough for the fixture's 320 MiB,
+    #: added to `pytest_needs()` rather than written down. The margin is half the
+    #: allocation, so both halves have the same slack: a machine whose floor
+    #: the measurement under-reads by less than this still refuses the allocation, and
+    #: one it over-reads by less than this still starts.
+    HEADROOM = 160 * 1024 * 1024
 
-        The one test here that needs the limit *enforced* rather than merely
-        set, so it is the one that is gated -- see `enforced`. Skipped rather
-        than dropped: it is the whole argument for `cap` existing, and it holds
-        on Linux, which is where the crash that prompted `cap` happened.
+    def test_a_test_that_exhausts_the_cap_is_broken_not_caught(self) -> None:
+        """A `MemoryError` raised inside a test arrives at the ``call`` phase
+        looking exactly like an assertion.
+
+        A *bounded* allocation, and the bound is what makes this row catchable
+        rather than fatal. `while True` reads better and, with the cap mutated
+        away, walks the lane past its whole memory share in about twenty seconds
+        -- and a killed session says nothing about any mutation. 40 chunks of
+        8 MiB is 320 MiB: it trips a 256 MiB cap after roughly twenty-six of
+        them, and when there is no cap it simply ends, leaving `broke` empty and
+        this test red. So the mutant that disables `cap` fails here instead of
+        taking the run with it.
         """
-        # A *bounded* allocation, and the bound is what makes this row
-        # catchable rather than fatal. `while True` reads better and, with the
-        # cap mutated away, walks the lane past its whole memory share in about
-        # twenty seconds -- measured: the session was killed, and a killed
-        # session says nothing about any mutation. 40 chunks of 8 MiB is 320
-        # MiB: it trips a 256 MiB cap after roughly twenty-six of them, and
-        # when there is no cap it simply ends, leaving `broke` empty and this
-        # test red. So the mutant that disables `cap` fails here instead of
-        # taking the run with it.
-        #
-        # 256 MiB and 40 chunks, not 512 and 100. The claim under test is that
-        # an exhausted cap is filed as `broke` rather than as a test noticing,
-        # and the size of the cap is not part of it -- the smaller pair reaches
-        # the same `MemoryError` having zeroed a quarter of the memory. The
-        # floor is the interpreter's own address space, which is tens of MiB
-        # here, so 256 keeps an order of magnitude over what must still fit.
         self.module(
             "test_a",
             """
@@ -547,7 +690,7 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
                         held.append(bytearray(8 * 1024 * 1024))
             """,
         )
-        found = self.verdict("test_a", memory=256 * 1024 * 1024)
+        found = self.verdict("test_a", memory=pytest_needs() + self.HEADROOM)
         self.assertEqual([], found["noticed"], "an out-of-memory test was credited")
         self.assertEqual(1, len(found["broke"]))
         self.assertIn("out of memory", found["broke"][0])
@@ -558,7 +701,7 @@ class TestWhatTheBaselineNeeds(Probe):
     it, and until this was recorded the only thing said about one was the
     failing test's name."""
 
-    def test_the_first_failure_carries_its_traceback(self) -> None:
+    def test_the_first_failure_carries_what_it_complained_about(self) -> None:
         self.module(
             "test_a",
             """
@@ -592,9 +735,10 @@ class TestWhatTheBaselineNeeds(Probe):
         self.assertEqual(1, len(found["reasons"]))
         self.assertIn("first", found["reasons"][0])
 
-    def test_an_error_carries_a_traceback_too(self) -> None:
-        """`addError`'s copy of the recording, which is a second place that can
-        fall out of step with `addFailure`'s."""
+    def test_an_error_carries_its_reason_too(self) -> None:
+        """The arm that is not an assertion, which renders through a different
+        part of pytest and is a second place the recording can fall out of
+        step."""
         self.module(
             "test_a",
             """
@@ -621,14 +765,35 @@ class TestWhatTheBaselineNeeds(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.T.test_it"], list(found["times"]))
+        self.assertEqual(["test_a.py::T::test_it"], list(found["times"]))
         # An interval, not `>= 0`: a duration is never negative, so that
-        # assertion held against `stopTest`'s subtraction becoming an addition
-        # -- a real generated mutant, verified to leave this whole file green.
-        # `Killers` orders the cheap prefix from these numbers, so a wrong one
-        # silently mis-orders it.
-        self.assertGreater(found["times"]["test_a.T.test_it"], SLEPT / 2)
-        self.assertLess(found["times"]["test_a.T.test_it"], SLEPT * 20)
+        # assertion holds against a sum becoming a difference. `Killers` orders
+        # the cheap prefix from these numbers, so a wrong one silently
+        # mis-orders it.
+        self.assertGreater(found["times"]["test_a.py::T::test_it"], SLEPT / 2)
+        self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 20)
+
+    def test_a_subtest_is_not_charged_to_its_owner_twice(self) -> None:
+        """pytest emits a report per `subTest` iteration *and* one for the
+        owner, and the owner's duration already contains them. Summing all of
+        them would make the 77 tests here that use `subTest` look dearer than
+        they are to the ordering that reads this -- silently, since nothing
+        else can see the number.
+        """
+        self.module(
+            "test_a",
+            f"""
+            import time, unittest
+            class T(unittest.TestCase):
+                def test_it(self):
+                    for n in range(3):
+                        with self.subTest(n=n):
+                            time.sleep({SLEPT / 3})
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual(["test_a.py::T::test_it"], list(found["times"]))
+        self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 2)
 
 
 class TestWhichTestsGetRun(Probe):
@@ -636,45 +801,18 @@ class TestWhichTestsGetRun(Probe):
     something much smaller while still reporting a plausible number."""
 
     def test_no_names_means_the_whole_suite(self) -> None:
-        """And by discovery, not `loadTestsFromNames(["tests"])`, which imports
-        the package, finds nothing, and comes back green having run zero."""
-        self.module(
-            "test_a",
-            """
-            import unittest
-            class T(unittest.TestCase):
-                def test_it(self):
-                    pass
-            """,
-        )
-        self.module(
-            "test_b",
-            """
-            import unittest
-            class T(unittest.TestCase):
-                def test_it(self):
-                    pass
-            """,
-        )
+        """Handed to pytest as no path arguments at all, so it collects from the
+        host project's `testpaths` or its rootdir -- which is the sandbox."""
+        self.passing("test_a", "test_b")
         self.assertEqual(2, self.verdict()["ran"])
 
     def test_first_does_not_turn_the_whole_suite_into_a_selection(self) -> None:
         """The one that matters. An empty `names` *means* everything; pushing
-        `first` onto that list makes it non-empty, so `confirm` -- which widens
-        a survivor to the whole suite while the cheap prefix is still attached
-        -- would run the prefix alone and report it as "the whole suite".
+        `first` onto that list makes it non-empty, so a row that must run the
+        whole suite would run the prefix and report it as "everything".
         """
-        for name in ("test_a", "test_b", "test_c"):
-            self.module(
-                name,
-                """
-                import unittest
-                class T(unittest.TestCase):
-                    def test_it(self):
-                        pass
-                """,
-            )
-        found = self.verdict(first="test_a.T.test_it")
+        self.passing("test_a", "test_b", "test_c")
+        found = self.verdict(first=("test_a.T.test_it",))
         self.assertEqual(4, found["ran"], "the prefix replaced the suite instead of preceding it")
 
     def test_first_really_runs_before_the_rest(self) -> None:
@@ -699,14 +837,23 @@ class TestWhichTestsGetRun(Probe):
                     self.fail("the remembered killer")
             """,
         )
-        # `test_b`, not `test_a`. The prefix has to name something discovery
-        # would reach *second*, or prepending and appending give the same
-        # failfast answer and the ordering is unobservable -- measured:
-        # building the suite as [chosen, first] instead of [first, chosen]
-        # leaves the whole selection green when the prefix is `test_a`.
-        found = self.verdict(failfast=True, first="test_b.T.test_it")
+        # `test_b`, not `test_a`. The prefix has to name something collection
+        # would reach *second*, or running it before and after give the same
+        # failfast answer and the ordering is unobservable.
+        found = self.verdict(failfast=True, first=("test_b.T.test_it",))
         self.assertEqual(1, found["ran"])
-        self.assertEqual(["test_b.T.test_it"], found["killers"])
+        self.assertEqual(["test_b.py::T::test_it"], found["killers"])
+
+    def test_a_dotted_name_reaches_the_test_pytest_calls_by_another(self) -> None:
+        """The translation, driven rather than unit-tested: `mutants.targets_for`
+        names modules the way `unittest` loaded them, and pytest addresses files.
+        A selection that resolved to nothing would not be an error to pytest --
+        it would run zero tests and the row would be filed as holding none.
+        """
+        self.passing("test_a")
+        self.assertEqual(1, self.verdict("test_a")["ran"])
+        self.assertEqual(1, self.verdict("test_a.T")["ran"])
+        self.assertEqual(1, self.verdict("test_a.T.test_it")["ran"])
 
     def test_failfast_stops_at_the_first_test_that_noticed(self) -> None:
         self.module(
@@ -730,56 +877,106 @@ class TestWhenTheToolItselfCannotRun(Probe):
     produces, two very different problems with byte-identical output, in a tool
     whose whole thesis is that those must be told apart."""
 
-    def test_a_report_is_written_even_when_collect_raises(self) -> None:
-        """A syntax error in a *named* module escapes `loader.errors` entirely
-        and reaches `main`'s `except BaseException`. Named rather than
-        discovered, and a syntax error rather than a missing import: both halves
-        matter, and both were wrong in this test's first draft. See
-        `TestABrokenModuleTakesTwoDifferentPaths` for the measurement."""
-        self.module("test_a", "this is not python at all !!!\n")
-        found = self.verdict("test_a")
-        self.assertFalse(found["loaded"])
-        self.assertIn("SyntaxError", found["why"])
-
-    def test_a_module_that_walks_out_at_import_scope_is_also_reported(self) -> None:
-        """`SystemExit` is a `BaseException`, so `loadTestsFromNames`' wrapping
-        -- which catches `Exception` -- does not see it either. `main` catches
-        `BaseException` for exactly this."""
+    def test_a_module_that_walks_out_at_import_scope_is_reported(self) -> None:
+        """`SystemExit` at module scope is not a collection *failure* to pytest
+        -- it comes back as an internal error with no report hook fired at all,
+        on a stream `mutate` sends to `DEVNULL`. Without the exit-status arm the
+        row would read "nothing ran" and be filed as holding no tests, which is
+        a different sentence about a tree that is broken.
+        """
         self.module("test_a", "raise SystemExit('module scope walked out')\n")
         found = self.verdict("test_a")
-        self.assertFalse(found["loaded"])
-        self.assertIn("module scope walked out", found["why"])
+        self.assertEqual([], found["noticed"])
+        self.assertEqual(1, len(found["broke"]))
+        self.assertIn("INTERNAL_ERROR", found["broke"][0])
+
+    def test_a_selection_naming_nothing_is_reported_rather_than_run(self) -> None:
+        """A stale `first` -- a test that has since been renamed -- makes pytest
+        refuse the whole invocation with a usage error and no hook fires. It is
+        the shape `mutate._loadable` exists to prevent, and this is what happens
+        when one gets past it."""
+        self.passing("test_a")
+        found = self.verdict("test_a", first=("test_a.py::T::test_gone",))
+        self.assertEqual(0, found["ran"])
+        self.assertEqual(1, len(found["broke"]))
+        self.assertIn("USAGE_ERROR", found["broke"][0])
+
+    def test_a_module_holding_no_tests_is_not_an_error(self) -> None:
+        """pytest exits 5 for it, and the walk steps over such a module all the
+        time. Read as a failure it would end the walk at the first helper-shaped
+        test module and report a survivor that nothing had finished looking
+        for."""
+        self.module("test_a", '"""No tests here."""\n')
+        found = self.verdict("test_a")
+        self.assertTrue(found["loaded"])
+        self.assertEqual([], found["broke"])
+        self.assertEqual(0, found["ran"])
 
     def test_a_loaded_report_says_so(self) -> None:
         """The other value of the same flag, so `loaded` is not trivially true
         of every report the caller ever sees."""
-        self.module(
-            "test_a",
-            """
-            import unittest
-            class T(unittest.TestCase):
-                def test_it(self):
-                    pass
-            """,
-        )
+        self.passing("test_a")
         self.assertTrue(self.verdict("test_a")["loaded"])
+
+    def test_a_report_is_always_written(self) -> None:
+        """The half of `main`'s outer belt that holds on every platform.
+
+        `mutate._run` reads an absent report as "the probe was killed before it
+        could write anything", and every scenario above is a different one --
+        so a report existing, with a `loaded` in it, is what keeps those apart
+        from a killed lane. The belt *firing* needs the address-space cap and is
+        therefore in `TestAnOutOfMemoryTestIsNotAnAnswer`, which the runners
+        without one exclude.
+
+        `assertIn` on the key rather than on its value, because the two values
+        are the two cases the tests above already separate; what is claimed here
+        is that the file exists and answers the question at all.
+        """
+        self.module("test_a", "raise SystemExit('nothing here survives')\n")
+        for found in (self.verdict("test_a"), self.verdict()):
+            self.assertIn("loaded", found)
+
+
+class TestTheSandboxIsLeftAsItWasFound(Probe):
+    """Nothing a probe writes may survive into the next mutation's sandbox.
+
+    A sandbox is reused, and a stale `.pyc` of the same size in the same second
+    is read instead of the mutation -- the trap CLAUDE.md records, whose whole
+    point is that it leaves no trace to assert on. pytest adds a second one:
+    it writes a `.pytest_cache` unless told not to, and rewrites assertions into
+    bytecode it would like to cache.
+    """
+
+    def test_nothing_is_written_beside_the_tests(self) -> None:
+        self.passing("test_a")
+        before = {path.name for path in self.sandbox.iterdir()}
+        self.verdict("test_a")
+        after = {path.name for path in self.sandbox.iterdir()}
+        self.assertEqual(before, after, "the probe left something in the sandbox")
+
+    def test_no_bytecode_survives_assertion_rewriting(self) -> None:
+        """Rewriting is left on -- it costs below measurement and Phase B's
+        pytest-native `assert` statements need it -- so this asserts the two
+        settings that keep it from caching: `-B` here and
+        `PYTHONDONTWRITEBYTECODE` for everything the suite forks."""
+        self.passing("test_a")
+        self.verdict("test_a")
+        self.assertEqual([], list(self.sandbox.rglob("*.pyc")))
+        self.assertEqual([], list(self.sandbox.rglob("__pycache__")))
 
 
 @unittest.skipUnless(CAPS, "RLIMIT_AS is not usable here")
 class TestTheMemoryCapsArithmetic(Probe):
-    """`cap`'s four cases, asserted on the rlimit it sets rather than on a
-    runaway allocation dying.
+    """`cap`'s branches, read back from `getrlimit` rather than by watching a
+    runaway allocation die.
 
-    The existing coverage of `cap` is by *consequence*: something allocates
-    until the cap stops it. (woswoar has a `TestAMutantThatEatsMemory` for this;
-    an earlier draft of this docstring said *this* project did too, and it does
-    not -- nothing in `tests/` mentions `RLIMIT` at all outside this class.)
-    Consequence can only be slow or fatal, and it is why two mutants here
-    came back `BROKE`
-    rather than `caught`: `==` becoming `!=` at the `hard` comparison, and `and`
-    becoming `or` at the `soft` one, both leave *no cap in force*, so the
-    memory-eating test is unbounded and the harness's alarm speaks first.
-    `BROKE` is never `caught`, so the arithmetic was unguarded.
+    Coverage by *consequence* -- something allocates until the cap stops it --
+    can only be slow or fatal, and it is why two mutants of this arithmetic came
+    back `BROKE` rather than `caught` in the backend this was ported from: `==`
+    becoming `!=` at the `hard` comparison, and `and` becoming `or` at the `soft`
+    one, both leave no cap in force, so the memory-eating test is unbounded and
+    the harness's alarm speaks first. `BROKE` is never `caught`, so the
+    arithmetic was unguarded.
 
     Reading `getrlimit` back is immediate and exact, and it distinguishes every
     branch. A child process each time, because `setrlimit` is not undoable
@@ -805,22 +1002,23 @@ class TestTheMemoryCapsArithmetic(Probe):
 
     def limits(self, limit: int, soft: int | None = None) -> int:
         """`RLIMIT_AS`'s soft limit after `cap(limit)`, from a child that starts
-        from a known state. The state it started *from* is left on `self.started`,
-        because one assertion below is about a difference rather than a value.
+        from a known state. The state it started *from* is left on
+        `self.started`, because one assertion below is about a difference rather
+        than a value.
 
         There is no `hard` parameter, and that is a finding rather than an
         omission -- see `test_a_higher_finite_soft_limit_is_brought_down`.
 
         **The child settles its own starting cap first, and that is
-        load-bearing.** `verdict.main` calls `cap` before the suite loads, so
-        *during a sweep* the process running these tests already holds a finite
-        `RLIMIT_AS` -- `mutate.MEMORY` is 4 GiB. Without settling it, `limits(0)`
-        reads that back instead of the fixture's own number and the test below
-        fails on an unmutated tree: every row of a `tools/verdict.py` sweep then
-        prints `caught` for a reason that has nothing to do with the mutation,
-        and the baseline run voids the lot. Green under a plain `python -m
-        unittest` and red under the harness is the worst shape a test in this
-        file can have.
+        load-bearing.** `verdict.main` calls `cap` before anything is collected,
+        so *during a sweep* the process running these tests already holds a
+        finite `RLIMIT_AS` -- `mutate.MEMORY` is 4 GiB. Without settling it,
+        `limits(0)` reads that back instead of the fixture's own number and the
+        test fails on an unmutated tree: every row of a `tools/verdict.py` sweep
+        then prints `caught` for a reason that has nothing to do with the
+        mutation, and the baseline run voids the lot. Green under a plain suite
+        run and red under the harness is the worst shape a test in this file can
+        have.
 
         **It raises to a bounded number, never to `hard`.** `(hard, hard)` was
         the first spelling and it is how a sweep OOM-killed the host: under the
@@ -873,11 +1071,9 @@ class TestTheMemoryCapsArithmetic(Probe):
         sandbox fail every row for a reason no output would explain.
 
         Asserted as "the limit is exactly what it was", not as "the limit is
-        `RLIM_INFINITY`". The second is what this used to say and it was a claim
-        about the *fixture's* starting state as much as about `cap` -- it only
-        held because the child had raised itself to unlimited first, which is
-        the thing that OOM-killed a machine. Unchanged-from-a-known-state is
-        the same guarantee and does not require the state to be dangerous.
+        `RLIM_INFINITY`". The second is a claim about the *fixture's* starting
+        state as much as about `cap`, and it only holds if the child raised
+        itself to unlimited first, which is the thing that OOM-killed a machine.
         """
         got = self.limits(0)
         self.assertEqual(self.started, got)
@@ -893,14 +1089,12 @@ class TestTheMemoryCapsArithmetic(Probe):
         `or`, a finite soft limit *above* the ceiling short-circuits the whole
         function and the process keeps the larger allowance.
 
-        An earlier draft argued at length that `hard == RLIM_INFINITY` read as
-        `!=` is an equivalent mutant. **That was wrong, and the sweep had
-        already said so** -- it reports that row `caught`. `RLIM_INFINITY` is
-        `-1`, not a large number, so with the comparison inverted an infinite
-        `hard` gives `min(limit, -1) == -1` and the process is left *uncapped*.
-        The argument assumed infinity sorted above every finite limit; the
-        constant is a sentinel, and reading it as an ordinary value is how the
-        whole paragraph went wrong.
+        `hard == RLIM_INFINITY` read as `!=` is **not** an equivalent mutant, an
+        earlier draft's long argument that it was notwithstanding.
+        `RLIM_INFINITY` is `-1`, not a large number, so with the comparison
+        inverted an infinite `hard` gives `min(limit, -1) == -1` and the process
+        is left *uncapped*. That argument assumed infinity sorted above every
+        finite limit; the constant is a sentinel.
 
         **`min(limit, hard)` itself cannot be observed**, and this test stands
         where a second one used to try. The kernel refuses `soft > hard`
@@ -909,14 +1103,6 @@ class TestTheMemoryCapsArithmetic(Probe):
         then holds by that same invariant, so `cap` returns having touched
         nothing. Dropping the `min` would make it *attempt* a raise of `hard`
         and swallow the refusal, reaching the identical state by a longer road.
-        No fixture can tell those apart. The test that claimed to was passing a
-        `hard` *above* `limit`, where the `min` picks `limit` either way, so it
-        asserted exactly what this one does.
-
-        The other equivalent here is `soft <= ceiling` read as `soft <
-        ceiling`, which the sweep does report SURVIVED: it changes the answer
-        only when `soft` is exactly `ceiling`, and setting a limit to the value
-        it already holds is a no-op either way.
         """
         self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2))
 
@@ -929,21 +1115,22 @@ class TestTheWalkPastTheSelection(Probe):
     against the whole suite afterwards -- so it ran its selection and then a
     superset of it, and the narrow run was work thrown away.
 
-    The three claims here are the whole of the change, and each fails without it:
-    the walk *reaches* a module the selection never named; it *stops* once
-    something notices; and a baseline does not walk at all.
+    The claims here are the whole of the change, and each fails without it: the
+    walk *reaches* a module the selection never named; it *stops* once something
+    notices; a baseline does not walk at all; and what it reaches is decided by
+    the host project's configuration rather than by a pattern spelled here.
     """
 
     #: Imported for its side effect, which is the point: a module that has not
     #: been imported cannot have written this. Laziness is not observable from
-    #: `ran`, because a module the walk loads but never reaches contributes no
-    #: tests to the count either way.
+    #: `ran`, because a module the walk collects but never reaches contributes
+    #: no tests to the count either way.
     MARKER = "reached.txt"
 
-    def sandboxed(self, *, selected_notices: bool) -> None:
+    def sandboxed(self, *, selected_notices: bool, beside: str = "test_beside") -> None:
         """Two modules: one selected, one not, and only the second ever fails.
 
-        `test_beside` records that it was imported at all, so "the walk stopped"
+        The second records that it was imported at all, so "the walk stopped"
         and "the walk ran it and it passed" are distinguishable -- they are the
         same `noticed: []` otherwise.
         """
@@ -958,7 +1145,7 @@ class TestTheWalkPastTheSelection(Probe):
             """,
         )
         self.module(
-            "test_beside",
+            beside,
             f"""
             import pathlib
             import unittest
@@ -979,46 +1166,60 @@ class TestTheWalkPastTheSelection(Probe):
         exactly the false survivor the confirmation pass existed to correct."""
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        # `killers`, not `noticed`. The two hold the same test, but `noticed` is
-        # the *display* string and its shape changed in 3.11: 3.10 renders
-        # `test_it (test_chosen.Chosen)` where later versions render
-        # `test_it (test_chosen.Chosen.test_it)`. Asserting on it passed here and
-        # turned the `test (3.10)` leg red -- and `verdict.py` says why in the
-        # field's own comment: `killers` exists "because `mutate` feeds these
-        # straight to a loader and a display format is not an API".
         self.assertEqual(
-            ["test_beside.Beside.test_it"],
+            ["test_beside.py::Beside::test_it"],
             found["killers"],
             "the walk did not reach past the selection",
         )
+
+    def test_what_it_walks_into_comes_from_the_configuration(self) -> None:
+        """The genericity requirement, and the half that fails silently.
+
+        **A pattern this project would never write, and neither of pytest's own
+        defaults.** The first version of this test used `beside_test.py`, which
+        is pytest's *other* built-in `python_files` entry -- so a `Watcher` with
+        the two defaults hardcoded passed it identically, and it distinguished
+        nothing. Writing a `pytest.ini` and asserting the walk follows
+        `check_*.py` is a test only `config.getini("python_files")` can pass.
+
+        What it guards: a module the walk misses turns a caught row into a
+        reported survivor -- the flattering direction -- with nothing anywhere
+        going red.
+        """
+        (self.sandbox / "pytest.ini").write_text(
+            "[pytest]\npython_files = check_*.py test_chosen.py\n", encoding="utf-8"
+        )
+        self.sandboxed(selected_notices=False, beside="check_beside")
+        found = self.verdict("test_chosen", failfast=True, walk=True)
+        self.assertEqual(["check_beside.py::Beside::test_it"], found["killers"])
 
     def test_it_stops_once_the_selection_itself_notices(self) -> None:
         """The cost half, and the one that makes the walk affordable: a caught
         mutation must pay for its selection and nothing more.
 
-        Asserted on the marker rather than on `ran`. Loading all 29 modules of
-        this repository measures 621ms against 0-1ms for one, so a walk that
-        loaded them eagerly would hand back ~2 min over a 194-row sweep -- more
-        than deleting the second pass saves. `ran` cannot see that: an imported
+        Asserted on the marker rather than on `ran`. Collecting all 33 modules
+        of this repository measures 500.8 ms against 116.0 ms for one, so a walk
+        that collected them eagerly would hand back minutes over a sweep -- more
+        than deleting the second pass saves. `ran` cannot see that: a collected
         module whose tests never run adds nothing to the count.
         """
         self.sandboxed(selected_notices=True)
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        self.assertEqual(["test_chosen.Chosen.test_it"], found["killers"])
-        self.assertFalse(self.reached(), "a module past the answer was imported anyway")
+        self.assertEqual(["test_chosen.py::Chosen::test_it"], found["killers"])
+        self.assertFalse(self.reached(), "a module past the answer was collected anyway")
 
     def test_it_stops_on_a_notice_even_with_failfast_off(self) -> None:
         """The same claim on the path a hand-written table takes.
 
-        `mutate._run_spec` leaves `failfast` off, so `shouldStop` is never set
-        and the outer walk has to notice for itself that the answer is already
-        in. Without that, every caught row on the spec path becomes a
-        whole-suite run -- the cost this design exists to avoid, reintroduced
-        on the one path nothing else here covers.
+        `mutate._run_spec` leaves `failfast` off, so pytest's own `-x` is never
+        passed and the outer walk has to notice for itself that the answer is
+        already in. Without that, every caught row on the spec path becomes a
+        whole-suite run -- the cost this design exists to avoid, reintroduced on
+        the one path nothing else here covers.
         """
         self.sandboxed(selected_notices=True)
         found = self.verdict("test_chosen", failfast=False, walk=True)
-        self.assertEqual(["test_chosen.Chosen.test_it"], found["killers"])
+        self.assertEqual(["test_chosen.py::Chosen::test_it"], found["killers"])
         self.assertFalse(self.reached(), "the walk carried on past its own answer")
 
     def test_a_baseline_does_not_walk(self) -> None:
@@ -1030,7 +1231,7 @@ class TestTheWalkPastTheSelection(Probe):
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_chosen", walk=False)
         self.assertEqual([], found["noticed"], "a baseline widened past its selection")
-        self.assertFalse(self.reached(), "a baseline imported a module it was not given")
+        self.assertFalse(self.reached(), "a baseline collected a module it was not given")
         self.assertEqual(1, found["ran"])
 
     def test_a_red_baseline_is_reported_whole(self) -> None:
@@ -1042,219 +1243,401 @@ class TestTheWalkPastTheSelection(Probe):
         notices, so that stop has to be gated on `walk` -- ungated, a baseline
         over several modules reports the first red one and silently skips the
         rest, which is one shard of a broken tree presented as the whole story.
-
-        Reachable only from here today, because `baseline_shards` returns a
-        single `WHOLE_SUITE` shard and an empty selection never enters that loop.
-        Written anyway: the gate is a claim about what a baseline means, and the
-        alternative is a line no fixture can tell from its own deletion.
         """
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_beside", "test_chosen", walk=False)
-        self.assertEqual(["test_beside.Beside.test_it"], found["killers"])
+        self.assertEqual(["test_beside.py::Beside::test_it"], found["killers"])
         self.assertEqual(2, found["ran"], "a red baseline stopped at its first red module")
 
 
-class TestTellingAnAnswerFromACarrier(unittest.TestCase):
-    """`_exhausted` and `_carrier`, the two that decide whether a test gets
-    *credited* with noticing a mutation.
+class TestWhatThisAssumesOfPytest(Probe):
+    """One test per pytest behaviour the classification rests on.
 
-    Both limits raise inside a real `TestCase`, so they reach `addError`
-    indistinguishable by protocol from that test asserting something -- and filed
-    as answers they credit a test that asserted nothing, which is a mutation
+    Every row of the module docstring's table is a *measurement* rather than a
+    documented guarantee, and each of them decides a `broke`/`caught` line. A
+    pytest release that moved one would otherwise turn `broke` silently into
+    `caught`, or hide a whole class of kill -- so this class exists to go red
+    loudly at the upgrade instead of flattering the next sweep.
+
+    Driven against pytest directly, with a plugin that records what it is
+    handed. Not through `verdict.py`, because a verdict-shaped assertion here
+    would pass just as well against a classifier that had learnt to compensate
+    for a change, which is the thing being watched for.
+    """
+
+    #: Written to a *file*, named by the first argument, and that is the point
+    #: rather than a convenience. Anything a plugin prints during a run is eaten
+    #: by pytest's own capture -- partially, which is worse than entirely:
+    #: measured, 3 of 8 lines survived. The remedy a reader reaches for is `-s`,
+    #: and that is the one flag a probe may never pass, because it hands the
+    #: suite a real stdin again. A file is outside the whole question, which is
+    #: why the report `verdict.py` writes is one too.
+    SPY = """
+    import json, sys
+    import pytest
+
+    seen = []
+
+    class Spy:
+        @pytest.hookimpl(wrapper=True)
+        def pytest_runtest_makereport(self, item, call):
+            report = yield
+            seen.append(
+                {
+                    "nodeid": item.nodeid,
+                    "when": call.when,
+                    "raised": None if call.excinfo is None else call.excinfo.type.__name__,
+                    "outcome": report.outcome,
+                    "subtest": getattr(report, "context", None) is not None,
+                }
+            )
+            return report
+
+        def pytest_runtest_logreport(self, report):
+            seen.append(
+                {
+                    "nodeid": report.nodeid,
+                    "when": report.when,
+                    "raised": None,
+                    "outcome": report.outcome,
+                    "subtest": getattr(report, "context", None) is not None,
+                    "logged": True,
+                }
+            )
+
+    pytest.main(["-q", "-p", "no:cacheprovider", *sys.argv[2:]], plugins=[Spy()])
+    with open(sys.argv[1], "w", encoding="utf-8") as out:
+        json.dump(seen, out)
+    """
+
+    def watched(self, body: str, *args: str) -> list[dict[str, Any]]:
+        """What pytest handed a plugin, running ``body`` as ``test_a.py``."""
+        self.module("test_a", body)
+        seen = self.report.with_name("seen.json")
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", textwrap.dedent(self.SPY), str(seen), *args],
+            cwd=self.sandbox,
+            env={**os.environ, **PROBE_ENV},
+            capture_output=True,
+            text=True,
+            timeout=BOUND,
+        )
+        self.assertTrue(
+            seen.is_file(), f"the spy wrote nothing.\nstdout: {done.stdout}\nstderr: {done.stderr}"
+        )
+        return [dict(event) for event in json.loads(seen.read_text(encoding="utf-8"))]
+
+    def phases(self, body: str) -> dict[str, str]:
+        """Which phase each failure was reported in, by what it raised."""
+        return {
+            str(event["raised"]): str(event["when"])
+            for event in self.watched(body)
+            if event["outcome"] == "failed" and not event.get("logged")
+        }
+
+    def test_a_test_and_its_own_teardown_are_the_call_phase(self) -> None:
+        """Both are the test's, so both are `caught`. Reported anywhere else
+        they would be `broke`, and a mutation only a `tearDown` can see would
+        come back a survivor."""
+        found = self.phases(
+            """
+            import unittest
+            class T(unittest.TestCase):
+                def test_body(self):
+                    raise LookupError("the body")
+                def test_clean(self):
+                    pass
+                def tearDown(self):
+                    if self._testMethodName == "test_clean":
+                        raise ArithmeticError("the cleanup")
+            """
+        )
+        self.assertEqual({"LookupError": "call", "ArithmeticError": "call"}, found)
+
+    def test_class_and_module_fixtures_are_the_other_two_phases(self) -> None:
+        """Nothing in them evaluated an assertion, so neither is `caught`. This
+        is the whole of what replaced an `isinstance` against
+        `unittest.suite._ErrorHolder`."""
+        self.assertEqual(
+            {"LookupError": "setup"},
+            self.phases(
+                """
+                import unittest
+                class T(unittest.TestCase):
+                    @classmethod
+                    def setUpClass(cls):
+                        raise LookupError("before")
+                    def test_it(self):
+                        pass
+                """
+            ),
+        )
+        self.fresh()
+        self.assertEqual(
+            {"ArithmeticError": "teardown"},
+            self.phases(
+                """
+                import unittest
+                class T(unittest.TestCase):
+                    @classmethod
+                    def tearDownClass(cls):
+                        raise ArithmeticError("after")
+                    def test_it(self):
+                        pass
+                """
+            ),
+        )
+
+    def test_a_failed_subtest_reaches_makereport_but_not_its_owners_report(self) -> None:
+        """The trap, asserted against pytest itself.
+
+        At `makereport` the failure arrives once, carrying the owner's nodeid --
+        which is what makes attribution free. By the time it is *logged* it has
+        become a separate object and the owner's own report reads ``passed``, so
+        a classifier reading logged reports would answer "nothing noticed" for a
+        test the suite demonstrably caught.
+        """
+        events = self.watched(
+            """
+            import unittest
+            class T(unittest.TestCase):
+                def test_it(self):
+                    with self.subTest(n=1):
+                        self.fail("inside")
+            """
+        )
+        made = [e for e in events if not e.get("logged") and e["when"] == "call"]
+        # Two events, and both name the owner: the subtest's failure, then the
+        # owner's own success. Classifying on the failed one is free -- there is
+        # no carrier to unwrap and no parametrized id to strip.
+        self.assertEqual(
+            [("test_a.py::T::test_it", "failed"), ("test_a.py::T::test_it", "passed")],
+            [(str(e["nodeid"]), str(e["outcome"])) for e in made],
+            "the subtest failure did not arrive at makereport against its owner",
+        )
+        # And the same two *logged*, where the failed one has become a separate
+        # object -- so "did this test's report fail" answers no.
+        logged = [e for e in events if e.get("logged") and e["when"] == "call"]
+        self.assertEqual(
+            [("failed", True), ("passed", False)],
+            [(str(e["outcome"]), bool(e["subtest"])) for e in logged],
+            "the owner's own logged report is no longer the passing one",
+        )
+
+    def test_a_baseexception_from_a_test_body_is_reported_rather_than_escaping(self) -> None:
+        """`Hung` derives from `BaseException` so a test doing `except
+        Exception` cannot swallow the alarm. That only helps if pytest reports
+        it instead of letting it end the session -- and the test after it has to
+        still run, or a hang would look like a walk that finished."""
+        events = self.watched(
+            """
+            import unittest
+            class Stop(BaseException):
+                pass
+            class T(unittest.TestCase):
+                def test_a_stops(self):
+                    raise Stop("not an Exception")
+                def test_b_runs(self):
+                    pass
+            """
+        )
+        made = [e for e in events if not e.get("logged")]
+        self.assertIn(
+            ("test_a.py::T::test_a_stops", "call", "Stop"),
+            [(str(e["nodeid"]), str(e["when"]), str(e["raised"])) for e in made],
+        )
+        self.assertIn("test_a.py::T::test_b_runs", {str(e["nodeid"]) for e in made})
+
+    def test_a_skip_is_neither_an_answer_nor_a_break(self) -> None:
+        """A skip is not an answer: nothing was checked. It must not be `failed`
+        anywhere, or every conditionally-skipped test in the suite would credit
+        every mutation it never ran against."""
+        events = self.watched(
+            """
+            import unittest
+            class T(unittest.TestCase):
+                @unittest.skip("because")
+                def test_it(self):
+                    self.fail("never reached")
+            """
+        )
+        self.assertEqual(set(), {str(e["outcome"]) for e in events} & {"failed"})
+        self.assertIn("skipped", {str(e["outcome"]) for e in events})
+
+
+class TestTellingAnAnswerFromACarrier(unittest.TestCase):
+    """`_carrier`, which decides whether a test gets *credited* with noticing.
+
+    Both limits raise inside a real test at the ``call`` phase, so by phase they
+    are indistinguishable from that test asserting something -- and filed as
+    answers they credit a test that asserted nothing, which is a mutation
     reported as caught by a test that never looked at it. That is the one error
     this whole tool cannot afford.
 
-    Driven directly rather than through `collect`: the module docstring's rule is
+    Driven directly rather than through a probe: the module docstring's rule is
     that nothing here may arm the alarm or set the rlimit in the process running
-    the suite, and these two are a tuple lookup and a string format.
+    the suite, and this is a subclass check and a string format.
     """
 
-    @staticmethod
-    def raised(kind: type[BaseException]) -> Any:
-        """A real `sys.exc_info()`, raised rather than assembled.
+    class Held:
+        """The two fields of `pytest.ExceptionInfo` that `_carrier` reads.
 
-        A hand-built tuple with `None` for the traceback is not the shape that
-        reaches `addError`, and the point of both functions is what they do with
-        what actually arrives there.
+        A stand-in rather than a real one, because building a real
+        `ExceptionInfo` needs a real raise inside a real `sys.exc_info`, and
+        `_carrier`'s claim is about which *class* it is handed.
         """
-        try:
-            raise kind("x")
-        except BaseException:
-            return sys.exc_info()
+
+        def __init__(self, kind: type[BaseException]) -> None:
+            self.type = kind
 
     def carrier(self, kind: type[BaseException] | None, each: float = 30.0) -> str:
         from tools import verdict
 
-        return verdict._carrier("test_it", None if kind is None else self.raised(kind), each)
-
-    def exhausted(self, kind: type[BaseException] | None) -> bool:
-        from tools import verdict
-
-        return verdict._exhausted(None if kind is None else self.raised(kind))
+        held = None if kind is None else self.Held(kind)
+        return verdict._carrier("t.py::T::test_it", held, each)  # type: ignore[arg-type]
 
     def test_an_ordinary_failure_is_an_answer(self) -> None:
-        """The most important row: an `AssertionError` is a test noticing the
-        mutation, and anything that called it a carrier would report every
-        caught row as broke."""
         self.assertEqual("", self.carrier(AssertionError))
-        self.assertFalse(self.exhausted(AssertionError))
 
     def test_no_error_at_all_is_an_answer(self) -> None:
         self.assertEqual("", self.carrier(None))
-        self.assertFalse(self.exhausted(None))
 
     def test_the_alarm_is_a_carrier_and_quotes_the_bound(self) -> None:
+        """The bound is in the message because the number is not a constant:
+        `--each-test` moves it, and a `broke` line naming a limit that was never
+        in force is worse than one naming none."""
         from tools import verdict
 
-        said = self.carrier(verdict.Hung, each=1.5)
-        self.assertIn("did not finish", said)
-        self.assertIn("1.5s", said)
+        said = self.carrier(verdict.Hung, each=2.5)
+        self.assertIn("did not finish within 2.5s", said)
+        self.assertIn("t.py::T::test_it", said)
 
     def test_the_cap_is_a_carrier(self) -> None:
         self.assertIn("ran out of memory", self.carrier(MemoryError))
-        self.assertTrue(self.exhausted(MemoryError))
 
     def test_a_subclass_of_the_cap_counts_too(self) -> None:
         """`issubclass` rather than `is`: the cap can surface as a subclass
-        raised by an extension module, and `is` would credit the test."""
+        raised by an extension module, and one that read `is` would credit the
+        test."""
 
         class Worse(MemoryError):
             pass
 
-        self.assertTrue(self.exhausted(Worse))
         self.assertIn("ran out of memory", self.carrier(Worse))
 
-    def test_it_reads_the_class_and_not_the_instance(self) -> None:
-        """`err[0]`, never `err[1]`. Building the instance is itself an
-        allocation that may not have succeeded, and asking `issubclass` of one
-        raises `TypeError` from inside the handler for an error -- which
-        replaces the row's verdict with a traceback about the verdict.
-
-        The fixture puts a *different* class in slot 1 so that reading the wrong
-        slot cannot accidentally agree with reading the right one.
-        """
+    def test_the_alarm_is_checked_before_the_cap(self) -> None:
+        """`Hung` is a `BaseException` and `MemoryError` an `Exception`, so no
+        class is both -- but the order is what makes the two messages
+        distinguishable, and a run that reported a hang as an exhausted cap
+        would send a reader looking at `--memory`."""
         from tools import verdict
 
-        swapped: Any = (MemoryError, *self.raised(ValueError)[1:])
-        other: Any = (ValueError, *self.raised(MemoryError)[1:])
-        self.assertTrue(verdict._exhausted(swapped))
-        self.assertFalse(verdict._exhausted(other))
+        self.assertIn("did not finish", self.carrier(verdict.Hung))
 
 
 class TestWhenTheAlarmIsArmedAtAll(unittest.TestCase):
-    """`each_test`, whose return value is quoted in every `broke` message.
+    """`each_test`: what it arms, and what it says it armed.
 
-    A run with no alarm armed must report `0s` rather than a bound that was never
-    in force -- and, more than that, it must not arm one when it was asked not
-    to. The value alone cannot say: `each_test(0)` returns `0.0` whether or not
-    it installed a handler first, so every test here reads the handler.
+    The return value is what the `Watcher` is given, so a run with no alarm
+    armed must report `0` rather than quoting a bound that was never in force.
     """
 
     def setUp(self) -> None:
         import signal
 
-        if not hasattr(signal, "SIGALRM"):  # pragma: no cover - not this platform
-            self.skipTest("no SIGALRM here")
-        self.was = signal.getsignal(signal.SIGALRM)
-        self.addCleanup(signal.signal, signal.SIGALRM, self.was)
+        self.signal = signal
+        before = signal.getsignal(signal.SIGALRM)
+        self.addCleanup(signal.signal, signal.SIGALRM, before)
 
     def handler(self) -> object:
-        import signal
-
-        return signal.getsignal(signal.SIGALRM)
+        return self.signal.getsignal(self.signal.SIGALRM)
 
     def test_zero_arms_nothing(self) -> None:
-        """The value is `0.0` either way, so the handler is the assertion. Under
-        `not seconds and not hasattr(...)` this still returns 0 -- and installs
-        an alarm the caller asked not to have."""
         from tools import verdict
 
+        before = self.handler()
         self.assertEqual(0.0, verdict.each_test(0))
-        self.assertIs(self.was, self.handler(), "an alarm was armed for a run that asked for none")
+        self.assertIs(before, self.handler(), "a handler was installed for no alarm")
 
     def test_a_bound_arms_the_handler_that_raises(self) -> None:
-        """The other half: a class that armed nothing would pass the test above.
-        `_ring` raises rather than setting a flag, because PEP 475 makes Python
-        *retry* a syscall interrupted by a signal -- a handler that returned
-        would be swallowed by the blocking read a hung test sits in."""
+        """PEP 475 retries a syscall interrupted by a signal, so a handler that
+        recorded the alarm and returned would be swallowed by exactly the
+        blocking read a hung test sits in. Raising propagates instead."""
         from tools import verdict
 
         self.assertEqual(2.5, verdict.each_test(2.5))
         self.assertIs(verdict._ring, self.handler())
+        with self.assertRaises(verdict.Hung):
+            verdict._ring(self.signal.SIGALRM, None)
 
     def test_a_platform_without_the_alarm_arms_nothing(self) -> None:
-        """Windows, which plan §2 puts out of scope for v1 -- so this is the
-        only way the guard is reachable at all."""
-        import types
+        """Windows, which plan §2 puts out of scope for v1 -- so this is a guard
+        rather than a supported path, and the guard is what keeps it a `0` in
+        the report instead of an `AttributeError` inside the probe."""
         from unittest import mock
 
         from tools import verdict
 
-        # A stand-in module with no `SIGALRM` on it, rather than deleting the
-        # attribute from the real one: the real `signal` is shared with the
-        # interpreter running this suite, and a window where it has no `SIGALRM`
-        # is a window where anything else that reads it breaks. Same shape as
-        # the `tomllib` gotcha in CLAUDE.md -- the claim is "this branch asks
-        # for that name", and standing something there that lacks it is exactly
-        # that claim.
-        with mock.patch.object(verdict, "signal", types.SimpleNamespace()):
+        with mock.patch.object(verdict, "signal") as absent:
+            del absent.SIGALRM
             self.assertEqual(0.0, verdict.each_test(5))
-        self.assertIs(self.was, self.handler())
-
-    def test_off_the_main_thread_it_gives_up_rather_than_raising(self) -> None:
-        """`signal.signal` raises `ValueError` off the main thread, and this runs
-        wherever the caller put it. Returning `0.0` is what makes the messages
-        honest there; the exception would take the whole run down."""
-        import threading
-
-        from tools import verdict
-
-        answer: list[float] = []
-        thread = threading.Thread(target=lambda: answer.append(verdict.each_test(5)))
-        thread.start()
-        thread.join()
-        self.assertEqual([0.0], answer)
-        self.assertIs(self.was, self.handler())
 
 
 class TestWhereTheWalkLooks(unittest.TestCase):
-    """`every_module` follows the selection's own package rather than a constant.
+    """`Watcher.beside`: every test file next to the selection's own.
 
-    A hardcoded `tests` would be right for this repository and unreachable from
-    the flat sandboxes above, so the guard would be one no fixture could drive.
-
-    **Imported here, unlike everything else in this file, and the module
-    docstring's reason is why that is allowed rather than an exception to it.**
-    What must not run in this process is `collect`: `cap` sets an address-space
-    rlimit and the alarm installs a `SIGALRM` handler, so driving it here would
-    configure the suite that is running it. `every_module` is a `glob` and a
-    string join, and touches neither. The import stays inside the methods so
-    that remains true of importing this file as well.
+    Driven in this process, which the module docstring allows for exactly the
+    functions that touch neither the alarm nor the rlimit: this is a `glob` and
+    a sort. The import stays inside the methods so that remains true of
+    importing this file as well -- and it is issued *before* any `chdir`, since
+    a probe runs as ``python -c`` where `sys.path[0]` is `''` and resolves
+    against the current directory at each import rather than at startup.
     """
 
-    @staticmethod
-    def every(names: list[str]) -> list[str]:
+    def watcher(self, root: Path, patterns: list[str] | None = None) -> Any:
         from tools import verdict
 
-        return verdict.every_module(names)
+        made = verdict.Watcher(0.0)
+        made.root = root
+        made.patterns = ["test_*.py", "*_test.py"] if patterns is None else patterns
+        return made
 
-    def test_it_follows_the_package_the_selection_lives_in(self) -> None:
-        found = self.every(["tests.test_sync"])
-        self.assertIn("tests.test_verdict", found)
-        self.assertNotIn("test_verdict", found, "the package prefix was dropped")
+    def test_it_looks_in_the_directory_the_selection_lives_in(self) -> None:
+        found = self.watcher(ROOT).beside(["tests.test_sync"])
+        self.assertIn("tests/test_verdict.py", found)
+        self.assertNotIn("test_verdict.py", found, "the directory was dropped")
+        self.assertNotIn("tests/test_sync.py", found, "the selection walked into itself")
+
+    def test_it_takes_the_patterns_it_is_given(self) -> None:
+        """The genericity claim at the unit it is decided in. A project spelling
+        its tests `*_test.py` gets those and no others; one spelling them the
+        way this project does gets those."""
+        with tempfile.TemporaryDirectory(prefix="tupferl-patterns-") as name:
+            box = Path(name)
+            for stem in ("test_one", "two_test", "helper"):
+                (box / f"{stem}.py").write_text("", encoding="utf-8")
+            made = self.watcher(box, ["*_test.py"])
+            self.assertEqual(["two_test.py"], made.beside(["test_one"]))
+            self.assertEqual(["test_one.py"], self.watcher(box, ["test_*.py"]).beside(["two_test"]))
+
+    def test_a_module_that_is_not_a_test_is_never_walked_into(self) -> None:
+        """`helper.py` is the half that can fail quietly: a glob of `*.py`
+        rather than the configured patterns walks into support modules, and a
+        selection handed one reports it as holding no tests."""
+        with tempfile.TemporaryDirectory(prefix="tupferl-walk-") as name:
+            box = Path(name)
+            for stem in ("test_one", "test_two", "helper"):
+                (box / f"{stem}.py").write_text("", encoding="utf-8")
+            self.assertEqual(["test_two.py"], self.watcher(box).beside(["test_one"]))
 
     def test_what_it_returns_is_sorted(self) -> None:
-        """The order is the walk's order, and it has to be *stable*: a bare
-        `set` iterates by hash, so two runs of the same sweep would try the
-        modules in different orders and a row's recorded `killer` would move.
+        """The order is the walk's order, and it has to be *stable*: a bare set
+        iterates by hash, so two runs of the same sweep would try the modules in
+        different orders and a row's recorded `killer` would move.
 
         Eight modules, not two. With two, `list(set(...))` frequently comes out
-        sorted by luck and the assertion holds against its own mutation -- which
-        is what happened: the sweep could only report this line as `BROKE`,
-        because unsorted order made an unrelated test in `tests/test_mutate.py`
-        reach its module last and trip the 30s per-test alarm. A `BROKE` is
-        never `caught`, so the line read as unguarded. Asserted here instead of
-        left to a timing accident.
+        sorted by luck and the assertion holds against its own mutation -- one
+        in two against one in 40320.
         """
         with tempfile.TemporaryDirectory(prefix="tupferl-order-") as name:
             box = Path(name)
@@ -1269,47 +1652,54 @@ class TestWhereTheWalkLooks(unittest.TestCase):
                 "test_delta",
             ):
                 (box / f"{stem}.py").write_text("", encoding="utf-8")
-            here = Path.cwd()
-            os.chdir(box)
-            try:
-                found = self.every(["test_alpha"])
-            finally:
-                os.chdir(here)
+            found = self.watcher(box).beside(["test_alpha"])
         self.assertEqual(sorted(found), found, "the walk order is not stable")
-        self.assertEqual(8, len(found))
+        self.assertEqual(7, len(found), "the selection was not subtracted, or a file was missed")
 
-    def test_a_flat_selection_looks_beside_itself(self) -> None:
-        # **Imported before the chdir, and that is load-bearing.** Directly,
-        # rather than by calling `every` for its side effect: the return value
-        # was thrown away and a reader had to follow the helper to find that
-        # out. The harness
-        # runs a shard as `python -c <the source of verdict.py>`, where
-        # `sys.path[0]` is `''` -- resolved against the *current* directory at
-        # each import rather than fixed at startup, as `python -m` fixes it. So
-        # an import issued from inside the box below looks for `tools/` in the
-        # box and does not find it.
-        #
-        # It only bites when this is the first test in the process to import
-        # `tools.verdict`, which is why the suite is green and a baseline shard
-        # selecting *only this module* was not: `mutate` could not measure
-        # `tools/verdict.py` against its own tests at all, and reported
-        # `BASELINE NOT GREEN` for every table that tried.
-        from tools import verdict  # noqa: F401
 
-        with tempfile.TemporaryDirectory(prefix="tupferl-walk-") as name:
-            box = Path(name)
-            (box / "test_one.py").write_text("", encoding="utf-8")
-            (box / "test_two.py").write_text("", encoding="utf-8")
-            (box / "helper.py").write_text("", encoding="utf-8")
-            here = Path.cwd()
-            os.chdir(box)
-            try:
-                # `helper.py` is the half that can fail quietly: a glob of `*.py`
-                # rather than `test_*.py` walks into support modules, and a
-                # loader handed one reports it as broke.
-                self.assertEqual(["test_one", "test_two"], self.every(["test_one"]))
-            finally:
-                os.chdir(here)
+class TestHowANameBecomesANode(unittest.TestCase):
+    """`as_path`: the one place a dotted selection becomes something pytest can
+    address.
+
+    It fails in the direction that is hardest to see. A name pytest cannot
+    resolve is refused with a usage error, which the exit-status arm reports as
+    `broke` -- loud. A name that resolves to the *wrong* node runs the wrong
+    tests and reports a plausible verdict about them.
+    """
+
+    def as_path(self, name: str) -> str:
+        from tools import verdict
+
+        return verdict.as_path(name)
+
+    def test_a_module_becomes_its_file(self) -> None:
+        self.assertEqual("tests/test_sync.py", self.as_path("tests.test_sync"))
+
+    def test_a_class_and_a_method_become_node_parts(self) -> None:
+        """The longest *existing* prefix wins, so the class is a node inside the
+        file rather than a directory called `TestX`. Split at the first dot it
+        would name `tests/test_sync/TestTheDecisionTable.py`, which does not
+        exist -- and pytest would refuse the whole run."""
+        self.assertEqual(
+            "tests/test_sync.py::TestTheDecisionTable",
+            self.as_path("tests.test_sync.TestTheDecisionTable"),
+        )
+
+    def test_a_nodeid_is_handed_back_untouched(self) -> None:
+        """`first` arrives already in this form, out of a killers cache written
+        by an earlier run, and translating it twice would turn every `::` into
+        a directory."""
+        for already in ("tests/test_sync.py", "tests/test_sync.py::TestX::test_y"):
+            self.assertEqual(already, self.as_path(already))
+
+    def test_a_name_that_resolves_to_nothing_is_still_a_module(self) -> None:
+        """Refused by pytest and reported as `broke`, which is what an
+        unloadable module always was. Selecting nothing quietly would be filed
+        as "the targets held no tests", which is a different sentence about a
+        tree that is fine."""
+        self.assertEqual(
+            "tests/test_nothing_of_the_sort.py", self.as_path("tests.test_nothing_of_the_sort")
+        )
 
 
 if __name__ == "__main__":

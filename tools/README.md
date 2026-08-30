@@ -30,14 +30,25 @@ are what `mutate.py` and `run_tests.py` are built from. `verdict.py` in particul
 *standalone* file on purpose — it is read as source and executed inside each
 mutation's sandbox, so it must not import anything from this package.
 
+`verdict_unittest.py` is the same file's predecessor, classifying `unittest`
+result objects where `verdict.py` classifies pytest reports. It is reached only
+with `TUPFERL_MUTATE_VERDICT=unittest`, which exists so a row the two disagree
+about can be re-run against the classifier that was here before rather than
+argued about, and it is deleted with that switch at the end of the conversion
+([`docs/pytest-plan.md`](../docs/pytest-plan.md), Phase C).
+
 ## Why these and not `mutmut` / `pytest-xdist`
 
 Three properties, each of which cost a real debugging session to learn:
 
 - **`BROKE` is never counted as `caught`.** A mutation that turns a working
-  import into a failing one exits non-zero and leaves `Ran 1 test` behind,
-  exactly like a test catching it. A harness that reads the exit status reports
-  a test that never executed as a test that noticed.
+  import into a failing one exits non-zero and leaves a plausible count of
+  tests behind, exactly like a test catching it. A harness that reads the exit
+  status reports a test that never executed as a test that noticed. Under
+  pytest there is a second, sharper version of the same trap: a failing
+  `self.subTest(...)` leaves the owning test's *own* report reading `passed`,
+  so a classifier that read finished reports would report a real kill as a
+  survivor.
 - **Every row is run against the whole suite until something notices** -- its
   selection first, then the rest, stopping at the first test that catches it.
   So a survivor has run everything by the time it is called one, and a

@@ -1,13 +1,18 @@
 """Which kind of failure a suite produced -- the question an exit status cannot answer.
 
-Ported from `martinus/woswoar` (Apache-2.0), where the evidence quoted below
-was collected; `woswoar#123` numbers index that repository's issues.
-
 `tools/mutate.py` needs to know whether a *test method noticed* the mutation, or
 whether the run merely fell over. Both exit non-zero, and both leave a plausible
-``Ran N`` behind, so the distinction has to be drawn where the result objects
-still exist rather than reconstructed from what `unittest` printed. That is what
-this file is.
+count of tests behind, so the distinction has to be drawn where the exception
+objects still exist rather than reconstructed from what pytest printed. That is
+what this file is.
+
+This is the pytest backend, and it is what a sweep uses.
+`tools/verdict_unittest.py` is the classifier that was here before, kept until
+`docs/pytest-plan.md`'s Phase C and reachable with
+``TUPFERL_MUTATE_VERDICT=unittest`` so that a row the two disagree about can be
+re-run against the old one rather than argued about. `cap` and `each_test` are
+duplicated between the two files rather than shared, because the isolation
+property below forbids either from importing anything of ours.
 
 **It is read, not imported.** `mutate` reads this source out of its *own* tree
 and hands it to ``python -c`` in the sandbox. Two properties fall out, and both
@@ -17,55 +22,75 @@ are the point:
   cannot decide its own verdict -- which matters as soon as `tools/**.py` is
   itself something a generated table mutates;
 - being a real module rather than a string constant, `ruff` and `mypy` see it.
-  The previous shape was a 35-line string literal that no checker could reach,
-  holding the one piece of genuinely new logic in the change.
 
 ``-c`` also puts the working directory on ``sys.path`` where a script path would
-not, which is how the sandbox's own test modules are importable at all.
+not, and it is the directory pytest then takes as its ``rootdir``.
 
-**Classification is by protocol, never by class name.** The obvious spelling --
-"is this class defined under ``unittest.``?" -- was written first and was wrong
-in the direction that matters. `unittest.case._SubTest` is a `TestCase` whose
-module is ``unittest.case``, so an assertion failing inside ``with
-self.subTest(...)`` was filed as "the suite broke" rather than "a test noticed",
-and with a strict table that aborts the run. This repository uses `subTest` in
-more than twenty places. So instead:
+**Classification is by phase, never by class name.** Measured against pytest
+9.1.1 on both supported interpreters, driving `unittest.TestCase`s:
 
-- ``addSubTest`` is handed the **owning** test, not the `_SubTest` carrier, so
-  overriding it records the right name;
-- a `setUpClass` or `setUpModule` failure arrives through ``addError`` as
-  `unittest.suite._ErrorHolder`, which is deliberately *not* a `TestCase` -- so
-  `isinstance` alone separates "a fixture died" from "a test failed", with no
-  private name involved;
-- a module that will not import is reported by `TestLoader.errors`, a public
-  attribute, and the suite is then not run at all. Running it would surface the
-  synthetic `unittest.loader._FailedTest` through ``addError`` -- and that one
-  *is* a `TestCase`, so it would read as a test noticing.
+| what died | phase | bucket |
+|---|---|---|
+| the test body, by assertion or by any exception | ``call`` | `noticed` |
+| a case inside ``self.subTest(...)`` | ``call`` | `noticed`, against the **owner** |
+| the instance's own ``tearDown`` | ``call`` | `noticed` |
+| ``setUpClass`` / ``setUpModule`` | ``setup`` | `broke` |
+| ``tearDownClass`` / ``tearDownModule`` | ``teardown`` | `broke` |
+| a module that will not import | no phase; `pytest_collectreport` | `broke` |
 
-Nothing here names a private symbol to make a decision. If a future `unittest`
-moves `_FailedTest` or `_ErrorHolder`, `loader.errors` and the `isinstance` still
-answer, and the failure mode is a name printed oddly rather than `broke`
-silently becoming `caught`.
+So the fixture/test line that `verdict_unittest` had to draw with an
+`isinstance` against `unittest.suite._ErrorHolder` is drawn here by the phase
+pytest already reports, and needs no special case at all. That mapping is a
+*measurement*, not a documented guarantee, which is why
+`tests/test_verdict.py`'s `TestWhatThisAssumesOfPytest` asserts each row of it:
+a pytest that moved one would otherwise turn `broke` silently into `caught`.
+
+**The subtest trap, and it is the reason to classify in
+`pytest_runtest_makereport` rather than in `pytest_runtest_logreport`.** When a
+case inside ``self.subTest(...)`` fails, pytest 9 emits a failed
+`_pytest.subtests.SubtestReport` *and* the owning test's own report says
+``passed``. Reading finished reports and asking "did this test fail" therefore
+answers no for a test the suite demonstrably caught -- flattering the tests,
+which is the direction every bug in this class has erred. At `makereport` there
+is no such split: every failure, subtest or not, arrives once with ``item``
+being the owner and ``call.excinfo`` holding what was raised.
+
+**`-s` is forbidden, and not as a style rule.** pytest replaces `sys.stdin` with
+something whose `isatty()` is false, which is what stops the suite prompting;
+``-s`` undoes exactly that, and `tupferl sync` asks `sys.stdin.isatty()` to
+decide whether anyone is there to answer a conflict. A probe that prompts does
+not fail, it blocks. The corollary is that anything this plugin `print`s is
+eaten by pytest's own capture -- partially, which is worse than entirely:
+measured, 3 of 8 lines survived. Diagnose from the report file or a file
+descriptor duplicated before `pytest.main` is entered, never by reaching for
+``-s``.
 """
 
 from __future__ import annotations
 
-import io
 import json
 import resource
 import signal
 import sys
-import time
 import traceback
-import unittest
+from collections.abc import Generator, Iterator, Sequence
 from pathlib import Path
-from types import TracebackType
 from typing import Any
 
-#: What `unittest` hands a result method for a failure, spelled exactly as
-#: typeshed spells it -- `mypy --strict` checks these overrides for Liskov and a
-#: near-miss here is an error, not a warning.
-ExcInfo = tuple[type[BaseException], BaseException, TracebackType] | tuple[None, None, None]
+import pytest
+
+#: Exit statuses that mean the run happened and its reports are the answer.
+#: `NO_TESTS_COLLECTED` belongs here rather than with the failures: an empty
+#: module is something the *walk* steps over, and a selection that holds no
+#: tests is reported by `mutate._run` from ``ran`` being zero, which is where
+#: that judgement has always lived.
+ANSWERED = frozenset(
+    {
+        int(pytest.ExitCode.OK),
+        int(pytest.ExitCode.TESTS_FAILED),
+        int(pytest.ExitCode.NO_TESTS_COLLECTED),
+    }
+)
 
 
 def cap(limit: int) -> None:
@@ -118,8 +143,7 @@ def cap(limit: int) -> None:
     in this function can see that, which is why the guard against it is a
     sampler one level up rather than another rlimit here.
     """
-    # survivor: off-by-one -- tools/verdict.py:121 in cap() -- `0` becomes `1` -- cosmetic, same as
-    #   the `-1` mutation on this line.
+    # survivor: off-by-one -- `0` becomes `1` -- cosmetic, same as the `-1` mutation on this line.
     if limit <= 0:
         # 0 is "no cap", as `--memory 0` promises and as `--limit 0` beside it
         # already means. Guarded here as well as at the CLI because `cap` is
@@ -141,7 +165,7 @@ def cap(limit: int) -> None:
         # Never raise an existing ceiling: a caller who already sandboxed us
         # meant it.
         # survivor: negate -- **caught outside the harness and equivalent inside it, because of this
-        #   branch's own fix.** Run under `python -m unittest`, three tests in
+        #   branch's own fix.** Run under a plain pytest, three tests in
         #   `TestTheMemoryCapsArithmetic` fail -- measured. Run inside a sweep they cannot: since
         #   `cap` began lowering the *hard* half, a probe's children inherit a finite ceiling, so
         #   `hard == RLIM_INFINITY` is false either way and the two spellings agree. Closing the
@@ -165,49 +189,14 @@ def cap(limit: int) -> None:
             # raising a hard limit needs a privilege none of this has.
             #
             # It costs the ability to *undo* the cap further down, which one
-            # test wanted (`TestTheMemoryCapsArithmetic` spawned children that raised
-            # soft back to hard to reach a known state). That is now bought with
-            # a bounded number instead of an unbounded one, which it should have
-            # been: "clear the inherited cap" and "have no cap" are different
-            # asks, and only the second can take the machine with it.
+            # test wanted (`TestTheMemoryCapsArithmetic` spawned children that
+            # raised soft back to hard to reach a known state). That is now
+            # bought with a bounded number instead of an unbounded one, which it
+            # should have been: "clear the inherited cap" and "have no cap" are
+            # different asks, and only the second can take the machine with it.
             resource.setrlimit(which, (ceiling, ceiling))
         except (OSError, ValueError):  # pragma: no cover - refused
             continue
-
-
-def _exhausted(err: ExcInfo | None) -> bool:
-    """Whether this traceback is the memory cap firing rather than an assertion.
-
-    `issubclass` rather than `is`, because the cap can also surface as a
-    subclass raised by an extension module; `err[0]` rather than the instance,
-    because building the instance is itself an allocation that may not have
-    succeeded.
-    """
-    # survivor: off-by-one -- `err` is `sys.exc_info()`, whose first element is the class. Index 1
-    #   is the instance and -1 the traceback, and `issubclass` refuses both with `TypeError` -- so
-    #   the mutant raises inside the result object rather than answering, which the docstring above
-    #   already argues is why the *class* is what this reads: building the instance is itself an
-    #   allocation that may not have succeeded.
-    return err is not None and err[0] is not None and issubclass(err[0], MemoryError)
-
-
-def _carrier(test: object, err: ExcInfo | None, each: float) -> str:
-    """Why this error is not an answer, or "" when it is one.
-
-    Both limits in one place, because both are the same mistake waiting to
-    happen: they raise *inside* a real `TestCase`, so they arrive at `addError`
-    indistinguishable by protocol from that test noticing the mutation, and
-    filed as answers they credit a test that asserted nothing. Written out
-    twice, a refinement to one copy leaves the other crediting -- and the
-    `addSubTest` copy had no test at all.
-    """
-    # survivor: off-by-one -- same tuple, same argument as `_exhausted`: index 0 is the exception
-    #   class, and a `None` there is how `sys.exc_info()` says there is nothing to report.
-    if err is None or err[0] is None:
-        return ""
-    if issubclass(err[0], Hung):
-        return f"{test} did not finish within {each:g}s"
-    return f"{test} ran out of memory" if _exhausted(err) else ""
 
 
 class Hung(BaseException):
@@ -215,8 +204,8 @@ class Hung(BaseException):
 
     `BaseException`, not `Exception`, so that a test doing `except Exception` --
     which several here do, to assert on a message -- cannot swallow the alarm and
-    hang anyway. `unittest` catches `BaseException` around a test, so it is still
-    reported rather than escaping the runner.
+    hang anyway. pytest reports whatever a test raises, `BaseException` included,
+    so it is still classified rather than escaping the run.
     """
 
 
@@ -232,155 +221,14 @@ def _ring(signum: int, frame: object) -> None:
     raise Hung("this test ran past the per-test limit")
 
 
-class Verdicts(unittest.TextTestResult):
-    """Keeps the tests that asserted apart from the carriers that did not."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        #: Real test methods that failed. This is what `caught` means.
-        self.noticed: list[str] = []
-        #: The same tests, as `python -m unittest` takes them back --
-        #: `module.Class.method`, where `noticed` holds `method (module.Class.
-        #: method)` for a human. Recorded rather than parsed back out of the
-        #: display string, because `mutate` feeds these straight to a loader and
-        #: a display format is not an API.
-        self.killers: list[str] = []
-        #: Fixtures that died before any assertion ran. Not an answer.
-        self.broke: list[str] = []
-        #: The formatted traceback of the first test that noticed.
-        #:
-        #: A mutation run does not want this -- `caught` is the whole answer and
-        #: 200 tracebacks is noise. The *baseline* does: a red baseline voids
-        #: every verdict above it, and until this was recorded the only thing
-        #: said about one was the failing test's name. Diagnosing it meant
-        #: reproducing the shard by hand, and five reproductions of a red
-        #: baseline all came back green because the sixth thing that differed
-        #: was never guessed. See `mutate.run`'s baseline branch, which is the
-        #: one reader.
-        self.reasons: list[str] = []
-        #: Seconds one test may take. 0 disables the alarm, which is what a
-        #: platform without `SIGALRM` gets.
-        self.each: float = 0.0
-        #: What each test that ran cost, by id. `mutate.Killers` accumulates
-        #: these so it can order the cheap high-yield tests first; the *baseline*
-        #: runs are where they mostly come from, since those alone run a whole
-        #: selection to the end without `failfast` cutting it short.
-        self.times: dict[str, float] = {}
-        # survivor: drop-assign -- equivalent: `startTest` assigns it before any test body runs, and
-        #   `stopTest` is the only reader. The line declares the attribute so the class is complete
-        #   without a test having started, which is what a `Verdicts` handed to `_unloadable` is.
-        self._began = 0.0
-
-    def startTest(self, test: unittest.TestCase) -> None:
-        super().startTest(test)
-        self._began = time.perf_counter()
-        # survivor: branch -- `each` is 0 exactly where `SIGALRM` does not exist -- Windows, and any
-        #   non-main thread -- and this suite runs on neither. Taking the branch there would raise
-        #   inside `startTest`; skipping it where the alarm exists loses the per-test bound, which
-        #   is `verdict.each_test`'s whole job and is asserted by
-        #   `TestAHungTestIsBoundedAndNotCredited` through the alarm rather than through this line.
-        if self.each:
-            signal.setitimer(signal.ITIMER_REAL, self.each)
-
-    def stopTest(self, test: unittest.TestCase) -> None:
-        self.times[test.id()] = time.perf_counter() - self._began
-        # Cancelled here rather than only on the next `startTest`, or a fast test
-        # would be charged for the timer its predecessor set and the alarm would
-        # land in whatever ran next.
-        # survivor: branch -- `each` is 0 exactly where `SIGALRM` does not exist -- Windows, and any
-        #   non-main thread -- and this suite runs on neither. Taking the branch there would raise
-        #   inside `startTest`; skipping it where the alarm exists loses the per-test bound, which
-        #   is `verdict.each_test`'s whole job and is asserted by
-        #   `TestAHungTestIsBoundedAndNotCredited` through the alarm rather than through this line.
-        if self.each:
-            # survivor: drop-call, off-by-one -- cancels the alarm the previous test armed. Dropping
-            #   it charges a fast test for its predecessor's timer, so the bound fires in whatever
-            #   ran next -- which is a misattributed `BROKE` rather than a wrong verdict, and the
-            #   comment above says so. Asserting it means watching *which* test a timeout is blamed
-            #   on, and that is a race by construction.
-            signal.setitimer(signal.ITIMER_REAL, 0)
-        # survivor: drop-call -- `TestResult.stopTest` clears the per-test bookkeeping the base
-        #   class keeps. Nothing this module reads comes from it, so the mutant answers identically
-        #   -- and a fixture for it would be asserting on `unittest`'s internals rather than on any
-        #   claim of ours.
-        super().stopTest(test)
-
-    def _answered(self, test: unittest.TestCase, err: ExcInfo | None = None) -> None:
-        """Record one test that noticed, every way round."""
-        self.noticed.append(str(test))
-        self.killers.append(test.id())
-        if err is not None and not self.reasons:
-            # The first only. A `failfast` run stops here anyway, and a baseline
-            # -- which never uses `failfast` -- is diagnosed from the first
-            # failure just as well as from forty.
-            # `traceback.format_exception`, not `TestResult._exc_info_to_string`:
-            # the latter is private, untyped in typeshed, and the version that
-            # differs between releases -- three reasons the one lint that only
-            # fails in CI would have found here.
-            self.reasons.append("".join(traceback.format_exception(*err)))
-
-    def addFailure(self, test: unittest.TestCase, err: ExcInfo) -> None:
-        super().addFailure(test, err)
-        self._answered(test, err)
-
-    def addError(self, test: unittest.TestCase, err: ExcInfo) -> None:
-        # survivor: drop-call -- the base class's own error list, which nothing here reads:
-        #   `noticed`, `broke` and `killers` are this module's answer and are appended above.
-        #   Delegating keeps `wasSuccessful()` honest for a caller that asks it, and
-        #   `verdict.collect` does not.
-        super().addError(test, err)
-        # The two limits, classified by type rather than by protocol, because by
-        # protocol they are a test noticing. See `_carrier`.
-        if reason := _carrier(test, err, self.each):
-            self.broke.append(reason)
-            return
-        # `_ErrorHolder` -- a dead `setUpClass`, `setUpModule` or `tearDown` --
-        # is not a `TestCase`, and that is the whole check. It carries a
-        # traceback for something that happened *around* the tests, so no
-        # assertion in it was ever evaluated.
-        # Kept as a ternary over the *list*, rather than an `if`/`else` around
-        # two statements. `test` is annotated `TestCase` because that is what
-        # typeshed says `addError` takes, so mypy proves an `else:` branch
-        # unreachable and `warn_unreachable` rejects it -- while at runtime the
-        # branch is exactly the case this check exists for. `target is` is a
-        # fact about a list mypy cannot argue with.
-        target = self.noticed if isinstance(test, unittest.TestCase) else self.broke
-        target.append(str(test))
-        if target is self.noticed:
-            self.killers.append(test.id())
-            # survivor: branch -- the first traceback is the one kept, and the comment above says
-            #   why: a run without `failfast` is diagnosed from the first failure as well as from
-            #   forty. Keeping them all is a longer report, not a different verdict.
-            if not self.reasons:
-                self.reasons.append("".join(traceback.format_exception(*err)))
-
-    def addSubTest(
-        self, test: unittest.TestCase, subtest: unittest.TestCase, err: ExcInfo | None
-    ) -> None:
-        # survivor: drop-call -- same as `addError`'s: the base class keeps its own list and this
-        #   module keeps the one it reports from.
-        super().addSubTest(test, subtest, err)
-        if err is not None:
-            # `test` is the owning case; `subtest` is the `_SubTest` carrier that
-            # the base class files into `failures`. Recording the owner is what
-            # keeps a `subTest` assertion a real answer.
-            if reason := _carrier(test, err, self.each):
-                self.broke.append(reason)
-            else:
-                # The *owner*, not the `_SubTest` carrier: its `id()` carries the
-                # parameters in brackets and `unittest` cannot load that back.
-                self._answered(test)
-
-
 def each_test(seconds: float) -> float:
     """Arm the per-test alarm, and say what was actually armed.
 
     0 where `SIGALRM` does not exist -- Windows, and any non-main thread. Plan §2
     puts Windows out of scope for v1 and `collect` runs in the main thread, so
     this is a guard rather than a supported path. The returned value is what the
-    `Verdicts` instances are given, so a run with no alarm armed reports every
-    test at `0s` in its `broke` messages rather than quoting a bound that was
-    never in force.
+    `Watcher` is given, so a run with no alarm armed reports every test at `0s`
+    in its `broke` messages rather than quoting a bound that was never in force.
     """
     if not seconds or not hasattr(signal, "SIGALRM"):
         return 0.0
@@ -391,92 +239,360 @@ def each_test(seconds: float) -> float:
     return seconds
 
 
-def every_module(names: list[str]) -> list[str]:
-    """Every test module beside ``names``, found where ``names`` themselves live.
+def _carrier(nodeid: str, excinfo: pytest.ExceptionInfo[BaseException] | None, each: float) -> str:
+    """Why this failure is not an answer, or "" when it is one.
 
-    Globbed from the sandbox rather than handed in, because the caller's row
-    names the *selection* and this is precisely the part it does not name.
+    Both limits in one place, because both are the same mistake waiting to
+    happen: they raise *inside* a real test, at the ``call`` phase, so by phase
+    alone they are indistinguishable from that test noticing the mutation, and
+    filed as answers they credit a test that asserted nothing.
 
-    The directory comes from the selection rather than being spelled `tests`
-    here. Two reasons, and the second is why it is not a nicety: the suite this
-    tool runs lives wherever the caller's modules do, and a constant would make
-    the walk unreachable from `tests/test_verdict.py`, whose sandboxes are flat
-    throwaway modules. A guard nothing can drive is the shape CLAUDE.md §2 is
-    about.
+    The *class* is read rather than the instance, and `issubclass` rather than
+    `is`, for the reason the cap makes plain: building an exception instance is
+    itself an allocation that may not have succeeded, and either limit can
+    surface as a subclass raised by an extension module.
+
+    **Not flattened across exception groups, and that was checked rather than
+    assumed.** pytest does report a group -- a dead `tearDownClass` and a dead
+    `tearDownModule` arrive as one `ExceptionGroup` -- but only at the
+    ``teardown`` phase, which is `broke` whatever is inside it. No group has
+    been observed at ``call``, and a guard for one could not be driven by any
+    fixture, which is the shape CLAUDE.md §2 is about.
     """
-    found: list[str] = []
-    # survivor: order -- tools/verdict.py:342 in every_module() -- the ordering is reversed --
-    #   equivalent: this sorts the *packages* the walk visits, and the function ends `return
-    #   sorted(set(found))` -- so the order the names are appended in is not observable. The sort on
-    #   line 346 *is* guarded, by `test_what_it_returns_is_sorted`.
-    for package in sorted({name.rpartition(".")[0] for name in names}):
-        root = Path(package.replace(".", "/")) if package else Path()
-        prefix = f"{package}." if package else ""
-        found += [f"{prefix}{beside.stem}" for beside in root.glob("test_*.py")]
-    # survivor: order -- `sorted` over a *set*, which CLAUDE.md records as only probabilistically
-    #   guarded: a set iterates in hash order, randomised per run, so the mutant agrees with the
-    #   original whenever that order happens to match. Sizing a fixture for the odds would be
-    #   pinning the hash seed rather than the sort.
-    return sorted(set(found))
+    if excinfo is None:
+        return ""
+    if issubclass(excinfo.type, Hung):
+        return f"{nodeid} did not finish within {each:g}s"
+    return f"{nodeid} ran out of memory" if issubclass(excinfo.type, MemoryError) else ""
 
 
-def _reached(names: list[str], walk: bool) -> list[list[str]]:
-    """The groups to run, in order, one load at a time.
+def _stated(longrepr: object) -> str:
+    """The one line of a rendered failure worth putting in a summary table.
 
-    Each entry is loaded only when the walk reaches it. That laziness is the
-    whole of the design: importing all 29 modules costs 621ms against 0-1ms for
-    one, so loading the ordered list up front would hand back two minutes over a
-    194-row sweep -- more than the second pass this replaced ever cost.
+    A collection failure renders as a small traceback whose last line is the
+    exception, prefixed ``E   `` the way it is printed. The *first* line is the
+    file and line number, which is what a reader would reach for and is the less
+    useful half -- "test_x.py:1: in <module>" says nothing about what went wrong.
+
+    Only collection failures come through here. A failure with a `CallInfo`
+    behind it is described by `_said` instead, which asks the exception rather
+    than the rendering: at the ``teardown`` phase pytest's rendering is a
+    forty-line `ExceptionGroup` traceback whose last line is ``+-------``.
     """
-    # No `if not names` guard, though an empty selection must reach `discover`
-    # below and not a named load -- the two classify a module that will not
-    # import differently, everything into `TestLoader.errors` where a named load
-    # wraps only what derives from `Exception` (`TestABrokenModuleTakesTwoDiffer
-    # entPaths` holds the measured table). It gets there anyway: `every_module`
-    # asks the selection which package to look in, and an empty selection names
-    # none, so both arms below return `[]` and the caller falls through. A guard
-    # was written here first and no fixture could tell it from its absence.
-    # survivor: branch, drop-not -- unanswered rather than equivalent, and this is the honest state.
-    #   The walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk makes
-    #   that inner run hang or exit rather than fail -- and the harness files either as `BROKE`,
-    #   which is never `caught`. Two attempts are recorded: #73 gave the tests a deadline so a hang
-    #   fails, and #74 passed `strict=False` so an inapplicable row comes back in the report instead
-    #   of raising `SystemExit` out of the test. Both were verified against a chosen selection and
-    #   both still come back unanswered under the *generated* one, which is the lesson CLAUDE.md
-    #   states twice: the killer a sweep names is one route to a line, not all of them. Re-open with
-    #   the generated selection in hand, not a chosen one.
-    if not walk:
-        # A baseline. It asks whether *this selection* is green, and widening it
-        # would make every baseline a whole-suite run.
-        # survivor: return-value -- unanswered rather than equivalent, and this is the honest state.
-        #   The walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk
-        #   makes that inner run hang or exit rather than fail -- and the harness files either as
-        #   `BROKE`, which is never `caught`. Two attempts are recorded: #73 gave the tests a
-        #   deadline so a hang fails, and #74 passed `strict=False` so an inapplicable row comes
-        #   back in the report instead of raising `SystemExit` out of the test. Both were verified
-        #   against a chosen selection and both still come back unanswered under the *generated*
-        #   one, which is the lesson CLAUDE.md states twice: the killer a sweep names is one route
-        #   to a line, not all of them. Re-open with the generated selection in hand, not a chosen
-        #   one.
-        return [[name] for name in names]
-    chosen = set(names)
-    # survivor: return-value -- unanswered rather than equivalent, and this is the honest state. The
-    #   walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk makes
-    #   that inner run hang or exit rather than fail -- and the harness files either as `BROKE`,
-    #   which is never `caught`. Two attempts are recorded: #73 gave the tests a deadline so a hang
-    #   fails, and #74 passed `strict=False` so an inapplicable row comes back in the report instead
-    #   of raising `SystemExit` out of the test. Both were verified against a chosen selection and
-    #   both still come back unanswered under the *generated* one, which is the lesson CLAUDE.md
-    #   states twice: the killer a sweep names is one route to a line, not all of them. Re-open with
-    #   the generated selection in hand, not a chosen one.
-    return [[name] for name in names] + [[m] for m in every_module(names) if m not in chosen]
+    spoken = [line for line in str(longrepr).splitlines() if line.strip()]
+    if not spoken:
+        return "collection failed and said nothing"
+    # The marker is stripped only when it really is one -- `removeprefix("E")`
+    # turns a line beginning "Errno" into one beginning "rrno", quietly, in the
+    # one message a reader has to act on.
+    head, _, rest = spoken[-1].partition(" ")
+    return (rest if head == "E" else spoken[-1]).strip()
+
+
+def _said(call: pytest.CallInfo[None]) -> str:
+    """What a phase failure was, in one line.
+
+    `exconly` is the exception as Python spells it -- ``RuntimeError: setUpClass
+    blew up`` -- rather than the traceback that led to it, and it is the first
+    line of that in case the message is a paragraph.
+
+    A failed report with no exception recorded says so rather than falling back
+    to `_stated`, which is documented as taking a *collection* rendering and
+    would be handed a forty-line `ExceptionGroup` here. No fixture produces this
+    and something still has to be said.
+    """
+    if call.excinfo is None:  # pragma: no cover - a failure with nothing raised
+        return "the phase failed with nothing raised"
+    return call.excinfo.exconly().splitlines()[0].strip()
+
+
+def as_path(name: str) -> str:
+    """A dotted selection name as the node pytest addresses it by.
+
+    `mutants.targets_for` names modules the way `unittest` loads them --
+    ``tests.test_sync`` -- and this is the one place that translation happens.
+    A name that is already a path or already a nodeid is handed back untouched,
+    so a caller may pass either.
+
+    The longest existing prefix wins, so ``tests.test_sync.TestX.test_y``
+    becomes ``tests/test_sync.py::TestX::test_y`` and not a directory called
+    ``TestX``. When nothing matches, the plain module reading is handed back and
+    pytest refuses it -- which is reported as `broke`, exactly as an unloadable
+    module always was, rather than quietly selecting nothing.
+    """
+    if name.endswith(".py") or "::" in name:
+        return name
+    parts = name.split(".")
+    for cut in range(len(parts), 0, -1):
+        found = Path(*parts[:cut]).with_suffix(".py")
+        if found.is_file():
+            return "::".join([found.as_posix(), *parts[cut:]])
+    return Path(*parts).with_suffix(".py").as_posix()
+
+
+class Watcher:
+    """One process's worth of pytest runs, and what they concluded.
+
+    The same instance is handed to every `pytest.main` call a walk makes, so
+    everything it holds accumulates across groups the way one `unittest` result
+    object used to.
+    """
+
+    def __init__(self, each: float) -> None:
+        #: Seconds one test may take. 0 disables the alarm, which is what a
+        #: platform without `SIGALRM` gets.
+        self.each = each
+        #: Tests that failed at the ``call`` phase, having asserted something.
+        #: This is what `caught` means. Under pytest a nodeid is both the
+        #: display form and the id a later run feeds back, so `mutate`'s two
+        #: keys -- `noticed` and `killers` -- are filled from this one list;
+        #: under `unittest` they genuinely differed and had to be kept apart.
+        self.noticed: list[str] = []
+        #: Fixtures and imports that died before or after any assertion ran, and
+        #: the two limits below. Not answers.
+        self.broke: list[str] = []
+        #: The rendered failure of the first test that noticed.
+        #:
+        #: A mutation run does not want this -- `caught` is the whole answer and
+        #: 200 tracebacks is noise. The *baseline* does: a red baseline voids
+        #: every verdict above it, and until this was recorded the only thing
+        #: said about one was the failing test's name. See `mutate.run`'s
+        #: baseline branch, which is the one reader.
+        self.reasons: list[str] = []
+        #: What each test cost, by nodeid, summed over its three phases.
+        #: `mutate.Killers` accumulates these so it can order the cheap
+        #: high-yield tests first.
+        self.times: dict[str, float] = {}
+        #: How many tests started, counting a test named in `first` again when
+        #: the selection reaches it -- so this is starts rather than distinct
+        #: tests, which is what `unittest`'s `testsRun` counted and what
+        #: `tests.test_mutate` reads to tell "the prefix *and* everything" from
+        #: "the prefix instead of everything". `mutate._run` reads only whether
+        #: it is zero.
+        self.ran = 0
+        #: Whether the run fell over rather than reporting: a module that would
+        #: not import, or a selection pytest refused. No later group can change
+        #: that answer, so the walk ends here.
+        self.stopped = False
+        #: `python_files`, out of the host project's own configuration rather
+        #: than assumed. Empty until the first `pytest.main` call configures.
+        self.patterns: list[str] = []
+        #: Where that configuration says the tree starts.
+        self.root = Path()
+
+    # -- what pytest tells us -------------------------------------------------
+
+    def pytest_configure(self, config: pytest.Config) -> None:
+        """Take the walk's vocabulary from the host project, not from here.
+
+        A tool that globbed ``test_*.py`` would be right about tupferl and wrong
+        about a project that spells its tests `*_test.py` or keeps them
+        somewhere else -- and wrong *quietly*, because a module the walk never
+        reaches turns a caught row into a reported survivor.
+        """
+        self.root = Path(str(config.rootpath))
+        self.patterns = [str(pattern) for pattern in config.getini("python_files")]
+
+    def pytest_runtest_logstart(self, nodeid: str, location: object) -> None:
+        """Counted here rather than from the reports, because this fires for a
+        test whose *setup* dies too -- which `unittest` also counted as a test
+        that started, and which is a `broke` that must not read as "nothing
+        ran"."""
+        self.ran += 1
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_protocol(
+        self, item: pytest.Item, nextitem: pytest.Item | None
+    ) -> Generator[None, object, object]:
+        """Arm the alarm around one whole test, and always cancel it.
+
+        Cancelled in a `finally` rather than only on the next arm, or a fast
+        test would be charged for the timer its predecessor set and the alarm
+        would land in whatever ran next -- a misattributed `broke` rather than a
+        wrong verdict, but one nothing could diagnose.
+        """
+        if self.each:
+            signal.setitimer(signal.ITIMER_REAL, self.each)
+        try:
+            return (yield)
+        finally:
+            if self.each:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_makereport(
+        self, item: pytest.Item, call: pytest.CallInfo[None]
+    ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+        """Classify here, where the exception object still exists.
+
+        See the module docstring for why this and not `pytest_runtest_logreport`:
+        by the time a report is logged, a failed `subTest` has become a separate
+        object and the owning test's own report reads ``passed``.
+        """
+        report = yield
+        if report.outcome == "failed":
+            self.answered(item.nodeid, call, report)
+        return report
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        """Charge each test for its three phases, and nothing twice.
+
+        A subtest's report is skipped rather than added: its duration is already
+        inside the owning test's ``call`` report, and adding it again would make
+        the tests that use `subTest` look dearer than they are to the ordering
+        that reads this. Recognised by carrying a ``context``, which is what
+        pytest hangs the subtest's parameters on -- not by its class name.
+
+        ``setup`` starts the sum again rather than adding to it, so a test named
+        in `first` and then reached again by the selection is charged for one
+        run instead of two. That is what the layer before this did, where one
+        assignment per test meant the last run won -- and it matters because
+        `Killers.prefix` divides rows-caught by cost, so a remembered killer
+        that looked twice as dear as it is would drop out of the cheap prefix.
+        """
+        if getattr(report, "context", None) is not None:
+            return
+        if report.when == "setup":
+            self.times[report.nodeid] = report.duration
+        else:
+            self.times[report.nodeid] = self.times.get(report.nodeid, 0.0) + report.duration
+
+    def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        """A module that will not import, reported before anything of it runs.
+
+        The parameter must be named ``report``: pluggy validates hookimpl
+        argument *names* against the hook specification and raises
+        `PluginValidationError` at registration for anything else.
+        """
+        if report.outcome == "failed":
+            self.stopped = True
+            self.broke.append(f"{report.nodeid or 'collection'}: {_stated(report.longrepr)}")
+
+    # -- what we make of it ---------------------------------------------------
+
+    def answered(self, nodeid: str, call: pytest.CallInfo[None], report: pytest.TestReport) -> None:
+        """Record one failure, in whichever of the two buckets it belongs to."""
+        # The two limits first, and by exception type rather than by phase,
+        # because by phase they are a test noticing. See `_carrier`.
+        if reason := _carrier(nodeid, call.excinfo, self.each):
+            self.broke.append(reason)
+            return
+        if call.when != "call":
+            # `setUpClass`, `setUpModule` and their teardowns. Nothing in them
+            # evaluated an assertion, so crediting the mutation to them would
+            # be crediting a test that never ran.
+            self.broke.append(f"{nodeid}: {call.when} failed -- {_said(call)}")
+            return
+        self.noticed.append(nodeid)
+        if not self.reasons:
+            # The first only. A `failfast` run stops here anyway, and a baseline
+            # -- which never uses `failfast` -- is diagnosed from the first
+            # failure just as well as from forty.
+            self.reasons.append(str(report.longrepr))
+
+    def beside(self, names: Sequence[str]) -> list[str]:
+        """Every test file next to the selection's own, and not in it.
+
+        Globbed from the sandbox rather than handed in, because the caller's row
+        names the *selection* and this is precisely the part it does not name.
+
+        The directories come from the selection rather than being spelled
+        ``tests`` here. Two reasons, and the second is why it is not a nicety:
+        the suite this tool runs lives wherever the caller's modules do, and a
+        constant would make the walk unreachable from `tests/test_verdict.py`,
+        whose sandboxes are flat throwaway modules.
+
+        **Not recursive, and so `norecursedirs` is deliberately not consulted.**
+        It looks beside the selection and no deeper, which is what the
+        `unittest` backend did and what the acceptance sweep compares against.
+        A recursive enumeration would need that setting to earn its keep: a
+        naive `rglob` of the default patterns over this very tree finds 71
+        files, 38 of them inside `.venv`, i.e. it would walk pytest's own test
+        suite. Anyone widening this owes that filter in the same change.
+        """
+        chosen = {as_path(name) for name in names}
+        found: set[str] = set()
+        for folder in sorted({str(Path(path).parent) for path in chosen}):
+            for pattern in self.patterns:
+                found |= {
+                    hit.relative_to(self.root).as_posix()
+                    for hit in (self.root / folder).glob(pattern)
+                }
+        # `sorted` rather than any set order: the walk order decides which test
+        # a row records as its killer, and a killer that moves between runs of
+        # the same sweep is a cache that never warms.
+        return sorted(found - chosen)
+
+    def over(self, group: Sequence[str], failfast: bool) -> None:
+        """One `pytest.main`, plus whatever its exit status says that no hook did.
+
+        The flags are the ones Phase 0 measured. ``-p no:cacheprovider`` is what
+        keeps a `.pytest_cache` out of the sandbox; ``-x`` is `failfast`,
+        spelled with pytest's own flag rather than by setting
+        `session.shouldstop`, and it stops on a `broke` as well as on a
+        `noticed` exactly as `unittest`'s did. Assertion rewriting is left on:
+        it costs below measurement here and Phase B's pytest-native `assert`
+        statements need it.
+        """
+        said = len(self.broke)
+        argv = ["-q", "-p", "no:cacheprovider", *(["-x"] if failfast else []), *group]
+        code = int(pytest.main(argv, plugins=[self]))
+        if code in ANSWERED:
+            return
+        # Said, not inferred. A usage error -- a nodeid in `first` that no
+        # longer exists, a module the selection names and the tree does not --
+        # is announced on pytest's own stdout and through no hook at all, and
+        # `mutate` sends that stream to `DEVNULL`. Without this the report would
+        # say "nothing ran" and the row would be filed as holding no tests.
+        self.stopped = True
+        if len(self.broke) == said:
+            over = " ".join(group) or "everything"
+            self.broke.append(f"pytest exited {_named(code)} over {over}")
+
+
+def _named(code: int) -> str:
+    """An exit status as pytest spells it, or as a number when it is not one."""
+    try:
+        return pytest.ExitCode(code).name
+    except ValueError:  # pragma: no cover - pytest exiting outside its own enum
+        return str(code)
+
+
+def _groups(
+    names: Sequence[str], first: Sequence[str], walk: bool, watcher: Watcher
+) -> Iterator[list[str]]:
+    """The `pytest.main` calls to make, in order, one at a time.
+
+    A generator rather than a list, and that is load-bearing twice over. The
+    walk's members are only knowable *after* the first call has configured --
+    `beside` reads the host project's `python_files` out of it -- and each group
+    beyond the selection is a module whose import nobody has paid for yet:
+    importing all 33 of this tree's test modules costs 250ms against 116ms for
+    one, so building the whole list up front would charge every caught row for
+    modules the walk never reaches.
+
+    `first` gets its own group rather than being pushed onto `names`, and that
+    is not tidiness. An empty `names` *means* the whole suite; prepending to the
+    list makes it non-empty, so "run everything" quietly becomes "run only
+    these three".
+    """
+    if first:
+        yield [as_path(name) for name in first]
+    if names:
+        yield from ([as_path(name)] for name in names)
+    else:
+        # No paths at all: pytest collects from `testpaths` or its rootdir,
+        # which is the sandbox. This is `mutate.WHOLE_SUITE`.
+        yield []
+    if walk and names:
+        yield from ([path] for path in watcher.beside(names))
 
 
 def collect(
-    names: list[str],
+    names: Sequence[str],
     failfast: bool,
     each: float = 0.0,
-    first: list[str] | None = None,
+    first: Sequence[str] = (),
     walk: bool = False,
 ) -> dict[str, Any]:
     """What the suite said, walking outward until something notices.
@@ -494,171 +610,46 @@ def collect(
     **The caller must have baselined the whole suite, not just the selection.**
     A row that walks outward can be caught by a module its selection never named,
     and on a tree that is already red that claim is free -- `failfast` stops at
-    the first red test whatever it was about. That is woswoar#268, and it is why
-    `mutate.run` baselines `WHOLE_SUITE` for a walking table.
+    the first red test whatever it was about. That is why `mutate.run` baselines
+    `WHOLE_SUITE` for a walking table.
     """
-    loader = unittest.TestLoader()
-    groups = _reached(names, walk)
-    # survivor: branch, drop-not -- unanswered rather than equivalent, and this is the honest state.
-    #   The walk is reached only by tests that drive a *nested* `mutate.run`, so a broken walk makes
-    #   that inner run hang or exit rather than fail -- and the harness files either as `BROKE`,
-    #   which is never `caught`. Two attempts are recorded: #73 gave the tests a deadline so a hang
-    #   fails, and #74 passed `strict=False` so an inapplicable row comes back in the report instead
-    #   of raising `SystemExit` out of the test. Both were verified against a chosen selection and
-    #   both still come back unanswered under the *generated* one, which is the lesson CLAUDE.md
-    #   states twice: the killer a sweep names is one route to a line, not all of them. Re-open with
-    #   the generated selection in hand, not a chosen one.
-    if not groups:
-        chosen = loader.discover(".", pattern="test_*.py", top_level_dir=".")
-        # `first` in its own argument rather than pushed onto `names`, and that is
-        # not tidiness. An empty `names` *means* the whole suite and the branch
-        # above is how; prepending to the list makes it non-empty, so "run
-        # everything" quietly becomes "run only these three".
-        groups, prepared = (
-            [],
-            (unittest.TestSuite([loader.loadTestsFromNames(first), chosen]) if first else chosen),
-        )
-        if loader.errors:
-            return _unloadable(loader)
-        ready: list[unittest.TestSuite] = [prepared]
-    else:
-        ready = []
-    armed = each_test(each)
-
-    def build(*args: Any, **kwargs: Any) -> Verdicts:
-        made = Verdicts(*args, **kwargs)
-        made.each = armed
-        return made
-
-    # survivor: off-by-one -- the third argument is `unittest`'s own verbosity, and the stream is a
-    #   `StringIO` nobody reads -- `collect` reports through `Verdicts`, never through what the
-    #   runner printed.
-    result = build(io.StringIO(), False, 0)
-    result.failfast = failfast
-    broke: list[str] = []
-    # survivor: branch -- tools/verdict.py:425 in collect() -- the `if` is never taken -- the
-    #   `first` prefix -- the remembered killer tried ahead of a row. Skipping it costs a longer run
-    #   and cannot change a verdict: the same tests run afterwards as part of the selection. That is
-    #   the whole design of the cache, and `Killers`/`Learned` have their own tests for what goes
-    #   into it.
-    if first and groups:
-        head = unittest.TestLoader()
-        # survivor: drop-call -- tools/verdict.py:427 in collect() -- the call to
-        #   `ready.append(...)` never happens -- same as `verdict.py:425`: the prefix is an ordering
-        #   optimisation, and dropping it changes when a killer is found rather than whether.
-        ready.append(head.loadTestsFromNames(first))
-        # survivor: branch -- tools/verdict.py:428 in collect() -- the `if` is never taken -- a
-        #   prefix naming a test that will not import. Reachable only from a killers cache written
-        #   by an older tree, which `Killers` already validates once per run -- so by the time
-        #   `collect` sees it, it has been checked.
-        if head.errors:
-            # survivor: return-value -- tools/verdict.py:429 in collect() -- returns `None` instead
-            #   of `_unloadable(head)` -- same branch as `verdict.py:428`, and the caller reads an
-            #   absent report as `broke` either way.
-            return _unloadable(head)
-    # survivor: drop-call -- tools/verdict.py:430 in collect() -- the call to
-    #   `result.startTestRun(...)` never happens -- `TextTestResult.startTestRun` is a hook with no
-    #   body in the stdlib, and `Verdicts` does not override it. Nothing in the process has anything
-    #   to do at that point.
-    result.startTestRun()
-    try:
-        for suite in ready:
-            suite(result)
-            # survivor: branch -- the `failfast` early exit inside one group. Losing it runs the
-            #   remaining tests of a group whose verdict is already decided -- slower, never
-            #   different, because `noticed` is already non-empty and that is what the outcome
-            #   reads.
-            if result.shouldStop:
-                break
-        else:
-            for group in groups:
-                # `result.noticed` as well as `shouldStop`, and only when
-                # walking. `failfast` is off for a hand-written table -- a red
-                # baseline is a thing you want the whole of -- so `shouldStop`
-                # alone would let a row that has *already* been caught carry on
-                # through the rest of the suite, turning every caught row on
-                # that path into a whole-suite run. Walking outward asks "has
-                # anything noticed yet", which is answered the moment one test
-                # has, whatever the caller wants to see of the rest.
-                #
-                # Not hoisted into the baseline's arm: there `failfast` being
-                # off is the request, and stopping at the first red module would
-                # report one shard of a broken tree as the whole story.
-                # survivor: branch, connector -- unanswered rather than equivalent, and this is the
-                #   honest state. The walk is reached only by tests that drive a *nested*
-                #   `mutate.run`, so a broken walk makes that inner run hang or exit rather than
-                #   fail -- and the harness files either as `BROKE`, which is never `caught`. Two
-                #   attempts are recorded: #73 gave the tests a deadline so a hang fails, and #74
-                #   passed `strict=False` so an inapplicable row comes back in the report instead of
-                #   raising `SystemExit` out of the test. Both were verified against a chosen
-                #   selection and both still come back unanswered under the *generated* one, which
-                #   is the lesson CLAUDE.md states twice: the killer a sweep names is one route to a
-                #   line, not all of them. Re-open with the generated selection in hand, not a
-                #   chosen one.
-                if result.shouldStop or (walk and result.noticed):
-                    break
-                # A fresh loader per group: `TestLoader.errors` accumulates, so a
-                # shared one would re-report an earlier group's failure against
-                # every later module.
-                step = unittest.TestLoader()
-                found = step.loadTestsFromNames(group)
-                if step.errors:
-                    broke = [str(error).splitlines()[0] for error in step.errors]
-                    break
-                found(result)
-    finally:
-        # survivor: drop-call -- tools/verdict.py:462 in collect() -- the call to
-        #   `result.stopTestRun(...)` never happens -- the matching hook, equally empty. Both are
-        #   called because the protocol says to, not because either does anything here.
-        result.stopTestRun()
-    # survivor: off-by-one -- `argv` indices into `_probe`'s own command line, which `_run` builds
-    #   three frames away in the same repository -- so the two are always the same revision and a
-    #   shifted index is a protocol break rather than an input. It shows up as every row coming back
-    #   `BROKE` at once, which no single fixture would diagnose better than the first sweep does.
+    watcher = Watcher(each_test(each))
+    for group in _groups(names, first, walk, watcher):
+        watcher.over(group, failfast)
+        # Three ways to stop, and they are not the same question. `stopped` is
+        # "no later group can change this answer". `failed` under `failfast` is
+        # the caller's request. `noticed` under `walk` is the walk's own
+        # question -- "has anything noticed yet" -- which is answered the moment
+        # one test has, and which a hand table must not be subjected to: there
+        # `failfast` being off is the request, and stopping at the first red
+        # module would report one shard of a broken tree as the whole story.
+        answered = watcher.noticed or watcher.broke
+        if watcher.stopped or (failfast and answered) or (walk and watcher.noticed):
+            break
     return {
         "loaded": True,
-        "ran": result.testsRun,
-        "noticed": result.noticed,
-        "killers": result.killers,
-        "reasons": result.reasons,
-        "times": result.times,
-        "broke": result.broke + broke,
-    }
-
-
-def _unloadable(loader: unittest.TestLoader) -> dict[str, Any]:
-    """A module that would not import, reported before anything runs.
-
-    Public API, and checked before running: the suite `loadTestsFromNames`
-    returns for an unimportable module holds a synthetic `_FailedTest` which
-    *is* a `TestCase`, so running it would report a test noticing.
-    """
-    return {
-        "loaded": True,
-        "ran": 0,
-        "noticed": [],
-        "killers": [],
-        "reasons": [],
-        "times": {},
-        # `str()` because typeshed types `errors` as exception classes while
-        # `unittest` actually appends formatted tracebacks; the first line is
-        # the "Failed to import test module: x" that says which.
-        "broke": [str(error).splitlines()[0] for error in loader.errors],
+        "ran": watcher.ran,
+        "noticed": watcher.noticed,
+        "killers": watcher.noticed,
+        "reasons": watcher.reasons,
+        "times": watcher.times,
+        "broke": watcher.broke,
     }
 
 
 def main(argv: list[str]) -> None:
     report, failfast = argv[0], argv[1] == "1"
+    # `first` is JSON rather than a space-joined slot: a pytest nodeid can
+    # contain spaces once anything is parametrized, and splitting on them would
+    # shred one name into several that select nothing.
+    #
     # `walk` in its own slot rather than inferred from the selection: a baseline
     # and a mutation can carry the *same* selection and must be run differently
     # -- the baseline asks whether that selection is green, the mutation asks
     # what in the whole suite notices. Inferring it from `names` cannot tell them
     # apart, and getting it wrong turns every baseline into a whole-suite run.
-    # survivor: negate -- `argv[5] == "1"` against `!=` flips whether the walk runs, and every test
-    #   that could see it drives a nested harness -- the same family as the walk rows above, and
-    #   unanswered for the same reason.
-    first, walk, names = [n for n in argv[4].split() if n], argv[5] == "1", argv[6:]
-    # Before the suite loads, not after: `discover` imports every test module,
+    first, walk, names = list(json.loads(argv[4])), argv[5] == "1", argv[6:]
+    # Before the suite loads, not after: collection imports every test module,
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))
     try:

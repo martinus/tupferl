@@ -101,7 +101,10 @@ jobs:
       #   unlimited ceiling as `sys.maxsize` rather than `RLIM_INFINITY`, so
       #   neither the arithmetic nor the enforcement of `verdict.cap` can be
       #   observed here. `tools/verdict.py` has said macOS ignores that limit
-      #   since it was written; this is the first suite that depends on it;
+      #   since it was written. Named twice, once per verdict backend: the
+      #   pytest layer and the `unittest` one it replaced hold the same two
+      #   classes, and `--exclude` anchors at a dot, so `tests.test_verdict`
+      #   deliberately does not also cover `tests.test_verdict_unittest`;
       # - there is no `/proc` here, so `mutate._from_proc` is unreachable and
       #   the address-space field it alone reads cannot be compared with
       #   anything. `_processes` dispatches to `ps` instead, and what that
@@ -111,6 +114,8 @@ jobs:
           --exclude tests.test_gitrepo.TestAPathThatIsNotUtf8
           --exclude tests.test_verdict.TestTheMemoryCapsArithmetic
           --exclude tests.test_verdict.TestAnOutOfMemoryTestIsNotAnAnswer
+          --exclude tests.test_verdict_unittest.TestTheMemoryCapsArithmetic
+          --exclude tests.test_verdict_unittest.TestAnOutOfMemoryTestIsNotAnAnswer
           --exclude tests.test_mutate.TestWhereThereIsAProc
 
   install:

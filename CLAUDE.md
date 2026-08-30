@@ -473,8 +473,8 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest, harness first** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phase 0 is measured and done, Phase A rewrites `tools/verdict.py`). Until Phase A lands this row is still true, so do not write a pytest-native test module yet: the unittest loader loads one as an *empty* suite, and its tests vanish from every sweep without anything going red |
-| `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout |
+| `tests/` | still written as stdlib `unittest` `TestCase`s, but **run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0 and A are done, Phase A2 ports `tools/run_tests.py`). A pytest-native module is still not safe to write: `run_tests.py` and its `--only`/`--exclude` are `unittest` loaders, and they load one as an *empty* suite, so its tests vanish from the preflight without anything going red |
+| `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the pytest classifier; `verdict_unittest.py` + `test_verdict_unittest.py` are the one it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` until Phase C |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on |
 
@@ -636,11 +636,13 @@ Five things are not where a newcomer would guess, all on purpose:
   and a table of 51 rows came back 51 for 51 twice before anyone read the line
   rather than the rows. The truth was 39.
 
-  What made it invisible for so long is that `tools/verdict.py` could not be
-  measured at all: a shard runs as `python -c <the source of verdict.py>`,
+  What made it invisible for so long is that the verdict layer (then
+  `tools/verdict.py`, now `tools/verdict_unittest.py`) could not be measured at
+  all: a shard runs as `python -c <the source of the verdict layer>`,
   where `sys.path[0]` is `''` -- resolved against the *current* directory at
   each import, where `python -m` fixes it at startup -- and
-  `test_a_flat_selection_looks_beside_itself` imported `tools` from inside an
+  `test_a_flat_selection_looks_beside_itself` (now in
+  `tests/test_verdict_unittest.py`) imported `tools` from inside an
   `os.chdir` block. Green under the suite, red under any shard that selected
   only that module. **Never issue an import from inside a chdir**, and read the
   baseline line before the verdicts.
@@ -748,11 +750,19 @@ has been dropped.
   and a fixture written for one proves nothing about the other. `discover`
   wraps everything into `loader.errors`; `loadTestsFromNames` wraps only what
   derives from `Exception`, so a syntax error or a module-scope `SystemExit`
-  escapes to `verdict.main`'s handler and comes back `loaded: False` instead.
-  Both correctly refuse to credit a test, which is the only thing that matters
-  — but two tests in `tests/test_verdict.py` were written with the fixtures
-  exactly backwards and failed. `TestABrokenModuleTakesTwoDifferentPaths` holds
-  the measured table.
+  escapes to `verdict_unittest.main`'s handler and comes back `loaded: False`
+  instead. Both correctly refuse to credit a test, which is the only thing that
+  matters — but two tests were written with the fixtures exactly backwards and
+  failed. `tests/test_verdict_unittest.py`'s
+  `TestABrokenModuleTakesTwoDifferentPaths` holds the measured table.
+
+  **This describes `tools/verdict_unittest.py` only.** pytest collects the same
+  way whether a module was named or found, so both routes report the failure
+  through `pytest_collectreport` and agree — measured, and asserted by
+  `tests/test_verdict.py`'s `TestABrokenModuleIsClassifiedTheSameWayTwice`,
+  which exists so a difference reappearing is loud rather than a difference in
+  what a *walk* concludes. It still governs `tools/run_tests.py`, which is a
+  `unittest` loader until Phase A2.
 - **Patching `sys.version_info` does not conjure the module.** A test that fakes
   3.11 and then lets the code `import tomllib` fails on a real 3.10 interpreter,
   where that module does not exist -- so it passes on every leg *except* the one
@@ -775,14 +785,22 @@ has been dropped.
   clearing `ECHO`, so the same call swallows the keypress on one and echoes it
   on the other. `conflicts.one_key` sets `ICANON` and `ECHO` itself and echoes
   the key deliberately, which is the same on every supported interpreter.
-- **`unittest`'s display string changed in 3.11, and `verdict.Verdicts.noticed`
-  holds it.** 3.10 renders `test_it (test_a.T)` where 3.11+ renders
-  `test_it (test_a.T.test_it)`. Four tests asserting on the *content* of
-  `noticed` passed locally and turned the `test (3.10)` leg red. Assert on
-  `killers` instead -- the same test as `module.Class.method`, which is what a
-  loader takes back. `verdict.py` already says why it is recorded separately:
-  "a display format is not an API". Asserting `len(noticed)` or that it is
-  empty is fine; asserting what is *in* it is not.
+- **`unittest`'s display string changed in 3.11, and
+  `verdict_unittest.Verdicts.noticed` holds it.** 3.10 renders
+  `test_it (test_a.T)` where 3.11+ renders `test_it (test_a.T.test_it)`. Four
+  tests asserting on the *content* of `noticed` passed locally and turned the
+  `test (3.10)` leg red. Assert on `killers` instead -- the same test as
+  `module.Class.method`, which is what a loader takes back;
+  `verdict_unittest.py` says why it is recorded separately: "a display format
+  is not an API".
+
+  **`tools/verdict.py` does not have this problem, and that is the argument for
+  the trade rather than an accident.** A pytest nodeid *is* the id a later run
+  feeds back, so `noticed` and `killers` are filled from one list and there is
+  no display format to drift. What it costs is that every id in
+  `sweeps/killers.json` changed shape; the cache is machine-local and
+  disposable, and `mutate._loadable` drops what the current backend cannot
+  name.
 - **`TestCase.enterContext` is 3.11.** On the 3.10 leg it is an
   `AttributeError`, so the tests reach for `contextlib.ExitStack` instead. Same
   family as the `tomllib` gotcha above, and the same leg catches it.
@@ -952,6 +970,56 @@ has been dropped.
     *created* on the macos leg and the test errors rather than tests there.
 
 #### The mutation harness
+
+- **The suite a probe runs is run by pytest, and a killer is a nodeid.**
+  `tools/verdict.py` hands each group to `pytest.main` in one process and
+  classifies at `pytest_runtest_makereport`, so a killer reads
+  `tests/test_sync.py::TestX::test_y` where it used to read
+  `tests.test_sync.TestX.test_y`. Three consequences, and the last is the one
+  that bites:
+
+  - `sweeps/killers.json` written before this is *dropped*, not migrated —
+    `mutate._loadable` asks pytest what it collects and keeps the intersection.
+    The cache is machine-local and gitignored, so the cost is one slow sweep.
+  - a **selection** is still dotted, because `mutants.targets_for` builds it out
+    of module names. The two spellings meet in three reachability filters, and
+    `mutate._reaches` is the one place that reconciles them. A nodeid compared
+    raw against a dotted selection matches *nothing* — which turns off every
+    ordering mechanism at once, costs the measured 3.9% and 6–10%, and **fails
+    nothing**.
+  - `TUPFERL_MUTATE_VERDICT=unittest` selects `tools/verdict_unittest.py`, the
+    classifier that was here before, for diagnosing a row the two disagree
+    about. A value that is neither is refused rather than defaulted: a typo that
+    silently fell back would report the two as agreeing when only one ever ran.
+
+- **`unittest` loads a module's classes alphabetically; pytest collects them in
+  definition order.** So the conversion changed which test reaches a mutated
+  line *first*, and where one test hangs under a mutation and a sibling fails
+  fast, that decides `caught` against `BROKE` -- and `BROKE` is never `caught`.
+  Measured on the Phase A acceptance sweep: five rows of `tools/mutants.py` that
+  the old runner caught came back `BROKE`, because `TestCappingTheTable`
+  (unittest index 2, file line 1406) and `TestLineEndingsThatAreNotNewline` both
+  arm `support.deadline` while their siblings `TestTheCap` (index 13, line 926)
+  and `TestTheOperators` (line 158) did not. Alphabetically the bounded ones ran
+  first and `failfast` stopped; in definition order the unbounded ones are
+  first. **The defect was always there** -- the ordering only decided whether
+  anything reached it.
+
+  The general form is the one this file already states five times, in its
+  newest spelling: *the killer a sweep reports is one route to the line, not all
+  of them* -- and **changing the runner changes which route is first**. So when
+  a row moves to `BROKE`, look for an unbounded sibling of a class that is
+  bounded, before suspecting the harness.
+
+  **A per-case bound inside a `subTest` loop does not bound the test.** This is
+  the correction to the "arm it inside the `subTest`" rule above, not a repeat
+  of it: `subTest` *catches* the `TimeoutError`, records a failure and carries
+  on, so a loop over twenty operators costs twenty times the bound. Measured on
+  `TestTheOperators`, whose `mutate` helper already armed `support.deadline` per
+  call: past 60s under one mutation, against a 30s alarm. It needs the class
+  bound **as well** -- and that works because `deadline` restores the outer
+  alarm with only its remaining time, so the class bound fires almost at once on
+  the next case rather than being swallowed with the first.
 
 - **A test's own timeout must *beat* the harness's, not merely exist.**
   `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
@@ -1380,7 +1448,7 @@ read this file:
   same instant. The effect is real and measured: bunching them costs 3040 ->
   3181 survivor lane-seconds, **1.6%**.
 
-  Seeding `verdict._reached`'s walk from `_key(row)` -- selection untouched,
+  Seeding `verdict_unittest._reached`'s walk from `_key(row)` -- selection untouched,
   walk beyond it shuffled -- was **12.7% slower** (208.56s / 208.43s against
   184.98s / 185.46s). But the timing is the least of it.
 

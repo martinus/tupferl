@@ -194,7 +194,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
         killer = report.results[0].verdict.killer
         self.assertTrue(
-            killer.startswith("tests.test_config."),
+            killer.startswith("tests/test_config.py::"),
             f"caught, but not by the module the walk had to reach: {killer}",
         )
         self.assertTrue(report.widened)
@@ -355,7 +355,21 @@ if __name__ == "__main__":
 #: kept". This module's own name, so it cannot go stale without this file
 #: being edited -- and if it is renamed, the test that depends on it is right
 #: here rather than somewhere that would fail mysteriously.
-REAL = "tests.test_mutate.TestRememberingWhatCaughtEachMutation.test_a_remembered_test_runs_first"
+#:
+#: A **pytest nodeid**, because that is what `mutate._loadable` asks pytest
+#: about and what a killers cache written by a sweep holds. Spelled with the
+#: unittest dots it would simply be dropped as an id that no longer resolves,
+#: and every assertion below would read "" -- which is how these four classes
+#: failed when the backend changed, correctly.
+REAL = (
+    "tests/test_mutate.py::TestRememberingWhatCaughtEachMutation::test_a_remembered_test_runs_first"
+)
+
+#: The class holding it, spelled the way a **selection** is spelled: dotted,
+#: because `mutants.targets_for` builds selections out of module names. The two
+#: formats meeting in one comparison is exactly what `mutate._reaches` is for,
+#: so this is written out rather than derived from `REAL`.
+REAL_CLASS = "tests.test_mutate.TestRememberingWhatCaughtEachMutation"
 
 
 def row(
@@ -521,6 +535,219 @@ class TestTheKillerIsRecordedAtAll(unittest.TestCase):
         self.assertEqual({result.verdict.killer}, mutate._loadable([result.verdict.killer]))
 
 
+class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
+    """`TUPFERL_MUTATE_VERDICT`: two classifiers, and a typo that must be loud.
+
+    The acceptance gate for the pytest conversion is two whole-tree sweeps of
+    the same command line differing only in this variable, so a mistyped value
+    that fell back to the default would report the pair as agreeing when only
+    one of them ever ran. That is CLAUDE.md §8's shape exactly, which is why
+    the refusal is asserted rather than the fallback.
+    """
+
+    def layer(self, value: str | None) -> str:
+        env = {name: held for name, held in os.environ.items() if name != mutate._VERDICT}
+        if value is not None:
+            env[mutate._VERDICT] = value
+        with mock.patch.dict(os.environ, env, clear=True):
+            return mutate._layer()
+
+    def test_pytest_is_what_a_sweep_uses(self) -> None:
+        """The backend's *name*. Which file holds it is
+        `test_the_source_handed_over_is_the_one_named`'s claim, and keeping the
+        two apart is why renaming that file cannot change a branch about
+        cache validity."""
+        self.assertEqual("pytest", self.layer(None))
+        self.assertEqual("pytest", self.layer("pytest"))
+
+    def test_the_classifier_it_replaced_can_still_be_asked_for(self) -> None:
+        self.assertEqual("unittest", self.layer("unittest"))
+
+    def test_a_name_that_is_neither_is_refused_rather_than_defaulted(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            self.layer("pytst")
+        # The alternatives are in the message, so a typo answers itself rather
+        # than sending the reader to this file.
+        self.assertIn("pytest", str(caught.exception))
+        self.assertIn("unittest", str(caught.exception))
+
+    def test_the_source_handed_over_is_the_one_named(self) -> None:
+        """The two backends are two files, not two branches inside one -- so a
+        row diagnosed under `unittest` really is graded by the code that was
+        here before, rather than by today's with a flag set."""
+        with mock.patch.dict(os.environ, {mutate._VERDICT: "unittest"}):
+            self.assertIn("unittest.TextTestResult", mutate._probe())
+        with mock.patch.dict(os.environ, {mutate._VERDICT: "pytest"}):
+            self.assertIn("pytest_runtest_makereport", mutate._probe())
+
+    def test_either_layer_can_actually_grade_a_row(self) -> None:
+        """Which file is read is not the claim; that `_run` can drive it is.
+
+        **This is the test that was missing, and its absence cost the switch.**
+        `_run` gained a JSON `first` slot and only one of the two layers was
+        taught to read it, so `TUPFERL_MUTATE_VERDICT=unittest` answered
+        `broke` -- with `Failed to import test module: []` -- for every row
+        including the baseline. The assertion above passed throughout: it reads
+        the source and never runs it, which is CLAUDE.md §8's "a passing check
+        and a real check are different things".
+
+        Driven through the real `_run`, on a real mutation, once per layer.
+        `strict=False` because a hand-built table must not stop at a row a layer
+        cannot answer -- and answering is exactly what is being asserted.
+        """
+        for layer in sorted(mutate._LAYERS):
+            with self.subTest(layer=layer), mock.patch.dict(os.environ, {mutate._VERDICT: layer}):
+                found = mutate.run(
+                    [UNKNOWN_KEY_GUARD],
+                    baseline=False,
+                    workers=1,
+                    summarise=False,
+                    strict=False,
+                )
+                (result,) = found.results
+                self.assertEqual(
+                    "caught",
+                    result.verdict.outcome,
+                    f"{layer} could not grade a row: {result.verdict.detail}",
+                )
+                self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
+
+
+class TestTwoSpellingsOfTheSameTest(unittest.TestCase):
+    """`_dotted` and `_reaches`: a killer's nodeid meeting a dotted selection.
+
+    A selection is dotted under either backend -- `mutants.targets_for` builds
+    it out of module names -- while a killer under pytest is a nodeid. The two
+    meet in three reachability filters, and a mismatch there is invisible:
+    `run_tests.selects` anchors at a dot, so a nodeid compared as it stands
+    matches *nothing*, every remembered and learned test is dropped, and the
+    sweep loses the orderings measured at 3.9% and 6-10% with nothing red.
+    """
+
+    def test_a_nodeid_becomes_the_dotted_id(self) -> None:
+        self.assertEqual(
+            "tests.test_sync.TestX.test_y", mutate._dotted("tests/test_sync.py::TestX::test_y")
+        )
+
+    def test_a_file_with_no_node_parts_is_still_a_module(self) -> None:
+        self.assertEqual("tests.test_sync", mutate._dotted("tests/test_sync.py"))
+
+    def test_an_id_that_is_already_dotted_is_left_alone(self) -> None:
+        """Both spellings reach these filters while both backends exist, and
+        translating twice would be as wrong as not translating at all."""
+        self.assertEqual(
+            "tests.test_sync.TestX.test_y", mutate._dotted("tests.test_sync.TestX.test_y")
+        )
+
+    def test_a_selection_covers_a_killer_in_either_spelling(self) -> None:
+        for killer in (
+            "tests/test_sync.py::TestX::test_y",
+            "tests.test_sync.TestX.test_y",
+        ):
+            with self.subTest(killer=killer):
+                self.assertTrue(mutate._reaches(killer, "tests.test_sync"))
+
+    def test_it_still_refuses_a_neighbour_whose_name_is_a_prefix(self) -> None:
+        """`selects` anchors at a dot so `--only tests.test_sync` does not drag
+        `tests/test_sync_chunks.py` under the same policy. Translating the
+        spellings must not lose that -- and a substring match would."""
+        self.assertFalse(
+            mutate._reaches("tests/test_sync_chunks.py::T::test_it", "tests.test_sync")
+        )
+
+
+class TestWhichRememberedIdsStillResolve(unittest.TestCase):
+    """`_loadable`: what may be put in front of a run.
+
+    An id that no longer names a test is not a slow cache, it is a wall of
+    `BROKE`: pytest refuses the whole invocation for one name it cannot find,
+    so every row that remembered a renamed test would answer nothing.
+    """
+
+    def test_a_real_nodeid_survives_and_a_renamed_one_does_not(self) -> None:
+        found = mutate._loadable([REAL, "tests/test_mutate.py::TestNothing::test_gone"])
+        self.assertEqual({REAL}, found)
+
+    def test_a_cache_from_the_other_backend_is_dropped_rather_than_handed_over(self) -> None:
+        """`sweeps/killers.json` written before the conversion holds dotted ids,
+        and the file is machine-local and gitignored -- so the first sweep after
+        it simply runs at yesterday's speed. Handed to pytest instead, those
+        ids are a usage error that refuses the run."""
+        self.assertEqual(set(), mutate._loadable([_dotted_form(REAL)]))
+
+    def test_asking_about_nothing_asks_pytest_nothing(self) -> None:
+        """`ahead_of` calls this with an empty set on every fresh cache, and
+        asking pytest what it collects is a subprocess and half a second."""
+        with mock.patch.object(subprocess, "run") as never:
+            self.assertEqual(set(), mutate._loadable([]))
+        never.assert_not_called()
+
+
+def _dotted_form(nodeid: str) -> str:
+    """`REAL` as the backend before this one would have written it.
+
+    Spelled out here rather than through `mutate._dotted`, so that this file
+    does not check one function with another.
+    """
+    path, _, rest = nodeid.partition("::")
+    return ".".join([path.removesuffix(".py").replace("/", "."), *rest.split("::")])
+
+
+class TestWhatEveryProbeIsHandedOnItsCommandLine(unittest.TestCase):
+    """The sandbox contract: which argv slot is which, and the environment.
+
+    Read off the spawn rather than asserted inside `_run`, because it *is* a
+    protocol -- `tools/verdict.py` reads these positions out of `sys.argv`, and
+    the two files only ever ship together. A slot that quietly moved shows up as
+    every row coming back `BROKE` at once, which no single fixture diagnoses
+    better than the first sweep does; these say which slot instead.
+    """
+
+    def spawn(self, **how: Any) -> tuple[list[str], dict[str, str]]:
+        """The argv and environment `_run` built, through the one `Popen` fake.
+
+        Borrowed from `TestHowOneRunsOutcomeIsClassified` rather than copied:
+        this class asks what the spawn *looked like* where that one asks what
+        the report *became*, and the two questions share a stand-in for the same
+        protocol. Written twice, the second copy had already lost the `_end`
+        patch and pinned `returncode` where the first sets it.
+        """
+        holder = TestHowOneRunsOutcomeIsClassified()
+        holder.verdict(holder.GREEN, **how)
+        return list(holder.spawned["argv"]), dict(holder.spawned["env"])
+
+    def test_the_prefix_travels_as_json_rather_than_space_joined(self) -> None:
+        """A pytest nodeid can hold a space the moment anything is parametrized,
+        and a space-joined slot shreds one name into several that select
+        nothing -- silently, because selecting nothing is not an error to
+        pytest."""
+        argv, _ = self.spawn(first=["a.py::T::test_one[a b]", "b.py::T::test_two"])
+        self.assertEqual(["a.py::T::test_one[a b]", "b.py::T::test_two"], json.loads(argv[8]))
+
+    def test_an_empty_prefix_is_still_a_list(self) -> None:
+        """`verdict.main` reads the slot with `json.loads` unconditionally, so
+        an empty prefix has to be `[]` rather than the empty string it was."""
+        argv, _ = self.spawn()
+        self.assertEqual([], json.loads(argv[8]))
+
+    def test_the_selection_comes_after_the_walk_flag_and_not_inside_it(self) -> None:
+        """The trap `first`'s own slot exists for: an empty selection *means*
+        the whole suite, so anything that slid into it would turn "run
+        everything" into "run these"."""
+        argv, _ = self.spawn(first=["a.py::T::test_one"], walk=True)
+        self.assertEqual("1", argv[9])
+        self.assertEqual(["tests.test_paths"], argv[10:])
+
+    def test_the_suite_runs_with_pytest_plugin_autoload_off(self) -> None:
+        """Measured at 79.5 ms a probe, and it belongs here rather than in the
+        verdict layer because it decides what the *suite* runs under: the
+        sandbox contract is `mutate`'s to own, and a host project that needs an
+        autoloaded plugin changes it in one place."""
+        _, env = self.spawn()
+        self.assertEqual("1", env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"])
+        self.assertEqual("1", env["PYTHONDONTWRITEBYTECODE"])
+
+
 #: A test module that hangs on a blocking read, and one that does not. Written
 #: to a throwaway directory rather than kept in `tests/`, because `run_tests`
 #: discovers everything here and a permanently-hanging test in the tree is the
@@ -561,7 +788,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         self,
         each: float,
         wait: float = BOUND,
-        first: str = "",
+        first: tuple[str, ...] = (),
         names: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Drive the real probe, in a real subprocess, on a real fifo.
@@ -602,7 +829,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                     "0",
                     "0",
                     str(each),
-                    first,
+                    json.dumps(list(first)),
                     # A baseline's shape: these tests are about what one named
                     # selection reports, and a walk would run the sandbox's
                     # other modules under each of them.
@@ -761,9 +988,10 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         times = found.times or {}
         self.assertTrue(times, "the run recorded no test timings at all")
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
-        # exactly what should have been measured.
+        # exactly what should have been measured. Keyed by nodeid, which is what
+        # the ids `Killers` orders by are.
         self.assertTrue(
-            any(name.startswith("tests.test_paths.") for name in times), sorted(times)[:5]
+            any(name.startswith("tests/test_paths.py::") for name in times), sorted(times)[:5]
         )
         self.assertTrue(all(seconds >= 0 for seconds in times.values()))
 
@@ -811,8 +1039,7 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         """`tests.test_mutate.TestX` selects `tests.test_mutate.TestX.test_y`.
         Comparing module names made this never match, so any row selected at
         class granularity silently lost the prefix."""
-        klass = REAL.rsplit(".", 1)[0]
-        self.assertEqual(REAL, self.ahead(klass).first)
+        self.assertEqual(REAL, self.ahead(REAL_CLASS).first)
 
     def test_a_row_that_cannot_reach_it_still_does_not_pay(self) -> None:
         """The guard the two above must not break: a test in a module that does
@@ -874,7 +1101,7 @@ class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
             # timeout -- proving the discovery worked, at thirty seconds a run.
             each=2,
             wait=30,
-            first="tests.test_hang.TestOne.test_is_fine",
+            first=("tests.test_hang.TestOne.test_is_fine",),
             names=(),
         )
         # Two tests in that module, and the prefix names one of them -- so it
@@ -4896,12 +5123,19 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
     KILLER = "tests.test_sync.TestTheDecisionTable.test_it"
     FRONT = "tests.test_sync.TestSomethingElse.test_other"
 
-    def first_for(self, mutation: Mutation) -> str:
-        """What `_attempt` hands `_run` as its `first`, for one row."""
-        seen: list[str] = []
+    def first_for(self, mutation: Mutation) -> list[str]:
+        """What `_attempt` hands `_run` as its `first`, for one row.
+
+        A list, because that is the slot's shape now: `_run` JSON-encodes it
+        rather than joining it with spaces, so that a nodeid containing one
+        survives the argv. Read here as the list it is -- `str()` on it and a
+        `split()` afterwards would compare the repr's brackets and quotes and
+        agree with almost nothing.
+        """
+        seen: list[list[str]] = []
 
         def watch(*args: object, **kw: object) -> mutate.Verdict:
-            seen.append(str(kw["first"]))
+            seen.append([str(name) for name in typing.cast(Sequence[str], kw["first"])])
             return mutate.Verdict("caught", "probe", killer=self.KILLER)
 
         learned = mutate.Learned()
@@ -4929,7 +5163,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
     def test_a_recorded_killer_runs_before_the_learned_front(self) -> None:
         """The row this exists for. `exact` is what `Killers.ahead_of` sets when
         it found this row's own killer."""
-        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        got = self.first_for(self.row(first=self.KILLER, exact=True))
         self.assertEqual([self.KILLER, self.FRONT], got)
 
     def test_a_general_prefix_runs_after_it(self) -> None:
@@ -4937,7 +5171,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         the test above. The cheap prefix is *not* about this row -- it is the
         tests that catch a lot per second across the table -- so the learned
         front, which is at least about this row's neighbours, precedes it."""
-        got = self.first_for(self.row(first=self.KILLER, exact=False)).split()
+        got = self.first_for(self.row(first=self.KILLER, exact=False))
         self.assertEqual([self.FRONT, self.KILLER], got)
 
     def test_the_learned_front_still_follows_a_killer_rather_than_being_dropped(
@@ -4948,7 +5182,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         guess before the whole selection. It costs nothing when the killer is
         right, because the killer has already answered by then.
         """
-        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        got = self.first_for(self.row(first=self.KILLER, exact=True))
         self.assertIn(self.FRONT, got, "the learned front was dropped, not demoted")
 
 
@@ -5680,8 +5914,18 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
         held: int = 0,
         stderr: str = "",
         hang: bool = False,
+        **how: Any,
     ) -> mutate.Verdict:
-        """`_run` against a probe that behaved as described."""
+        """`_run` against a probe that behaved as described.
+
+        The spawn itself is recorded on `self.spawned` as well, because
+        `TestWhatEveryProbeIsHandedOnItsCommandLine` asks a different question of
+        the same fake -- what argv and environment `_run` built -- and a second
+        copy of this `Popen` stand-in was already drifting from this one within a
+        single change.
+        """
+        spawned: dict[str, Any] = {}
+        self.spawned = spawned
 
         class Probe:
             pid = 4242
@@ -5692,6 +5936,7 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
                 # off the command line rather than reaching into `_run` is what
                 # keeps this a test of the protocol.
                 self.returncode = returncode
+                spawned["argv"], spawned["env"] = list(argv), dict(kwargs["env"])
                 Path(kwargs["stderr"].name).write_text(stderr, encoding="utf-8")
                 if written is not None:
                     Path(argv[4]).write_text(json.dumps(written), encoding="utf-8")
@@ -5714,7 +5959,10 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
             mock.patch.object(mutate, "_WATCHED", Watched()),
             mock.patch.object(mutate, "_end", lambda probe: None),
         ):
-            return mutate._run(["tests.test_paths"], Path(root), memory=1 << 31)
+            # `how` is whatever the caller wants `_run` itself told -- `first`,
+            # `walk`, `failfast`. Nothing here reads them; they are how
+            # `TestWhatEveryProbeIsHandedOnItsCommandLine` varies the spawn.
+            return mutate._run(["tests.test_paths"], Path(root), memory=1 << 31, **how)
 
     def test_a_probe_that_never_answers_is_a_timeout(self) -> None:
         """Its own outcome, not an exception: a generated mutant can turn a loop

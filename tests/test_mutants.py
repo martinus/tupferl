@@ -156,7 +156,32 @@ class TestWhatMayBeMutated(unittest.TestCase):
 
 
 class TestTheOperators(unittest.TestCase):
-    """One fixture where each fires, one where it must not."""
+    """One fixture where each fires, one where it must not.
+
+    **Bounded for the whole test, not only per case, and that distinction is the
+    finding.** `mutate` above already arms `support.deadline` around each call,
+    which is CLAUDE.md's "arm it inside the `subTest`" -- and it is not enough
+    here, because `subTest` *catches* the `TimeoutError`, records a failure and
+    carries on with the next operator. With one bound per case and twenty
+    operators the test costs twenty times the bound: measured under
+    `line_starts`' `at += 1` becoming `at -= 1`, this test ran past 60s, the
+    harness's 30s alarm fired first, and the row came back `BROKE` -- never
+    `caught`. With the bound below it fails in 5.35s.
+
+    It was always so and nothing showed it, because `unittest` loads classes
+    alphabetically and `TestLineEndingsThatAreNotNewline` -- which is bounded --
+    sorted ahead of this one, caught the mutation, and `failfast` stopped before
+    this class ran. pytest collects in *definition* order, and this class is at
+    the top of the file. Same lesson as the class docstrings below, in the one
+    spelling nobody had reached: **the killer a sweep reports is one route to
+    the line, not all of them**, and changing the runner changes which route is
+    first.
+    """
+
+    def setUp(self) -> None:
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(support.PATIENCE, "an operator never finished"))
 
     def prose(self, body: str, operators: list[str]) -> list[str]:
         return [row.label.split(" -- ", 1)[1] for row in mutate(body, operators=operators)]
@@ -924,6 +949,25 @@ class TestTheLabel(unittest.TestCase):
 
 
 class TestTheCap(unittest.TestCase):
+    """`cap`'s round-robin, from the other side of the file.
+
+    **Bounded for the reason `TestCappingTheTable` gives, and it needs its own
+    copy.** That class arms the same deadline and says why: turning
+    `len(kept) < limit` into `<=` leaves the outer loop true while the inner one
+    appends nothing, so the queues never drain and the call hangs. These three
+    tests call `cap` too, so the same four mutations hang here -- and under
+    `unittest`'s alphabetical order `TestCappingTheTable` ran first and caught
+    them, so nothing ever showed that this class was unguarded. pytest collects
+    in definition order and reaches this one first: measured, four rows that
+    were `caught` came back `BROKE`, and `BROKE` is never `caught`. With the
+    bound below they fail in 5.10s.
+    """
+
+    def setUp(self) -> None:
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(support.deadline(support.PATIENCE, "cap never finished"))
+
     def rows(self, path: str, count: int) -> list[Mutation]:
         return [Mutation(f"{path}:{n}", path, "a", "b", "t", span=(n, n + 1)) for n in range(count)]
 
