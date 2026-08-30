@@ -1232,6 +1232,24 @@ has been dropped.
   redirected. The stub restores `SIG_DFL` itself since v0.5, so this particular
   test no longer cares — but the general hazard stands for any fixture about
   signals, and a POSIX shell **cannot** reset a signal it inherited as ignored.
+- **A redirected stream is *block* buffered, so `flush=True` at one call site
+  is not a fix.** Every documented way of running a sweep sends stdout to a
+  log, and `print` to a non-terminal holds ~8 KiB before writing. `_attempt`
+  learned this and flushes its progress line; the *header* prints did not, and
+  a detached sweep then showed **0 bytes for its first five minutes** — checked
+  at 35s and again at 2:25 with forty lanes working the whole time — because
+  `slowest_first` puts the survivors first and no row completed to carry the
+  header out.
+
+  That is the ambiguity [`tools/watch.py`](tools/watch.py) exists to remove:
+  silence reads identically to progress. `mutate.main` now sets
+  `sys.stdout.reconfigure(line_buffering=True)` **once**, because remembering
+  `flush=True` per call site is the thing that already failed. One write
+  syscall per line against a job measured in minutes.
+
+  The general form: **when a lesson is written down as a per-call-site habit,
+  check whether it can be set once instead.** The habit is what rots.
+
 - **A mutation sweep is minutes to hours.** Launch it detached, record the pid,
   and watch it with `tools/watch.py` — never identify the job by pattern.
   `pgrep -f` matches the asking shell's own command line, which reported a dead

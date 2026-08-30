@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import io
 import itertools
 import json
 import os
@@ -36,6 +37,7 @@ import time
 import typing
 import unittest
 from collections.abc import Sequence
+from contextlib import redirect_stderr, redirect_stdout, suppress
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -3714,6 +3716,53 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         stop this vetoing the kill. A header line, a locale this cannot parse,
         and a pid column with no date all take that path."""
         self.assertEqual({}, mutate._parse_lstart("  PID STARTED\n  431 not a date at all\n"))
+
+
+class TestTheLogIsReadableWhileItIsBeingWritten(unittest.TestCase):
+    """`main` asks for line buffering, so a detached sweep says something.
+
+    A stream that is not a terminal is *block* buffered, and every documented
+    way of running a sweep redirects to a log -- so an unflushed header arrives
+    in 8 KiB steps of about a hundred rows. `_attempt` already passes
+    `flush=True` for its progress line, and its comment records a sweep whose
+    log "sat empty for five minutes because its header was 250 bytes and
+    nothing had flushed it". The header prints never got the same treatment,
+    and a sweep launched detached did it again: six minutes of empty log while
+    forty lanes worked.
+
+    `tools/watch.py` exists because silence reads identically to progress, so
+    this is not cosmetic -- it is the premise that tool rests on.
+    """
+
+    class Recording(io.StringIO):
+        """A capture that remembers being reconfigured, which `StringIO` cannot.
+
+        The claim under test is that `main` *asks*; whether CPython then
+        flushes is CPython's to keep. Driving a real redirected sweep would
+        test the interpreter and take a sweep to do it.
+        """
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.asked: dict[str, object] = {}
+
+        def reconfigure(self, **how: object) -> None:
+            self.asked.update(how)
+
+    def test_it_asks_for_line_buffering(self) -> None:
+        spill = self.Recording()
+        with redirect_stdout(spill), redirect_stderr(io.StringIO()), suppress(SystemExit):
+            mutate.main(["--list", "--base", "HEAD"])
+        self.assertEqual({"line_buffering": True}, spill.asked)
+
+    def test_a_stream_that_cannot_be_reconfigured_is_not_an_error(self) -> None:
+        """A dozen tests here call `main` under `support.quiet`, whose capture
+        is a plain `StringIO` with no `reconfigure`. Asked rather than
+        suppressed, so this is the behaviour rather than a swallowed
+        `AttributeError` -- and without the guard those tests all raise."""
+        self.assertFalse(hasattr(io.StringIO(), "reconfigure"))
+        with support.quiet(), suppress(SystemExit):
+            mutate.main(["--list", "--base", "HEAD"])
 
 
 class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
