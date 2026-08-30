@@ -30,10 +30,10 @@ def only() -> Iterator[Callable[..., None]]:
     one asserts a default.
 
     A fixture handing back a *callable* rather than one that patches on entry,
-    because each test names a different environment and several call it after
-    deciding what to name. The `ExitStack` unwinds at teardown whether the test
-    called it once, twice or not at all -- which is what the `addCleanup` this
-    replaced did, without needing a base class to hang it on.
+    because each test names a different environment, and a fixture that patched
+    on entry could not know which. Every one of the eleven call sites calls it
+    exactly once; the `ExitStack` is what unwinds at teardown, which is what the
+    `addCleanup` this replaced did without needing a base class to hang it on.
     """
     with ExitStack() as stack:
 
@@ -158,7 +158,7 @@ class TestTheRepositoryLayout:
     @pytest.mark.parametrize(
         "build",
         [paths.host_overlay, paths.snapshot_dir],
-        ids=lambda build: str(build.__name__),
+        ids=["host_overlay", "snapshot_dir"],
     )
     def test_a_hostile_hostname_cannot_escape(self, build: Callable[[Path, str], Path]) -> None:
         """The check is on the path builders too, not only on `hostname()` --

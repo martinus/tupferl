@@ -1447,8 +1447,10 @@ not new coverage. Nothing disappeared; the mapping is in the PR.
 ### `tests/conftest.py` was not created, and that is the divergence
 
 The cluster table above says B1 creates it "initially near-empty". It does not,
-because after converting all eight modules **nothing in them is shared**. The
-three fixtures B1 wrote are each used by exactly one file: `only` (an
+because after converting all eight modules **no *fixture* in them is shared**.
+That is narrower than "nothing is shared", and the distinction matters: what B1
+did share it shared through `tests/support.py` and CLAUDE.md, which is where
+those belong. The three fixtures B1 wrote are each used by exactly one file: `only` (an
 `os.environ` holding precisely what a test names) in `test_paths.py`, `box` (a
 throwaway directory) in `test_config.py`, and `merged_under` (a real
 `~/.gitconfig` naming a conflict style) in `test_merge.py`.
@@ -1458,6 +1460,33 @@ nothing yet backs, and §0 is about exactly that kind of sentence. B3 is the
 first cluster with machinery two modules genuinely share (`SandboxCase` →
 `sandbox`), so the file arrives in the PR that justifies it, and the table above
 now says so.
+
+**Two things B1 shared as prose rather than as code, and both are deliberate.**
+The comment-stripping rule now has two spellings in two files, and the
+"parametrize over a computed list needs a non-empty companion" invariant has
+four. Both are named as follow-ups below rather than extracted here -- see
+"Declined in the review, and why".
+
+### Declined in the review, and why
+
+The `/simplify` pass raised two structural findings that were not applied, and
+CLAUDE.md §3 asks that a declined finding be argued rather than dropped.
+
+- **A `support.over(argnames, cases)` wrapper refusing an empty case list.**
+  The invariant is real and is currently written four ways (`test_ci`,
+  `test_release`, `test_errors`, `test_config` each guard it differently), and
+  25 modules follow. But it is a *new shared abstraction* introduced in a
+  conversion PR, with only one cluster's worth of evidence about what shape it
+  wants. **B2 is the right home**, with two clusters to validate it against;
+  after B3 the retrofit becomes its own PR, so it should not slip further.
+- **Extracting `settings()` into one shared helper.** `tests/test_ci.py` and
+  `tests/test_release.py` now hold byte-identical strippers. Extracting one
+  invites extracting `jobs()` too -- and those genuinely are two different
+  parsers (a line accumulator against `re.finditer`) for one YAML shape, which
+  needs its own perturbation evidence over both workflows. That is a PR, not a
+  paragraph. What *was* fixed here is the half that made a test unfailable:
+  `test_release.jobs()` now strips in the parser rather than at four call
+  sites, and has the both-halves test it never had.
 
 ### The `unittest` verdict layer lost its footing, loudly, and one test moved
 

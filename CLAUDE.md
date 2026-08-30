@@ -588,6 +588,14 @@ Five things are not where a newcomer would guess, all on purpose:
   drives a real sync** except `tests/test_overlays.py`, which asserts the two
   differ before it asserts anything else. The general shape is §2's "two
   symmetric inputs"; this is the spelling it takes here.
+- **A test wanting a throwaway directory uses `tests/support.py`'s `tempdir`,
+  never pytest's `tmp_path`.** `tmp_path` keeps the last three numbered roots
+  per user under `/tmp/pytest-of-<user>`, and a sweep runs thousands of probes
+  as separate processes racing over that numbering. `support.tempdir` removes
+  its own tree in a `finally` and names what survived if the delete fails. This
+  is written here rather than only beside `tests/test_config.py`'s `box`
+  fixture, because it binds every module Phase B has yet to convert and nobody
+  writing one of those will read that docstring first.
 - **Every `raise TupferlError` is checked by a test, not by habit.**
   `tests/test_errors.py` reads them all out with `ast` and asserts plan §5's
   shape: one semicolon (what happened; what to do next), one full stop, one
@@ -759,7 +767,7 @@ measurement pins it.
 
 ### Gotchas
 
-Thirty-five of them, and each is here because it cost somebody an afternoon.
+Forty-eight of them, and each is here because it cost somebody an afternoon.
 Grouped rather than run together: as one flat list of 461 lines this was a
 section a reader scanned past. The entries themselves are unchanged and none
 has been dropped.
@@ -1054,10 +1062,9 @@ has been dropped.
     about. A value that is neither is refused rather than defaulted: a typo that
     silently fell back would report the two as agreeing when only one ever ran.
 
-    **What it can still grade shrinks with every Phase B cluster, and the
-    failure is loud rather than silent.** That layer runs `unittest`'s own
-    loader, which refuses a pytest-native module with `calling <class ...>
-    returned <object>, not a test` -- so every row whose selection names a
+    **What it can still grade shrinks with every Phase B cluster.** That layer
+    runs `unittest`'s own loader, which refuses a pytest-native module with
+    `calling <class ...> returned <object>, not a test` -- so every row whose selection names a
     converted module comes back `broke` under it. As of B1 that is
     `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`,
     `test_ci`, `test_release` and `test_paths`. The one module that stays
@@ -1065,6 +1072,14 @@ has been dropped.
     with its subject in Phase C -- so `tests/test_mutate.py`'s `EITHER_LAYER`
     row is pointed at it, and is the row to copy when something needs grading
     by both.
+
+    **It is loud in the sense that the row is not `caught`, and quiet in the
+    sense that it reads like a harness fault.** A `broke` row is never
+    `caught`, so it appears in neither of the two numbers a reader looks at --
+    the entry above about `BROKE` applies here exactly. Somebody diagnosing
+    under this flag after a cluster lands gets a wall of them and no sentence
+    saying why. Recognising the loader's `not a test` `TypeError` and saying
+    so in the detail is one line in that layer, and it is not written yet.
 
 - **`unittest` loads a module's classes alphabetically; pytest collects them in
   definition order.** So the conversion changed which test reaches a mutated

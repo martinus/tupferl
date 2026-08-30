@@ -77,8 +77,15 @@ def jobs() -> dict[str, str]:
     Only what follows `jobs:`, and only to the next top-level key -- `on:`,
     `env:` and `concurrency:` have two-space children too, and a parser that
     collected those would report `push` as a job.
+
+    Read from `settings(...)`, so every block below holds what the workflow
+    *does* and not what it says about itself. **Stripping happens here and not
+    at each call site**, which is the shape `tests/test_ci.py` was corrected to:
+    stripped in one place, a negative assertion added tomorrow is safe by
+    default, where four call sites make safety something the author has to
+    remember.
     """
-    text = workflow()
+    text = settings(workflow())
     start = re.search(r"^jobs:$", text, re.MULTILINE)
     assert start, "no `jobs:` key in the workflow"
     body = text[start.end() :]
@@ -103,12 +110,26 @@ class TestTheParserFindsTheJobs:
     nothing would satisfy every "the workflow contains X" test vacuously, in the
     flattering direction."""
 
-    def test_the_file_exists_and_is_not_empty(self) -> None:
-        assert RELEASE.is_file(), f"no {RELEASE}"
+    def test_the_file_is_not_a_stub(self) -> None:
+        """Existence is enforced *earlier* than this, and that is why it is no
+        longer asserted here: `FOUND = jobs()` reads the file at import, so a
+        missing `release.yml` is a collection error before any test runs. An
+        `is_file()` assertion below it could not fail -- §2's decoration."""
         assert len(workflow()) > 500
 
     def test_every_expected_job_is_found(self) -> None:
         assert sorted(FOUND) == sorted(JOBS)
+
+    def test_the_comment_stripping_leaves_the_settings_alone(self) -> None:
+        """`settings`' own precondition, and this file had none.
+
+        Strip too much and every negative assertion below passes by finding
+        nothing; strip too little and they pass by finding a comment. This file
+        had the stripper and not the test, so the first failure mode was silent
+        -- and the second is what took `tests/test_ci.py`'s gate test down.
+        """
+        assert "runs-on:" in FOUND["check"], "stripping removed the settings"
+        assert "irreversible" not in settings(workflow()), "comments are still being read"
 
 
 class TestNothingIsPublishedUnchecked:
@@ -182,7 +203,7 @@ class TestTheUploadCannotSucceedQuietly:
         over an upload that did not happen -- indistinguishable from a first run
         that worked, which is the direction every mistake in this class errs."""
         assert "gh-action-pypi-publish" in FOUND["pypi"], "nothing publishes at all"
-        assert "skip-existing" not in settings(FOUND["pypi"])
+        assert "skip-existing" not in FOUND["pypi"]
 
     def test_the_build_is_checked_before_it_is_uploaded(self) -> None:
         """`twine check --strict` reads the long description the README becomes,
@@ -216,7 +237,7 @@ class TestTheWorkflowAsksForLittle:
         """Trusted Publishing needs `id-token: write` and nothing else; the
         release needs `contents: write` and nothing else. Neither job should
         have the other's."""
-        granted = {name: settings(block) for name, block in FOUND.items()}
+        granted = FOUND
         assert "id-token: write" in granted["pypi"]
         assert "contents: write" not in granted["pypi"]
         assert "contents: write" in granted["github"]
@@ -224,7 +245,7 @@ class TestTheWorkflowAsksForLittle:
 
     @pytest.mark.parametrize("name", ["check", "build"])
     def test_the_checking_jobs_only_read(self, name: str) -> None:
-        block = settings(FOUND[name])
+        block = FOUND[name]
         assert "contents: read" in block
         granted = block.split("permissions:")[1].split("steps:")[0]
         assert "write" not in granted, f"{name} asks for a write it does not need"

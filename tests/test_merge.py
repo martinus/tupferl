@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable, Iterator
-from contextlib import ExitStack
 from pathlib import PurePosixPath
 from unittest import mock
 
@@ -268,31 +266,27 @@ class TestKeepingBothVersions:
         assert ".icon" in str(raised.value)
 
 
-@pytest.fixture
-def merged_under() -> Iterator[Callable[[str], merge.Merged]]:
+def merged_under(style: str) -> merge.Merged:
     """`three_way` run as if the user's `~/.gitconfig` named a conflict style.
 
     A real config file with `GIT_CONFIG_GLOBAL` pointing at it, because that is
     how an ordinary user's setting reaches git and `-c` reproduces nothing --
-    see the class below. The `ExitStack` holds the throwaway directory and the
-    environment patch until the test ends, which is what the `addCleanup` pair
-    this replaced did.
+    see the class below.
+
+    A plain function rather than a fixture, because the environment only has to
+    hold for the `three_way` call: it returns `Merged`, which is bytes and a
+    count, and `conflicts.hunks` below is pure over the `Sides` it is given.
+    Scoping the patch to the call is what a fixture yielding a callable could
+    not do.
     """
-    with ExitStack() as stack:
-
-        def under(style: str) -> merge.Merged:
-            box = stack.enter_context(support.tempdir(prefix="tupferl-conflictstyle-"))
-            written = box / "gitconfig"
-            written.write_text(f"[merge]\n\tconflictstyle = {style}\n", encoding="utf-8")
-            stack.enter_context(
-                mock.patch.dict(
-                    os.environ,
-                    {"GIT_CONFIG_GLOBAL": str(written), "GIT_CONFIG_SYSTEM": os.devnull},
-                )
-            )
+    with support.tempdir(prefix="tupferl-conflictstyle-") as box:
+        written = box / "gitconfig"
+        written.write_text(f"[merge]\n\tconflictstyle = {style}\n", encoding="utf-8")
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": str(written), "GIT_CONFIG_SYSTEM": os.devnull},
+        ):
             return merge.three_way(".bashrc", LONGER, MINE, THEIRS)
-
-        yield under
 
 
 class TestTheConflictStyleCannotComeFromTheUser:
@@ -315,17 +309,13 @@ class TestTheConflictStyleCannotComeFromTheUser:
     """
 
     @pytest.mark.parametrize("style", ["merge", "diff3", "zdiff3"])
-    def test_no_setting_puts_a_base_section_in_the_markers(
-        self, merged_under: Callable[[str], merge.Merged], style: str
-    ) -> None:
+    def test_no_setting_puts_a_base_section_in_the_markers(self, style: str) -> None:
         got = merged_under(style)
         assert got.conflicts == 1
         assert got.data is not None
         assert b"|||||||" not in got.data
 
-    def test_the_two_sides_are_still_attributed_to_the_right_computers(
-        self, merged_under: Callable[[str], merge.Merged]
-    ) -> None:
+    def test_the_two_sides_are_still_attributed_to_the_right_computers(self) -> None:
         """The consequence, rather than the marker: what the prompt would show."""
         got = merged_under("zdiff3")
         assert got.data is not None

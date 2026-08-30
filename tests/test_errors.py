@@ -19,6 +19,19 @@ three, and the four that lacked a semicolon were the four with no next step. A
 proxy that agreed with the real property on every instance available is the
 strongest form this check can take.
 
+What it deliberately does not cover:
+
+- **`why` arguments to `sync.undone`.** That function appends its own clause, so
+  the message a user sees is the caller's half plus "-- run `tupferl doctor`,
+  then sync again." The composed sentence is what matters and the `raise` that
+  builds it is scanned; the fragments handed in are not.
+- **Anything not raised as a `TupferlError`.** `manifest.Refused.why` and
+  `sync.Outcome.why` are sentences a user reads, printed rather than raised.
+  They pass through the messages above -- "skipped {path}: {why}" -- where the
+  surrounding line carries the shape. A rule for them would be a different rule.
+- **Whether the advice is any *good*.** Nothing mechanical can say that. This
+  catches the message that does not try.
+
 **Each message is its own test**, parametrized over the scan, rather than one
 test looping over all of them. A failure then names the offending message in
 its own nodeid instead of in a `subTest` label, and the list is built once at
