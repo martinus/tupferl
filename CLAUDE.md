@@ -430,6 +430,13 @@ away.** Collected instances, all real:
   reported "nothing noticed this" — flattering the tests, which is the direction
   every bug in that class has erred.
 - A required CI check that was skipped rather than run, and counted as satisfied.
+- `gh pr checks` reporting the **previous** commit's completed run. A poll loop
+  that broke when "every check is non-pending" saw a full set of passes seconds
+  after a push, before GitHub had registered the new run at all — so a green was
+  reported for code CI had never seen. Ask for the run belonging to a *revision*
+  (`gh api "…/actions/runs?head_sha=$(git rev-parse HEAD)"`) rather than for the
+  pull request's current check list, and re-confirm immediately before merging
+  rather than trusting the earlier read.
 
 So: **distrust a pass you cannot explain before you distrust the code.** Make
 tools fail loudly rather than substituting a default. And when a check reports
@@ -1136,6 +1143,22 @@ has been dropped.
   trusting a watcher. Point `--done` at `<json>.done`, never at the `--json`
   report, which under `--batch` and `--all` is rewritten after every file and so
   exists long before the run ends.
+
+  **The pid is in `<json>.pid`, written by the sweep itself.** That is what "read
+  it out of the `--json` path" means, and not knowing the file existed is how one
+  session came to scan `/proc` for an exact argv-and-cwd match instead — which
+  worked, and was answering a question the tool had already answered. Two
+  corollaries, both learned the same session:
+
+  - **a stale `<json>.pid` from a killed run outlives it.** A pid file beside no
+    log reads exactly like a sweep that started and produced nothing, and the
+    number may since have been handed to something else. Delete it with the
+    `--json` file when you abandon a run, and `kill -0` before believing it.
+  - **waiting on `<json>.done` alone cannot tell *finished* from *died*.** A
+    sweep that is killed never writes it, so the wait is identical in both
+    cases — and the notification when the *waiter* is reaped reads like the
+    sweep completing. Wait on `[ -f <json>.done ] || ! kill -0 $pid`, and say
+    which one happened.
 - **The sweep sizes itself from what is actually free, and says so.**
   `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the
   smaller of that and any cgroup limit, leaves a gibibyte, and divides. So a
