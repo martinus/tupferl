@@ -4863,15 +4863,29 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
         table = self.rows(("tests.a", ()), ("tests.b", ()), ("tests.a", ()))
         self.assertEqual([("tests.a",), ("tests.b",)], mutate.baseline_shards(table))
 
+    #: Eight killers, and the number is the assertion below working. The shard is
+    #: built by `sorted` over a *set*, and CLAUDE.md's rule for that is here in
+    #: full: a set iterates in hash order, Python randomises it per run, so
+    #: `sorted` becoming `list` is caught only when that order happens to differ
+    #: from sorted. Two names is a coin flip -- a guard that guards half the time
+    #: and reads exactly like one that always does, and this fixture had two
+    #: until a sweep reported the reversal caught and `sorted` -> `list` survived
+    #: on the same line. Eight is 1 in 40320.
+    KILLERS = tuple(f"tests.{letter}.{letter.upper()}.test_it" for letter in "hbfdaegc")
+
     def test_the_remembered_killers_get_one_shard_between_them(self) -> None:
         """One for all of them, never one each. A shard per remembered test is
-        the sharding explosion that took 372s to 730s, in a new disguise."""
-        table = self.rows(
-            ("tests.a", ("tests.x.X.test_one",)), ("tests.a", ("tests.y.Y.test_two",))
-        )
+        the sharding explosion that took 372s to 730s, in a new disguise.
+
+        The exact tuple rather than its membership, which is what makes this the
+        killer for both of `order`'s edits. Written unsorted above and asserted
+        sorted here, so neither "keep the elements, drop the guarantee" nor
+        "reverse them" can satisfy it.
+        """
+        table = self.rows(*(("tests.a", (killer,)) for killer in self.KILLERS))
         shards = mutate.baseline_shards(table)
         self.assertEqual(2, len(shards), shards)
-        self.assertIn(("tests.x.X.test_one", "tests.y.Y.test_two"), shards)
+        self.assertIn(tuple(sorted(self.KILLERS)), shards)
 
     def test_a_killer_outside_its_row_s_selection_is_still_covered(self) -> None:
         """Why the extra shard exists at all: a cached killer can name a test

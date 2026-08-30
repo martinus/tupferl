@@ -2634,10 +2634,6 @@ def baseline_shards(table: Sequence[Mutation]) -> list[tuple[str, ...]]:
     already went stale once here.
     """
     shards = [tuple(tests.split()) for tests in sorted({mutation.tests for mutation in table})]
-    # survivor: order -- equivalent: a baseline shard runs its whole selection with `failfast` off
-    #   and has to be green in all of it, so the order the names go in decides nothing about the
-    #   answer. `sorted` is here to make the shard reproducible between runs, not to rank it, and
-    #   both this operator's edits -- reversed, and `sorted` becoming `list` -- keep every name.
     if ahead := tuple(sorted({name for row in table for name in row.first})):
         shards.append(ahead)
     return shards
