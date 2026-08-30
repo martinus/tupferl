@@ -1,8 +1,20 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **cluster B1** with them. Eight of the 33 modules are pytest-native; 25 are
-still `TestCase`s.
+and **cluster B1** with them, which converted the first eight modules.
+**Of 35 test modules, 26 still hold `TestCase`s** — 25 of those convert in
+B2–B6, and `tests/test_verdict_unittest.py` stays as it is until Phase C deletes
+it with its subject.
+
+Both numbers are asserted by `tests/test_pytest_plan.py`, which asks `unittest`
+which modules still hold a `TestCase` rather than grepping for one — so this
+line cannot quietly go stale and "continue the plan" is a safe instruction.
+
+**"Still `TestCase`" is the number to state, not "converted".** The first
+version of this line said "8 are pytest-native", and the test written to guard
+it failed on its own first run: a module born pytest-native — such as that test
+— raises the native count without any conversion having happened. Modules left
+to do is the quantity the plan is actually about, and it only ever falls.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did
@@ -21,8 +33,8 @@ by the accounting check.
 You are likely reading this in a fresh session with no memory of how it came to
 be. The background you need:
 
-tupferl's suite is stdlib `unittest` (1505 tests, 33 modules -- Phase 0 counted
-them; the estimate here was ~1557), a choice
+tupferl's suite *was* stdlib `unittest` (1505 tests, 33 modules -- Phase 0
+counted them; the estimate here was ~1557), a choice
 [`docs/plan.md`](plan.md) §7.1 made because the mutation tooling in `tools/`
 classifies unittest result objects. The maintainer has since decided to convert
 the whole suite to pytest, **because the end goal is to open-source the
