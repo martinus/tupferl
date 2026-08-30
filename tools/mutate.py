@@ -2370,14 +2370,17 @@ def _report_headroom(ceiling: int) -> None:
     """
     widest = _WATCHED.widest()
     # survivor: off-by-one -- TODO: why is this acceptable?
-    if not widest or ceiling <= 0:
-        return
-    share = widest / ceiling
-    said = (
-        f"heaviest lane process held {widest >> 20} MiB of its {ceiling >> 20} MiB "
-        f"ceiling ({share:.0%}, sampled, ~3% under)"
-    )
-    print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
+    if widest and ceiling > 0:
+        share = widest / ceiling
+        said = (
+            f"heaviest lane process held {widest >> 20} MiB of its {ceiling >> 20} MiB "
+            f"ceiling ({share:.0%}, sampled, ~3% under)"
+        )
+        print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
+    # Outside that `if`, and not inside it: the two lines answer different
+    # questions and go quiet for different reasons. Nested, a run with no
+    # ceiling to report against would also lose the figure that says whether the
+    # *machine* was big enough -- the one thing #90 is about.
     _report_crowding()
 
 

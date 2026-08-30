@@ -3621,6 +3621,23 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
         at = int(mutate._TIGHT * (52000 << 20))
         self.assertIn(paint.ODD, self.said(at, 52000 << 20, terminal=True))
 
+    def test_it_is_still_said_when_there_is_no_ceiling_to_report_against(self) -> None:
+        """The two lines go quiet for different reasons, so one must not be
+        nested inside the other. `_report_headroom` says nothing when no lane
+        process was measured or when there is no ceiling -- and a run with no
+        ceiling is exactly one where "was the machine big enough" is the only
+        question left. Nested, this figure disappeared with the other."""
+        with (
+            mock.patch.object(mutate._WATCHED, "_crowd", 900 << 20),
+            mock.patch.object(mutate._WATCHED, "_widest", 0),
+            mock.patch.object(mutate, "_budget", lambda: 52000 << 20),
+            support.quiet() as spill,
+        ):
+            mutate._report_headroom(0)
+        said = spill.getvalue()
+        self.assertIn("900 MiB", said, "the crowd went quiet with the headroom line")
+        self.assertNotIn("ceiling", said, "a headroom line was printed with nothing to report")
+
 
 class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
     """`_Lanes` measures every lane, not only one it is about to kill.
