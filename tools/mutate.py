@@ -292,13 +292,22 @@ _MUTATION_PROFILE = "mutation"
 
 #: Which verdict layer grades a probe. ``pytest`` is what a sweep uses;
 #: ``unittest`` selects `tools/verdict_unittest.py`, the classifier that was here
-#: before the conversion, so that a row the two disagree about can be re-run
-#: against the old one rather than argued about. It is deleted with that file at
+#: before the conversion, so that a row the two disagree about can be graded by
+#: the old one rather than argued about. It is deleted with that file at
 #: `docs/pytest-plan.md`'s Phase C.
 #:
-#: An environment variable rather than a flag because the acceptance gate is two
-#: whole-tree sweeps of the *same* command line, and the only honest way to
-#: compare them is for nothing else to differ.
+#: An environment variable rather than a flag because it has to survive
+#: ``python -c`` into a nested harness, the way `_BUDGET` and `_ALARM` do.
+#:
+#: **It will not give you a green whole-tree run, and that is not a defect to
+#: fix.** `tests/test_mutate.py` asserts the shape of a killer id -- it has to,
+#: since a cache full of ids nothing can select is a wall of `BROKE` -- so under
+#: the old classifier those assertions fail and the baseline is red. Use it for
+#: one row at a time, ``--no-baseline --only <file>``, and read the row rather
+#: than the summary; and prefer a caught row to a survivor, because a survivor
+#: walks outward far enough to reach those same failing tests and comes back
+#: falsely `caught`. The whole-tree control for this conversion was the tree
+#: *before* it, which is where the old classifier is the one the tests expect.
 _VERDICT = "TUPFERL_MUTATE_VERDICT"
 
 #: What each accepted value names, next to this file. Read out loud in the error

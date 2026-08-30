@@ -694,6 +694,19 @@ setsid env TUPFERL_MUTATE_VERDICT=unittest python -m tools.mutate --all --json s
 setsid env TUPFERL_MUTATE_VERDICT=pytest   python -m tools.mutate --all --json sweeps/new.json > sweeps/new.log 2>&1 &
 ```
 
+**As built, the control was run on the tree before the change instead, and the
+reason is worth keeping.** A killer id has a shape, `tests/test_mutate.py`
+asserts it, and it must — a cache full of ids nothing can select is a wall of
+`BROKE`, so something has to hold the format. Under
+`TUPFERL_MUTATE_VERDICT=unittest` those assertions fail, the baseline is red,
+and a red baseline reports every row as `caught`: the command above would have
+produced a control that agreed with everything. The same question asked
+correctly is "did rebuilding the layer change a verdict", and its control is a
+whole-tree sweep of the parent commit, where the old classifier is the one the
+tests expect. Rows are then compared on `(path, line, operator, label)`, which
+is only meaningful for files the change did not touch — every `tupferl/**` file
+and every `tools/**` file but `mutate.py` and the two verdict layers.
+
 Compare per `(path, span/line, operator)`: the verdict outcome
 (`caught`/`SURVIVED`/`BROKE`/`TIMEOUT`) must be identical, modulo killer
 *names* (formats differ by design), `times`, `reasons` text, and written
