@@ -1517,6 +1517,13 @@ and carries those numbers.
 - Three dead `if __name__ == "__main__": unittest.main()` blocks deleted,
   including the one sitting **mid-file** in `test_packaging.py` with a class
   after it.
+- **No `skipUnless`/`skipIf` at all.** The contract above lists "5 sites →
+  `pytest.mark.skipif`"; none of them is in this cluster -- they are in
+  `test_doctor`, `test_verdict`, `test_run_tests`, `test_mutate` and
+  `support.requires_git`, so B3, B5 and B6 inherit that item and the
+  `--no-skips` check with it. `test_cpus` deliberately has none: its
+  Linux-only half is a plain `if` with a label, because the `macos` leg turned
+  red the one time it was a skip.
 - `test_config`'s throwaway directory goes through `support.tempdir` rather than
   pytest's `tmp_path`, and the fixture says why: `tmp_path` keeps three numbered
   roots per user under `/tmp/pytest-of-<user>`, and a sweep races thousands of
