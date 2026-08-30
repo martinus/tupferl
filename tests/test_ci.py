@@ -52,14 +52,42 @@ def workflow() -> str:
     return CI.read_text(encoding="utf-8")
 
 
+def settings(text: str) -> str:
+    """`text` with its comment lines removed.
+
+    **Every assertion about `ci.yml` reads this and not the raw file**, and it
+    was written because one of them could not fail. The gate explains itself in
+    a comment that quotes the setting it is explaining --
+
+        # - `if: always()`, because a job whose dependency failed is *skipped*
+
+    -- so `test_it_runs_even_when_a_dependency_failed` was satisfied by the
+    prose. Measured: deleting the real `if: always()` line left all 33 tests in
+    this file green. That is the same trap
+    `TestTheScheduledSweepSaysWhatItSwept` records for `mutation.yml`, where two
+    of four hand-made edits survived for the same reason, and the same one
+    `tests/test_release.py`'s `settings()` exists for.
+
+    Whole comment *lines* rather than `mutation.yml`'s cut-at-the-first-`#`,
+    because the two files differ and the rule has to be exact rather than
+    approximate: `ci.yml` has no trailing comments at all -- checked -- while it
+    does have `#` inside shell blocks that a first-`#` cut would leave half a
+    line of.
+    """
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
 def jobs() -> dict[str, str]:
     """Top-level job names mapped to their block of the file.
 
     Only what follows the `jobs:` line, and only until the next top-level key:
     `on:` and `concurrency:` have two-space children too, and a parser that
     collected those would report `push` as a job.
+
+    Read from `settings(...)`, so every block below holds what the workflow
+    *does* and not what it says about itself. See `settings`.
     """
-    text = workflow()
+    text = settings(workflow())
     start = re.search(r"^jobs:$", text, re.MULTILINE)
     assert start, "no `jobs:` key in the workflow"
     body = text[start.end() :]
@@ -96,6 +124,16 @@ class TestTheParserWorks:
         """`on:` has `push:` under it at the same indentation as a job name."""
         assert "push" not in FOUND
         assert "pull_request" not in FOUND
+
+    def test_the_comment_stripping_leaves_the_settings_alone(self) -> None:
+        """`settings`' own precondition, and it needs both halves.
+
+        Strip too much and every assertion below passes by finding nothing;
+        strip too little and they pass by finding a comment. The second is what
+        actually happened here -- see `settings`.
+        """
+        assert "runs-on:" in FOUND[GATE], "stripping removed the settings"
+        assert "load-bearing" not in FOUND[GATE], "comments are still being read"
 
     @pytest.mark.parametrize("job", sorted(FOUND))
     def test_every_job_has_a_runner(self, job: str) -> None:

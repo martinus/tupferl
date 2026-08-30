@@ -1522,9 +1522,24 @@ and carries those numbers.
   roots per user under `/tmp/pytest-of-<user>`, and a sweep races thousands of
   probe processes over that numbering.
 
+### The review found a test that could not fail, and it was pre-existing
+
+`test_ci.py`'s `test_it_runs_even_when_a_dependency_failed` asserted
+`"if: always()" in gate_block` against the **raw** file, and the gate explains
+itself in a comment that quotes the setting. Measured: deleting the real
+`if: always()` line left all 33 tests in that file green -- a test that could not
+fail, guarding the one required status check.
+
+Found by perturbing a copy of the tree rather than by reading: seven settings
+deleted one at a time from `ci.yml`, six of which went correctly red. `jobs()`
+now parses `settings(workflow())`, the same comment-stripping `test_release.py`
+already had, and `test_the_comment_stripping_leaves_the_settings_alone` states
+both halves of the precondition. All seven probes now fail; the control is
+green. CLAUDE.md has the general rule.
+
 ### Gate
 
-Preflight green. The mutation check is in the PR body: `--all --only <src>` for
+Preflight green -- 1737 tests, 0 failures. The mutation check is in the PR body: `--all --only <src>` for
 every source file whose sweep selection includes one of the eight modules,
 against the last whole-tree sweep.
 

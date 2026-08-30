@@ -1289,6 +1289,35 @@ has been dropped.
   holds everywhere and add the rest under a plain `if`, labelled at the
   assertion. §2 asks for the label either way; this is the spelling that keeps
   the leg green.
+- **A test that greps a config file must read it with the comments stripped,
+  and this has now cost three tests in two files.** A workflow that explains
+  itself quotes the setting it is explaining, so `"if: always()" in gate_block`
+  is satisfied by the comment `# - \`if: always()\`, because a job whose
+  dependency failed is *skipped*`. Measured: deleting the real `if: always()`
+  line from `ci.yml` left **all 33 tests in `tests/test_ci.py` green**, and the
+  test that could not fail was the one guarding the single required status
+  check.
+
+  The other two are already recorded beside their own code —
+  `test_release.py`'s `settings()` ("the first version of that test failed on
+  its own explanation") and `test_ci.py`'s `mutation.yml` class ("two of four
+  hand-made edits survived"). Three instances is a rule: **strip once, in the
+  parser, and give the stripping its own test with both halves** — a setting
+  that is still there, and a phrase that is only ever prose. Strip too much and
+  everything passes by finding nothing; strip too little and it passes by
+  finding a comment.
+
+  The stripping rule has to be exact rather than approximate, and it is not the
+  same rule in both files: `ci.yml` and `release.yml` have no trailing comments,
+  so whole comment *lines* is exact there, while `mutation.yml`'s class cuts at
+  the first `#` and its comment says why that is exact for it. Check the file
+  before copying either.
+
+  **The way to find one of these is to perturb the file and watch**, which is
+  §2's revert-and-verify with the "fix" being a setting: copy the tree aside,
+  delete the setting, and confirm the test goes red. Seven such probes over
+  `ci.yml` found this one and cleared the other six.
+
 - **A fingerprint of "nothing was written" needs the file's bytes in it.**
   Path, size and mode is the obvious spelling and it cannot fail here: the edit
   a sync test makes is usually one line to upper case, so the file before and
