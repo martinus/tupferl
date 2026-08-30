@@ -729,6 +729,140 @@ mechanism is worse than none (§5). If the disagreement class is "pytest
 cannot express X", stop and report; do not paper over with a verdict-side
 special case.
 
+## Phase A as built — 2026-08-30
+
+What landed, where it differs from the section above, and the evidence. Read
+this before A2: three of the decisions below are ones A2 inherits.
+
+### The classification moved from a class name to a phase
+
+`tools/verdict.py` is a pytest plugin handed to `pytest.main(plugins=[...])`,
+one process per probe, one `pytest.main` call per walk group. The
+`noticed`/`broke` line is drawn in a `pytest_runtest_makereport` hookwrapper,
+where the exception object still exists:
+
+| what died | phase | bucket |
+|---|---|---|
+| the test body, by assertion or by any exception | `call` | `noticed` |
+| a case inside `self.subTest(...)` | `call` | `noticed`, against the **owner** |
+| the instance's own `tearDown` | `call` | `noticed` |
+| `setUpClass` / `setUpModule` | `setup` | `broke` |
+| `tearDownClass` / `tearDownModule` | `teardown` | `broke` |
+| a module that will not import | no phase; `pytest_collectreport` | `broke` |
+
+That table is the whole of what replaced an `isinstance` against
+`unittest.suite._ErrorHolder`, and it is a *measurement* rather than a
+documented guarantee — so `tests/test_verdict.py`'s
+`TestWhatThisAssumesOfPytest` asserts every row of it against pytest directly,
+with a plugin that records what it is handed. A pytest that moved one would
+otherwise turn `broke` silently into `caught`.
+
+### Classifying at `makereport` rather than at `logreport` is the load-bearing choice
+
+S3 warned that on pytest 9 the owning test's own report reads `passed` when one
+of its `subTest` cases failed. At `makereport` there is no such split: the
+failure arrives once, carrying `item.nodeid` — the owner — so attribution is
+free and there is no carrier to unwrap. Measured, and asserted both ways in
+`test_a_failed_subtest_reaches_makereport_but_not_its_owners_report`.
+
+### Four things the section above did not anticipate
+
+- **A usage error fires no hook at all.** A stale `first` naming a renamed
+  test, or a module the selection names and the tree does not, makes pytest
+  refuse the whole invocation and say so on *stdout*, which `mutate._run` sends
+  to `DEVNULL`. Without an exit-status arm the report would read "nothing ran"
+  and the row would be filed as holding no tests. `Watcher.over` reads the
+  status and records a `broke` when no hook did; `SystemExit` at module scope
+  reaches it too, as `INTERNAL_ERROR`.
+- **`NO_TESTS_COLLECTED` is not a failure.** The walk steps over an empty
+  module all the time; read as an error it would end the walk at the first one.
+- **A killer id is a nodeid, and a selection is still dotted.** They meet in
+  three reachability filters, and a nodeid compared raw matches nothing —
+  turning off every ordering mechanism at once and failing nothing.
+  `mutate._reaches` is the single reconciliation point.
+- **`mutate._loadable` asks pytest what it collects**, once per run in a
+  subprocess, and keeps the intersection. That is also what drops a
+  `sweeps/killers.json` written by the other backend — 601 such ids on the
+  first run here.
+
+### What was deliberately not done
+
+- **`Mutation.first`, `Killers.known` and `Learned.recent` still hold ids
+  space-joined into one string.** `_run` JSON-encodes the argv slot, which is
+  the half that this phase's rewrite owns; the other half has no trigger until
+  a parametrized nodeid exists, which is Phase B's first cluster. Phase B's
+  contract now has it as step 1a.
+- **The walk is not recursive, so `norecursedirs` is not consulted.** It looks
+  in the directories the selection's own files live in, which is what the
+  `unittest` layer did and what the sweep pair compares against. Anyone
+  widening it owes that filter in the same change: a naive `rglob` of the
+  default patterns over this tree finds 71 files, 38 of them inside `.venv`.
+- **`pytest-subtests` is still absent**, as S3 concluded.
+
+### Evidence
+
+Two whole-tree sweeps, on an idle machine, compared on
+`(path, line, operator, label)`. The control is the parent commit `b95db93`,
+for the reason the acceptance-gate section above now gives.
+
+| | control (`b95db93`) | branch |
+|---|---|---|
+| rows | 3410 | 3599 |
+| wall | 1895 s | 4479 s |
+| `caught` | 3047 | 3177 |
+| `SURVIVED` | 339 | 385 |
+| `BROKE` | 9 | 21 |
+| `TIMEOUT` | 15 | 16 |
+| baseline | green | green |
+
+Both read from the baseline *line*, not the row colours.
+
+**Comparable rows: 2246.** `tupferl/**` is **1298 rows with 0 differences** —
+the package the harness exists to measure is graded identically by both
+backends. `tools/**` is 948 rows with 13 differences, every one of them
+accounted for:
+
+- **4 were a real defect this change exposed** — the collection-order finding,
+  now fixed and confirmed `caught` under `python -m tools.mutate --all --only
+  tools/mutants.py`. See the CLAUDE.md gotcha; the cause is the suite's, not
+  the verdict layer's.
+- **6 are improvements**: `survived → caught` ×3 (`mutants.py:640`,
+  `mutants.py:1621`, `watch.py:446`) and `broke → caught` ×3
+  (`mutants.py:1475`, `mutants.py:1479`, `watch.py:178`) — two of them rows the
+  control could not answer at all.
+- **1 is dispositioned in the tree already**: `mutants.py:1438`'s `sorted` →
+  `list` carries a `# survivor: order` tag, written before this PR, naming
+  `rglob`'s filesystem-defined order as the reason. The two sweeps ran in
+  different directories, so the control caught it by luck.
+- **2 are the same flaky line**, `mutants.py:376`, and it flips *within* the
+  backend — which is the known-flaky protocol's own definition. Six post-fix
+  runs:
+
+  | row | caught | broke |
+  |---|---|---|
+  | `+=` → `-=` | 5 | 1 |
+  | `1` → `0` | 2 | 1 |
+  | `1` → `2` | 3 | 0 |
+
+  The mechanism is a runaway allocation racing the memory cap, and which test
+  module the walk reaches first decides it. It is not new:
+  `TestLineEndingsThatAreNotNewline`'s docstring already records "four rows came
+  back `BROKE` that way on the whole-tree sweep — two of them 'ran out of
+  memory'" under the old runner. The class bound added here improves it (5 of 6
+  where the control had 1 of 1) rather than fixing it.
+
+**One caveat on the branch sweep's own summary.** Seven of its 21 `BROKE` rows
+are void: the host OOM killer took seven consecutive lanes at 09:53, in the same
+event that killed the desktop session, and each reports *"the probe was killed by
+SIGKILL"*. All seven are in `tools/mutate.py`, which this PR changes, so none
+entered the compared set — checked, not assumed. Both sweeps also closed with
+`heaviest lane process held … 100% of its ceiling`, the control included, so
+that is not new to pytest. It is the first evidence bearing on `_COMMIT`'s
+"150% is calibrated against '126% has never been killed' and no more", and it is
+recorded here as an observation rather than a proposal: the sum-of-lane-RSS
+sampler CLAUDE.md asks for first still does not exist, and the machine was also
+running a browser and Steam.
+
 ## Phase A2 — Port `tools/run_tests.py` to drive pytest
 
 **Goal:** the sharded parallel runner and its accounting check

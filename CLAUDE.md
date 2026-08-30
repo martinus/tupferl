@@ -992,6 +992,35 @@ has been dropped.
     about. A value that is neither is refused rather than defaulted: a typo that
     silently fell back would report the two as agreeing when only one ever ran.
 
+- **`unittest` loads a module's classes alphabetically; pytest collects them in
+  definition order.** So the conversion changed which test reaches a mutated
+  line *first*, and where one test hangs under a mutation and a sibling fails
+  fast, that decides `caught` against `BROKE` -- and `BROKE` is never `caught`.
+  Measured on the Phase A acceptance sweep: five rows of `tools/mutants.py` that
+  the old runner caught came back `BROKE`, because `TestCappingTheTable`
+  (unittest index 2, file line 1406) and `TestLineEndingsThatAreNotNewline` both
+  arm `support.deadline` while their siblings `TestTheCap` (index 13, line 926)
+  and `TestTheOperators` (line 158) did not. Alphabetically the bounded ones ran
+  first and `failfast` stopped; in definition order the unbounded ones are
+  first. **The defect was always there** -- the ordering only decided whether
+  anything reached it.
+
+  The general form is the one this file already states five times, in its
+  newest spelling: *the killer a sweep reports is one route to the line, not all
+  of them* -- and **changing the runner changes which route is first**. So when
+  a row moves to `BROKE`, look for an unbounded sibling of a class that is
+  bounded, before suspecting the harness.
+
+  **A per-case bound inside a `subTest` loop does not bound the test.** This is
+  the correction to the "arm it inside the `subTest`" rule above, not a repeat
+  of it: `subTest` *catches* the `TimeoutError`, records a failure and carries
+  on, so a loop over twenty operators costs twenty times the bound. Measured on
+  `TestTheOperators`, whose `mutate` helper already armed `support.deadline` per
+  call: past 60s under one mutation, against a 30s alarm. It needs the class
+  bound **as well** -- and that works because `deadline` restores the outer
+  alarm with only its remaining time, so the class bound fires almost at once on
+  the next case rather than being swallowed with the first.
+
 - **A test's own timeout must *beat* the harness's, not merely exist.**
   `tools/mutate.py` arms a per-test alarm (30s by default) and files anything
   that trips it as `BROKE` — which is never `caught`, so the line it was
