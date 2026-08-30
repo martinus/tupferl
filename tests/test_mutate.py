@@ -101,6 +101,34 @@ UNWATCHED = UNKNOWN_KEY_GUARD._replace(
     tests="tests.test_paths",
 )
 
+#: A row **either verdict layer can grade**, which the two above are not.
+#:
+#: `TUPFERL_MUTATE_VERDICT=unittest` runs `unittest`'s own loader, and a
+#: pytest-native module is not something that loader can take back: a plain
+#: `class TestX:` is found by name and refused with `calling <class ...>
+#: returned <object>, not a test`. So every row whose selection names a
+#: converted module is now `broke` under that layer -- which is correct, and is
+#: what Phase B of `docs/pytest-plan.md` is doing on purpose, one cluster at a
+#: time. `UNKNOWN_KEY_GUARD` selects `tests.test_config`, converted in B1.
+#:
+#: The one module that stays `unittest`-style to the end is
+#: `tests/test_verdict_unittest.py` -- deliberately, because it dies with its
+#: subject in Phase C -- so a row selecting *it* is the one that keeps working
+#: through the rest of the conversion. That the row also mutates
+#: `tools/verdict_unittest.py` is a bonus rather than the reason: the claim
+#: under test is that `_run` drives whichever layer is named, and it is asserted
+#: on a row both can answer.
+#:
+#: Measured at 0.35s per layer against `UNKNOWN_KEY_GUARD`'s 0.66s, so moving
+#: the row bought headroom rather than spending it.
+EITHER_LAYER = Mutation(
+    "a test that noticed the mutation is not recorded as having noticed",
+    "tools/verdict_unittest.py",
+    "self.noticed.append(str(test))",
+    "pass",
+    "tests.test_verdict_unittest.TestATestThatNoticed",
+)
+
 
 class TestTheHarnessAnswersBothWays(unittest.TestCase):
     """The whole loop: copy the tree, apply the edit, run a suite, classify.
@@ -594,11 +622,15 @@ class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
         Driven through the real `_run`, on a real mutation, once per layer.
         `strict=False` because a hand-built table must not stop at a row a layer
         cannot answer -- and answering is exactly what is being asserted.
+
+        The row is `EITHER_LAYER` and not `UNKNOWN_KEY_GUARD`, because the
+        latter selects a module Phase B has converted and `unittest`'s loader
+        cannot take a pytest-native module back. See `EITHER_LAYER`.
         """
         for layer in sorted(mutate._LAYERS):
             with self.subTest(layer=layer), mock.patch.dict(os.environ, {mutate._VERDICT: layer}):
                 found = mutate.run(
-                    [UNKNOWN_KEY_GUARD],
+                    [EITHER_LAYER],
                     baseline=False,
                     workers=1,
                     summarise=False,

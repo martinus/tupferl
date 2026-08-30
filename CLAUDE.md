@@ -498,8 +498,12 @@ does not.
 
 `python -m pytest -q` runs the same tests serially, and is the one to reach for
 when a parallel run's output is confusing -- it is what a batch runs, without
-the batching. `python -m unittest discover -s . -t . -p 'test_*.py'` still works
-too, for as long as every test is a `TestCase`, which Phase B ends.
+the batching. **It is now the only serial fallback.** `python -m unittest
+discover -s . -t . -p 'test_*.py'` used to work too, and stopped with Phase B's
+first cluster: it silently loads *nothing* from a pytest-native module. Measured
+across B1 -- 1614 tests before, **1499 after, `OK` both times**, exactly the 115
+in the eight converted modules gone with nothing said. That is the flattering
+failure §8 collects, so reach for `pytest -q`.
 
 ### Layout
 
@@ -514,7 +518,7 @@ too, for as long as every test is a `TestCase`, which Phase B ends.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | still written as stdlib `unittest` `TestCase`s, but **run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0, A and A2 are done, Phase B converts the modules). **A pytest-native module is safe to write now** -- `tools/run_tests.py` collects with pytest as of A2, so a plain `def test_...` is discovered, packed by its module, run and accounted for. What is *not* yet done is the conversion itself: a module converts whole, by hand, one cluster per PR, because a half-converted one is the worst state |
+| `tests/` | **being converted from stdlib `unittest` `TestCase`s to pytest-native, and run by pytest either way**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0, A, A2 and Phase B's step 1a and cluster B1 are done -- B1 converted `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release` and `test_paths`; the other 25 modules are still `TestCase`s). **A pytest-native module is safe to write now** -- `tools/run_tests.py` collects with pytest as of A2, so a plain `def test_...` is discovered, packed by its module, run and accounted for. What is *not* yet done is the conversion itself: a module converts whole, by hand, one cluster per PR, because a half-converted one is the worst state |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the pytest classifier; `verdict_unittest.py` + `test_verdict_unittest.py` are the one it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` until Phase C |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on |
@@ -1033,6 +1037,18 @@ has been dropped.
     classifier that was here before, for diagnosing a row the two disagree
     about. A value that is neither is refused rather than defaulted: a typo that
     silently fell back would report the two as agreeing when only one ever ran.
+
+    **What it can still grade shrinks with every Phase B cluster, and the
+    failure is loud rather than silent.** That layer runs `unittest`'s own
+    loader, which refuses a pytest-native module with `calling <class ...>
+    returned <object>, not a test` -- so every row whose selection names a
+    converted module comes back `broke` under it. As of B1 that is
+    `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`,
+    `test_ci`, `test_release` and `test_paths`. The one module that stays
+    `TestCase`-style to the end is `tests/test_verdict_unittest.py`, which dies
+    with its subject in Phase C -- so `tests/test_mutate.py`'s `EITHER_LAYER`
+    row is pointed at it, and is the row to copy when something needs grading
+    by both.
 
 - **`unittest` loads a module's classes alphabetically; pytest collects them in
   definition order.** So the conversion changed which test reaches a mutated

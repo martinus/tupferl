@@ -9,13 +9,15 @@ here is a boundary around that decision.
 from __future__ import annotations
 
 import sys
-import tempfile
 import types
-import unittest
+from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
+from tests import support
 from tupferl import config
 from tupferl.config import DEFAULT_MAX_FILE_SIZE, KNOWN, Config, load, parse
 from tupferl.errors import TupferlError
@@ -23,9 +25,9 @@ from tupferl.errors import TupferlError
 WHERE = "config.toml"
 
 
-class TestReadingTheSettings(unittest.TestCase):
+class TestReadingTheSettings:
     def test_an_empty_file_is_the_defaults(self) -> None:
-        self.assertEqual(Config(), parse("", WHERE))
+        assert parse("", WHERE) == Config()
 
     def test_every_known_key_arrives(self) -> None:
         """Both at once, each with a value the other does not share, so a parser
@@ -39,20 +41,20 @@ class TestReadingTheSettings(unittest.TestCase):
             'ignore = ["*.log", ".cache/**"]\nmax_file_size = 2048\n',
             WHERE,
         )
-        self.assertEqual(Config(ignore=["*.log", ".cache/**"], max_file_size=2048), found)
+        assert found == Config(ignore=["*.log", ".cache/**"], max_file_size=2048)
 
     def test_the_default_size_limit_is_one_megabyte(self) -> None:
         """Plan §5 names the number, so it is asserted rather than derived."""
-        self.assertEqual(1024 * 1024, DEFAULT_MAX_FILE_SIZE)
-        self.assertEqual(DEFAULT_MAX_FILE_SIZE, parse("", WHERE).max_file_size)
+        assert DEFAULT_MAX_FILE_SIZE == 1024 * 1024
+        assert parse("", WHERE).max_file_size == DEFAULT_MAX_FILE_SIZE
 
     def test_a_partial_file_keeps_the_other_defaults(self) -> None:
         found = parse("max_file_size = 2048", WHERE)
-        self.assertEqual(2048, found.max_file_size)
-        self.assertEqual([], found.ignore)
+        assert found.max_file_size == 2048
+        assert found.ignore == []
 
 
-class TestTheTableAndTheRecordAgree(unittest.TestCase):
+class TestTheTableAndTheRecordAgree:
     """`parse` ends in `Config(**raw)`, so the two definitions of "a setting"
     have to be the same one.
 
@@ -62,19 +64,22 @@ class TestTheTableAndTheRecordAgree(unittest.TestCase):
     """
 
     def test_every_known_key_is_a_field(self) -> None:
-        self.assertEqual(set(KNOWN), {field.name for field in fields(Config)})
+        """Non-emptiness is asserted first, and not for symmetry: the test below
+        is parametrized over `KNOWN`, so an empty table would collect no cases
+        at all -- zero tests, all of them passing. §2's zero-iteration trap,
+        arriving at collection time."""
+        assert KNOWN
+        assert set(KNOWN) == {field.name for field in fields(Config)}
 
-    def test_every_field_has_the_type_the_table_claims(self) -> None:
+    @pytest.mark.parametrize(("name", "expected"), sorted(KNOWN.items()))
+    def test_every_field_has_the_type_the_table_claims(self, name: str, expected: type) -> None:
         """Reading the annotation, not the default: a field whose default is
         `None` or an empty list would have a default-based check say its type is
         `NoneType` or `list` regardless of what the table claims."""
-        for name, expected in KNOWN.items():
-            with self.subTest(key=name):
-                said = Config.__annotations__[name]
-                self.assertIn(expected.__name__, said)
+        assert expected.__name__ in Config.__annotations__[name]
 
 
-class TestWhichTomlParserIsUsed(unittest.TestCase):
+class TestWhichTomlParserIsUsed:
     """`config.toml()` picks stdlib `tomllib` on 3.11+ and the `tomli` backport
     below it, and the choice is deferred so that `tupferl --version` does not pay
     for a parser it will not use.
@@ -86,18 +91,21 @@ class TestWhichTomlParserIsUsed(unittest.TestCase):
     real 3.10; this proves the *choice* is the right way round on any of them.
     """
 
-    def test_three_eleven_and_later_use_the_standard_library(self) -> None:
+    @pytest.mark.parametrize("version", [(3, 11, 0), (3, 14, 1)])
+    def test_three_eleven_and_later_use_the_standard_library(
+        self, version: tuple[int, ...]
+    ) -> None:
         """Stubbed, for the same reason the 3.10 case is: patching the version
         number does not conjure the module. On a real 3.10 interpreter `import
         tomllib` raises `ModuleNotFoundError`, so the first version of this test
         passed everywhere except the one leg that runs 3.10 -- which is the leg
         that exists to check exactly this branch."""
         stdlib = types.ModuleType("tomllib")
-        stubbed = mock.patch.dict(sys.modules, {"tomllib": stdlib})
-        for version in ((3, 11, 0), (3, 14, 1)):
-            said = mock.patch.object(sys, "version_info", version)
-            with self.subTest(version=version), stubbed, said:
-                self.assertIs(stdlib, config.toml())
+        with (
+            mock.patch.dict(sys.modules, {"tomllib": stdlib}),
+            mock.patch.object(sys, "version_info", version),
+        ):
+            assert config.toml() is stdlib
 
     def test_three_ten_uses_the_backport_it_was_taken_from(self) -> None:
         """`(3, 11, 0)` above and `(3, 10, 7)` here are the two sides of the
@@ -126,12 +134,14 @@ class TestWhichTomlParserIsUsed(unittest.TestCase):
         leg is what exercises the real one.
         """
         backport = types.ModuleType("tomli")
-        stubbed = mock.patch.dict(sys.modules, {"tomli": backport})
-        with stubbed, mock.patch.object(sys, "version_info", (3, 10, 7)):
-            self.assertIs(backport, config.toml())
+        with (
+            mock.patch.dict(sys.modules, {"tomli": backport}),
+            mock.patch.object(sys, "version_info", (3, 10, 7)),
+        ):
+            assert config.toml() is backport
 
 
-class TestRejectingAnUnknownKey(unittest.TestCase):
+class TestRejectingAnUnknownKey:
     def test_the_settings_are_listed_in_a_fixed_order(self) -> None:
         """`sorted(KNOWN)`, which today's `KNOWN` cannot show: it holds two keys
         declared in the order `sorted` would put them in, so `list` gives the
@@ -145,23 +155,23 @@ class TestRejectingAnUnknownKey(unittest.TestCase):
         """
         with (
             mock.patch.object(config, "KNOWN", {"zebra": list, "apple": int}),
-            self.assertRaises(TupferlError) as caught,
+            pytest.raises(TupferlError) as caught,
         ):
             parse("nope = 1", WHERE)
-        self.assertIn("apple, zebra", str(caught.exception))
+        assert "apple, zebra" in str(caught.value)
 
     def test_a_typo_is_an_error_rather_than_silence(self) -> None:
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse('ignroe = ["*.pem"]', WHERE)
-        self.assertIn("ignroe", str(caught.exception))
+        assert "ignroe" in str(caught.value)
 
     def test_the_message_lists_what_is_accepted(self) -> None:
         """Naming the key alone leaves the reader guessing at the spelling; the
         message is generated from `KNOWN`, so it cannot drift from the check."""
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse("nonsense = 1", WHERE)
         for key in KNOWN:
-            self.assertIn(key, str(caught.exception))
+            assert key in str(caught.value)
 
     def test_the_list_is_in_a_fixed_order(self) -> None:
         """Alphabetical, and written out here as one string.
@@ -172,82 +182,87 @@ class TestRejectingAnUnknownKey(unittest.TestCase):
         mutation sweep is what noticed: reversing the sort changed nothing any
         test could see.
         """
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse("nonsense = 1", WHERE)
-        self.assertIn("ignore, max_file_size", str(caught.exception))
+        assert "ignore, max_file_size" in str(caught.value)
 
     def test_the_file_is_named(self) -> None:
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse("nonsense = 1", "/somewhere/config.toml")
-        self.assertIn("/somewhere/config.toml", str(caught.exception))
+        assert "/somewhere/config.toml" in str(caught.value)
 
 
-class TestRejectingAWrongValue(unittest.TestCase):
+class TestRejectingAWrongValue:
     def test_a_string_where_a_number_belongs(self) -> None:
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse('max_file_size = "big"', WHERE)
-        self.assertIn("int", str(caught.exception))
+        assert "int" in str(caught.value)
 
     def test_a_number_where_a_string_belongs(self) -> None:
-        with self.assertRaises(TupferlError):
+        with pytest.raises(TupferlError):
             parse("ignore = 7", WHERE)
 
     def test_a_boolean_is_not_a_number(self) -> None:
         """`True` is an `int` in Python, so an `isinstance` check alone accepts
         `max_file_size = true` and then uses it as 1 -- every file "too large",
         with nothing in the file that looks wrong."""
-        with self.assertRaises(TupferlError):
+        with pytest.raises(TupferlError):
             parse("max_file_size = true", WHERE)
 
     def test_a_non_string_ignore_entry(self) -> None:
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse("ignore = [1, 2]", WHERE)
-        self.assertIn("ignore", str(caught.exception))
+        assert "ignore" in str(caught.value)
 
     def test_a_size_limit_of_zero_would_refuse_everything(self) -> None:
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse("max_file_size = 0", WHERE)
-        self.assertIn("positive", str(caught.exception))
+        assert "positive" in str(caught.value)
 
     def test_a_negative_size_limit(self) -> None:
-        with self.assertRaises(TupferlError):
+        with pytest.raises(TupferlError):
             parse("max_file_size = -1", WHERE)
 
     def test_broken_toml_says_so(self) -> None:
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse("this is not toml", WHERE)
-        self.assertIn("TOML", str(caught.exception))
+        assert "TOML" in str(caught.value)
 
 
-class TestLoadingFromDisk(unittest.TestCase):
-    def setUp(self) -> None:
-        box = tempfile.TemporaryDirectory(prefix="tupferl-config-")
-        self.addCleanup(box.cleanup)
-        self.box = Path(box.name)
+@pytest.fixture
+def box() -> Iterator[Path]:
+    """A throwaway directory, through `support.tempdir`.
 
-    def test_a_missing_file_is_the_defaults(self) -> None:
+    Not pytest's `tmp_path`, and the reason is the mutation harness rather than
+    taste: `tmp_path` keeps the last three numbered roots per user under
+    `/tmp/pytest-of-<user>`, and a sweep runs thousands of probes as separate
+    processes racing over that same numbering. `support.tempdir` removes its own
+    tree in a `finally` and names what survived if the delete fails.
+    """
+    with support.tempdir(prefix="tupferl-config-") as made:
+        yield made
+
+
+class TestLoadingFromDisk:
+    def test_a_missing_file_is_the_defaults(self, box: Path) -> None:
         """Not an error: `init` need not write one, and a user who wants no
         settings should not have to keep an empty file to say so."""
-        self.assertEqual(Config(), load(self.box / "absent.toml"))
+        assert load(box / "absent.toml") == Config()
 
-    def test_a_file_that_cannot_be_read_is_an_error(self) -> None:
+    def test_a_file_that_cannot_be_read_is_an_error(self, box: Path) -> None:
         """A directory rather than a chmod: the suite runs as root in some
         containers, and root ignores the mode bits -- so a permissions fixture
         would pass there whatever the code did. `IsADirectoryError` is an
         `OSError` and not a `FileNotFoundError`, which is exactly the
         distinction under test.
         """
-        unreadable = self.box / "config.toml"
+        unreadable = box / "config.toml"
         unreadable.mkdir()
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             load(unreadable)
-        self.assertIn(str(unreadable), str(caught.exception))
+        assert str(unreadable) in str(caught.value)
 
-    def test_a_real_file_is_parsed(self) -> None:
-        where = self.box / "config.toml"
+    def test_a_real_file_is_parsed(self, box: Path) -> None:
+        where = box / "config.toml"
         where.write_text("max_file_size = 4096\n", encoding="utf-8")
-        self.assertEqual(4096, load(where).max_file_size)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert load(where).max_file_size == 4096

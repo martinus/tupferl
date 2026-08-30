@@ -12,13 +12,20 @@ Parsed by hand, like `test_ci.py`, and with the same cost: a hand parser that
 finds nothing asserts nothing. So `TestTheParserFindsTheJobs` states the
 precondition on its own, and every other test here begins from a job set that is
 known to be non-empty.
+
+**The per-job and per-guard tests are parametrized over module-level lists.**
+`GUARDS` and `JOBS` are literals, so those cannot collapse to nothing; `FOUND`
+is the parse, and a parse that found nothing would make its cases *disappear*
+rather than fail -- which is why `test_every_expected_job_is_found` compares it
+against the literal rather than merely counting it.
 """
 
 from __future__ import annotations
 
 import re
-import unittest
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / ".github" / "workflows" / "release.yml"
@@ -86,20 +93,25 @@ def jobs() -> dict[str, str]:
     return found
 
 
-class TestTheParserFindsTheJobs(unittest.TestCase):
+#: The parse, done once, so that the per-job tests below and the precondition
+#: that vouches for them are looking at the same thing.
+FOUND = jobs()
+
+
+class TestTheParserFindsTheJobs:
     """The precondition for everything below. Without it a parser that matched
     nothing would satisfy every "the workflow contains X" test vacuously, in the
     flattering direction."""
 
     def test_the_file_exists_and_is_not_empty(self) -> None:
-        self.assertTrue(RELEASE.is_file(), f"no {RELEASE}")
-        self.assertGreater(len(workflow()), 500)
+        assert RELEASE.is_file(), f"no {RELEASE}"
+        assert len(workflow()) > 500
 
     def test_every_expected_job_is_found(self) -> None:
-        self.assertEqual(sorted(JOBS), sorted(jobs()))
+        assert sorted(FOUND) == sorted(JOBS)
 
 
-class TestNothingIsPublishedUnchecked(unittest.TestCase):
+class TestNothingIsPublishedUnchecked:
     """The guards, and that the jobs which publish depend on them.
 
     Each is a distinct way to put something on PyPI that nobody agreed to, and
@@ -107,36 +119,33 @@ class TestNothingIsPublishedUnchecked(unittest.TestCase):
     is a filename, and a tag cut from a branch records no branch.
     """
 
-    def test_the_check_job_holds_every_guard(self) -> None:
-        block = jobs()["check"]
-        for guard in GUARDS:
-            self.assertIn(guard, block, f"the {guard!r} guard is gone")
+    @pytest.mark.parametrize("guard", GUARDS)
+    def test_the_check_job_holds_every_guard(self, guard: str) -> None:
+        assert guard in FOUND["check"], f"the {guard!r} guard is gone"
 
-    def test_each_guard_runs_only_for_a_tag(self) -> None:
+    @pytest.mark.parametrize("guard", GUARDS)
+    def test_each_guard_runs_only_for_a_tag(self, guard: str) -> None:
         """A guard that ran on `workflow_dispatch` too would fail every dry run
         -- there is no tag to compare -- and the fix somebody reaches for under
         that pressure is deleting the guard. Asserted so the `if` is understood
         as part of it rather than as noise."""
-        block = jobs()["check"]
-        for guard in GUARDS:
-            after = block[block.index(guard) :]
-            self.assertIn(
-                "startsWith(github.ref, 'refs/tags/')",
-                after[: after.index("run:")],
-                f"the {guard!r} guard does not say when it applies",
-            )
+        block = FOUND["check"]
+        after = block[block.index(guard) :]
+        assert "startsWith(github.ref, 'refs/tags/')" in after[: after.index("run:")], (
+            f"the {guard!r} guard does not say when it applies"
+        )
 
     def test_the_preflight_runs_on_the_tagged_tree_in_order(self) -> None:
         """A tag proves somebody typed a command, not that anything passed on
         this tree. The commit may predate a merge that broke it -- and a red
         main is exactly when someone reaches for a release of the last good
         one."""
-        block = jobs()["check"]
+        block = FOUND["check"]
         at = -1
         for step in PREFLIGHT:
             found = block.find(step, at + 1)
-            self.assertNotEqual(-1, found, f"the release never runs `{step}`")
-            self.assertGreater(found, at, f"`{step}` runs out of order")
+            assert found != -1, f"the release never runs `{step}`"
+            assert found > at, f"`{step}` runs out of order"
             at = found
 
     def test_publishing_waits_on_the_checks(self) -> None:
@@ -147,27 +156,24 @@ class TestNothingIsPublishedUnchecked(unittest.TestCase):
         counted as satisfied and had to be forced to run; here, skipping is
         precisely the behaviour that keeps a bad build off PyPI.
         """
-        found = jobs()
-        self.assertIn("needs: check", found["build"])
-        self.assertIn("needs: [check, build]", found["pypi"])
-        self.assertIn("needs: [check, build, pypi]", found["github"])
-        self.assertNotIn(
-            "always()", settings(workflow()), "a release job would run after a failed guard"
+        assert "needs: check" in FOUND["build"]
+        assert "needs: [check, build]" in FOUND["pypi"]
+        assert "needs: [check, build, pypi]" in FOUND["github"]
+        assert "always()" not in settings(workflow()), (
+            "a release job would run after a failed guard"
         )
 
-    def test_only_a_tag_publishes(self) -> None:
+    @pytest.mark.parametrize("name", ["pypi", "github"])
+    def test_only_a_tag_publishes(self, name: str) -> None:
         """`workflow_dispatch` is a dry run, and the thing that makes it safe to
         reach for is that the two publishing jobs test the ref rather than
         anyone remembering not to press it."""
-        for name in ("pypi", "github"):
-            self.assertIn(
-                "if: startsWith(github.ref, 'refs/tags/')",
-                jobs()[name],
-                f"{name} would publish from a branch",
-            )
+        assert "if: startsWith(github.ref, 'refs/tags/')" in FOUND[name], (
+            f"{name} would publish from a branch"
+        )
 
 
-class TestTheUploadCannotSucceedQuietly(unittest.TestCase):
+class TestTheUploadCannotSucceedQuietly:
     """CLAUDE.md §8: never trust a green run you cannot explain. A release has
     two ways to report success having done nothing, and both are one line."""
 
@@ -175,75 +181,70 @@ class TestTheUploadCannotSucceedQuietly(unittest.TestCase):
         """`skip-existing` turns re-running a finished release into a green tick
         over an upload that did not happen -- indistinguishable from a first run
         that worked, which is the direction every mistake in this class errs."""
-        self.assertIn("gh-action-pypi-publish", jobs()["pypi"], "nothing publishes at all")
-        self.assertNotIn("skip-existing", settings(jobs()["pypi"]))
+        assert "gh-action-pypi-publish" in FOUND["pypi"], "nothing publishes at all"
+        assert "skip-existing" not in settings(FOUND["pypi"])
 
     def test_the_build_is_checked_before_it_is_uploaded(self) -> None:
         """`twine check --strict` reads the long description the README becomes,
         which is the usual thing to be malformed -- and PyPI rejects it *after*
         the version number is spent."""
-        self.assertIn("twine check --strict", jobs()["build"])
+        assert "twine check --strict" in FOUND["build"]
 
     def test_the_built_wheel_is_installed_and_asked_its_version(self) -> None:
         """The same claim ci.yml's `install` job makes, asked of the artifact
         that is about to be published rather than of the source tree. It is the
         last point at which a wheel missing the package or the entry point is
         still recallable."""
-        block = jobs()["build"]
-        self.assertIn("tupferl --version", block)
-        self.assertIn("python -m venv", block)
+        assert "tupferl --version" in FOUND["build"]
+        assert "python -m venv" in FOUND["build"]
 
     def test_the_artifact_names_are_asserted(self) -> None:
         """`python -m build` cannot fail for a wrong version: it names the file
         after whatever `hatchling` read. Without this the only place the tag and
         the wheel could disagree is a filename nobody reads until it is live."""
-        self.assertIn("dist/tupferl-$version.tar.gz", jobs()["build"])
+        assert "dist/tupferl-$version.tar.gz" in FOUND["build"]
 
 
-class TestTheWorkflowAsksForLittle(unittest.TestCase):
+class TestTheWorkflowAsksForLittle:
     """Permissions, which are the other thing a release workflow gets wrong once
     and lives with."""
 
     def test_the_default_is_nothing(self) -> None:
-        self.assertRegex(workflow(), r"(?m)^permissions:\s*\{\}\s*$")
+        assert re.search(r"(?m)^permissions:\s*\{\}\s*$", workflow())
 
     def test_only_pypi_may_mint_a_token_and_only_github_may_write(self) -> None:
         """Trusted Publishing needs `id-token: write` and nothing else; the
         release needs `contents: write` and nothing else. Neither job should
         have the other's."""
-        found = {name: settings(block) for name, block in jobs().items()}
-        self.assertIn("id-token: write", found["pypi"])
-        self.assertNotIn("contents: write", found["pypi"])
-        self.assertIn("contents: write", found["github"])
-        self.assertNotIn("id-token: write", found["github"])
+        granted = {name: settings(block) for name, block in FOUND.items()}
+        assert "id-token: write" in granted["pypi"]
+        assert "contents: write" not in granted["pypi"]
+        assert "contents: write" in granted["github"]
+        assert "id-token: write" not in granted["github"]
 
-    def test_the_checking_jobs_only_read(self) -> None:
-        for name in ("check", "build"):
-            block = settings(jobs()[name])
-            self.assertIn("contents: read", block)
-            granted = block.split("permissions:")[1].split("steps:")[0]
-            self.assertNotIn("write", granted, f"{name} asks for a write it does not need")
+    @pytest.mark.parametrize("name", ["check", "build"])
+    def test_the_checking_jobs_only_read(self, name: str) -> None:
+        block = settings(FOUND[name])
+        assert "contents: read" in block
+        granted = block.split("permissions:")[1].split("steps:")[0]
+        assert "write" not in granted, f"{name} asks for a write it does not need"
 
 
-class TestTheHistoryIsDeepEnoughToJudge(unittest.TestCase):
+class TestTheHistoryIsDeepEnoughToJudge:
     """`git branch --contains` needs the branches, and a release checkout is
     shallow by default -- with depth 1 the commit is on no branch at all and the
     guard would fail on every correct release. The fix somebody reaches for then
     is deleting the guard, so the reason is asserted rather than remembered."""
 
     def test_the_check_job_fetches_the_whole_history(self) -> None:
-        self.assertIn("fetch-depth: 0", jobs()["check"])
+        assert "fetch-depth: 0" in FOUND["check"]
 
 
-class TestEveryJobIsBounded(unittest.TestCase):
+class TestEveryJobIsBounded:
     """The same reason ci.yml gives: a hang is otherwise GitHub's six-hour
     default, and a running job's log is a 404 -- so a wedged release is the one
     failure with nothing to read."""
 
-    def test_no_job_is_unbounded(self) -> None:
-        for name, block in jobs().items():
-            self.assertIn("timeout-minutes:", block, f"{name} has no timeout")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    @pytest.mark.parametrize("name", sorted(FOUND))
+    def test_no_job_is_unbounded(self, name: str) -> None:
+        assert "timeout-minutes:" in FOUND[name], f"{name} has no timeout"

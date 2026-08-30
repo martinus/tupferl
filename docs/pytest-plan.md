@@ -1,14 +1,15 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-with them; no module has been converted yet.
+and **cluster B1** with them. Eight of the 33 modules are pytest-native; 25 are
+still `TestCase`s.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did
 differently from what it says below is in
-[Phase A as built](#phase-a-as-built--2026-08-30) and
-[Phase A2 as built](#phase-a2-as-built--2026-08-30) — read all three before the
-next phase.
+[Phase A as built](#phase-a-as-built--2026-08-30),
+[Phase A2 as built](#phase-a2-as-built--2026-08-30) and
+[B1 as built](#b1-as-built--2026-08-30) — read all four before the next phase.
 
 **A pytest-native test module is safe to write as of A2**, which was the whole
 point of doing it before Phase B: `tools/run_tests.py` collects with pytest now,
@@ -1328,9 +1329,9 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 
 | PR | modules | machinery converted | notes |
 |---|---|---|---|
-| B1 | `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
+| B1 | **Done** — see [B1 as built](#b1-as-built--2026-08-30). `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) — **not done, deliberately**; see B1 as built | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
 | B2 | `test_config_properties`, `test_merge_properties`, `test_sync_properties`, `test_profiles` | none new | Hypothesis-native. Delete the `__module__`/`__name__`/`__qualname__` dunder hack in `test_sync_properties.py` (it existed for unittest id round-trip in sharding; pytest nodeids come from collection) — keep the `X = Machine.TestCase` assignments, which are the pytest-idiomatic spelling. `profiles.py` untouched. The pyproject mypy-override list stays valid (module names unchanged). |
-| B3 | `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
+| B3 | `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
 | B4a | `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture (copytree of the cached template + remote-url repair; the `template()`/`two_machines()` functions themselves unchanged) | the overlay both-copies rule and `TestTheSnapshotIsWrittenLast` transfer as-is. |
 | B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
@@ -1436,6 +1437,96 @@ have seen it.
 Plus two in `tests/test_mutants.py` for the `check` guard, and a sweep of
 `tupferl/merge.py` — 31 rows, 30 caught, 1 survivor already tagged, baseline
 green — to drive the shard path end to end.
+
+## B1 as built — 2026-08-30
+
+Eight modules, 115 collected items before and 237 after -- the growth is
+`subTest` loops becoming `parametrize`, which is a rename of existing cases and
+not new coverage. Nothing disappeared; the mapping is in the PR.
+
+### `tests/conftest.py` was not created, and that is the divergence
+
+The cluster table above says B1 creates it "initially near-empty". It does not,
+because after converting all eight modules **nothing in them is shared**. The
+three fixtures B1 wrote are each used by exactly one file: `only` (an
+`os.environ` holding precisely what a test names) in `test_paths.py`, `box` (a
+throwaway directory) in `test_config.py`, and `merged_under` (a real
+`~/.gitconfig` naming a conflict style) in `test_merge.py`.
+
+An empty `conftest.py` would make a claim -- *shared fixtures live here* -- that
+nothing yet backs, and §0 is about exactly that kind of sentence. B3 is the
+first cluster with machinery two modules genuinely share (`SandboxCase` →
+`sandbox`), so the file arrives in the PR that justifies it, and the table above
+now says so.
+
+### The `unittest` verdict layer lost its footing, loudly, and one test moved
+
+`TUPFERL_MUTATE_VERDICT=unittest` drives `unittest`'s own loader, and that
+loader cannot take a pytest-native module back: a plain `class TestX:` is found
+by name and refused with
+
+    TypeError: calling <class 'tests.test_config.TestRejectingAnUnknownKey'>
+    returned <tests.test_config.TestRejectingAnUnknownKey object ...>, not a test
+
+So every row whose *selection* names a converted module now answers `broke`
+under that layer. `tests/test_mutate.py`'s
+`TestWhichVerdictLayerGradesAProbe::test_either_layer_can_actually_grade_a_row`
+was the one test that noticed, and it was right to: its row,
+`UNKNOWN_KEY_GUARD`, selects `tests.test_config`.
+
+**The fix was to move the row, not to weaken the test.** `EITHER_LAYER` mutates
+`tools/verdict_unittest.py` and selects
+`tests.test_verdict_unittest.TestATestThatNoticed` -- the one module this plan
+keeps `TestCase`-style to the end, because it dies with its subject in Phase C.
+So the row lives and dies with the layer it exists to exercise, and it is stable
+through B2–B6. Measured: **0.35s per layer, against `UNKNOWN_KEY_GUARD`'s
+0.66s**, so the move bought headroom rather than spending it.
+
+Two candidate rows were timed before this one was picked; the other, mutating
+`_carrier`'s "did not finish within" message, is also caught by both layers but
+costs **3.4s per layer**, because its killer is a deliberately hanging test.
+That is the kind of number the five "where to arm it" lessons are about, and the
+cheaper row was chosen for it.
+
+### `python -m unittest discover` is no longer a fallback, measured
+
+It ran **1614 tests before this cluster and 1499 after, reporting `OK` both
+times** -- exactly the 115 in the eight converted modules gone, with nothing
+said. Pointed at one converted module alone it prints `Ran 0 tests` and
+`NO TESTS RAN`. CLAUDE.md's "Build & test" line now says `python -m pytest -q`
+and carries those numbers.
+
+### What the conversion did, in one list
+
+- `unittest.TestCase` bases dropped; the classes stay, because their docstrings
+  are where this project keeps its arguments and pytest collects a plain
+  `Test*` class the same way.
+- `self.assertX(...)` → plain `assert`, and `assertRaises(...) as caught` →
+  `pytest.raises(...) as caught` with `caught.exception` becoming
+  `caught.value`.
+- Every `subTest` loop → `pytest.mark.parametrize`. Where the case list is
+  *computed* -- `test_errors`' ast-walk, `test_ci`'s and `test_release`'s hand
+  parse of a workflow -- it is computed once at module level and the companion
+  "the scan found them" test is restated to say what it now also guards: an
+  empty list collects **no cases**, so those tests would not fail, they would
+  cease to exist.
+- `setUp` + `addCleanup` → yield-fixtures. Where the old base ran a helper the
+  test called (`test_paths`' `Environment.only`, `test_merge`'s
+  `merged_under`), the fixture yields a *callable* and holds an
+  `contextlib.ExitStack` that unwinds at teardown.
+- Three dead `if __name__ == "__main__": unittest.main()` blocks deleted,
+  including the one sitting **mid-file** in `test_packaging.py` with a class
+  after it.
+- `test_config`'s throwaway directory goes through `support.tempdir` rather than
+  pytest's `tmp_path`, and the fixture says why: `tmp_path` keeps three numbered
+  roots per user under `/tmp/pytest-of-<user>`, and a sweep races thousands of
+  probe processes over that numbering.
+
+### Gate
+
+Preflight green. The mutation check is in the PR body: `--all --only <src>` for
+every source file whose sweep selection includes one of the eight modules,
+against the last whole-tree sweep.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 

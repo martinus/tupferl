@@ -19,33 +19,31 @@ three, and the four that lacked a semicolon were the four with no next step. A
 proxy that agreed with the real property on every instance available is the
 strongest form this check can take.
 
-What it deliberately does not cover:
-
-- **`why` arguments to `sync.undone`.** That function appends its own clause, so
-  the message a user sees is the caller's half plus "-- run `tupferl doctor`,
-  then sync again." The composed sentence is what matters and the `raise` that
-  builds it is scanned; the fragments handed in are not.
-- **Anything not raised as a `TupferlError`.** `manifest.Refused.why` and
-  `sync.Outcome.why` are sentences a user reads, printed rather than raised.
-  They pass through the messages above -- "skipped {path}: {why}" -- where the
-  surrounding line carries the shape. A rule for them would be a different rule.
-- **Whether the advice is any *good*.** Nothing mechanical can say that. This
-  catches the message that does not try.
+**Each message is its own test**, parametrized over the scan, rather than one
+test looping over all of them. A failure then names the offending message in
+its own nodeid instead of in a `subTest` label, and the list is built once at
+import rather than once per test. The list being non-empty is the precondition
+`test_the_scan_found_them` states, and it is stated separately because a
+parametrize over an empty list is *zero tests that all pass* -- §2's
+zero-iteration trap, moved from run time to collection time and no less silent
+for it.
 """
 
 from __future__ import annotations
 
 import ast
-import unittest
 from pathlib import Path
 from typing import NamedTuple
+
+import pytest
 
 #: The package, found from this file rather than from the working directory.
 #: Both would work under `tools/run_tests.py` and under `tools/mutate.py`, which
 #: run with a tree root as their cwd -- but a test that reads a *tree* rather
 #: than the tree it was loaded from is one that passes when pointed at the wrong
-#: one, and CLAUDE.md §8 collects what that costs. `python -m unittest
-#: tests.test_errors` from anywhere is the case that shows the difference.
+#: one, and CLAUDE.md §8 collects what that costs. `python -m pytest` given this
+#: file's absolute path, from another directory, is the case that shows the
+#: difference.
 PACKAGE = Path(__file__).resolve().parent.parent / "tupferl"
 
 #: The fewest messages the scan may find and still be believed. A walk that
@@ -126,48 +124,58 @@ def messages() -> list[Message]:
     return found
 
 
-class TestEveryErrorSaysWhatToDoNext(unittest.TestCase):
-    """Plan §5's two halves and one sentence, over the whole package."""
+#: Read once, at import, so the two per-message tests below are parametrized
+#: over the same list rather than each rebuilding it. `test_the_scan_found_them`
+#: is what says this is not empty.
+FOUND = messages()
 
-    def setUp(self) -> None:
-        self.found = messages()
+
+def named(message: Message) -> str:
+    """A parametrize id that reads like the `subTest` label this replaced."""
+    return f"{message.module}:{message.line}"
+
+
+class TestEveryErrorSaysWhatToDoNext:
+    """Plan §5's two halves and one sentence, over the whole package."""
 
     def test_the_scan_found_them(self) -> None:
         """The precondition for every assertion below.
 
         Without it a walk that matched nothing passes the other three, and a
         green run would mean "this file no longer reads the package" rather than
-        "the package is fine". The module count is asserted too: one file
-        holding all of them would mean the glob had collapsed.
+        "the package is fine". Under parametrize it does more than that: an
+        empty `FOUND` collects *no* cases at all, so the two tests below would
+        not fail, they would cease to exist -- and a suite that lost two tests
+        reports the same green as one that ran them. The module count is
+        asserted too: one file holding all of them would mean the glob had
+        collapsed.
         """
-        self.assertGreaterEqual(len(self.found), FLOOR, self.found)
-        self.assertGreaterEqual(len({message.module for message in self.found}), 5)
+        assert len(FOUND) >= FLOOR, FOUND
+        assert len({message.module for message in FOUND}) >= 5
 
-    def test_each_has_two_halves(self) -> None:
+    @pytest.mark.parametrize("message", FOUND, ids=named)
+    def test_each_has_two_halves(self, message: Message) -> None:
         """`what happened; what to do next.` -- the semicolon is the seam.
 
         This is the assertion that four real messages failed. Each of them
         ended at git's own words, which say what broke and never what to try.
         """
-        for message in self.found:
-            with self.subTest(module=message.module, line=message.line):
-                self.assertIn("; ", message.text, message.text)
-                self.assertTrue(message.text.rsplit(";", 1)[1].strip(), message.text)
+        assert "; " in message.text, message.text
+        assert message.text.rsplit(";", 1)[1].strip(), message.text
 
-    def test_each_is_one_finished_sentence(self) -> None:
+    @pytest.mark.parametrize("message", FOUND, ids=named)
+    def test_each_is_one_finished_sentence(self, message: Message) -> None:
         """Plan §5 says one sentence, so: it ends, and it ends once.
 
         Ending in a full stop also rules out a message that trails off in an
         interpolated value -- a `git` error, a path -- which is the shape "what
         happened" alone always takes.
         """
-        for message in self.found:
-            with self.subTest(module=message.module, line=message.line):
-                self.assertTrue(message.text.endswith("."), message.text)
-                self.assertNotIn(". ", message.text, message.text)
+        assert message.text.endswith("."), message.text
+        assert ". " not in message.text, message.text
 
 
-class TestTheScanCanFail(unittest.TestCase):
+class TestTheScanCanFail:
     """The other direction, and the reason the class above is worth having.
 
     Every assertion up there is of the form "no message is bad". CLAUDE.md §2
@@ -183,35 +191,35 @@ class TestTheScanCanFail(unittest.TestCase):
 
     def test_a_message_with_no_next_step_has_no_semicolon(self) -> None:
         (text,) = self.check('raise TupferlError(f"could not stage {name}: {why}")')
-        self.assertNotIn("; ", text)
+        assert "; " not in text
 
     def test_a_message_that_trails_off_in_a_value_has_no_full_stop(self) -> None:
         (text,) = self.check('raise TupferlError(f"could not commit; git said {why}")')
-        self.assertFalse(text.endswith("."))
+        assert not text.endswith(".")
 
     def test_two_sentences_are_visible_as_two(self) -> None:
         text = self.check('raise TupferlError("it broke; try again. Sorry.")')[0]
-        self.assertIn(". ", text)
+        assert ". " in text
 
     def test_both_arms_of_a_conditional_message_are_read(self) -> None:
         """`manage.remove`'s shape. Checking one arm and not the other is how a
         message goes unguarded while the line it is on looks covered."""
         texts = self.check('raise TupferlError(f"a; b." if flag else f"c: {value}")')
-        self.assertEqual(["a; b.", "c: {}"], texts)
+        assert texts == ["a; b.", "c: {}"]
 
     def test_a_message_with_no_text_at_all_is_reported(self) -> None:
         """Not skipped. A `raise TupferlError()` that the scan passed over
         silently would be the one error in the program with no message."""
-        self.assertEqual([""], self.check("raise TupferlError()"))
+        assert self.check("raise TupferlError()") == [""]
 
     def test_an_unreadable_message_is_reported_as_empty(self) -> None:
         """A message built elsewhere and raised through a name. It cannot be
         read here, so it comes back empty and fails -- rather than counting as
         a message that passed."""
-        self.assertEqual([""], self.check("raise TupferlError(built_elsewhere)"))
+        assert self.check("raise TupferlError(built_elsewhere)") == [""]
 
     def test_other_exceptions_are_not_scanned(self) -> None:
         """`OSError` and friends are not the user's to act on -- see
         `tupferl/errors.py`. A scan that swept them in would fail on the first
         `raise ValueError("x")` in the package and say nothing true."""
-        self.assertEqual([], self.check('raise ValueError("no semicolon here")'))
+        assert self.check('raise ValueError("no semicolon here")') == []
