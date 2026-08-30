@@ -473,9 +473,10 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red |
+| `tests/` | stdlib `unittest`, not pytest — the mutation tooling classifies unittest result objects. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest, harness first** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phase 0 is measured and done, Phase A rewrites `tools/verdict.py`). Until Phase A lands this row is still true, so do not write a pytest-native test module yet: the unittest loader loads one as an *empty* suite, and its tests vanish from every sweep without anything going red |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout |
 | `docs/plan.md` | the plan this is built from |
+| `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on |
 
 Five things are not where a newcomer would guess, all on purpose:
 
@@ -685,6 +686,13 @@ A dependency arrives as one import in one commit, and nothing else in the suite
 notices: the code works, the tests pass, and the supply chain grew. If a new
 dependency is genuinely wanted, that test is the place the argument for it gets
 written down.
+
+**That test governs `[project] dependencies` — what a *user* installs — and not
+the optional extras**, which is why `pytest>=9.1.1` could join `test` without it
+going red. An extra ships to nobody, so the check that matters there is a
+different one: the floor has to be a version somebody actually ran. Both
+extras carry that argument as a comment beside them, and pytest's says what
+measurement pins it.
 
 ### Gotchas
 

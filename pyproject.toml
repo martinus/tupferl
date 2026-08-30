@@ -52,7 +52,26 @@ dependencies = ["tomli>=2.0; python_version < '3.11'"]
 # `test` is separate from `dev` so the CI jobs that only run the suite can take
 # hypothesis without also pulling a linter and a type checker into a job that
 # runs neither.
-test = ["hypothesis>=6.100"]
+#
+# `pytest` is here rather than in `dev` because the suite will be run by it
+# (docs/pytest-plan.md): a job that only runs tests needs it, and a job that
+# only lints does not.
+#
+# The floor is the version Phase 0 spiked, and here that is stronger than the
+# usual floors-are-real-versions stance: the mutation harness classifies pytest
+# *report objects*, and their shape for `TestCase.subTest` changed between 8 and
+# 9. Measured on the same two-case fixture, second case failing:
+#
+#     8.4.2   one TestReport,  outcome failed
+#     9.1.1   SubtestReport passed, SubtestReport failed, TestReport *passed*
+#
+# Both fail the run, so this is not about a silent pass -- it is that on 9 the
+# owning test's own report says `passed`, and a classifier reading only
+# `TestReport` would call a subTest kill "nothing noticed". Written against one
+# version it is wrong on the other, so the floor is the version it was written
+# against. `pytest-subtests` is deliberately absent: on 9 it changes the report
+# stream for `TestCase.subTest` not at all, only the summary wording.
+test = ["hypothesis>=6.100", "pytest>=9.1.1"]
 dev = ["ruff>=0.16", "mypy>=2.3", "tupferl[test]"]
 
 [project.scripts]
