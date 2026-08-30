@@ -1520,35 +1520,50 @@ read this file:
     parallel than before, and it passes every obvious assertion. Measured: that
     mutation survived every other test in the class until
     `test_the_commitment_buys_lanes_rather_than_headroom` was written for it.
-  - **The number that would justify a figure rather than a judgement is not
-    measured.** `_report_headroom` samples the heaviest *single* lane process;
-    nothing samples the *sum* of lane RSS at one instant, which is what the host
-    feels. "One lane reached 92% of its ceiling" and "the machine was near its
-    limit" are different claims and only the first is in evidence.
+  - **Measured, and the constant is vindicated by an order of magnitude
+    (#90).** `_report_crowding` samples the *sum* of lane RSS at one instant —
+    what the host actually feels, where `_report_headroom` watches the heaviest
+    single process. Three whole-table runs of `--all --only tools/mutate.py` at
+    40 lanes, ceilings summing to **80 GiB on a 62 GiB machine**:
 
-    **The sampler exists now** (`_report_crowding`), and every run prints what
-    the lanes held between them against what the machine had. Until it did, this
-    constant was the obvious suspect when a sweep killed a desktop session on
-    2026-08-30 — and it was the wrong one.
+    | | |
+    |---|---:|
+    | peak held by every lane between them | **5.1–5.7 GiB**, 7–10% of budget |
+    | lowest `MemAvailable`, watchdogged independently | **47 GiB** |
+    | headroom against the commitment | **15×** |
 
-    **That mis-diagnosis is the entry worth keeping.** `killed by SIGKILL` in a
-    row's detail reads as "the machine ran out of memory", and the harness's own
-    message says so *first* — but it says something else second, which is the
-    true half here: "or a harness running inside it killed the session it was
-    in". The cause was #91: a mutant of `_lane` inverts the lane's membership
-    test, and `_end_lane` `SIGKILL`s everything it returns, which is then every
-    process the user owns. `os.kill` in a loop, not the OOM killer.
+    So 150% is not generous, it is conservative — on the one table where peaks
+    were argued to correlate. Both instruments *sample* (1s and 2s), so a
+    sub-second spike is invisible to both; what is established is that no
+    *sustained* aggregate pressure exists, which is the claim the constant
+    rests on.
 
-    The numbers that settled it, and none was available before the sampler:
-    that table holds **924 MiB across 8 lanes**, so ~3.2 GiB at the 28 that were
-    running, on a 62 GiB machine showing 55 GiB free afterwards.
+  - **A lane at 100% of its ceiling is a runaway being capped, not a starved
+    lane — and reading it the other way costs an afternoon.** It reads like
+    "the ceiling is too small", so #94 was filed on it. The A/B refuted that:
+    same table, same 40 lanes, ceiling raised 2048 → 3072 MiB, and the heaviest
+    lane came back at **100% of both** (2046/2048, 3071/3072) while `BROKE` got
+    *worse*, 3 → 8. A process with no bound of its own fills any bound you give
+    it, so no ceiling is ever enough and there is nothing here to tune.
 
-    Two things to carry forward. **A `SIGKILL` row is a question, not an
-    answer** — cross it against the summed figure before believing memory, and
-    look at *which* rows died: seven of the thirteen mutated the guard
-    machinery itself, which is not a coincidence any memory story explains. And
-    **`_COMMIT` is not known to be wrong**; it is known to be unmeasured, which
-    is all #90 now claims.
+    What those rows actually are is #96: **the sweep mutates its own memory
+    guard and pool** — `_Lanes.release`, `_Lanes._sample`, `_sandboxes`,
+    `_borrow`, `Work.take` — so the probe's guard is disabled and its nested
+    harness runs unbounded whatever the outer lane was given. 8 of 9
+    not-answered rows recurred across both arms, which is what tells a
+    structural cause from noise.
+
+  - **A `SIGKILL` row is a question, not an answer.** It reads as "the machine
+    ran out of memory", and the harness's own message says so *first* — but it
+    offers something else second, which was the true half on 2026-08-30: "or a
+    harness running inside it killed the session it was in". A sweep killed a
+    desktop session that day and `_COMMIT` was the obvious suspect and the
+    wrong one; the cause was #91, a mutant of `_lane` inverting the membership
+    test that `_end_lane` then `SIGKILL`s. `os.kill` in a loop.
+
+    So cross a `SIGKILL` row against the summed figure before believing
+    memory, and look at *which* rows died — seven of the thirteen mutated the
+    guard machinery, which no memory story explains.
 
   The counter-argument, which is measured and which `slowest_first` makes worse:
   woswoar#232 was not lanes drifting up independently, it was *three of four
