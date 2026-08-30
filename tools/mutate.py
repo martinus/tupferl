@@ -1356,7 +1356,7 @@ class Learned:
             self.recent.insert(0, killer)
             del self.recent[self.keep :]
 
-    def ahead(self, row: Mutation) -> str:
+    def ahead(self, row: Mutation) -> tuple[str, ...]:
         """The learned tests this row can reach, newest first.
 
         Cut to what the row's selection covers, for the reason `ahead_of` gives:
@@ -1366,18 +1366,22 @@ class Learned:
 
         Already-remembered tests are dropped rather than repeated -- `first` is
         run in order, and naming a test twice buys nothing and costs a run.
+
+        A tuple rather than a space-joined string, for the reason
+        `Mutation.first` gives: these are pytest nodeids and a parametrized one
+        can hold a space.
         """
         with self._lock:
             recent = list(self.recent)
         # survivor: branch -- tools/mutate.py:1156 in Learned.ahead() -- the `if` is never taken --
         #   equivalent: with nothing remembered the comprehension below iterates an empty list and
-        #   `' '.join([])` is the same empty string the guard returns. The guard says it plainly
-        #   rather than deriving it.
+        #   yields the same empty tuple the guard returns. The guard says it plainly rather than
+        #   deriving it.
         if not recent:
-            return ""
-        already = set(row.first.split())
+            return ()
+        already = set(row.first)
         reachable = row.tests.split()
-        return " ".join(
+        return tuple(
             test
             for test in recent
             if test not in already
@@ -1456,7 +1460,7 @@ def _attempt(
             # Asked *here*, on the lane, rather than when the row was queued:
             # `run` submits the whole table to the pool at once, so at submit
             # time no verdict exists yet and there is nothing to have learned.
-            ahead = learned.ahead(mutation) if learned is not None else ""
+            ahead = learned.ahead(mutation) if learned is not None else ()
             # **The exact killer goes in front of the learned front, not
             # behind it.** `Killers.ahead_of` already drops the cheap prefix
             # for a row whose killer is known -- "exact beats general, the
@@ -1475,21 +1479,18 @@ def _attempt(
             # the full selection. That costs nothing when the killer is right,
             # because the killer has already answered.
             #
-            # Split on spaces here, and that is the *remaining* half of the
-            # nodeid hazard `_run`'s JSON slot closes. `Mutation.first`,
-            # `Killers.known` and `Learned.recent` all hold ids space-joined
-            # into one string, so a nodeid containing a space is shredded before
-            # it ever reaches argv. Nothing in this tree produces one -- every
-            # test is a `TestCase` method, and pytest names those
-            # `file.py::Class::method` -- so the first pytest-native
-            # `@pytest.mark.parametrize` to land is what makes these three
-            # fields have to hold sequences. `docs/pytest-plan.md`'s Phase B
-            # says so where that would happen.
-            first = (
-                f"{mutation.first} {ahead}".split()
-                if mutation.exact
-                else f"{ahead} {mutation.first}".split()
-            )
+            # Concatenated, never joined-and-re-split. This used to read
+            # `f"{mutation.first} {ahead}".split()`, which was the *remaining*
+            # half of the nodeid hazard `_run`'s JSON slot closes: an id
+            # containing a space was shredded here, before it ever reached
+            # argv. Nothing in the tree produced one while every test was a
+            # `TestCase` method -- pytest names those `file.py::Class::method`
+            # -- so the round trip was invisible and free. `docs/pytest-plan.md`
+            # step B1a closed it ahead of the first `@pytest.mark.parametrize`,
+            # because the failure is silent in the flattering direction: half a
+            # nodeid selects nothing, and selecting nothing is not an error to
+            # pytest.
+            first = (*mutation.first, *ahead) if mutation.exact else (*ahead, *mutation.first)
             began = time.monotonic()
             verdict = _run(
                 mutation.tests.split(),
@@ -2009,9 +2010,9 @@ def run(
                 # survivor: drop-call -- TODO: why is this acceptable?
                 print(paint.paint(f"{reason_at}-- {verdict.detail}", known.colour), flush=True)
 
-    def _first_look(shard: str) -> Verdict:
+    def _first_look(shard: Sequence[str]) -> Verdict:
         """One baseline shard, in a borrowed sandbox like any other lane task."""
-        return _borrow(available, shard.split(), timeout, memory, each)
+        return _borrow(available, shard, timeout, memory, each)
 
     def lane_walk(lane: int) -> None:
         """One lane: take the next row, run it, say what it found, repeat."""
@@ -2592,7 +2593,7 @@ def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | 
 WHOLE_SUITE = ""
 
 
-def baseline_shards(table: Sequence[Mutation]) -> list[str]:
+def baseline_shards(table: Sequence[Mutation]) -> list[tuple[str, ...]]:
     """What the untouched tree must be green on before any verdict counts.
 
     One shard per distinct selection, plus one holding every remembered `first`.
@@ -2600,6 +2601,17 @@ def baseline_shards(table: Sequence[Mutation]) -> list[str]:
     covering too -- one shard for all of them, never one each: a shard per
     remembered test is the sharding explosion that cost 372s -> 730s, in a new
     disguise.
+
+    **A shard is a sequence of names, and that second shard is why.** It used to
+    be a space-joined string that `run` re-`split()` before handing it to
+    `_borrow`, which is exactly the round trip `Mutation.first` now exists to
+    avoid -- and this was the worst place for it. A parametrized nodeid split in
+    half gives two names that select nothing, pytest does not call selecting
+    nothing an error, so the shard meant to prove those killers green would have
+    come back green having run none of them. Every verdict a stale killer then
+    caught would rest on it. The selection shards are built the same way for one
+    shape rather than two, though their names -- dotted paths from `targets_for`
+    -- could never have held a space.
 
     **Not the whole suite, though every row now walks it.** That was tried and
     measured, and it fails three ways. It costs a full-suite run per table, which
@@ -2621,14 +2633,18 @@ def baseline_shards(table: Sequence[Mutation]) -> list[str]:
     will ask later, and it is worth nothing if it asks a different one. It
     already went stale once here.
     """
-    shards = sorted({mutation.tests for mutation in table})
-    # survivor: order -- TODO: why is this acceptable?
-    if ahead := " ".join(sorted({name for row in table for name in row.first.split()})):
+    # Sorted as tuples rather than sorting the joined strings and converting after, which was
+    # the first spelling. The two orders are identical -- a space is below every character a
+    # dotted target path can hold, so joining preserves the comparison, checked over 200k random
+    # cases -- and the set then also collapses two selections that differ only in spacing, which
+    # as strings were distinct and produced two identical full baseline runs.
+    shards = sorted({tuple(mutation.tests.split()) for mutation in table})
+    if ahead := tuple(sorted({name for row in table for name in row.first})):
         shards.append(ahead)
     return shards
 
 
-def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
+def _unbaselined(results: Sequence[Result], shards: Sequence[Sequence[str]]) -> list[str]:
     """Killers that no baseline shard covered, so nothing proved them green.
 
     The hole the walk opens. A row that nothing in its selection notices keeps
@@ -2651,7 +2667,7 @@ def _unbaselined(results: Sequence[Result], shards: Sequence[str]) -> list[str]:
     """
     if any(not shard for shard in shards):
         return []
-    reachable = [only for shard in shards for only in shard.split()]
+    reachable = [only for shard in shards for only in shard]
     # survivor: order -- tools/mutate.py:2030 in _unbaselined() -- the ordering is reversed -- same
     #   set, same argument as the `sorted` mutation on this line -- and reversal is equally
     #   invisible to a caller that only needs the names.
@@ -3161,7 +3177,7 @@ class Killers:
                 # the prefix would only be work before the answer. `exact` says
                 # so to `_attempt`, which owes the same precedence against
                 # `Learned` and for the same reason.
-                ahead.append(row._replace(first=killer, exact=True))
+                ahead.append(row._replace(first=(killer,), exact=True))
                 continue
             # Nothing remembered -- a new row, or one whose killer stopped
             # working. Cut to what this row can reach: a test in a module that
@@ -3181,7 +3197,7 @@ class Killers:
                 for test in head
                 if not reachable or any(_reaches(test, only) for only in reachable)
             ]
-            ahead.append(row._replace(first=" ".join(mine)) if mine else row)
+            ahead.append(row._replace(first=tuple(mine)) if mine else row)
         return ahead
 
     def learn(self, report: Report) -> None:
@@ -3947,13 +3963,17 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
     green = True
     with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
         checks = [
-            pool.submit(_borrow, available, shard.split(), args.timeout, memory, args.each_test)
+            pool.submit(_borrow, available, shard, args.timeout, memory, args.each_test)
             for shard in shards
         ]
         for shard, future in zip(shards, checks, strict=True):
             verdict = future.result()
+            # Joined for the display and nowhere else. What went to `_borrow` above is the
+            # sequence; this is the one place a shard becomes a string, because nothing
+            # reads it back.
+            said = " ".join(shard)
             # survivor: boundary -- TODO: why is this acceptable?
-            name = shard if len(shard) < 70 else f"{shard[:67]}..."
+            name = said if len(said) < 70 else f"{said[:67]}..."
             if verdict.outcome == "survived":
                 # survivor: drop-call -- TODO: why is this acceptable?
                 print(f"  {paint.paint('green  ', paint.GOOD)} {paint.paint(name, paint.QUIET)}")

@@ -679,6 +679,59 @@ class TestDroppingAKeywordArgument(unittest.TestCase):
         self.assertEqual(self.dropped('p.read_text(encoding="utf-8")\n'), [])
 
 
+class TestAPrefixMustBeASequenceRatherThanAString(unittest.TestCase):
+    """The one hole `first: Sequence[str]` leaves open, closed at the table.
+
+    `str` *is* a `Sequence[str]`, so the annotation accepts the whole string it
+    exists to forbid and mypy says nothing -- and `NamedTuple._replace` is worse
+    still, since mypy does not check its keywords at all. That is how a string
+    survived the conversion in the first place, in two rows of this project's own
+    suite.
+
+    What it costs is not an exception. Iterating a string yields characters, so
+    `_attempt` spreads one killer into fifty single-letter names, every one of
+    which selects nothing -- and the row comes back `BROKE`, which is never
+    `caught`, so the line it appeared to guard is guarded by nothing and the
+    summary counts it in neither of the two numbers a reader looks at.
+    """
+
+    def file(self, tmp: str) -> str:
+        path = Path(tmp) / "mod.py"
+        path.write_text("value = 1\n", encoding="utf-8")
+        return str(path)
+
+    def test_a_string_is_refused_before_the_file_is_read(self) -> None:
+        """Two claims in one call, because the fixture proves the second for free.
+
+        **The path does not exist**, so reaching `read_text` is a
+        `FileNotFoundError` rather than the `SystemExit` asserted -- which is what
+        makes "refused *before* the read" an assertion rather than a comment. That
+        ordering is the point of putting the guard in `check`: it runs over the
+        whole table before the first sandbox exists, so a table built with the
+        wrong shape dies loudly at row 0 rather than as a wall of non-answers an
+        hour later, and it is reported as its own mistake rather than as whatever
+        the row's path happens to say.
+
+        The message is asserted with the fix in it, because the two spellings
+        differ by one comma and the wrong one is the one that reads naturally.
+        """
+        row = Mutation("x", "/nonexistent/mod.py", "a", "b", "t", first="a.py::T::t")
+        with self.assertRaises(SystemExit) as refused:
+            mutants.check(row)
+        self.assertIn("sequence of test ids", str(refused.exception))
+        self.assertIn('first=("a.py::T::t",)', str(refused.exception))
+
+    def test_a_sequence_is_accepted(self) -> None:
+        """The half that keeps the refusal from being unconditional -- without
+        it, `check` raising on everything would pass the test above. A real file,
+        because this one goes past the guard into the checks that read it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            row = Mutation(
+                "x", self.file(tmp), "value = 1", "value = 2", "t", first=("a.py::T::t",)
+            )
+            mutants.check(row)
+
+
 class TestARowThatMatchesNothingSaysWhatIsClose(unittest.TestCase):
     """The refusal is right and used to end the search there.
 
