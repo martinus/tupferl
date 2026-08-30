@@ -160,19 +160,19 @@ EACH_TEST = 30.0
 #: sweeps, whole-tree ones included. The heaviest single lane process ran 14-18%
 #: of its ceiling on `--only tupferl/` and 92% on a whole-tree run.
 #:
-#: **That calibration has since been falsified, and this constant is now known
-#: to be unsafe on one table -- see #90.** `--all --only tools/mutate.py` at 28
-#: lanes let the ceilings sum to 79 GiB on a 62 GiB machine and the host's OOM
-#: killer took the developer's desktop session; at 40 lanes the same table
-#: returned 12 `BROKE` rows, every one `killed by SIGKILL`, with the closing
-#: line reporting the heaviest lane at **100%** of its ceiling. `broke` fell
-#: 12 -> 2 -> 0 as lanes came down, on identical rows.
+#: **A sweep did kill a desktop session (2026-08-30), and this constant was
+#: blamed for it wrongly** -- recorded because the wrong diagnosis is the more
+#: instructive half. The cause was #91: a mutant of `_lane` inverts the lane's
+#: membership test, and `_end_lane` then `SIGKILL`s every process the *user*
+#: owns. It was `os.kill` in a loop, not the OOM killer.
 #:
-#: The reason it is that table and not `--only tupferl/` is mechanical: its rows
-#: run *nested* harnesses, and `slowest_first` dispatches a file's dearest rows
-#: adjacently -- so the peaks this constant assumes are independent are, there,
-#: in flight together. Until the sampler below exists, pass `--workers` by hand
-#: for it.
+#: What ruled memory out is now measurable, which is the point of
+#: `_report_crowding` below: that table's lanes hold **924 MiB between them at
+#: 8 lanes**, so ~3.2 GiB at the 28 that killed the session, on a 62 GiB machine
+#: that showed 55 GiB free afterwards. No exhaustion anywhere near it.
+#:
+#: So this constant is **not** known to be wrong. It is known to be unmeasured,
+#: which is what #90 is now about and what the line below finally prints.
 #:
 #: **Not applied to `_affordable`**, which divides by what a lane is *measured*
 #: to use rather than by its ceiling. That number already assumes peaks are
@@ -2391,12 +2391,17 @@ def _report_headroom(ceiling: int) -> None:
 def _report_crowding() -> None:
     """Say what every lane held *between them*, against what the machine has.
 
-    **The number `_COMMIT` was set without, and #90 is what it costs.** That
-    constant lets the lanes' ceilings add up to 150% of the budget on the
-    argument that peaks are not simultaneous, and until this line existed
-    nothing anywhere measured whether they were. On `--all --only
-    tools/mutate.py` they are: 28 lanes summed their ceilings to 79 GiB on a
-    62 GiB machine and the host's OOM killer took the developer's session.
+    **The number `_COMMIT` was set without.** That constant lets the lanes'
+    ceilings add up to 150% of the budget on the argument that peaks are not
+    simultaneous, and until this line existed nothing anywhere measured whether
+    they were -- so when a sweep killed a desktop session, memory was the
+    obvious suspect and there was no way to clear it.
+
+    This is what cleared it. `--all --only tools/mutate.py` holds **924 MiB
+    across 8 lanes**, so about 3.2 GiB at the 28 that were running, on a 62 GiB
+    machine with 55 GiB free afterwards. The kill was #91 -- a mutant of `_lane`
+    inverting the membership test that `_end_lane` then `SIGKILL`s -- and not
+    memory at all.
 
     It is deliberately a *different* question from the line above.
     `_report_headroom` asks "was one lane's ceiling big enough", which

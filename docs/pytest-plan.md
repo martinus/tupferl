@@ -1629,7 +1629,22 @@ which is why the 975-row `tools/mutate.py` table did not have to be run again
 for a change to `test_packaging.py`, the thing that would otherwise have made
 this review expensive.
 
-### The sweep OOM-killed the machine, and that is the first recorded instance
+### A sweep killed the machine's desktop session -- and not for the reason recorded here
+
+**The paragraphs below were written during B1 and their diagnosis is wrong.**
+They are kept because the correction is worth more than the original: the cause
+was #91, a mutant of `_lane` inverting the lane's membership test so that
+`_end_lane` `SIGKILL`s every process the *user* owns. It was `os.kill` in a
+loop, not the OOM killer, and the summed-lane sampler written for #90 is what
+established it -- that table holds 924 MiB across 8 lanes, so ~3.2 GiB at the 28
+that were running, on a 62 GiB machine that showed 55 GiB free afterwards.
+
+What survives unchanged is the *reading* rule, which is why the section stays:
+`broke` fell 12 -> 2 -> 0 as lanes came down on identical rows, so a `SIGKILL`
+row is a question rather than an answer. What does not survive is blaming
+`_COMMIT`; see #90, now downgraded to "unmeasured" rather than "unsafe".
+
+### The lane arithmetic, as it was recorded at the time
 
 `tools/mutate.py`'s table was run three times before it was believed, and the
 reason is CLAUDE.md's `_COMMIT` entry coming true:
