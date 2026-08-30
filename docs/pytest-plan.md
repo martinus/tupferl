@@ -1,13 +1,17 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **plan, not yet started**. Nothing in this document has been executed.
+Status: **Phase 0 executed** (2026-08-30); Phases A onwards not started. The
+measured answers are in [Spike results](#spike-results--measured-2026-08-30),
+which corrects three expectations this plan was written with — read it before
+Phase A.
 
 ## Context for the executing agent
 
 You are likely reading this in a fresh session with no memory of how it came to
 be. The background you need:
 
-tupferl's suite is stdlib `unittest` (~1557 tests, 33 modules), a choice
+tupferl's suite is stdlib `unittest` (1505 tests, 33 modules -- Phase 0 counted
+them; the estimate here was ~1557), a choice
 [`docs/plan.md`](plan.md) §7.1 made because the mutation tooling in `tools/`
 classifies unittest result objects. The maintainer has since decided to convert
 the whole suite to pytest, **because the end goal is to open-source the
@@ -100,7 +104,7 @@ catch 3.10-only breaks.
 
 ### S0 — Does the whole existing suite pass under plain pytest?
 
-*Question:* do all ~1557 unittest-style tests pass, unmodified, under
+*Question:* do all 1505 unittest-style tests pass, unmodified, under
 `python -m pytest -q`? *Experiment:* run it; compare pass/fail/skip counts
 against `python -m tools.run_tests` and
 `python -m unittest discover -s . -t . -p 'test_*.py'`. Run again with
@@ -226,6 +230,327 @@ measured answer for S0–S6; `pip install -e '.[dev]'` brings in the pinned
 pytest; full preflight green (nothing else changed). **Size:** 1 PR, roughly
 2–4 sessions of experiments, small diff. **Failure protocol:** FP; if S0
 reveals broad incompatibility, the whole plan stops for maintainer review.
+
+## Spike results — measured 2026-08-30
+
+**Every S0-S6 question below is answered from a measurement on this machine, not
+from documentation.** Where a spike contradicts the expectation the plan was
+written with, the plan text above is left as written and the correction is
+here — three of them do (S3, S5, and half of S4).
+
+**Pinned for every spike:** pytest **9.1.1** (the newest stable; its
+`Requires-Python >= 3.10` matches this project's own floor exactly),
+pytest-subtests 0.15.0 (spiked, **not adopted** — see S3), hypothesis 6.165.10.
+
+| | |
+|---|---|
+| primary interpreter | CPython **3.14.7**, Fedora, kernel 7.1.8 |
+| machine | AMD Ryzen 9 7950X, 32 logical cores, 62 GiB (≈53 GiB available) |
+| 3.10 leg | CPython **3.10.21** in a `python:3.10-slim` container under podman, `git` and `procps` installed, run as a non-root user |
+
+Timings are medians of interleaved repetitions; the count is stated at each.
+
+### S0 — The whole existing suite passes under plain pytest, unmodified
+
+**Yes, on both interpreters, with no pre-work needed.** Not one test needed
+touching, and every expected suspect (stdin, the pty tests, the nested
+harnesses in `test_run_tests.py` / `test_mutate.py`) passed untouched.
+
+| | tests | wall |
+|---|---|---|
+| `python -m tools.run_tests` | 1505, 0 failures / 0 errors / 0 skipped | 20.7 s |
+| `python -m unittest discover -s . -t . -p 'test_*.py'` | 1505 | 89.0 s |
+| `python -m pytest -q` | **1940 passed**, 0 failed, 0 skipped | 89.6 s |
+| `python -m pytest --collect-only -q` | **1505 nodeids** | — |
+
+**The 1940-vs-1505 delta is not extra tests, and explaining it was the whole
+of this spike.** pytest collects exactly the same 1505 items; it emits 435
+additional *reports*, one per `subTest` iteration. Accounted exactly by a
+plugin counting reports by class:
+
+```
+call/passed/SubtestReport   435      <- 77 tests use subTest at runtime
+call/passed/TestReport     1505
+setup/passed/TestReport    1505
+teardown/passed/TestReport 1505
+                           1505 owners + 435 subtests = 1940
+```
+
+The plan's "~1557 tests" is superseded: the real number is **1505**.
+
+**Tree hygiene:** `git status --ignored --short` is byte-identical before and
+after a whole-suite run, and no `.pytest_cache` appears anywhere with
+`-p no:cacheprovider`.
+
+**stdin, measured against a real pty rather than assumed.** `sync` asks
+`sys.stdin.isatty()` to decide whether anyone is there to answer a conflict, so
+this one is load-bearing. Handing the child a real terminal with `pty.openpty()`:
+
+| | `sys.stdin` | `isatty()` |
+|---|---|---|
+| pytest, default capture | `DontReadFromInput` | **False** |
+| pytest, **`-s`** | `TextIOWrapper` | **True** |
+| unittest (today) | `TextIOWrapper` | **True** |
+| control: bare interpreter on that pty | `TextIOWrapper` | True |
+
+pytest replaces stdin whether or not a terminal is there, which is the safe
+direction and *safer than today* — but **`-s` undoes it exactly**, and a probe
+that prompts on a developer's machine does not fail, it blocks. So the probe
+must never pass `-s`. That is a measured rule, and it collides with the capture
+finding under "One finding that belongs to no single spike" below: `-s` is
+precisely what one reaches for when plugin output goes missing. Reach for a
+pre-`dup`'d fd instead.
+
+**3.10:** identical — 1505 nodeids, 1505 owner reports + 435 subtest reports =
+1940, 0 failed, 0 collection errors, no cache. One skip
+(`test_watch.TestWhetherAProcessIsThere::test_pid_one_is_alive_though_it_is_not_ours`),
+which `python -m unittest discover` also skips in the same container:
+environment, not framework.
+
+**One false alarm, recorded because it is the shape §8 warns about.** The first
+3.10 run showed *four* failures, all in `tests/test_mutate.py`
+(`TestWhereThereIsAProc`, `TestWhatPsIsAskedFor`). They are not a pytest delta
+and not a 3.10 delta: `ps` is absent from `python:3.10-slim`, and the same four
+fail identically under `python -m unittest` and under `python -m tools.run_tests`
+in that same container. Installing `procps` removed all four. **The check that
+settled it was running the other framework in the same container** — comparing
+against the 3.14 run would have "confirmed" a pytest regression that does not
+exist.
+
+### S1 — Walk strategy: repeated in-process `pytest.main()` wins
+
+**Primary wins on both counts, speed and correctness.**
+
+Fixed per-probe overhead — subprocess spawn included, since that is what a
+probe costs `mutate`; median of 9 each:
+
+| | median |
+|---|---|
+| bare interpreter | 8.0 ms |
+| `import unittest` | 27.7 ms |
+| `import pytest` | 75.8 ms (autoload on) / 74.1 ms (off) |
+| **unittest: load + run one module** | **42.5 ms** |
+| **`pytest.main` one module, autoload on** | **193.1 ms** |
+| **`pytest.main` one module, autoload off** | **113.6 ms** |
+| `pytest.main` one module, autoload off + `-p hypothesispytest` | 169.9 ms |
+
+So a probe costs **+71 ms** over unittest, with autoload off (S4).
+
+The walk, all 33 groups, interleaved A/B, two pairs:
+
+| | run 1 | run 2 |
+|---|---|---|
+| in-process repeated `pytest.main()` | 80.98 s | 80.19 s |
+| one subprocess per group | 85.42 s | 85.60 s |
+| *(today)* in-process repeated unittest load+run | 78.43 s | 78.48 s |
+
+Subprocess-per-group is **6.1% slower** (~150 ms per group) — well under the
+plan's 10–16 s estimate, but it buys nothing, because in-process showed no
+contamination at all. Against today's unittest walk, pytest is **+2.9%**.
+
+**Estimated whole-sweep cost of the move: about +2%** — survivors are ~49% of
+lane-seconds and pay +2.9%; caught rows are the rest and pay the +71 ms fixed
+overhead once each.
+
+Safety, which is what actually decides this:
+
+- `sys.meta_path` is **3 before and 3 after** 33 consecutive `pytest.main()`
+  calls. No duplicate-plugin errors, no assertion-rewrite hook stacking.
+- Four unmutated 33-group walks (2 in-process, 2 subprocess) agree **exactly**,
+  per module, on `(exit code, number noticed)`. No module differs.
+- Three seeded source mutations — `paths.META` renamed, the first `return` in
+  `copies.py` negated, the first `not` in `manifest.py` dropped — stop the walk
+  at groups **7, 16 and 29** respectively, and **both arms agree exactly** on
+  the stopping group, the module and the number noticed. The walk stops at the
+  first notice, as designed.
+
+The plan asked for the seed to be "in module 20"; where a seeded mutation is
+first noticed is not something the seeder chooses, so this was run as three
+seeds landing early, middle and late instead.
+
+### S2 — The per-test alarm: reported per test, and classifiable
+
+**Primary wins.** A `Hung(BaseException)` raised from a `SIGALRM` handler armed
+by `signal.setitimer` inside a `pytest_runtest_protocol` hookwrapper:
+
+- is reported **per test**, in the `call` phase;
+- arrives at `pytest_runtest_makereport` with `call.excinfo.type` equal to
+  `Hung`, so `issubclass(call.excinfo.type, Hung)` is checkable exactly where
+  the plan wanted it;
+- **does not abort the session** — with five tests and two 60-second sleeps,
+  all five started and the two tests following the hangs ran and passed;
+- is **not swallowed by `except Exception:` inside the test body** (which is
+  the reason `Hung` derives from `BaseException`); the test that wraps its
+  sleep in `except Exception` still reports `Hung`, not the `AssertionError`
+  its handler would have raised;
+- is distinguishable from a plain failure — a normal `assertEqual` failure in
+  the same run reports `AssertionError`, `is_hung` false — so a hang is
+  classified `broke` and never `noticed`.
+
+At `EACH=1.0` the whole five-test run took **2.07 s**, which is the alarm
+firing rather than the sleeps completing.
+
+**Identical on 3.10.**
+
+### S3 — subTest: pytest 9 does this natively, and pytest-subtests is not needed
+
+**The plan expected the opposite, and the correction matters.** It anticipated
+that a failing `self.subTest(...)` would silently pass under plain pytest and
+that `pytest-subtests` would be a Phase A dependency. Measured:
+
+| pytest | call-phase reports for a two-case subTest owner whose second case fails | run |
+|---|---|---|
+| 8.4.2 | one `TestReport`, outcome **failed** | exit 1 |
+| **9.1.1** | `SubtestReport` passed, `SubtestReport` failed, `TestReport` **passed** | exit 1 |
+
+Both versions fail the run, so the historical silent-pass is not the hazard
+here. `SubtestReport` comes from `_pytest.subtests` — a module inside pytest's own
+package, not the plugin — and is emitted with `-p no:subtests` in force.
+
+Each `SubtestReport` carries the **owning test's nodeid** and a
+`report.context` of `SubtestContext(msg=..., kwargs={...})`, so attribution to
+the owner is direct and no parametrized carrier id is involved.
+
+**The trap this creates is the one to write down.** On 9.1.1 the owning test's
+*own* `TestReport` says `passed` even when one of its subTests failed. A
+classifier that reads only `TestReport` objects — which is the obvious port of
+today's `addSubTest` handling — would file a subTest kill as "nothing
+noticed", and report a mutation SURVIVED that the suite actually caught. That
+is the flattering direction. **Classify on `report.outcome == "failed"` across
+every report object, not on the owner's report.**
+
+**pytest-subtests 0.15.0 is not adopted.** Installed, it changes the report
+stream for `TestCase.subTest` not at all — same objects, same classes, same
+order — and changes only the summary wording (`1 failed, 2 passed, 1 subtests
+passed` against `1 failed, 3 passed`). Revisit in Phase B only if a converted
+pytest-native test wants the `subtests` *fixture*, which is a different
+feature; Phase C's "remove it if unused" step is then moot.
+
+**Identical on 3.10.**
+
+### S4 — Sandbox hygiene, and the probe's exact env and argv
+
+**Decided:** `python -B`, `PYTHONDONTWRITEBYTECODE=1`,
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, `-p no:cacheprovider`, `-q`, assertion
+rewriting **on**, and **no** `-p` for Hypothesis.
+
+- **No `.pyc`, in any combination.** `-B` plus `PYTHONDONTWRITEBYTECODE=1`
+  gives zero `.pyc` files in the sandbox even with assertion rewriting on: the
+  rewriter honours `sys.dont_write_bytecode`.
+- **No `.pytest_cache`** with `-p no:cacheprovider`; one is created without it.
+- **Autoload off saves 79.5 ms per probe** (193.1 → 113.6 ms).
+- **Hypothesis needs no `-p`, contrary to the plan's expectation.** With
+  autoload off and no Hypothesis plugin: the `mutation` profile is still in
+  force (`max_examples=20`, `derandomize=True`, `STATEFUL,STEPS = 3,4`),
+  because it arrives through `tests/profiles.py`'s import side effect and not
+  through the plugin; there is **no complaint or warning**; and a deliberately
+  failing `@given` test still **fails**, in all three combinations. Adding
+  `-p hypothesispytest` costs **56 ms per probe** — most of the autoload saving
+  — and changed nothing measured. The entry-point name, for the record, is
+  `hypothesispytest` (module `_hypothesis_pytestplugin`).
+- **`--assert=plain` is not worth taking.** It saved 0.15 s and 0.80 s on ~80 s
+  walks — below resolution — and produced a byte-identical `longrepr` for
+  unittest-style assertions. Rewriting stays on, because Phase B's
+  pytest-native `assert` statements need it and it costs nothing now.
+- **`.hypothesis/` is written into the sandbox — by both frameworks.** Measured
+  under a pytest probe and under today's unittest probe: both create it. It is
+  Hypothesis's own behaviour and is gitignored. Not a regression; noted so a
+  Phase A reader does not chase it.
+
+**Genericity caveat, which the plan should carry into Phase D.**
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` is right for tupferl and *wrong* for a host
+project whose suite needs an autoloaded plugin — it would silently change what
+that project's tests do. It belongs with the `probe_plugins` knob as a setting
+with a default a host can change, not as a constant.
+
+**And one trap found the hard way:** pluggy validates hookimpl *argument
+names*. A hook spelled `pytest_collectreport(self, r)` raises
+`PluginValidationError` at plugin registration, naming the argument. The
+parameter must be `report`.
+
+### S5 — Collection cost: glob, by a factor of 123
+
+| | median of 7, whole process |
+|---|---|
+| `pytest --collect-only -q`, whole suite | **500.8 ms** |
+| `pytest --collect-only -q`, one module | 116.0 ms |
+| `unittest discover`, whole suite (imports all 33) | 250.5 ms |
+| `unittest loadTestsFromNames`, one module | 41.2 ms |
+| **glob only, no imports** | **12.0 ms** (4.0 ms over a bare interpreter) |
+
+**Primary wins: a config-respecting glob, not a cached `--collect-only` pass.**
+The plan's condition for the fallback was "only if globbing provably misses
+files the config would collect", and it does not: reading `rootdir`,
+`python_files` and `testpaths` out of `config` and globbing names **the same 33
+files** pytest collects — no misses, no additions. `rootdir` resolves to the
+tree correctly with no `[tool.pytest.ini_options]` table present; the defaults
+in force are `python_files = ["test_*.py", "*_test.py"]` and `testpaths = []`.
+
+**`norecursedirs` is load-bearing and is easy to leave out.** A naive
+`rglob` of those two patterns over the real tree finds **71** files — 38 of
+them inside `.venv`, i.e. it would walk pytest's own test suite. Applying
+`norecursedirs` gives exactly **33**. Phase A owes the enumeration a test that
+it agrees with `--collect-only`, because a *missed* file turns a caught row
+into a reported survivor, which is the flattering direction.
+
+`tools/run_tests`'s parent can afford one full collect: 500.8 ms against a
+20.7 s parallel suite is **2.4%**.
+
+*Observation for Phase A, not acted on here:* `tools/verdict.py`'s docstring
+argues laziness from "621 ms to import all 29 modules against 0–1 ms for one".
+That number does not reproduce on this machine — `discover` over all 33 costs
+250.5 ms. The *argument* is unchanged and in fact stronger under pytest
+(500.8 ms against 116.0 ms), but the figure travelled from another machine and
+should be re-measured rather than copied when that docstring is rewritten.
+
+### S6 — MemoryError: classified per test, with the outer belt demonstrated
+
+**Primary wins: the classification lives in `pytest_runtest_makereport`, and no
+belt at the logreport level is needed.** Three regimes, driving a test that
+allocates without bound under `RLIMIT_AS` with **both** halves lowered (as
+`verdict.cap` has done since #74):
+
+| ceiling | what happens |
+|---|---|
+| **≥ 320 MiB** | `MemoryError` arrives at `makereport`, phase `call`, `call.excinfo.type` a `MemoryError`, report `failed`. **The session continues** and the next test runs. Classifiable `broke`, never `noticed`. |
+| **256 MiB** | pytest cannot reach collection. The probe's outer `except BaseException` fires with `MemoryError`, zero tests started → the `{"loaded": false}` path, which `mutate` files `broke`. **The belt is demonstrated, not assumed.** |
+| **≤ 192 MiB** | the process dies before writing anything; `mutate` sees no report file, exactly as today. |
+
+Address-space floor to run one trivial module at all: **unittest 242 MiB,
+pytest 278 MiB** (binary search, both halves of the rlimit lowered). pytest
+costs **+36 MiB**, which against `mutate._FLOOR`'s 2048 MiB is **1.8%** —
+**`_FLOOR` needs no change**, and a real sweep's per-lane ceiling puts every
+probe in the first regime.
+
+### One finding that belongs to no single spike
+
+**Anything a verdict plugin `print`s during `pytest.main()` is eaten by
+pytest's own capture.** Measured on a run whose plugin printed once per
+call-phase report: 3 of 8 lines survived with default `fd` capture, 8 of 8 with
+`-s`, and 4 of 4 (the correct count) when written to a file descriptor
+`os.dup`'d **before** `pytest.main()` was entered. The report JSON is written
+to a file so it is unaffected — but a probe that diagnoses itself by printing
+would lose most of its output, silently and partially, which is worse than
+losing all of it. Diagnose from a file or a pre-duplicated fd.
+
+This also explains a scare during S1: a hook that printed nothing looked like a
+state leak between repeated `pytest.main()` calls, and was capture. **The two
+look identical from outside**, which is worth knowing before Phase A debugs a
+walk — and the obvious remedy, `-s`, is the one thing the probe may not do,
+because it hands the suite a real stdin again (S0).
+
+### What this changes in the plan above
+
+| | the plan said | measured |
+|---|---|---|
+| suite size | ~1557 tests | **1505** (1940 pytest reports) |
+| S3 | pytest-subtests expected to be a Phase A dependency | **not needed**; pytest 9 is native. The hazard is the *opposite* one: the owner's own report reads `passed` |
+| S4 | Hypothesis "complains without its plugin"; explicit `-p` list | **no complaint**, profile loads anyway, `-p` costs 56 ms and buys nothing |
+| S5 | glob primary "unless it provably misses files" | glob confirmed exact; but `norecursedirs` must be applied — a naive glob finds 71 files, not 33 |
+| S1 | subprocess fallback would cost +7–11% of sweep lane-seconds | it costs **6.1% of a walk**, ≈2% of a sweep; in-process is safe, so it is not needed |
+| Phase C step 2 | "remove pytest-subtests if Phase B eliminated all subtests uses" | moot — it was never added |
+
+Nothing here changes a phase boundary or the order of the plan.
 
 ## Phase A — Rebuild the verdict layer on pytest (tests stay unittest-style)
 
