@@ -773,12 +773,29 @@ class TestWhatTheBaselineNeeds(Probe):
         self.assertGreater(found["times"]["test_a.py::T::test_it"], SLEPT / 2)
         self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 20)
 
-    def test_a_subtest_is_not_charged_to_its_owner_twice(self) -> None:
-        """pytest emits a report per `subTest` iteration *and* one for the
-        owner, and the owner's duration already contains them. Summing all of
-        them would make the 77 tests here that use `subTest` look dearer than
-        they are to the ordering that reads this -- silently, since nothing
-        else can see the number.
+    def test_a_subtest_leaves_exactly_one_entry_for_its_owner(self) -> None:
+        """**This asserted something it could not see, and CI is what found
+        it.** It compared a wall clock against `SLEPT * 2` -- which is precisely
+        the value the double-counting it named would produce, so no margin at
+        all -- and it turned the macOS leg red the first time three 0.067 s
+        sleeps took 0.419 s on a loaded runner. That leg's own wall clock varies
+        128 s to 230 s across four consecutive green runs of `main`, so the
+        threshold was never going to hold there.
+
+        Worse, it could not have failed for the reason it gave. Measured on
+        pytest 9.1.1: a `SubtestReport`'s ``duration`` is **0** -- three subcases
+        sleeping 0.067 s each report 0, 0, 0 against the owner's ``call`` report
+        of 0.2017 -- so removing `verdict.Watcher`'s ``context`` filter changes
+        the number here by nothing at all. `tools/verdict.py` now says the same
+        beside the filter, and no test can see that guard removed.
+
+        What is real, and is what this asserts: every subcase reports under its
+        *owner's* nodeid, so a test using `subTest` appears in `times` exactly
+        once however many cases it runs. `Killers.prefix` divides rows-caught by
+        cost, and a second key for the same test would be a row with no cost
+        against it. The upper bound is `SLEPT * 20`, the same loose sanity bound
+        its sibling above uses, and for the same reason: it catches a number
+        that has stopped being a duration, not one that is off by a factor.
         """
         self.module(
             "test_a",
@@ -793,7 +810,8 @@ class TestWhatTheBaselineNeeds(Probe):
         )
         found = self.verdict("test_a")
         self.assertEqual(["test_a.py::T::test_it"], list(found["times"]))
-        self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 2)
+        self.assertGreater(found["times"]["test_a.py::T::test_it"], SLEPT / 2)
+        self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 20)
 
 
 class TestWhichTestsGetRun(Probe):
@@ -1700,6 +1718,70 @@ class TestHowANameBecomesANode(unittest.TestCase):
         self.assertEqual(
             "tests/test_nothing_of_the_sort.py", self.as_path("tests.test_nothing_of_the_sort")
         )
+
+
+class TestTheSummaryLineOfACollectionFailure(unittest.TestCase):
+    """`_stated`, and the fact that `tools/run_tests.py` holds a second copy.
+
+    The copy is deliberate and both docstrings argue for it: this module is read
+    as *source text* into a sandbox and may import nothing from `tools`, so a
+    shared helper would drag the whole package in behind it. What the decision
+    costs is that nothing kept the two honest, and until this class nothing did
+    -- `tests/test_run_tests.py` tests its copy and no test anywhere named this
+    one, so the `Errno`-is-not-`E` trap was guarded in one file and guarded by
+    nothing in the other. That trap matters here: this line is what a `broke`
+    row carries into a sweep's summary, which is the only text a reader gets
+    for a mutant no test could answer.
+
+    **The assertion is that the two agree**, not that this one is right. A
+    divergence is the failure the duplication risks, and it is invisible from
+    either side alone.
+
+    Imported inside the methods, as `TestHowANameBecomesANode` above does: the
+    subject of this file is a probe that runs as a subprocess, and a
+    module-scope import would read as though that had changed.
+    """
+
+    #: What pytest renders for a module whose import raised. The first line is
+    #: the file, which is the half a reader would reach for and the less useful
+    #: one; the last is the exception, prefixed the way pytest prints it.
+    RENDERED = (
+        "ImportError while importing test module '/tmp/x/tests/test_broken.py'.\n"
+        "Hint: make sure your test modules/packages have valid Python names.\n"
+        "Traceback:\n"
+        "tests/test_broken.py:1: in <module>\n"
+        "    import nothing_by_this_name  # noqa: F401\n"
+        "E   ModuleNotFoundError: No module named 'nothing_by_this_name'\n"
+    )
+
+    def both(self, rendered: str) -> tuple[str, str]:
+        from tools import run_tests, verdict
+
+        return verdict._stated(rendered), run_tests._stated(rendered)
+
+    def test_the_cause_is_kept_rather_than_the_file_and_line(self) -> None:
+        said, twin = self.both(self.RENDERED)
+        self.assertEqual("ModuleNotFoundError: No module named 'nothing_by_this_name'", said)
+        self.assertEqual(said, twin, "the two copies of `_stated` have diverged")
+
+    def test_a_line_that_merely_starts_with_an_e_keeps_it(self) -> None:
+        """`removeprefix("E")` turns a line beginning "Errno" into one beginning
+        "rrno", quietly, in the one message a reader has to act on.
+
+        Three lines, so that neither `spoken[0]` nor `spoken[1]` is the answer
+        -- `tests/test_run_tests.py` records the two sweeps it took to learn
+        that, and the same fixture has to be used here or this copy is guarded
+        more weakly than the one it is checked against."""
+        said, twin = self.both(
+            "tests/test_x.py:1: in <module>\n    raise OSError(2)\nErrno 2: no such file"
+        )
+        self.assertEqual("Errno 2: no such file", said)
+        self.assertEqual(said, twin, "the two copies of `_stated` have diverged")
+
+    def test_a_rendering_with_nothing_in_it_still_says_something(self) -> None:
+        said, twin = self.both("\n  \n")
+        self.assertEqual("collection failed and said nothing", said)
+        self.assertEqual(said, twin, "the two copies of `_stated` have diverged")
 
 
 if __name__ == "__main__":

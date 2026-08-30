@@ -437,11 +437,20 @@ class Watcher:
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         """Charge each test for its three phases, and nothing twice.
 
-        A subtest's report is skipped rather than added: its duration is already
-        inside the owning test's ``call`` report, and adding it again would make
-        the tests that use `subTest` look dearer than they are to the ordering
-        that reads this. Recognised by carrying a ``context``, which is what
-        pytest hangs the subtest's parameters on -- not by its class name.
+        A subtest's report is skipped rather than added, and it is recognised
+        by carrying a ``context`` -- what pytest hangs the subcase's parameters
+        on -- rather than by its class name.
+
+        **Measured on pytest 9.1.1, and it is weaker than it reads: a
+        `SubtestReport`'s ``duration`` is 0.** Three subcases sleeping 0.067 s
+        each report 0, 0, 0 against the owner's ``call`` report of 0.2017 -- the
+        machinery does not time subcases -- so adding them would change this
+        number by exactly nothing, and no fixture can make it change. The filter
+        stays as a guard against a pytest that starts timing them, which is a
+        future that has not arrived; that also means nothing can test it, and
+        `tests/test_verdict.py` says so where the test that pretended to used
+        to be. Deciding whether it earns its line is Phase C's, with the rest of
+        the documentation settling.
 
         ``setup`` starts the sum again rather than adding to it, so a test named
         in `first` and then reached again by the selection is charged for one

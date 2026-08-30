@@ -1,11 +1,18 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **Phases 0 and A executed** (2026-08-30); A2 onwards not started. The
-measured answers to the spikes are in
+Status: **Phases 0, A and A2 executed** (2026-08-30); B onwards not started.
+The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
-expectations this plan was written with. What Phase A did differently from what
-it says below is in [Phase A as built](#phase-a-as-built--2026-08-30) — read
-both before the next phase.
+expectations this plan was written with. What each executed phase did
+differently from what it says below is in
+[Phase A as built](#phase-a-as-built--2026-08-30) and
+[Phase A2 as built](#phase-a2-as-built--2026-08-30) — read all three before the
+next phase.
+
+**A pytest-native test module is safe to write as of A2**, which was the whole
+point of doing it before Phase B: `tools/run_tests.py` collects with pytest now,
+so a plain `def test_...` is discovered, packed by its module, run, and counted
+by the accounting check.
 
 ## Context for the executing agent
 
@@ -952,6 +959,258 @@ preflight green; and one mutation check over the runner itself:
 newly-surviving/newly-BROKE rows against Phase A's sweep for that file
 (`tests/test_run_tests.py` is *not* converted yet; it must still kill them).
 **Size:** 1 PR, ~400–600 line diff. **Failure protocol:** FP.
+
+## Phase A2 as built — 2026-08-30
+
+The design above survived in every part a reader would check: one in-process
+`--collect-only` in the parent, `file::Class` scopes from `item.parent`, the
+same worker command line, the same five-key JSON, dotted `--only`/`--exclude`,
+and the docstring rewritten. Two details came out differently from the letter of
+it, both deliberately:
+
+- **the translation goes the other way.** The design said `--only`/`--exclude`
+  would be "translated to nodeid prefixes"; the build translates each *scope*
+  into the dotted spelling instead. A dotted pattern cannot become a nodeid
+  prefix without already knowing whether `tests.test_x` names a directory, a
+  module or a class, so that direction is the lossy one — and translating the
+  scope is what lets `selects` stay exactly as it was, anchored at a dot, with
+  the property `test_only_is_anchored_at_a_dot` unchanged.
+- **collection errors of *named* items stay in `unloadable`**, where the design
+  put them in `errors`. `errors` is a list of test ids the parent prints under
+  an `ERROR:` label; a module name in it would be counted as a test that failed,
+  which is the distinction `unloadable` was added to keep. `run_batch` says so
+  where it writes the key.
+
+What follows is what the section did not anticipate, and the numbers.
+
+### The packing key was free, and that decided a design question
+
+`item.parent.nodeid` **is** the scope unit -- `tests/test_sync.py::TestX` for a
+class-bound test, `tests/test_sync.py` for a plain function -- so nothing here
+parses a nodeid to find it. That matters beyond tidiness: a string cut would
+have to know that a parametrized id ends in `[...]`, which is exactly the
+knowledge Phase B would have invalidated.
+
+### Four things the section above did not anticipate
+
+- **A failed `subTest` reaches `pytest_runtest_logreport` as a `SubtestReport`
+  and the owning test's own `call` report reads `passed`** -- the pytest 9
+  behaviour pyproject.toml's floor is there for, now met a second time in a
+  second layer. The obvious way to avoid double-counting a subcase is to drop
+  every report carrying a `context`, and that would have made a batch whose
+  only failure is a subcase report itself **green**: no id in `failures`,
+  `run_batch` exiting 0, and pytest's own exit status the only dissent. The
+  failed arm therefore does not filter on `context` at all, and `_settled`
+  deduplicates instead -- both reports carry the owner's nodeid.
+  `test_a_failing_subtest_is_reported_once_and_not_lost` drives two failing
+  subcases so that the deduplication is exercised rather than assumed.
+- **A batch naming a scope inside a module that will not import exits
+  `USAGE_ERROR`, not `INTERRUPTED`.** pytest reports the import failure through
+  `pytest_collectreport` and *then* says "found no collectors for
+  tests/test_x.py::TestY". The first draft of `_unexplained` accepted
+  `INTERRUPTED` alone as explained-by-`unloadable`, so that batch threw its
+  report away as unbelievable. The rule is now "anything already in
+  `unloadable` explains any status", which is wider and is the honest reading:
+  the entry is what makes the batch red either way.
+- **`errors` changed meaning, and the new one is better.** `unittest` split
+  failures from errors by exception type -- `AssertionError` against everything
+  else -- so a test raising `RuntimeError` in its own body was an "error". The
+  split is by *phase* now: `call` is the test saying no, `setup`/`teardown` is
+  the fixture around it, which is what decides whether a reader looks at the
+  test or at what set it up. The same change fixes an accounting wart: a class
+  whose `setUpClass` raises used to produce one synthetic
+  `setUpClass (module.Class)` id while every test under it surfaced as "never
+  ran" under a name nobody could run. pytest starts each test and files a
+  `setup` error against its real nodeid.
+- **Everything pytest prints is moved to stderr**, which is where a
+  `TextTestRunner` put it and where the parent's contract already assumed it
+  was. `contextlib.redirect_stdout(sys.stderr)` around `pytest.main` is enough
+  -- pytest builds its terminal writer from `sys.stdout` inside the call --
+  measured at 0 bytes on stdout against 1980 on stderr, and it leaves
+  `run_batch` callable in-process without wrecking its caller's streams.
+  `os.dup2(2, 1)` would work too and cannot be done in-process at all.
+
+### What was deliberately not done
+
+- **Plugin autoload is not disabled**, which is the opposite of what
+  `tools/mutate.py` does to its probes and is deliberate: a sweep has to be
+  reproducible across machines, and this is the developer's own suite runner.
+  Nothing a plugin can do escapes the accounting check, because discovery runs
+  under the same plugins the batches do.
+- **`run_tests.dotted` and `mutate._dotted` are two spellings of one
+  translation**, kept apart. They differ only in `mutants.module_of`, which
+  additionally collapses a package's `__init__` -- a case that cannot arise
+  from a scope, since `__init__.py` matches none of pytest's `python_files`
+  patterns. Sharing would mean importing `mutants` into every worker for one
+  line. Both docstrings name the other.
+- **`docs/plan.md` §7.1 still says "Framework: stdlib `unittest`, not
+  pytest".** That is Phase C's line to correct, together with the rest of the
+  documentation settling; it is named here so the next session does not have to
+  rediscover it.
+
+### What `/simplify` found, after the PR was open and CI was green
+
+Four review agents over the diff. One real defect, several cleanups, and two
+issues filed rather than fixed here.
+
+**The defect: a broken module excused *any* collect failure, and the run went
+green.** `_unexplained` treated anything in `unloadable` as accounting for any
+exit status — widened deliberately, because a batch naming a scope *inside* an
+unimportable module exits `USAGE_ERROR` rather than `INTERRUPTED`. Too wide for
+discovery, which names no scopes. Measured with the guard reverted, on a tree
+holding a broken module and a `conftest.py` hook that raises once the collection
+passes three items:
+
+```
+=== with the fix: exit 1
+    ::error::pytest exited INTERNAL_ERROR (3) while collecting /tmp/hole-...
+=== reverted:     exit 0
+    Ran 2 tests in 1 batches on 64 workers | OK (0 failures, 0 errors, 0 skipped)
+```
+
+A green run over a collect that raised — the failure this file exists to refuse,
+one level up from where it refuses it. The set of excused statuses is now chosen
+by the caller (`BY_A_BROKEN_MODULE` for discovery, `BY_ONE_A_BATCH_NAMED` for a
+batch), and `test_a_broken_module_does_not_excuse_a_collect_that_blew_up` holds
+it. **The `> 3` in that fixture is the test, not a detail**: it makes the parent
+and the batch see different collections, so the batch is honestly green and
+nothing downstream can notice. A hook that raised unconditionally takes the
+worker down too, and the accounting check then catches it for the wrong reason —
+which reads exactly like the right one, and is how this stayed invisible.
+
+Applied besides: `pack` returns no batches for no scopes rather than one empty
+one its only caller had to undo; the `dotted` side-table went, since it was
+derived state built before the filters that shrink it; the two plugins'
+identical `pytest_collectreport` bodies became one `_note_unloadable`, because
+that key is the wire protocol and was written twice; `Batch` in the tests keeps
+`CompletedProcess`'s own field names instead of renaming two streams; and
+`tests/test_run_tests.py`'s throwaway trees now run with
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` — they contain two hand-written `TestCase`s
+and no plugin can matter to them, measured 0.21 s → 0.12 s per process across
+33 call sites, and that module's own runtime fell from ~13 s to ~9 s.
+
+**A duplication that was accepted at a cost nobody was paying.** `_stated` is
+four lines in both `tools/verdict.py` and `tools/run_tests.py`, deliberately not
+shared because `verdict.py` is read as source text into a sandbox. Only the
+`run_tests` copy had a test. `tests/test_verdict.py` now runs the same table
+against both and asserts they agree, so a divergence is red rather than a
+discovery. `_named` is the same pair; its docstring now says the two render
+differently on purpose and which audience each serves, because
+`tools/cpus.py` already records what an unremarked copy of one number costs.
+
+Not fixed here, filed instead: `--exclude` cannot name a module that will not
+import and refuses with "matches nothing" (#84, predates the port), and
+`tests/support.py`'s module-scope hypothesis import costs 20 of 35 modules
+~60 ms each, about 7 s of CPU per run (#85, and the efficiency pass ranked it
+the cheapest way to buy back this PR's +5%).
+
+Skipped with reasons: dropping the `int(pytest.ExitCode.…)` casts (they match
+`verdict.ANSWERED`, and consistency across the three copies is worth more than
+four characters); memoising the tests' worker subprocesses (the one-claim-per-
+test granularity is deliberate); re-keying `unloadable` by nodeid (its keys are
+what a person types after `--only` and what "could not import …" prints);
+`--jobs 32` against `--jobs 64` now that a batch start costs 0.20 s rather than
+0.10 s (a measurement to run, not a change to make — `--jobs` already exposes
+it); and narrowing the parent's collect under `--only` (0.42 s → 0.20 s, which
+matters only to the interactive loop).
+
+### Evidence
+
+| | HEAD (`23fb988`, `unittest`) | this branch (pytest) |
+|---|---|---|
+| tests run | 1589 | **1607** |
+| result | 0 failures, 0 errors, 0 skipped | 0 failures, 0 errors, 0 skipped |
+| scopes packed | 339 classes | 339 scopes |
+
+The +18 is exactly this PR's own test arithmetic and nothing else: three tests
+of the `unittest` loader's two spellings of an import failure removed, and
+twenty-one added -- four on `_stated` and `_why`, three more running the same
+`_stated` table against `verdict.py`'s copy, four on `dotted`, one on ci.yml's
+`--exclude` values, one on the collect traceback reaching stderr without the
+node listing, two on a collect that cannot be believed (one of them the
+false-green above), and six on the worker (its stdout, a dead fixture's ids, a
+failing subtest, a status nobody can believe, and both halves of the xfail
+rule).
+
+**Wall clock costs about 5%, and this one *is* an A/B** -- same machine, same
+interpreter, two `git worktree` trees differing only in the commit, runs
+interleaved A B A B A B, which is what CLAUDE.md §5 asks for:
+
+| pair | HEAD | branch | |
+|---|---|---|---|
+| 1 | 28.58 s | 29.44 s | +0.86 s |
+| 2 | 28.68 s | 30.11 s | +1.43 s |
+| 3 | 28.29 s | 30.26 s | +1.97 s |
+
+Median paired difference **+1.43 s on ~28.5 s, about +5%**, and every pair is
+positive, so it is a real cost rather than noise. Three pairs is not many and
+the differences drift upwards across them while HEAD stays flat, so treat +5%
+as the shape and not as two significant figures.
+
+**The mechanism is not established.** Two terms are known to exist and neither
+has been measured on its own: the parent now pays one whole-tree collect
+(Phase 0's S5 measured that at 500 ms, which is a third of the difference), and
+each of 128 batches pays pytest's startup instead of `unittest`'s. Both are
+per-run constants rather than per-test, so the share should fall as the suite
+grows. Nothing here was optimised, and the obvious lever -- collecting once in
+the parent and handing each worker its ids rather than its scopes -- was not
+taken, because it would put a nodeid per test on a command line that today
+carries one per scope, and `ARG_MAX` is a limit CLAUDE.md already records
+being got wrong twice.
+
+Phase 0's 20.7 s figure for the `unittest` runner does not reproduce here at
+all -- the same binary measures ~28.5 s on this machine today -- which is the
+reason the interleave was run rather than the earlier number quoted. Comparing
+against it would have reported a 45% regression that does not exist.
+
+**The mutation gate, `python -m tools.mutate --all --only tools/run_tests.py`**,
+against Phase A's whole-tree sweep as the control for that file. Both baselines
+green, read from the baseline *line*:
+
+| | control (Phase A) | this branch |
+|---|---|---|
+| rows | 172 | 211 |
+| `caught` | 159 | **200** |
+| `SURVIVED` | 12 | 10 |
+| `BROKE` | 1 | 1 |
+| unread | 12 survived + 1 broke, all tagged | **0** |
+
+Every non-`caught` row carries a written reason beside the code and **none says
+`TODO`**. The single `BROKE` is `if args.worker:` -- forcing that branch off
+makes every worker run the whole suite and spawn more, and its tag has said so
+since before this PR.
+
+**And CI found a Phase A test that could not fail.** The `macos` leg went red
+on `test_verdict.py::TestWhatTheBaselineNeeds::test_a_subtest_is_not_charged_to_its_owner_twice`,
+which compared a wall clock against `SLEPT * 2` -- *exactly* the value the
+double-counting it named would produce, so no margin at all -- and three 0.067 s
+sleeps took 0.419 s on a loaded runner. That leg's own wall clock varies 128 s
+to 230 s across four consecutive green runs of `main`, and this branch's was
+211 s, inside that spread; the threshold was never going to hold there.
+
+The deeper half is that it could not have failed for the reason it gave.
+Measured on pytest 9.1.1, a `SubtestReport`'s `duration` is **0** -- three
+subcases sleeping 0.067 s each report 0, 0, 0 against the owner's `call` report
+of 0.2017 -- so removing `verdict.Watcher`'s `context` filter changes that
+number by nothing, and **no fixture can make it change**. The filter's docstring
+claimed the subcase duration was "already inside the owning test's `call`
+report", which is true in principle and not why the filter matters. Corrected in
+place; the guard is kept against a pytest that starts timing subcases, and both
+the docstring and the test now say it is untestable and that removing it is
+Phase C's call. Same family as CLAUDE.md's `merge.conflictStyle` entry: a guard
+written for a future that has not arrived cannot be tested.
+
+**Five sweeps, and every one after the first was earned.** The first reported 13
+unread survivors; ten of them were killable rather than equivalent, and killing
+them is where six of this PR's new tests come from -- `_why` driven directly
+(three rows), a collect that cannot be believed (five rows), and `_stated`'s
+`else` arm. The last sweep's one remaining survivor was the *same fixture
+weakness one subscript along*: a one-line rendering cannot tell `spoken[-1]`
+from `spoken[0]`, and the two-line rendering written to fix that cannot tell it
+from `spoken[1]`. Three lines is the first length at which no other index gives
+the answer. CLAUDE.md §2's symmetric-fixture entry, met twice in a row in the
+same four lines of code. The fourth confirmed the `test_verdict.py` correction
+above, and the fifth this section's own cleanups.
 
 ## Phase B — Convert the 33 test modules, in clusters
 
