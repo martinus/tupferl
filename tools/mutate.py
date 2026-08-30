@@ -1045,6 +1045,10 @@ class _Lanes:
             # After the loop, so it is one instant rather than a running total,
             # and outside the per-lane `continue`s above, which skip a lane that
             # is inside its ceiling -- exactly the lanes this has to count.
+            # survivor: branch -- equivalent: with `crowd` empty the sum is 0 and `max(mark, 0)` is
+            #   `mark`, because the mark starts at 0 and never falls. So taking the branch anyway
+            #   reaches the same answer, and what the guard actually saves is the lock -- acquired
+            #   once a second per sweep, which is real and is not observable from any assertion.
             if crowd:
                 with self._lock:
                     self._crowd = max(self._crowd, sum(table[pid].resident for pid in crowd))

@@ -3621,6 +3621,20 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
         at = int(mutate._TIGHT * (52000 << 20))
         self.assertIn(paint.ODD, self.said(at, 52000 << 20, terminal=True))
 
+    def test_a_machine_that_reports_no_memory_is_said_nothing_about(self) -> None:
+        """`_budget` can answer 0 -- a machine publishing no `/proc/meminfo`, no
+        cgroup and no `sysconf`, where `_BLIND_LANES` is the fallback. Dividing
+        by it is a `ZeroDivisionError` in the reporting line of a sweep that has
+        otherwise finished, which is the worst place to raise."""
+        self.assertEqual("", self.said(900 << 20, 0))
+
+    def test_a_machine_that_reports_one_byte_is_still_reported_on(self) -> None:
+        """The other side of `<= 0`, and the only input that tells it from
+        `<= 1`: a budget of exactly one byte is absurd but it is a *reading*,
+        and a reading gets reported. Without this the guard may quietly widen
+        until it swallows real machines."""
+        self.assertIn("900 MiB", self.said(900 << 20, 1))
+
     def test_it_is_still_said_when_there_is_no_ceiling_to_report_against(self) -> None:
         """The two lines go quiet for different reasons, so one must not be
         nested inside the other. `_report_headroom` says nothing when no lane
