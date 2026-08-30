@@ -26,8 +26,6 @@ this the test would fail intermittently and read as a bug in the merge.
 
 from __future__ import annotations
 
-import unittest
-
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
@@ -49,7 +47,7 @@ TEXT = support.line(max_size=12)
 SIDES = st.sampled_from(["ours", "theirs", "neither"])
 
 
-class TestOneSidedChangeWins(unittest.TestCase):
+class TestOneSidedChangeWins:
     """Property 1."""
 
     @given(base=st.lists(TEXT, max_size=8), edit=st.lists(TEXT, max_size=8))
@@ -57,19 +55,19 @@ class TestOneSidedChangeWins(unittest.TestCase):
         got = merge.three_way(
             ".bashrc", support.joined(base), support.joined(edit), support.joined(base)
         )
-        self.assertEqual(0, got.conflicts)
-        self.assertEqual(support.joined(edit), got.data)
+        assert got.conflicts == 0
+        assert got.data == support.joined(edit)
 
     @given(base=st.lists(TEXT, max_size=8), edit=st.lists(TEXT, max_size=8))
     def test_only_theirs_changed(self, base: list[str], edit: list[str]) -> None:
         got = merge.three_way(
             ".bashrc", support.joined(base), support.joined(base), support.joined(edit)
         )
-        self.assertEqual(0, got.conflicts)
-        self.assertEqual(support.joined(edit), got.data)
+        assert got.conflicts == 0
+        assert got.data == support.joined(edit)
 
 
-class TestANonOverlappingMergeKeepsBothSides(unittest.TestCase):
+class TestANonOverlappingMergeKeepsBothSides:
     """Property 2."""
 
     @given(
@@ -105,9 +103,5 @@ class TestANonOverlappingMergeKeepsBothSides(unittest.TestCase):
         )
         # The merged text in the failure message: a conflict here means the
         # fixture's regions overlapped, and the markers say which two.
-        self.assertEqual(0, got.conflicts, got.data)
-        self.assertEqual(support.joined(want), got.data)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert got.conflicts == 0, got.data
+        assert got.data == support.joined(want)
