@@ -3471,6 +3471,204 @@ class TestWhatPsIsAskedFor(unittest.TestCase):
         self.assertEqual(2048 * 1024, mutate._parse_ps("7 1 7 2048\n")[7].resident)
 
 
+class TestWhatMayBeSignalled(unittest.TestCase):
+    """`_permitted`: the guard that stopped #91 from being repeatable.
+
+    A sweep mutates its own source and runs it, so `_lane` -- which decides
+    *what gets killed* -- is itself under test. Mutated from `row.group ==
+    leader` to `!=` it returns every process the user owns except the lane, and
+    `_end_lane` sent SIGKILL to all of them. A real desktop session died.
+
+    The guard cannot be a better membership walk, because the walk is the thing
+    being mutated. It is a second fact read somewhere else: a process older than
+    this one cannot be in a lane this one started.
+    """
+
+    def permitted(self, members: list[int], born: dict[int, float]) -> list[int]:
+        with mock.patch.object(mutate, "_born", lambda: dict(born)):
+            return mutate._permitted(members)
+
+    def test_a_process_older_than_this_one_is_refused(self) -> None:
+        """**#91 in one assertion.** The desktop, the browser and the shell all
+        started hours before the sweep; the lane started after it."""
+        mine = os.getpid()
+        got = self.permitted(
+            [4321, 4322, 999],
+            {mine: 5000.0, 4321: 5001.0, 4322: 5002.0, 999: 12.0},
+        )
+        self.assertEqual([4321, 4322], got, "something older than the sweep was permitted")
+
+    def test_this_process_is_never_signalled(self) -> None:
+        """Its own start time is equal to its own, so `>=` alone would let the
+        harness kill itself -- and `_end_lane`'s `killpg` had the same hole."""
+        mine = os.getpid()
+        self.assertEqual([], self.permitted([mine], {mine: 5000.0}))
+
+    def test_the_same_tick_counts_as_ours(self) -> None:
+        """`>=` and not `>`, and this is the only input that tells them apart.
+        A tick is 10ms and a `Popen` is well inside one, so a lane born in the
+        sweep's own tick is the sweep's."""
+        mine = os.getpid()
+        self.assertEqual([7], self.permitted([7], {mine: 5000.0, 7: 5000.0}))
+
+    def test_a_pid_that_has_gone_is_still_permitted(self) -> None:
+        """It exited between the walk and here. `os.kill` on it is an `OSError`
+        the caller already suppresses; refusing it would be the guard deciding
+        something it has no evidence about."""
+        mine = os.getpid()
+        self.assertEqual([7], self.permitted([7], {mine: 5000.0}))
+
+    def test_an_unreadable_self_refuses_nothing(self) -> None:
+        """No `/proc/self`, or a `ps` that did not run. Refusing everything
+        would leave a fork storm alive, which is the failure `_Lanes` exists to
+        stop -- so the guard stands down rather than inverting into a different
+        hazard. It is the behaviour that existed before it."""
+        self.assertEqual([1, 2, 3], self.permitted([1, 2, 3], {}))
+
+    def test_it_reads_the_clock_itself_rather_than_the_process_table(self) -> None:
+        """The independence is the design. `_processes` is what `_lane` walks,
+        so a guard reading the same table could be disabled by the same
+        mutation -- and `_from_proc`'s `drop-assign` row, which empties that
+        table, is one of the rows this exists to survive."""
+        with (
+            mock.patch.object(mutate, "_processes", lambda: {}),
+            mock.patch.object(mutate, "_born", lambda: {os.getpid(): 5000.0, 7: 12.0}),
+        ):
+            self.assertEqual([], mutate._permitted([7]))
+
+
+class TestTheKillListIsVettedForReal(unittest.TestCase):
+    """`_end_lane` end to end, against the exact list #91's mutant produces.
+
+    Every other test here decides; this one *signals*. It is safe to run
+    because `members` is a two-element list of processes this test started, so
+    a guard that failed open would kill only those two -- where the defect it
+    guards killed everything the user owned.
+    """
+
+    #: Long enough that neither child can exit on its own before the assertions,
+    #: and far below the harness's 30s per-test alarm.
+    ALIVE = 30
+
+    def sleeper(self) -> subprocess.Popen[bytes]:
+        child = subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep({self.ALIVE})"],
+            start_new_session=True,
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        return child
+
+    def alive(self, child: subprocess.Popen[bytes]) -> bool:
+        """Whether `child` is still running, without reaping it."""
+        return child.poll() is None
+
+    def test_it_never_signals_its_own_process_group(self) -> None:
+        """The other half of the kill, and the half `_permitted` cannot reach.
+
+        `_end_lane` opens with `killpg(leader, SIGKILL)`, and `leader` does not
+        come from `_lane` -- so the per-pid guard never sees it. A leader equal
+        to this process's own group would take the sweep, the shell that started
+        it and every sibling lane with it. `killpg` is mocked because the claim
+        is about *which* group is asked for, and a fixture that got it wrong
+        would kill the suite proving it.
+        """
+        with mock.patch("os.killpg") as never:
+            mutate._end_lane(os.getpgrp(), [])
+        never.assert_not_called()
+
+    def test_it_does_signal_a_group_that_is_not_its_own(self) -> None:
+        """The other side, without which "never call killpg" would pass."""
+        with mock.patch("os.killpg") as called:
+            mutate._end_lane(os.getpgrp() + 1, [])
+        called.assert_called_once_with(os.getpgrp() + 1, signal.SIGKILL)
+
+    def test_something_older_than_the_sweep_survives_being_named(self) -> None:
+        """**#91, driven rather than argued.** The mutant's `_lane` returns
+        processes the sweep never started; this hands `_end_lane` exactly such a
+        list and watches the bystander live.
+
+        The two children differ only in when they started, which is the one
+        fact the guard reads -- so a guard that read anything else would fail
+        this, and a guard that read nothing would kill both.
+        """
+        bystander = self.sleeper()
+        # `_born` is read fresh inside `_end_lane`, so the fake has to place
+        # this process's own start *after* the bystander's and before the lane's
+        # -- which is what a real sweep looks like from the bystander's side.
+        real = mutate._born()
+        self.assertIn(bystander.pid, real, "the reader could not see the bystander")
+        lane = self.sleeper()
+        fake = {os.getpid(): 500.0, bystander.pid: 100.0, lane.pid: 900.0}
+        with mock.patch.object(mutate, "_born", lambda: dict(fake)):
+            mutate._end_lane(lane.pid, [bystander.pid, lane.pid])
+        lane.wait(timeout=support.PATIENCE)
+        self.assertTrue(self.alive(bystander), "a process older than the sweep was killed")
+        self.assertFalse(self.alive(lane), "the lane itself was not killed")
+
+
+class TestWhenEachProcessStarted(unittest.TestCase):
+    """`_born`, and the two readers behind it. Both are exercised on every
+    platform for the reason `_processes` gives: the fallback must not be
+    discovered to be broken on the machine that has nothing else."""
+
+    def test_this_process_is_in_the_answer_and_so_is_its_parent(self) -> None:
+        """Driven against the real machine rather than a fixture, because the
+        claim is that the field being read is the one meant."""
+        born = mutate._born()
+        self.assertIn(os.getpid(), born, "the reader did not find this process")
+        self.assertIn(os.getppid(), born, "the reader did not find its parent")
+
+    def test_the_processes_do_not_all_report_the_same_instant(self) -> None:
+        """**The field is a start time, and this is what says so.**
+
+        `/proc/<pid>/stat` field 21 is `itrealvalue`, one index below the one
+        this reads, and the kernel has reported it as 0 for every process since
+        2.6. Read by mistake, every comparison in `_permitted` becomes
+        `0 >= 0` -- so the guard permits everything and #91 is back with a test
+        suite that still passes. Measured: that off-by-one survived every other
+        test in this class.
+
+        Asserted as "the values differ" rather than against a known instant,
+        because the unit is not the same on both readers and only the ordering
+        is ever used.
+        """
+        born = mutate._born()
+        self.assertGreater(len(set(born.values())), 1, "every process reports the same start time")
+
+    def test_a_child_started_now_is_not_older_than_this_process(self) -> None:
+        """The ordering, which is the only property `_permitted` uses. A weaker
+        test -- that the numbers merely differ -- would pass against a reader
+        that had picked the wrong field entirely."""
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        born = mutate._born()
+        self.assertIn(child.pid, born)
+        self.assertGreaterEqual(born[child.pid], born[os.getpid()])
+        # And strictly later than the oldest process on the machine. "The
+        # values differ" is not enough on its own: `/proc/<pid>/stat` field 20
+        # is `num_threads`, which also differs between processes and is not a
+        # time at all -- read by mistake, a one-threaded child compares equal to
+        # a one-threaded init and the guard permits it. Measured: that
+        # off-by-one survived every other test in this class.
+        if 1 in born:  # absent only where this user cannot see init
+            self.assertGreater(born[child.pid], born[1], "a child is not younger than init")
+
+    def test_the_ps_reader_parses_what_ps_prints(self) -> None:
+        """macOS's half, driven from text on every platform. The date shape is
+        `ps -o lstart=`'s, which is `%c`-like and fixed by BSD `ps`."""
+        got = mutate._parse_lstart("  431 Sat Aug 30 17:28:03 2026\n 9999 Sat Aug 30 17:28:04 2026")
+        self.assertEqual([431, 9999], sorted(got))
+        self.assertLess(got[431], got[9999], "the two instants did not order")
+
+    def test_a_line_it_cannot_read_is_skipped_rather_than_raising(self) -> None:
+        """An unreadable date must not stop a lane being killed -- it must only
+        stop this vetoing the kill. A header line, a locale this cannot parse,
+        and a pid column with no date all take that path."""
+        self.assertEqual({}, mutate._parse_lstart("  PID STARTED\n  431 not a date at all\n"))
+
+
 class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
     """`_Lanes.crowded`: the sum across lanes at one instant, which is #90.
 
