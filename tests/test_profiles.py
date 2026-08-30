@@ -32,9 +32,8 @@ class TestTheProfilesExist:
 
     def test_the_mutation_profile_is_the_cheap_one(self) -> None:
         """Cheaper than `ci`, which is the point of having it."""
-        assert settings.get_profile("mutation").max_examples < (
-            settings.get_profile("ci").max_examples
-        )
+        cheap = settings.get_profile("mutation").max_examples
+        assert cheap < settings.get_profile("ci").max_examples
 
     @pytest.mark.parametrize("name", ["ci", "mutation"])
     def test_the_non_interactive_profiles_are_derandomised(self, name: str) -> None:

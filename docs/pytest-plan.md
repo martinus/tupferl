@@ -2,27 +2,37 @@
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
 and **clusters B1 and B2** with them, which converted the first twelve modules.
-**Of 35 test modules, 22 still hold `TestCase`s** — 21 of those convert in
-B3–B6, and `tests/test_verdict_unittest.py` stays as it is until Phase C deletes
-it with its subject.
+**Of 35 test modules, 23 still run through pytest's `unittest` adapter** — 21 of
+those convert in B3–B6. The other two never do, and are **not** arrears:
+`tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
+its subject, and `tests/test_sync_properties.py` is converted but exposes a
+class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
+the pytest-idiomatic spelling.
 
-Both numbers are asserted by `tests/test_pytest_plan.py`, which asks `unittest`
-which modules still hold a `TestCase` rather than grepping for one — so this
-line cannot quietly go stale and "continue the plan" is a safe instruction.
+Both numbers are asserted by `tests/test_pytest_plan.py`, which asks the
+`unittest` loader what it takes back from each module — so this line cannot
+quietly go stale and "continue the plan" is a safe instruction.
 
-**"Still `TestCase`" is the number to state, not "converted".** The first
-version of this line said "8 are pytest-native", and the test written to guard
-it failed on its own first run: a module born pytest-native — such as that test
-— raises the native count without any conversion having happened. Modules left
-to do is the quantity the plan is actually about, and it only ever falls.
+**"Still run as `unittest`" is the number to state, and it took two tries to
+find a predicate that means it.** "Converted" was the first, and the guard
+written for it failed on its own first run: a module born pytest-native — such
+as that guard — raises the native count with no conversion behind it. The second
+asked `issubclass` of each module's attributes, filtered by `__module__`, and
+cluster B2 then edited exactly that attribute: deleting
+`test_sync_properties.py`'s dunder rewrite dropped the count by one for free. A
+number a `__module__ = __name__` can lower is not a number of work done, so the
+guard asks the loader instead — what `python -m unittest discover` and
+`tools/verdict_unittest.py` actually run.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did
 differently from what it says below is in
 [Phase A as built](#phase-a-as-built--2026-08-30),
-[Phase A2 as built](#phase-a2-as-built--2026-08-30) and
+[Phase A2 as built](#phase-a2-as-built--2026-08-30),
 [B1 as built](#b1-as-built--2026-08-30) and
-[B2 as built](#b2-as-built--2026-08-30) — read all five before the next phase.
+[B2 as built](#b2-as-built--2026-08-30). **Read every "as built" section before
+the next phase** — said that way rather than as a count, because a count is one
+more thing to hand-maintain per cluster and this one was already wrong once.
 
 **A pytest-native test module is safe to write as of A2**, which was the whole
 point of doing it before Phase B: `tools/run_tests.py` collects with pytest now,
@@ -1521,6 +1531,12 @@ CLAUDE.md §3 asks that a declined finding be argued rather than dropped.
   conversion PR, with only one cluster's worth of evidence about what shape it
   wants. **B2 is the right home**, with two clusters to validate it against;
   after B3 the retrofit becomes its own PR, so it should not slip further.
+
+  **Overturned by B2, which is where it was sent.** B2 contributes no case to
+  validate it with, and reading the four existing guards settled it against the
+  wrapper outright — see [B2 as built](#b2-as-built--2026-08-30). The retrofit
+  is not owed to B3; what is owed instead is an `ast` walk over `tests/`,
+  filed as [#100](https://github.com/martinus/tupferl/issues/100).
 - **Extracting `settings()` into one shared helper.** `tests/test_ci.py` and
   `tests/test_release.py` now hold byte-identical strippers. Extracting one
   invites extracting `jobs()` too -- and those genuinely are two different
@@ -1776,16 +1792,81 @@ actually work is a test, not a helper** -- one that walks `tests/` with `ast`,
 finds every `parametrize` whose case list is a name rather than a literal, and
 insists the module also holds a test naming that name. That is `test_errors.py`'s
 own technique pointed at the suite, it is about a page of code, and it is a PR of
-its own rather than a paragraph in a conversion. Nobody has been bitten yet;
-filed nowhere, recorded here, and the retrofit is not owed to B3.
+its own rather than a paragraph in a conversion.
 
-### The gate, and the one file that was deliberately not swept
+**The decline is recorded here; the test that should exist is
+[#100](https://github.com/martinus/tupferl/issues/100).** The two are separable
+and belong in different places -- the argument against the wrapper is about this
+conversion and dies with the plan, while the guard outlives it and is something
+somebody has to do. §4 asks for a filed issue when a finding is "a guard that
+would catch a future regression", and this is one by its own description. The
+issue carries both constraints that make the obvious implementation wrong, one
+of which is that the new test is itself parametrized over a scan and needs its
+own non-emptiness precondition. Nobody has been bitten yet, so it is a P3, and
+the retrofit is not owed to B3.
+
+### The review found the predicate behind the plan's own progress count
+
+Not in the four converted modules, which came through the four `/simplify`
+angles clean -- but in `tests/test_pytest_plan.py`, which this cluster falsified
+without touching.
+
+That guard counted a module as unconverted if it *defined* a
+`unittest.TestCase`, asked as `issubclass` over the module's attributes and
+filtered by `value.__module__ == mod.__name__`. **B2 edited exactly that
+attribute.** `test_sync_properties.py` never wrote a `TestCase` of its own; it
+was in the count only because the deleted dunder rewrite pointed Hypothesis's
+class at this module. So the count fell 26 -> 22 in a PR that converted four
+modules, and one of the four fell for three deleted assignments.
+
+The number was honest and the mechanism was not, which is the distinction worth
+recording: *a count a `__module__ = __name__` can lower is not a count of work
+done*, and the same file's docstring already rejects a "converted" count for the
+symmetric reason. The predicate is now the `unittest` loader itself --
+`loadTestsFromModule(mod).countTestCases()` -- which is what
+`python -m unittest discover` and `tools/verdict_unittest.py` actually run, is
+immune to `__module__` (verified: re-applying the deleted hack in memory leaves
+the answer at 2 tests), and needs no filter for imported bases, because a base
+carries no `test_` methods to count. 159ms for all 35 modules.
+
+Three consequences:
+
+- **The number is 23, not 22**, and the status line now names *two* permanent
+  exceptions rather than one. `test_sync_properties` is converted and will be
+  unittest-backed for ever, because the class is Hypothesis's. Saying so is
+  better than a count that quietly excluded it: a reader of "22 left" would have
+  gone looking for 22 modules to convert and found 21.
+- **The grep the docstring rejects is wrong in both directions**, measured: it
+  misses `test_overlays`, `test_sync_commits`, `test_sync_conflicts` and
+  `test_sync_properties`, and it counts `test_pytest_plan` itself, which names
+  `unittest.TestCase` only to ask about it. 23 against grep's 20. That worked
+  example had been made false by this cluster under the old predicate and is
+  exact again under the new one.
+- **Two of the new tests could not fail on their first run**, found by
+  perturbation rather than by reading. "The plan names both permanent modules"
+  searched the whole document head, and the paragraph explaining the predicate
+  names `test_sync_properties` -- so a status line that had dropped it stayed
+  green; it is scoped to the status paragraph now. And a probe that renamed the
+  two class bindings to `_Hidden` did not go red, because `loadTestsFromModule`
+  walks `dir(module)` and does not care what a name looks like -- the probe was
+  wrong, not the test, and the correct probe (delete the bindings) fails two
+  tests as it should.
+
+Five perturbations now go red with a green control: total off by one, count off
+by one, a module dropped from the cluster table, the status line dropping a
+permanent module, and a permanent module genuinely converted.
+
+### The gate: what was in selection, and the one file deliberately not swept
 
 Selections were recomputed from `tools/mutants.py` rather than taken from B1's
 notes, and the earlier estimate of "six `tupferl/` files" was wrong by four:
 `tupferl/__init__.py`, `tupferl/errors.py` and `tools/__init__.py` are in scope
 and generate **0 rows** between them, and `tools/mutate.py` is in scope because
 `test_profiles.py` imports it.
+
+`tupferl/` has not been touched since 2026-08-29, so the whole-tree report of
+2026-08-30 10:04 is an exact row-for-row baseline for the six files that do
+generate rows. Preflight and sweep numbers are below.
 
 `tools/mutate.py` was **not** swept, on the rule the [#96
 section](#96-is-a-prerequisite-of-b6-and-of-no-other-cluster) already states and
@@ -1795,6 +1876,28 @@ is killed by any B2 module**, in either. So no change to these four modules can
 turn one of those caught rows into a survivor -- there is nothing there that
 depends on them -- and the 1030-row table is at present the noisiest in the tree
 (#96), which is the second reason not to read a comparison out of it.
+
+### Declined in the review, and why
+
+- **Renaming `test_all_three_are_registered` now that it is parametrized.** The
+  ids read `[dev]`, `[ci]`, `[mutation]` and each case asserts one profile, so
+  the plural is odd. Kept anyway: the cluster's auditable claim is "16 items
+  before, 19 after, every original name present", and a rename that is not
+  forced by `parametrize` weakens exactly that. The failure message is one line
+  of oddness against a mapping a reader can check.
+- **`pytest.raises(TupferlError, match=key)` in `test_config_properties`.**
+  Shorter by two lines, and it would be correct today because `KEYS`' alphabet
+  is `a-z_-`, all regex-safe. That is the objection: the test would silently
+  become weaker -- `re.search` matching more than the substring did -- the day
+  somebody adds `.` or `*` to that alphabet, and nothing would say so. The
+  explicit `assert key in str(caught.value)` has no such coupling.
+- **Caching `ask(CI="true")`, which two tests spawn separately.** Measured at
+  0.103s, 26% of the module's in-pytest wall, and paid on every probe that walks
+  `tests.test_profiles`. Declined because the second of those tests is the
+  *precondition* -- it exists to say that the identical answers the first test
+  compares are the right answers -- and sharing one subprocess run would make it
+  assert about the run the first test already made. 0.1s is not worth turning a
+  precondition into a restatement.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 

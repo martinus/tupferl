@@ -192,14 +192,12 @@ SyncMachine.TestCase.settings = settings(
 )
 
 #: Named so discovery finds it. The class Hypothesis generates is the test; this
-#: assignment is the whole of the plumbing.
-#:
-#: **The name it is bound to here is the name in the id**, which is why this
-#: line is all there is. Under `unittest` it was not: a loader asks the class
-#: what module it is in, Hypothesis builds `TestCase` inside `hypothesis.
-#: stateful`, and the id that came back could not be re-imported -- so three
-#: dunders were rewritten here to say otherwise. pytest takes the name from the
-#: module namespace it collected, so there is nothing to correct.
+#: assignment is the whole of the plumbing, because **the name it is bound to
+#: here is the name in the id**. Under `unittest` it was not, and three dunders
+#: were rewritten here to say otherwise -- see the plan's "B2 as built" for what
+#: that cost and why pytest needs none of it. The class itself lives in
+#: `hypothesis.stateful`, which is why this module is one of the two that stay
+#: unittest-backed for good (`tests/test_pytest_plan.py`'s `PERMANENT`).
 TestSyncIsIdempotentAndConverges = SyncMachine.TestCase
 
 

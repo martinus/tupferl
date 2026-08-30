@@ -10,30 +10,45 @@ It is not hypothetical. The line said "33 modules ... 25 are still `TestCase`s"
 and the tree held 34 and 26, **one day after it was written**: Phase 0 counted
 before `tests/test_verdict_unittest.py` existed, and nothing re-counted.
 
-**The count asks `unittest`, never the text.** Grepping for `unittest.TestCase`
-is the obvious spelling and it is wrong here by four modules: `test_overlays`,
-`test_sync_commits`, `test_sync_conflicts` and `test_sync_properties` subclass
-bases that live in `tests/support.py` and never name `TestCase` themselves, so a
-grep reports them converted when they are not -- in the flattering direction,
-which is the one CLAUDE.md §8 collects. Importing and asking `issubclass` is
-exact, and costs 176ms for all 34 modules.
+**The count asks the `unittest` loader what it takes back, and nothing else.**
+Two cheaper spellings were tried and both are wrong, in the flattering direction
+CLAUDE.md §8 collects:
+
+- *grepping for `unittest.TestCase`* is wrong in both directions, measured over
+  this tree: it misses `test_overlays`, `test_sync_commits`,
+  `test_sync_conflicts` -- which subclass bases living in `tests/support.py` and
+  never name `TestCase` themselves -- and `test_sync_properties`, whose class
+  Hypothesis builds; and it counts *this* file, which names `unittest.TestCase`
+  only to ask about it. 23 against grep's 20.
+- *asking `issubclass` of the module's own attributes*, filtered by
+  `value.__module__ == mod.__name__`, was what this file did first. It reads a
+  mutable attribute, and cluster B2 then edited exactly that attribute: deleting
+  `test_sync_properties.py`'s three-line dunder rewrite dropped the count by one
+  with no conversion behind it. **A count that a `__module__ = __name__` can
+  lower is not a count of work done.**
+
+`loadTestsFromModule` is what `python -m unittest discover` and
+`tools/verdict_unittest.py` actually run, so the number means the thing the plan
+is about: modules pytest still takes through its `unittest` adapter. It is also
+immune to the hazard the `__module__` filter existed for -- a module that
+*imports* a base from `tests/support.py` gains no runnable test by doing so, and
+those bases carry no `test_` methods to count. Measured: 159ms for all 35.
 
 The companion claim is the one a status line cannot make: that **every** module
 is accounted for. A module nobody scheduled is invisible to a count that only
-compares two totals, so `test_every_module_is_scheduled_or_excused` reads the
-cluster table and insists each module is either converted, named in a future
-cluster, or the one the plan excludes on purpose.
+compares two totals, so `test_every_module_is_scheduled_or_permanent` reads the
+cluster table and insists each module is either converted, named in a cluster,
+or one of the two the plan keeps.
 
 **The plan states modules *left*, not modules converted**, and this file is why:
 its first version guarded a "converted" count and failed on its own first run,
 because a module born pytest-native -- this one -- raises that number without a
-conversion. What is left only ever falls, and is what the plan is about.
+conversion. What is left only ever falls.
 """
 
 from __future__ import annotations
 
 import importlib
-import inspect
 import re
 import unittest
 from pathlib import Path
@@ -41,10 +56,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = ROOT / "docs" / "pytest-plan.md"
 
-#: The one module Phase B never converts. It dies with its subject in Phase C,
-#: and `tools/verdict_unittest.py` needs a `unittest`-style module to grade
-#: while it lives -- `tests/test_mutate.py`'s `EITHER_LAYER` row points at it.
-EXCUSED = "test_verdict_unittest"
+#: The modules pytest will still run through its `unittest` adapter once Phase B
+#: is over, and why. **Neither is work left to do**, which is why they are named
+#: here rather than left to look like arrears:
+#:
+#: - `test_verdict_unittest` dies with its subject in Phase C, and until then
+#:   `tools/verdict_unittest.py` needs one module it can still grade --
+#:   `tests/test_mutate.py`'s `EITHER_LAYER` row points at it;
+#: - `test_sync_properties` exposes a class Hypothesis builds inside
+#:   `hypothesis.stateful`. The plan keeps `X = Machine.TestCase` as the
+#:   pytest-idiomatic spelling, so that module is finished and will still be
+#:   unittest-backed for ever.
+PERMANENT = {
+    "test_verdict_unittest": "dies with its subject in Phase C",
+    "test_sync_properties": "the class is Hypothesis's, built in `hypothesis.stateful`",
+}
 
 
 def modules() -> list[str]:
@@ -53,21 +79,17 @@ def modules() -> list[str]:
 
 
 def still_unittest() -> list[str]:
-    """Those that still define a `unittest.TestCase`, asked of `unittest`.
+    """Those `unittest`'s own loader still takes runnable tests back from.
 
-    `v.__module__ == mod.__name__` because a module that imports a base class
-    from `tests/support.py` would otherwise be reported as defining it -- the
-    import is not the definition, and half this suite imports `support`.
+    Asked of the loader rather than read off the source or off a class
+    attribute, for the two reasons in this module's docstring: both cheaper
+    spellings answer a different question, and one of them answers it wrongly
+    the moment a conversion touches `__module__`.
     """
     found = []
     for stem in modules():
         mod = importlib.import_module(f"tests.{stem}")
-        if any(
-            inspect.isclass(value)
-            and issubclass(value, unittest.TestCase)
-            and value.__module__ == mod.__name__
-            for value in vars(mod).values()
-        ):
+        if unittest.TestLoader().loadTestsFromModule(mod).countTestCases():
             found.append(stem)
     return found
 
@@ -77,15 +99,30 @@ def claimed() -> tuple[int, int]:
 
     **Left to do, not converted**, and the difference is what this test found on
     its own first run: a module born pytest-native -- this one -- raises a
-    "converted" count without any conversion having happened. Modules still
-    holding a `TestCase` is the quantity the plan is about, and it only falls.
+    "converted" count without any conversion having happened. Modules still run
+    through the `unittest` adapter is the quantity the plan is about, and it only
+    falls.
     """
     said = re.search(
-        r"\*\*Of (\d+) test modules, (\d+)\s*\n?\s*still hold",
+        r"\*\*Of (\d+) test modules, (\d+)\s*\n?\s*still",
         PLAN.read_text(encoding="utf-8"),
     )
     assert said, "the status line no longer has the shape this test reads"
     return int(said.group(1)), int(said.group(2))
+
+
+def status_line() -> str:
+    """The status paragraph alone -- the sentence a reader acts on.
+
+    Bounded by the paragraph that follows it rather than by the section heading:
+    everything between them is *about* the status line rather than part of it,
+    and a claim that may be made anywhere in that region is a claim that need
+    not be made in the line itself.
+    """
+    text = PLAN.read_text(encoding="utf-8")
+    start, end = text.find("Status: **Phases"), text.find("Both numbers are asserted")
+    assert 0 <= start < end, "the status paragraph no longer has the shape this test reads"
+    return text[start:end]
 
 
 def scheduled() -> set[str]:
@@ -117,11 +154,11 @@ class TestTheStatusLineIsTrue:
             f"the plan says {total} test modules; the tree has {len(modules())}"
         )
 
-    def test_it_names_the_right_number_left_to_convert(self) -> None:
+    def test_it_names_the_right_number_still_run_as_unittest(self) -> None:
         _, left = claimed()
         still = still_unittest()
         assert left == len(still), (
-            f"the plan says {left} modules still hold TestCases; {len(still)} do: {still}"
+            f"the plan says {left} modules still run as unittest; {len(still)} do: {still}"
         )
 
 
@@ -138,14 +175,30 @@ class TestEveryModuleIsAccountedFor:
         below by scheduling nothing against nothing."""
         assert len(scheduled()) > 20, scheduled()
 
-    def test_every_module_is_scheduled_or_excused(self) -> None:
-        """Converted, named in a cluster, or the one module the plan keeps."""
-        loose = [stem for stem in still_unittest() if stem not in scheduled() and stem != EXCUSED]
+    def test_every_module_is_scheduled_or_permanent(self) -> None:
+        """Converted, named in a cluster, or one of the two the plan keeps."""
+        loose = [
+            stem for stem in still_unittest() if stem not in scheduled() and stem not in PERMANENT
+        ]
         assert loose == [], f"these modules are in no cluster and are not converted: {loose}"
 
-    def test_the_excused_module_is_the_one_the_plan_says(self) -> None:
-        """It is excused here and argued for in the plan's B6 row, so the two
-        must not drift apart -- and if it were ever converted, this file would
-        be the only thing still claiming it was not."""
-        assert EXCUSED in still_unittest(), f"{EXCUSED} was converted; the plan says it is not"
-        assert EXCUSED not in scheduled(), f"{EXCUSED} is in a cluster and also excused"
+    def test_the_permanent_ones_really_are_unittest_backed(self) -> None:
+        """If one were ever converted, this file would be the only thing left
+        claiming it was not -- and the plan's number would then be one too high
+        with nothing to say so."""
+        still = still_unittest()
+        for stem in PERMANENT:
+            assert stem in still, f"{stem} no longer runs as unittest; the plan says it does"
+
+    def test_the_status_line_names_both_of_them(self) -> None:
+        """The half a count cannot carry. A permanent exception that only this
+        file knows about reads, in the plan, as a module somebody forgot.
+
+        Scoped to the status paragraph and not to the document, which was the
+        first spelling and could not fail: the paragraph *below* the status line
+        names `test_sync_properties` while explaining how the guard's predicate
+        was chosen, so a status line that had dropped it was still green.
+        """
+        said = status_line()
+        for stem in PERMANENT:
+            assert stem in said, f"the status line does not name {stem}"
