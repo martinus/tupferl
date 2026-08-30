@@ -412,6 +412,7 @@ committed; the only recovery is writing it again from memory.
   | the suite is slow enough that you are tempted to run a subset | [`tools/run_tests.py`](tools/run_tests.py) |
   | a long job is running detached and silence is ambiguous | [`tools/watch.py`](tools/watch.py) |
   | a tool's output needs a colour, and its log must not get one | [`tools/paint.py`](tools/paint.py) |
+  | a cluster of `unittest` tests has more `self.assertX` than you can honestly hand-edit | [`tools/unassert.py`](tools/unassert.py) |
 
   ```sh
   python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
@@ -423,7 +424,12 @@ committed; the only recovery is writing it again from memory.
   The first four were ported from `martinus/woswoar` (Apache-2.0), where they
   were written; their module docstrings carry the argument for each one's shape
   and say which of its evidence was measured there rather than here.
-  `tools/paint.py` was written here.
+  `tools/paint.py` was written here, and so was `tools/unassert.py` -- which
+  **dies with Phase C**, like `tools/verdict_unittest.py`, and is in the
+  repository rather than a scratch directory for §7's stated reason: the
+  alternative was never "the next cluster reuses the file in `/tmp`", it was
+  "the next cluster writes it again, with the same four mistakes". It rewrites
+  `tests/**`, so a checkpoint commit first, as with `mutate --accept`.
 
 ---
 
@@ -596,6 +602,31 @@ Five things are not where a newcomer would guess, all on purpose:
   is written here rather than only beside `tests/test_config.py`'s `box`
   fixture, because it binds every module Phase B has yet to convert and nobody
   writing one of those will read that docstring first.
+- **A converted test class keeps `@pytest.mark.usefixtures("...")` for its
+  sandbox even when no test in it names the fixture.** A test can depend on a
+  base class for a *side effect* and never mention it: `SandboxCase.setUp`
+  patches `os.environ`, so a test that sets `PATH` and reads the result looks,
+  in its own text, like a test needing nothing. Converted by giving each test
+  the fixtures its body mentions, that test gets none -- and runs against the
+  developer's real environment, which is the failure `tests/support.py`'s
+  docstring exists to prevent, arriving by a new route. Measured in B3: it
+  broke `PATH` for the rest of the process and took nine later tests with it,
+  which was luck. A test that merely *read* `$HOME` would have passed.
+
+  So the decorator goes on the class and is the load-bearing statement -- *this
+  class runs in a sandbox* -- rather than an inference from whether some method
+  still happens to use the value. **13 classes still name `support.SandboxCase`
+  directly and 36 more reach it through `support.Machine`**, across B4a and
+  B4b; count them with `grep -rn "class .*(support\.SandboxCase)" tests/`
+  rather than trusting this sentence, which is the kind that rots.
+
+  **The leak half is guarded rather than trusted.** `tests/conftest.py`'s
+  `_every_test_puts_the_environment_back` is autouse and fails the test that
+  left `os.environ` changed, instead of the nine downstream ones that then
+  cannot find git. It does not catch a test that merely *reads* the real
+  environment, and nothing cheap does -- that half is what the marks are for.
+  A session-wide replacement of `$HOME` would look like the deeper fix and is
+  not: it turns a loud failure into every test silently sharing one home.
 - **Every `raise TupferlError` is checked by a test, not by habit.**
   `tests/test_errors.py` reads them all out with `ast` and asserts plan §5's
   shape: one semicolon (what happened; what to do next), one full stop, one
