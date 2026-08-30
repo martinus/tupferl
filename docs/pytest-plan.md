@@ -1335,12 +1335,41 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 | B4a | `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture (copytree of the cached template + remote-url repair; the `template()`/`two_machines()` functions themselves unchanged) | the overlay both-copies rule and `TestTheSnapshotIsWrittenLast` transfer as-is. |
 | B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
-| B6 | `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
+| B6 | **Fix #96 first — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
 
 **Size:** 7 PRs, each roughly 1–4 sessions. **Failure protocol:** FP per
 cluster; a newly-surviving row means the conversion weakened a test — fix the
 test, never the disposition; a newly-BROKE row is almost always a bound/alarm
 race — apply the five-lessons checklist before touching anything else.
+
+### #96 is a prerequisite of B6, and of no other cluster
+
+**Fix [#96](https://github.com/martinus/tupferl/issues/96) before starting B6.**
+A sweep mutates its own memory guard and pool — `_Lanes.release`,
+`_Lanes._sample`, `_sandboxes`, `_borrow`, `Work.take` — so those rows come back
+`BROKE`, and a `BROKE` row is never `caught`. B6's gate is the 1030-row
+`tools/mutate.py` table, where the noise sits; converting `test_mutate.py` while
+those rows are unanswerable means the cluster's own acceptance check cannot
+distinguish "the conversion weakened a test" from "the harness cannot answer
+this row", which is the one thing the gate exists to tell apart.
+
+**Measured, so this is a schedule rather than a worry.** Counting the caught
+rows of `tools/mutate.py` that each cluster's modules actually kill:
+
+| cluster | caught rows it kills | forces the 1030-row gate? |
+|---|---:|---|
+| B2 | 0 | no |
+| B3 / B4a / B4b | 2 / 2 / 3 | check the handful individually |
+| B5 | 0 | no |
+| **B6** | **3105** | **yes, all of it** |
+
+So B2–B5 are unaffected and should not wait. Re-run that count before B3, B4a
+and B4b rather than trusting these three small numbers: they came from sweeps
+taken on 2026-08-30 and a cluster that changes a module changes what kills what.
+
+**And do #96 last rather than first for a second reason:** its fix touches
+`tools/mutants.py`, whose tests B6 converts. Adjacent is better than four
+clusters apart.
 
 ## Step 1a as built — 2026-08-30
 
