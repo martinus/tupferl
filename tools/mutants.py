@@ -93,7 +93,19 @@ class Mutation(NamedTuple):
     #: baseline check by distinct `tests` string, so a killer prepended there
     #: made every row its own shard -- 1 baseline run became 42, each a full
     #: suite. See `mutate.Killers`.
-    first: str = ""
+    #:
+    #: **A sequence, where `tests` beside it is one space-joined string, and the
+    #: asymmetry is the point.** `tests` holds a *selection* -- dotted module and
+    #: class paths built by `targets_for`, which cannot contain a space. This
+    #: holds pytest *nodeids*, and a parametrized one can:
+    #: `tests/test_errors.py::test_the_shape[tupferl/manage.py:41]` is ordinary,
+    #: and `[not fine]` is what a two-word parameter gives. Space-joined, such an
+    #: id is shredded into halves that select nothing -- and selecting nothing is
+    #: not an error to pytest, so a baseline shard built from one comes back
+    #: green having run no test at all. That is the failure this type prevents,
+    #: and it fails in the flattering direction, which is why it is the type
+    #: rather than a check.
+    first: Sequence[str] = ()
     #: Whether `first` is the test recorded as catching *this* row, rather than
     #: the general cheap-yield prefix. The two are both "run these first" and
     #: are otherwise indistinguishable once written into one string, but they
@@ -1285,6 +1297,25 @@ def check(mutation: Mutation) -> None:
     byte-versus-character offset trap and a mutation that silently edits the
     wrong span of a file that still parses.
     """
+    # `str` *is* a `Sequence[str]`, so `first: Sequence[str]` accepts the whole
+    # string it exists to forbid and mypy says nothing -- verified. Iterating one
+    # yields characters, so `_attempt` spreads a killer into fifty single-letter
+    # names and every one selects nothing; the row comes back `BROKE`, which is
+    # never `caught`, so the line it guards is unguarded and the summary counts
+    # it in neither of the two numbers a reader looks at.
+    #
+    # Here rather than in `_attempt` because this runs over the whole table
+    # before the first sandbox is built: one loud death at row 0 rather than a
+    # wall of non-answers at the end of an hour. The other half of the hole is
+    # `NamedTuple._replace`, whose keywords mypy does not check at all -- which
+    # is exactly how a `str` got past the conversion that introduced this.
+    if isinstance(mutation.first, str):
+        raise SystemExit(
+            f"{mutation.label}: `first` is a sequence of test ids, not one "
+            f"space-joined string. Given a string it is iterated character by "
+            f"character, and every character selects nothing. Pass a tuple, "
+            f'even for a single id: `first=("{mutation.first}",)`.'
+        )
     original = Path(mutation.path).read_text(encoding="utf-8")
     if mutation.span is None:
         found = original.count(mutation.old)

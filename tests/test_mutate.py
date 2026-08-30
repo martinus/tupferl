@@ -401,7 +401,7 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         one = row()
         cached = self.cache({mutate._key(one): REAL})
         (ahead,) = cached.ahead_of([one])
-        self.assertEqual(REAL, ahead.first)
+        self.assertEqual((REAL,), ahead.first)
         self.assertEqual("tests.test_sync", ahead.tests)
 
     def test_a_remembered_test_is_marked_as_exact(self) -> None:
@@ -435,7 +435,7 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         cached = self.cache({mutate._key(one): REAL})
         (ahead,) = cached.ahead_of([one])
         self.assertEqual("tests.test_sync tests.test_sync_cli", ahead.tests)
-        self.assertEqual(REAL, ahead.first)
+        self.assertEqual((REAL,), ahead.first)
 
     def test_the_selection_stays_identical_across_rows(self) -> None:
         """`run` shards the baseline check by distinct `tests` string, so a
@@ -458,18 +458,18 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         cached = self.cache({mutate._key(one): "tests.test_mutate.NoSuchClass.no_such_test"})
         with support.quiet():
             (ahead,) = cached.ahead_of([one])
-        self.assertEqual("", ahead.first)
+        self.assertEqual((), ahead.first)
 
     def test_a_module_that_no_longer_exists_is_dropped_too(self) -> None:
         one = row()
         cached = self.cache({mutate._key(one): "tests.test_gone.Class.test_x"})
         with support.quiet():
             (ahead,) = cached.ahead_of([one])
-        self.assertEqual("", ahead.first)
+        self.assertEqual((), ahead.first)
 
     def test_a_row_nothing_is_remembered_about_is_left_alone(self) -> None:
         (ahead,) = mutate.Killers(None).ahead_of([row()])
-        self.assertEqual("", ahead.first)
+        self.assertEqual((), ahead.first)
         self.assertEqual("tests.test_sync", ahead.tests)
 
 
@@ -954,14 +954,14 @@ class TestWhichRowsGetThePrefix(unittest.TestCase):
         one = self.rows("tests.test_mutate")[0]
         cache.known = {mutate._key(one): REAL}
         (ahead,) = cache.ahead_of([one])
-        self.assertEqual(REAL, ahead.first)
+        self.assertEqual((REAL,), ahead.first)
 
     def test_a_row_with_nothing_remembered_gets_the_prefix(self) -> None:
         cache = self.cache()
         cache.known = {"someone-else": REAL}
         with support.quiet():
             (ahead,) = cache.ahead_of(self.rows("tests.test_mutate"))
-        self.assertEqual(REAL, ahead.first)
+        self.assertEqual((REAL,), ahead.first)
 
     def test_the_prefix_is_cut_to_what_the_row_can_reach(self) -> None:
         """A test in a module that does not import the mutated file cannot see
@@ -970,7 +970,7 @@ class TestWhichRowsGetThePrefix(unittest.TestCase):
         cache.known = {"someone-else": REAL}
         with support.quiet():
             (ahead,) = cache.ahead_of(self.rows("tests.test_paths"))
-        self.assertEqual("", ahead.first)
+        self.assertEqual((), ahead.first)
 
 
 class TestTheCacheLearnsFromARealRun(unittest.TestCase):
@@ -1033,18 +1033,18 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         into the selection it would make an empty list non-empty, and "run
         everything" would become "run the prefix" -- see `verdict.collect`.
         """
-        self.assertEqual(REAL, self.ahead(mutate.WHOLE_SUITE).first)
+        self.assertEqual((REAL,), self.ahead(mutate.WHOLE_SUITE).first)
 
     def test_a_selection_naming_a_class_still_matches_its_tests(self) -> None:
         """`tests.test_mutate.TestX` selects `tests.test_mutate.TestX.test_y`.
         Comparing module names made this never match, so any row selected at
         class granularity silently lost the prefix."""
-        self.assertEqual(REAL, self.ahead(REAL_CLASS).first)
+        self.assertEqual((REAL,), self.ahead(REAL_CLASS).first)
 
     def test_a_row_that_cannot_reach_it_still_does_not_pay(self) -> None:
         """The guard the two above must not break: a test in a module that does
         not import the mutated file cannot see the mutation."""
-        self.assertEqual("", self.ahead("tests.test_paths").first)
+        self.assertEqual((), self.ahead("tests.test_paths").first)
 
 
 class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
@@ -1121,7 +1121,10 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
 
     def test_a_prefix_that_catches_it_still_reports_caught(self) -> None:
         one = UNKNOWN_KEY_GUARD._replace(
-            first="tests.test_config.TestRejectingAnUnknownKey.test_a_typo_is_an_error_rather_than_silence"
+            first=(
+                "tests.test_config.TestRejectingAnUnknownKey"
+                ".test_a_typo_is_an_error_rather_than_silence",
+            )
         )
         found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
         self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
@@ -1130,7 +1133,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
         """The safety argument, driven rather than asserted on a data structure:
         a prefix that cannot see the mutation must cost one test, not the
         answer."""
-        one = UNKNOWN_KEY_GUARD._replace(first="tests.test_paths.TestWhereTheRepositoryGoes")
+        one = UNKNOWN_KEY_GUARD._replace(first=("tests.test_paths.TestWhereTheRepositoryGoes",))
         found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
         self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
 
@@ -1316,9 +1319,24 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
     def caught(self, killer: str, tests: str = "tests.test_paths") -> mutate.Result:
         return mutate.Result(row()._replace(tests=tests), mutate.Verdict("caught", "d", killer))
 
+    def shards(self, *selections: str) -> list[tuple[str, ...]]:
+        """Selections in the shape `baseline_shards` hands `run`: one sequence of
+        names per shard, not one space-joined string.
+
+        Through a helper rather than written out at each call, because the wrong
+        shape is *invisible* here. A bare `["tests.test_paths"]` is a list of one
+        string, and iterating a string yields characters -- so the shard covers
+        `t`, `e`, `s` and nothing real. When `first` became a sequence three of
+        these eight went red and five went on passing unchanged, and the five are
+        the dangerous half: they assert a killer is *not* covered, which a shard
+        of single letters satisfies perfectly. One producer, so a shard cannot be
+        built wrongly in a fixture and rightly in production.
+        """
+        return [tuple(only.split()) for only in selections]
+
     def test_a_killer_its_shard_covered_needs_nothing(self) -> None:
         found = self.caught("tests.test_paths.TestA.test_b")
-        self.assertEqual([], mutate._unbaselined([found], ["tests.test_paths"]))
+        self.assertEqual([], mutate._unbaselined([found], self.shards("tests.test_paths")))
 
     def test_a_killer_no_shard_covered_is_returned(self) -> None:
         """The one the walk produces. `UNWATCHED` is exactly this shape in the
@@ -1326,7 +1344,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
         self.assertEqual(
             ["tests.test_config.TestRejectingAnUnknownKey.test_it"],
-            mutate._unbaselined([found], ["tests.test_paths"]),
+            mutate._unbaselined([found], self.shards("tests.test_paths")),
         )
 
     def test_the_whole_suite_shard_covers_everything(self) -> None:
@@ -1334,7 +1352,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         shard list holding one covers every test. Read as a plain string it
         matches nothing instead, and every killer would be re-checked."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        self.assertEqual([], mutate._unbaselined([found], [mutate.WHOLE_SUITE]))
+        self.assertEqual([], mutate._unbaselined([found], self.shards(mutate.WHOLE_SUITE)))
 
     def test_only_caught_rows_are_asked_about(self) -> None:
         """A survivor has no killer to stand behind, and a `broke` row's is not
@@ -1342,14 +1360,15 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         send the run off to baseline a test that decided nothing."""
         survivor = mutate.Result(row(), mutate.Verdict("survived"))
         broke = mutate.Result(row(), mutate.Verdict("broke", "d", "tests.test_config.T.t"))
-        self.assertEqual([], mutate._unbaselined([survivor, broke], ["tests.test_paths"]))
+        covered = self.shards("tests.test_paths")
+        self.assertEqual([], mutate._unbaselined([survivor, broke], covered))
 
     def test_a_class_shard_still_covers_its_own_tests(self) -> None:
         """`run_tests.selects` rather than comparing module names: a shard naming
         a class never matched at all when this was spelled by hand, and every row
         it caught was sent for re-baselining."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        covered = ["tests.test_config.TestRejectingAnUnknownKey"]
+        covered = self.shards("tests.test_config.TestRejectingAnUnknownKey")
         self.assertEqual([], mutate._unbaselined([found], covered))
 
     def test_one_whole_suite_shard_among_several_covers_everything(self) -> None:
@@ -1361,7 +1380,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         run that already covered it.
         """
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        mixed = [mutate.WHOLE_SUITE, "tests.test_paths"]
+        mixed = self.shards(mutate.WHOLE_SUITE, "tests.test_paths")
         self.assertEqual([], mutate._unbaselined([found], mixed))
 
     def test_a_killer_covered_by_one_shard_of_several_needs_nothing(self) -> None:
@@ -1372,7 +1391,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         sweep would drag the run into a re-baseline it does not need.
         """
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        several = ["tests.test_paths", "tests.test_config"]
+        several = self.shards("tests.test_paths", "tests.test_config")
         self.assertEqual([], mutate._unbaselined([found], several))
 
     def test_a_sibling_module_is_not_covered_by_a_prefix_of_its_name(self) -> None:
@@ -1389,7 +1408,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         found = self.caught("tests.test_sync_cli.TestTheRemoteLine.test_it")
         self.assertEqual(
             ["tests.test_sync_cli.TestTheRemoteLine.test_it"],
-            mutate._unbaselined([found], ["tests.test_sync"]),
+            mutate._unbaselined([found], self.shards("tests.test_sync")),
         )
 
 
@@ -1589,13 +1608,15 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
     chance.
     """
 
-    def row(self, tests: str = "tests.test_sync", first: str = "") -> Mutation:
+    def row(self, tests: str = "tests.test_sync", first: Sequence[str] = ()) -> Mutation:
         return row()._replace(tests=tests, first=first)
 
     def test_the_last_killer_comes_first(self) -> None:
         learned = mutate.Learned()
         learned.saw("tests.test_sync.TestTheDecisionTable.test_it")
-        self.assertEqual("tests.test_sync.TestTheDecisionTable.test_it", learned.ahead(self.row()))
+        self.assertEqual(
+            ("tests.test_sync.TestTheDecisionTable.test_it",), learned.ahead(self.row())
+        )
 
     def test_the_newest_wins(self) -> None:
         """Move-to-*front*, not append. Without the reordering this is a queue,
@@ -1605,8 +1626,8 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         for name in ("a", "b", "c"):
             learned.saw(f"tests.test_sync.T.test_{name}")
         self.assertEqual(
-            ["tests.test_sync.T.test_c", "tests.test_sync.T.test_b", "tests.test_sync.T.test_a"],
-            learned.ahead(self.row()).split(),
+            ("tests.test_sync.T.test_c", "tests.test_sync.T.test_b", "tests.test_sync.T.test_a"),
+            learned.ahead(self.row()),
         )
 
     def test_seeing_one_again_moves_it_rather_than_repeating_it(self) -> None:
@@ -1616,8 +1637,8 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         for name in ("a", "b", "a"):
             learned.saw(f"tests.test_sync.T.test_{name}")
         self.assertEqual(
-            ["tests.test_sync.T.test_a", "tests.test_sync.T.test_b"],
-            learned.ahead(self.row()).split(),
+            ("tests.test_sync.T.test_a", "tests.test_sync.T.test_b"),
+            learned.ahead(self.row()),
         )
 
     def test_it_is_bounded(self) -> None:
@@ -1627,7 +1648,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         learned = mutate.Learned(keep=3)
         for index in range(10):
             learned.saw(f"tests.test_sync.T.test_{index}")
-        self.assertEqual(3, len(learned.ahead(self.row()).split()))
+        self.assertEqual(3, len(learned.ahead(self.row())))
 
     def test_a_test_the_row_cannot_reach_is_not_offered(self) -> None:
         """The guard `Killers.ahead_of` gives: a test in a module that does not
@@ -1635,7 +1656,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         pure cost."""
         learned = mutate.Learned()
         learned.saw("tests.test_paths.T.test_it")
-        self.assertEqual("", learned.ahead(self.row(tests="tests.test_sync")))
+        self.assertEqual((), learned.ahead(self.row(tests="tests.test_sync")))
 
     def test_a_whole_suite_row_reaches_everything(self) -> None:
         """`WHOLE_SUITE` is the *empty* selection and means "run the lot", so
@@ -1644,7 +1665,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         learned = mutate.Learned()
         learned.saw("tests.test_paths.T.test_it")
         self.assertEqual(
-            "tests.test_paths.T.test_it",
+            ("tests.test_paths.T.test_it",),
             learned.ahead(self.row(tests=mutate.WHOLE_SUITE)),
         )
 
@@ -1653,7 +1674,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         nothing."""
         learned = mutate.Learned()
         learned.saw("tests.test_sync.T.test_it")
-        self.assertEqual("", learned.ahead(self.row(first="tests.test_sync.T.test_it")))
+        self.assertEqual((), learned.ahead(self.row(first=("tests.test_sync.T.test_it",))))
 
     def test_an_empty_killer_is_not_learned(self) -> None:
         """A survivor and a `broke` row both carry `killer=""`.
@@ -2560,10 +2581,10 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         the verdicts are unchanged -- an ordering that altered an answer would
         be the one failure this whole file exists to prevent.
         """
-        fed: list[str] = []
+        fed: list[tuple[str, ...]] = []
         real = mutate.Learned.ahead
 
-        def watched(inner: mutate.Learned, row: Mutation) -> str:
+        def watched(inner: mutate.Learned, row: Mutation) -> tuple[str, ...]:
             got = real(inner, row)
             fed.append(got)
             return got
@@ -3885,7 +3906,7 @@ class TestWhatIsTriedAheadOfARow(unittest.TestCase):
     """`Learned.ahead`: the move-to-front head a row runs before its own
     selection, and the three ways it can quietly stop paying for itself."""
 
-    def row(self, tests: str = "tests.test_sync", first: str = "") -> Mutation:
+    def row(self, tests: str = "tests.test_sync", first: Sequence[str] = ()) -> Mutation:
         return Mutation("a row", "tupferl/sync.py", "a", "b", tests, first=first)
 
     def learned(self, *tests: str) -> mutate.Learned:
@@ -3895,20 +3916,21 @@ class TestWhatIsTriedAheadOfARow(unittest.TestCase):
         return made
 
     def test_with_nothing_remembered_there_is_no_head(self) -> None:
-        """The first row of every run. `""` and not `None`: the caller splits
-        it, and `None.split()` is an `AttributeError` before the sweep starts."""
-        self.assertEqual("", mutate.Learned().ahead(self.row()))
+        """The first row of every run. An empty *sequence* and not `None`:
+        `_attempt` unpacks it with `*`, and `*None` is a `TypeError` raised on
+        the lane, one row at a time, for every row of the sweep."""
+        self.assertEqual((), mutate.Learned().ahead(self.row()))
 
     def test_a_remembered_test_the_row_can_reach_is_offered(self) -> None:
         self.assertEqual(
-            "tests.test_sync.T.test_it",
+            ("tests.test_sync.T.test_it",),
             self.learned("tests.test_sync.T.test_it").ahead(self.row()),
         )
 
     def test_a_test_outside_the_rows_selection_is_not_offered(self) -> None:
         """A test in a module that does not import the mutated file cannot see
         the mutation, so running it first is pure cost -- paid by every row."""
-        self.assertEqual("", self.learned("tests.test_merge.T.test_it").ahead(self.row()))
+        self.assertEqual((), self.learned("tests.test_merge.T.test_it").ahead(self.row()))
 
     def test_one_reachable_test_among_several_is_the_one_offered(self) -> None:
         """`any`, not `all`. With a single-module selection the two agree, so
@@ -3917,20 +3939,20 @@ class TestWhatIsTriedAheadOfARow(unittest.TestCase):
         cache silently stops working."""
         head = self.learned("tests.test_merge.T.test_it")
         row = self.row(tests="tests.test_sync tests.test_merge")
-        self.assertEqual("tests.test_merge.T.test_it", head.ahead(row))
+        self.assertEqual(("tests.test_merge.T.test_it",), head.ahead(row))
 
     def test_a_row_that_already_names_a_test_is_not_given_it_twice(self) -> None:
         """`first` is run in order, and naming a test twice buys nothing and
         costs a run."""
         head = self.learned("tests.test_sync.T.test_it")
-        self.assertEqual("", head.ahead(self.row(first="tests.test_sync.T.test_it")))
+        self.assertEqual((), head.ahead(self.row(first=("tests.test_sync.T.test_it",))))
 
     def test_a_row_with_no_selection_reaches_everything(self) -> None:
         """`WHOLE_SUITE` is the empty selection, and it means "run the lot" --
         so nothing in the head is out of reach."""
         head = self.learned("tests.test_merge.T.test_it")
         self.assertEqual(
-            "tests.test_merge.T.test_it", head.ahead(self.row(tests=mutate.WHOLE_SUITE))
+            ("tests.test_merge.T.test_it",), head.ahead(self.row(tests=mutate.WHOLE_SUITE))
         )
 
 
@@ -4513,7 +4535,7 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
             Mutation(f"row {n}", "tupferl/sync.py", "a", "b", f"tests.shard{n}") for n in range(2)
         ]
         _, _, seen = self.asked(mutate.Verdict("survived", ""), mutate.Verdict("survived", ""))
-        self.assertEqual([s.split() for s in mutate.baseline_shards(table)], seen)
+        self.assertEqual([list(s) for s in mutate.baseline_shards(table)], seen)
 
     def test_a_red_shard_says_which_and_why(self) -> None:
         """A red baseline is the one verdict that cannot be diagnosed by
@@ -4829,39 +4851,57 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
     depend on.
     """
 
-    def rows(self, *pairs: tuple[str, str]) -> list[Mutation]:
+    def rows(self, *pairs: tuple[str, Sequence[str]]) -> list[Mutation]:
         return [
-            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", tests, first=first)
+            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", tests, first=tuple(first))
             for n, (tests, first) in enumerate(pairs)
         ]
 
     def test_one_shard_per_distinct_selection(self) -> None:
         """Distinct, not one per row: a table of two hundred rows against three
         selections is three suite runs, not two hundred."""
-        table = self.rows(("tests.a", ""), ("tests.b", ""), ("tests.a", ""))
-        self.assertEqual(["tests.a", "tests.b"], mutate.baseline_shards(table))
+        table = self.rows(("tests.a", ()), ("tests.b", ()), ("tests.a", ()))
+        self.assertEqual([("tests.a",), ("tests.b",)], mutate.baseline_shards(table))
 
     def test_the_remembered_killers_get_one_shard_between_them(self) -> None:
         """One for all of them, never one each. A shard per remembered test is
         the sharding explosion that took 372s to 730s, in a new disguise."""
-        table = self.rows(("tests.a", "tests.x.X.test_one"), ("tests.a", "tests.y.Y.test_two"))
+        table = self.rows(
+            ("tests.a", ("tests.x.X.test_one",)), ("tests.a", ("tests.y.Y.test_two",))
+        )
         shards = mutate.baseline_shards(table)
         self.assertEqual(2, len(shards), shards)
-        self.assertIn("tests.x.X.test_one tests.y.Y.test_two", shards)
+        self.assertIn(("tests.x.X.test_one", "tests.y.Y.test_two"), shards)
 
     def test_a_killer_outside_its_row_s_selection_is_still_covered(self) -> None:
         """Why the extra shard exists at all: a cached killer can name a test
         the row's own selection does not run, and an unchecked killer is the
         false `caught` the baseline exists to prevent."""
-        table = self.rows(("tests.a", "tests.elsewhere.E.test_it"))
-        self.assertIn("tests.elsewhere.E.test_it", " ".join(mutate.baseline_shards(table)))
+        table = self.rows(("tests.a", ("tests.elsewhere.E.test_it",)))
+        covered = [name for shard in mutate.baseline_shards(table) for name in shard]
+        self.assertIn("tests.elsewhere.E.test_it", covered)
 
     def test_no_killers_means_no_extra_shard(self) -> None:
         """The precondition. Without it, "the killers get a shard" is equally
         satisfied by a function that always appends one -- and an empty shard
         runs the whole suite, which is the one thing `baseline_shards`'
         docstring says it must not do."""
-        self.assertEqual(["tests.a"], mutate.baseline_shards(self.rows(("tests.a", ""))))
+        self.assertEqual([("tests.a",)], mutate.baseline_shards(self.rows(("tests.a", ()))))
+
+    def test_a_parametrized_killer_reaches_its_shard_whole(self) -> None:
+        """The worst place in the harness for a space-joined id, and the only one
+        where getting it wrong is silent in the flattering direction.
+
+        This shard is what proves the remembered killers green, and every verdict
+        a stale killer catches rests on it. Split in half, its two pieces select
+        nothing -- and selecting nothing is not an error to pytest, so the shard
+        comes back green having run none of the tests it exists to check. The
+        sweep above it then reports a wall of `caught` rows that nothing
+        verified.
+        """
+        killer = "tests/test_errors.py::test_the_shape[tupferl/manage.py a b]"
+        table = self.rows(("tests.a", (killer,)))
+        self.assertIn((killer,), mutate.baseline_shards(table))
 
     def test_an_empty_table_needs_nothing_checked(self) -> None:
         self.assertEqual([], mutate.baseline_shards([]))
@@ -5123,7 +5163,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
     KILLER = "tests.test_sync.TestTheDecisionTable.test_it"
     FRONT = "tests.test_sync.TestSomethingElse.test_other"
 
-    def first_for(self, mutation: Mutation) -> list[str]:
+    def first_for(self, mutation: Mutation, front: str = FRONT) -> list[str]:
         """What `_attempt` hands `_run` as its `first`, for one row.
 
         A list, because that is the slot's shape now: `_run` JSON-encodes it
@@ -5139,7 +5179,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
             return mutate.Verdict("caught", "probe", killer=self.KILLER)
 
         learned = mutate.Learned()
-        learned.saw(self.FRONT)
+        learned.saw(front)
         available: queue.Queue[Path] = queue.Queue()
         with tempfile.TemporaryDirectory() as box:
             root = Path(box)
@@ -5163,7 +5203,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
     def test_a_recorded_killer_runs_before_the_learned_front(self) -> None:
         """The row this exists for. `exact` is what `Killers.ahead_of` sets when
         it found this row's own killer."""
-        got = self.first_for(self.row(first=self.KILLER, exact=True))
+        got = self.first_for(self.row(first=(self.KILLER,), exact=True))
         self.assertEqual([self.KILLER, self.FRONT], got)
 
     def test_a_general_prefix_runs_after_it(self) -> None:
@@ -5171,7 +5211,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         the test above. The cheap prefix is *not* about this row -- it is the
         tests that catch a lot per second across the table -- so the learned
         front, which is at least about this row's neighbours, precedes it."""
-        got = self.first_for(self.row(first=self.KILLER, exact=False))
+        got = self.first_for(self.row(first=(self.KILLER,), exact=False))
         self.assertEqual([self.FRONT, self.KILLER], got)
 
     def test_the_learned_front_still_follows_a_killer_rather_than_being_dropped(
@@ -5182,8 +5222,27 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         guess before the whole selection. It costs nothing when the killer is
         right, because the killer has already answered by then.
         """
-        got = self.first_for(self.row(first=self.KILLER, exact=True))
+        got = self.first_for(self.row(first=(self.KILLER,), exact=True))
         self.assertIn(self.FRONT, got, "the learned front was dropped, not demoted")
+
+    def test_a_parametrized_id_survives_the_composition_from_both_sides(self) -> None:
+        """The step this change exists for. `_attempt` used to build its `first`
+        as `f"{mutation.first} {ahead}".split()`, a join and a re-split that is
+        the identity for every id without a space in it -- which was every id in
+        the tree while every test was a `TestCase` method.
+
+        A parametrized nodeid has one, and both sides of the composition can
+        carry it: the recorded killer comes from `Killers.known` and the front
+        from `Learned.recent`, and each is whatever a previous verdict named. So
+        both are parametrized here. Split, each becomes two names that select
+        nothing, and pytest does not call selecting nothing an error -- the probe
+        runs its selection alone and the row is answered as though the ordering
+        had simply missed.
+        """
+        killer = "tests/test_sync.py::TestTheDecisionTable::test_it[a b]"
+        front = "tests/test_sync.py::TestSomethingElse::test_other[c d]"
+        got = self.first_for(self.row(first=(killer,), exact=True), front=front)
+        self.assertEqual([killer, front], got)
 
 
 class TestHandingRowsOutToLanes(unittest.TestCase):

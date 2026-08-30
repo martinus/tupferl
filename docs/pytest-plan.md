@@ -1,6 +1,7 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **Phases 0, A and A2 executed** (2026-08-30); B onwards not started.
+Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
+with them; no module has been converted yet.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did
@@ -799,6 +800,12 @@ free and there is no carrier to unwrap. Measured, and asserted both ways in
   the half that this phase's rewrite owns; the other half has no trigger until
   a parametrized nodeid exists, which is Phase B's first cluster. Phase B's
   contract now has it as step 1a.
+
+  **Closed since, by that step** — see
+  [Step 1a as built](#step-1a-as-built--2026-08-30), which also corrects the
+  list: only `Mutation.first` was ever space-joined, and the field this
+  paragraph does not name — `baseline_shards`' extra shard — was the one where
+  it would have been silent.
 - **The walk is not recursive, so `norecursedirs` is not consulted.** It looks
   in the directories the selection's own files live in, which is what the
   `unittest` layer did and what the sweep pair compares against. Anyone
@@ -1281,19 +1288,10 @@ that same PR).
 
 1. Before editing: record the module's collected item count and test list
    (`python -m pytest --collect-only -q tests/test_X.py`).
-1a. **Before the first `parametrize` lands, make `Mutation.first`,
-   `Killers.known`, `Learned.recent` and `baseline_shards`' extra shard hold
-   sequences.** The fourth is the one that bites hardest and is easiest to
-   miss: `baseline_shards` space-joins every remembered `first` into one shard
-   *string*, which `run` re-splits before handing it to `_run` — so a
-   parametrized killer shreds a *baseline shard* rather than a selection, and a
-   baseline shard that selects nothing comes back green. Phase A closed the
-   argv half of this — `mutate._run` JSON-encodes `first` because a
-   parametrized nodeid can contain spaces — and deliberately left the three
-   in-harness fields space-joined, because nothing in the tree produced such an
-   id yet. A parametrized test is exactly what produces one, and it shreds
-   silently: half a nodeid selects nothing, and selecting nothing is not an
-   error to pytest. The comment in `mutate._attempt` says so at the `.split()`.
+1a. **Done, as its own PR, before B1** — see
+   [Step 1a as built](#step-1a-as-built--2026-08-30). It is listed here because
+   it is a precondition of every cluster after it, not because it recurs: no
+   later cluster has to repeat it.
 2. Convert by hand. `subTest` → `pytest.mark.parametrize` where the cases are
    static; where the case list is computed (e.g. `test_errors`' ast-walk over
    every `raise TupferlError`), compute it at module level and parametrize
@@ -1342,6 +1340,93 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 cluster; a newly-surviving row means the conversion weakened a test — fix the
 test, never the disposition; a newly-BROKE row is almost always a bound/alarm
 race — apply the five-lessons checklist before touching anything else.
+
+## Step 1a as built — 2026-08-30
+
+Landed on its own, before B1, for two reasons. It touches only `tools/` and
+converts no test module, so its own mutation sweep is a clean before-and-after;
+and B1's gate is "zero newly-surviving and zero newly-BROKE rows against the
+last whole-tree sweep", which a harness change landing in the same PR would
+have muddied.
+
+### Three of the four fields already held sequences
+
+The plan named `Mutation.first`, `Killers.known`, `Learned.recent` and
+`baseline_shards`' extra shard. Read against the code, only two of those are
+places a space can be lost:
+
+| named | what it actually holds | changed |
+|---|---|---|
+| `Mutation.first` | one space-joined string | **yes** — now `Sequence[str]`, and `Learned.ahead` returns a tuple to match |
+| `baseline_shards`' extra shard | one space-joined string, re-`split()` by `run` | **yes** — a shard is now a sequence of names throughout, selection shards included |
+| `Killers.known` | `dict[key, one test id]` | no — a single id per row, never joined |
+| `Learned.recent` | `list[one test id]` | no — same |
+
+`Killers.known` and `Learned.recent` were never the hazard: each element is one
+id and nothing concatenates them. What did concatenate them is `Learned.ahead`,
+which joined its result with spaces on the way out, and `_attempt`, which did
+`f"{mutation.first} {ahead}".split()`. Both are gone; the composition is now
+`(*mutation.first, *ahead)`.
+
+`Mutation.tests` beside it is **deliberately still one space-joined string.** It
+holds a *selection* — dotted module and class paths from `mutants.targets_for`
+— and a dotted path cannot contain a space. Converting it too would have been a
+larger diff for a hazard that does not exist there.
+
+### `str` is a `Sequence[str]`, so the type does not close the hole
+
+Measured, not assumed: `Mutation(..., first="a whole string")` type-checks
+clean. So does `row._replace(first="...")` — mypy does not check
+`NamedTuple._replace`'s keywords **at all**, which is how two rows of this
+project's own suite kept a string through the conversion and came back `BROKE`.
+
+The failure is the flattering one. Iterating a string yields characters, so a
+killer becomes fifty single-letter names, each selecting nothing; the row is
+`BROKE`, and a `BROKE` row is never `caught`, so the line it appeared to guard
+is guarded by nothing while the summary counts it in neither of the two numbers
+a reader looks at.
+
+`mutants.check` now refuses a string `first`, naming the tuple spelling in the
+message. It goes there because `check` runs over the whole table before the
+first sandbox is built: one loud death at row 0, not a wall of non-answers an
+hour later.
+
+### The fixtures were wrong in a way five of them could not show
+
+`_unbaselined` takes the shard list, so its eight tests all built shards by
+hand as `["tests.test_paths"]`. Under the new shape that is a list of one
+*string*, which iterates into `t`, `e`, `s`… — and **three went red while five
+went on passing.** The five are the dangerous half: they assert that a killer
+is *not* covered by a shard, which a shard of single letters satisfies
+perfectly.
+
+They now go through one `shards()` helper, so a shard cannot be built wrongly
+in a fixture and rightly in production. This is §2's "suspect the fixture"
+arriving through a type change rather than through a review.
+
+### Evidence
+
+Two regression tests, and the revert that proves them. Reverting the *types* is
+not the honest check — the tests then fail with `'tuple' object has no attribute
+'split'`, which proves only that the shape moved. Reverting the **mechanism**
+while keeping the types (restoring the join-and-re-split under
+`first: Sequence[str]`) is the real one:
+
+- `test_a_parametrized_id_survives_the_composition_from_both_sides` — both
+  sides of `_attempt`'s composition carry a parametrized id, because both come
+  from a previous verdict. Fails on the shredding: `…test_it[a b]` arrives as
+  `…test_it[a` and `b]`.
+- `test_a_parametrized_killer_reaches_its_shard_whole` — the same for the
+  baseline shard, which is where it would have been silent.
+
+Both fail under that revert; **the eight neighbouring tests in the same two
+classes pass unchanged**, which is the point — the old mechanism was the
+identity for every id without a space, so nothing already in the tree could
+have seen it.
+
+Plus three in `tests/test_mutants.py` for the `check` guard, and a sweep of
+`tupferl/merge.py` — 31 rows, 30 caught, 1 survivor already tagged, baseline
+green — to drive the shard path end to end.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
