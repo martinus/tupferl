@@ -37,6 +37,7 @@ import time
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -783,34 +784,85 @@ def typing(keys: str | None) -> Iterator[None]:
         terminal.close()
 
 
-class SandboxCase(unittest.TestCase):
-    """A test with a throwaway `$HOME`, and `os.environ` pointed inside it.
+@dataclass(frozen=True)
+class Sandbox:
+    """A throwaway `$HOME` with `os.environ` already pointed inside it.
 
-    The temporary directory is torn down by `TemporaryDirectory` rather than by
-    an `rmtree` in `tearDown`: if the test fails mid-way the cleanup still runs,
-    and there is no path by which a bug in `tearDown` deletes something outside
-    the box it created.
+    What `SandboxCase` used to *be*, extracted so that the class and
+    `tests/conftest.py`'s `sandbox` fixture are two adapters over one
+    definition. Both exist through Phase B -- B3 converts five of this base's
+    modules and B4a/B4b the rest -- and two hand-maintained copies of "what a
+    sandbox is" would be free to drift for exactly as long as it takes nobody
+    to notice. Measured cost of not extracting: `env` alone is read 93 times
+    across the five modules B3 converts.
     """
 
-    host = HOST
-
-    def setUp(self) -> None:
-        box = tempfile.TemporaryDirectory(prefix="tupferl-test-")
-        self.addCleanup(discard, box)
-        self.tmp = Path(box.name)
-        self.home = self.tmp / "home"
-        self.home.mkdir()
-        seed_home(self.home, self.host)
-        self.env = sandbox_env(self.home, self.host)
-        patched = mock.patch.dict(os.environ, self.env, clear=True)
-        patched.start()
-        self.addCleanup(patched.stop)
+    tmp: Path
+    home: Path
+    env: dict[str, str]
+    host: str
 
     def write(self, where: Path, text: str) -> Path:
         """Write a file, making its parents. Returns it, so calls can chain."""
         where.parent.mkdir(parents=True, exist_ok=True)
         where.write_text(text, encoding="utf-8")
         return where
+
+
+@contextmanager
+def sandbox(host: str = HOST) -> Iterator[Sandbox]:
+    """A `Sandbox`, torn down on the way out.
+
+    The temporary directory is torn down by `TemporaryDirectory` rather than by
+    an `rmtree`: if the test fails mid-way the cleanup still runs, and there is
+    no path by which a bug in the cleanup deletes something outside the box it
+    created.
+    """
+    box = tempfile.TemporaryDirectory(prefix="tupferl-test-")
+    try:
+        tmp = Path(box.name)
+        home = tmp / "home"
+        home.mkdir()
+        seed_home(home, host)
+        env = sandbox_env(home, host)
+        with mock.patch.dict(os.environ, env, clear=True):
+            yield Sandbox(tmp=tmp, home=home, env=env, host=host)
+    finally:
+        discard(box)
+
+
+class SandboxCase(unittest.TestCase):
+    """A test with a throwaway `$HOME`, and `os.environ` pointed inside it.
+
+    **The `unittest` adapter over `sandbox` above**, kept until its last user
+    converts (`docs/pytest-plan.md`, clusters B4a and B4b) and deleted in that
+    PR. It holds no setup of its own, so the two spellings cannot disagree
+    about what a sandbox is.
+    """
+
+    host = HOST
+
+    def setUp(self) -> None:
+        self.box = self.enterSandbox()
+        self.tmp = self.box.tmp
+        self.home = self.box.home
+        self.env = self.box.env
+
+    def enterSandbox(self) -> Sandbox:
+        """`sandbox(self.host)`, unwound by `addCleanup`.
+
+        Spelled out rather than `enterContext`, which is 3.11 and this project
+        supports 3.10 -- the same reason the rest of this file reaches for
+        `ExitStack`.
+        """
+        made = sandbox(self.host)
+        built = made.__enter__()
+        self.addCleanup(made.__exit__, None, None, None)
+        return built
+
+    def write(self, where: Path, text: str) -> Path:
+        """Write a file, making its parents. Returns it, so calls can chain."""
+        return self.box.write(where, text)
 
     def assertContains(self, haystack: str, needle: str, *args: Any) -> None:
         """`assertIn` with the haystack in the message.
