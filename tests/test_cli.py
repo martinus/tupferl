@@ -207,7 +207,8 @@ class TestTheRealProcess:
         assert done.stdout.strip() == f"tupferl {__version__}"
 
     def test_doctor_on_a_bare_machine_reports_and_exits_one(
-        self, sandbox: support.Sandbox
+        self,
+        sandbox: support.Sandbox,
     ) -> None:
         done = support.run_cli(["doctor"], sandbox.env)
         assert done.returncode == 1
