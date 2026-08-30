@@ -464,8 +464,10 @@ ruff check . && ruff format --check . && mypy tupferl tests tools \
   && python -m tools.run_tests            # the preflight, exactly what CI runs
 ```
 
-`python -m unittest discover -s . -t . -p 'test_*.py'` runs the same tests
-serially, and is the one to reach for when a parallel run's output is confusing.
+`python -m pytest -q` runs the same tests serially, and is the one to reach for
+when a parallel run's output is confusing -- it is what a batch runs, without
+the batching. `python -m unittest discover -s . -t . -p 'test_*.py'` still works
+too, for as long as every test is a `TestCase`, which Phase B ends.
 
 ### Layout
 
@@ -480,7 +482,7 @@ serially, and is the one to reach for when a parallel run's output is confusing.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | still written as stdlib `unittest` `TestCase`s, but **run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0 and A are done, Phase A2 ports `tools/run_tests.py`). A pytest-native module is still not safe to write: `run_tests.py` and its `--only`/`--exclude` are `unittest` loaders, and they load one as an *empty* suite, so its tests vanish from the preflight without anything going red |
+| `tests/` | still written as stdlib `unittest` `TestCase`s, but **run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0, A and A2 are done, Phase B converts the modules). **A pytest-native module is safe to write now** -- `tools/run_tests.py` collects with pytest as of A2, so a plain `def test_...` is discovered, packed by its module, run and accounted for. What is *not* yet done is the conversion itself: a module converts whole, by hand, one cluster per PR, because a half-converted one is the worst state |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the pytest classifier; `verdict_unittest.py` + `test_verdict_unittest.py` are the one it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` until Phase C |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on |
@@ -768,8 +770,9 @@ has been dropped.
   through `pytest_collectreport` and agree — measured, and asserted by
   `tests/test_verdict.py`'s `TestABrokenModuleIsClassifiedTheSameWayTwice`,
   which exists so a difference reappearing is loud rather than a difference in
-  what a *walk* concludes. It still governs `tools/run_tests.py`, which is a
-  `unittest` loader until Phase A2.
+  what a *walk* concludes. **It governs nothing else now**: `tools/run_tests.py`
+  collected with `unittest` until Phase A2 and collects with pytest since, so
+  the only reader of this entry is the retired backend, which Phase C deletes.
 - **Patching `sys.version_info` does not conjure the module.** A test that fakes
   3.11 and then lets the code `import tomllib` fails on a real 3.10 interpreter,
   where that module does not exist -- so it passes on every leg *except* the one

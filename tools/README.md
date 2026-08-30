@@ -63,9 +63,11 @@ Three properties, each of which cost a real debugging session to learn:
   so a kill at the wrong moment cannot leave mutated source behind (CLAUDE.md
   §6).
 
-`run_tests.py` earns its place with one accounting check that plain `unittest`
-has no need for: `ids discovered == ids reported`. A parallel run can be green
-because a batch died before it reported anything.
+`run_tests.py` earns its place with one accounting check that a serial run has
+no need for: `ids discovered == ids reported`. A parallel run can be green
+because a batch died before it reported anything. It drives pytest since
+Phase A2 of `docs/pytest-plan.md`; its module docstring says why not
+`pytest -n auto --dist loadscope`, and what would justify re-opening that.
 
 ## What was changed in the port
 
