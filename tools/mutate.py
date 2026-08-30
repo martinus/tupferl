@@ -2012,7 +2012,7 @@ def run(
 
     def _first_look(shard: Sequence[str]) -> Verdict:
         """One baseline shard, in a borrowed sandbox like any other lane task."""
-        return _borrow(available, list(shard), timeout, memory, each)
+        return _borrow(available, shard, timeout, memory, each)
 
     def lane_walk(lane: int) -> None:
         """One lane: take the next row, run it, say what it found, repeat."""
@@ -2633,7 +2633,12 @@ def baseline_shards(table: Sequence[Mutation]) -> list[tuple[str, ...]]:
     will ask later, and it is worth nothing if it asks a different one. It
     already went stale once here.
     """
-    shards = [tuple(tests.split()) for tests in sorted({mutation.tests for mutation in table})]
+    # Sorted as tuples rather than sorting the joined strings and converting after, which was
+    # the first spelling. The two orders are identical -- a space is below every character a
+    # dotted target path can hold, so joining preserves the comparison, checked over 200k random
+    # cases -- and the set then also collapses two selections that differ only in spacing, which
+    # as strings were distinct and produced two identical full baseline runs.
+    shards = sorted({tuple(mutation.tests.split()) for mutation in table})
     if ahead := tuple(sorted({name for row in table for name in row.first})):
         shards.append(ahead)
     return shards
@@ -3958,7 +3963,7 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
     green = True
     with _sandboxes(lanes) as available, ThreadPoolExecutor(max_workers=lanes) as pool:
         checks = [
-            pool.submit(_borrow, available, list(shard), args.timeout, memory, args.each_test)
+            pool.submit(_borrow, available, shard, args.timeout, memory, args.each_test)
             for shard in shards
         ]
         for shard, future in zip(shards, checks, strict=True):

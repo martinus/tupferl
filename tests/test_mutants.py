@@ -700,35 +700,36 @@ class TestAPrefixMustBeASequenceRatherThanAString(unittest.TestCase):
         path.write_text("value = 1\n", encoding="utf-8")
         return str(path)
 
-    def test_a_string_is_refused_and_the_message_shows_the_tuple(self) -> None:
-        """Named with the fix in it, because the two spellings differ by a comma
-        and the wrong one is the one that reads naturally."""
-        with tempfile.TemporaryDirectory() as tmp:
-            row = Mutation("x", self.file(tmp), "value = 1", "value = 2", "t", first="a.py::T::t")
-            with self.assertRaises(SystemExit) as refused:
-                mutants.check(row)
-        self.assertIn('first=("a.py::T::t",)', str(refused.exception))
+    def test_a_string_is_refused_before_the_file_is_read(self) -> None:
+        """Two claims in one call, because the fixture proves the second for free.
 
-    def test_a_sequence_is_accepted(self) -> None:
-        """The half that keeps the refusal from being unconditional -- without
-        it, `check` raising on everything would pass the test above."""
-        with tempfile.TemporaryDirectory() as tmp:
-            row = Mutation(
-                "x", self.file(tmp), "value = 1", "value = 2", "t", first=("a.py::T::t",)
-            )
-            mutants.check(row)
+        **The path does not exist**, so reaching `read_text` is a
+        `FileNotFoundError` rather than the `SystemExit` asserted -- which is what
+        makes "refused *before* the read" an assertion rather than a comment. That
+        ordering is the point of putting the guard in `check`: it runs over the
+        whole table before the first sandbox exists, so a table built with the
+        wrong shape dies loudly at row 0 rather than as a wall of non-answers an
+        hour later, and it is reported as its own mistake rather than as whatever
+        the row's path happens to say.
 
-    def test_it_is_refused_before_the_file_is_read(self) -> None:
-        """So a table built with the wrong shape is reported as that, rather than
-        as whatever the row's path happens to say. `check` runs over the whole
-        table before the first sandbox exists, which is the point of putting the
-        guard in it: one loud death at row 0, not a wall of non-answers an hour
-        later.
+        The message is asserted with the fix in it, because the two spellings
+        differ by one comma and the wrong one is the one that reads naturally.
         """
         row = Mutation("x", "/nonexistent/mod.py", "a", "b", "t", first="a.py::T::t")
         with self.assertRaises(SystemExit) as refused:
             mutants.check(row)
         self.assertIn("sequence of test ids", str(refused.exception))
+        self.assertIn('first=("a.py::T::t",)', str(refused.exception))
+
+    def test_a_sequence_is_accepted(self) -> None:
+        """The half that keeps the refusal from being unconditional -- without
+        it, `check` raising on everything would pass the test above. A real file,
+        because this one goes past the guard into the checks that read it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            row = Mutation(
+                "x", self.file(tmp), "value = 1", "value = 2", "t", first=("a.py::T::t",)
+            )
+            mutants.check(row)
 
 
 class TestARowThatMatchesNothingSaysWhatIsClose(unittest.TestCase):

@@ -103,8 +103,11 @@ class Mutation(NamedTuple):
     #: id is shredded into halves that select nothing -- and selecting nothing is
     #: not an error to pytest, so a baseline shard built from one comes back
     #: green having run no test at all. That is the failure this type prevents,
-    #: and it fails in the flattering direction, which is why it is the type
-    #: rather than a check.
+    #: and it fails in the flattering direction.
+    #:
+    #: The type carries the intent and cannot enforce it: `str` *is* a
+    #: `Sequence[str]`, so the annotation accepts the one value it exists to
+    #: forbid. `check` closes that half -- see the guard at the top of it.
     first: Sequence[str] = ()
     #: Whether `first` is the test recorded as catching *this* row, rather than
     #: the general cheap-yield prefix. The two are both "run these first" and
@@ -1288,9 +1291,12 @@ def _near_miss(original: str, wanted: str) -> str:
 
 
 def check(mutation: Mutation) -> None:
-    """Refuse a row that cannot mean anything, reading the real file.
+    """Refuse a row that cannot mean anything.
 
-    Two shapes, because the two kinds of row make different promises. A
+    Three checks. The first is about the row's *shape* and reads nothing; the
+    other two read the real file.
+
+    Two shapes there, because the two kinds of row make different promises. A
     hand-written one says "this text is unique", and a second match means the
     edit could land anywhere. A generated one says "this text is *here*", which
     is the stronger claim -- and checking it is what stands between the
@@ -1307,8 +1313,17 @@ def check(mutation: Mutation) -> None:
     # Here rather than in `_attempt` because this runs over the whole table
     # before the first sandbox is built: one loud death at row 0 rather than a
     # wall of non-answers at the end of an hour. The other half of the hole is
-    # `NamedTuple._replace`, whose keywords mypy does not check at all -- which
-    # is exactly how a `str` got past the conversion that introduced this.
+    # `NamedTuple._replace`, whose keywords mypy does not check at all -- and
+    # `_replace` does not even reach `__new__`, so a validator there would miss
+    # `Killers.ahead_of`, which is one of the two producers. That is exactly how
+    # a `str` got past the conversion that introduced this.
+    #
+    # It is the *only* enforcement point, and `mutate.run` is the only caller.
+    # `--baseline-only` reaches `baseline_shards` without passing through here,
+    # which is safe today for a reason that is about its argument parsing rather
+    # than about this: that flag lives inside the generated-table branch, where
+    # every `first` was built by `Killers.ahead_of` as a tuple. A spec file
+    # never reaches it. Widening the flag means bringing this check with it.
     if isinstance(mutation.first, str):
         raise SystemExit(
             f"{mutation.label}: `first` is a sequence of test ids, not one "

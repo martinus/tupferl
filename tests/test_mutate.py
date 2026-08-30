@@ -1319,24 +1319,30 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
     def caught(self, killer: str, tests: str = "tests.test_paths") -> mutate.Result:
         return mutate.Result(row()._replace(tests=tests), mutate.Verdict("caught", "d", killer))
 
-    def shards(self, *selections: str) -> list[tuple[str, ...]]:
-        """Selections in the shape `baseline_shards` hands `run`: one sequence of
-        names per shard, not one space-joined string.
+    def shards(self, *selections: tuple[str, ...]) -> list[tuple[str, ...]]:
+        """The shard list `run` builds, in a shape mypy can check.
 
-        Through a helper rather than written out at each call, because the wrong
-        shape is *invisible* here. A bare `["tests.test_paths"]` is a list of one
-        string, and iterating a string yields characters -- so the shard covers
-        `t`, `e`, `s` and nothing real. When `first` became a sequence three of
-        these eight went red and five went on passing unchanged, and the five are
-        the dangerous half: they assert a killer is *not* covered, which a shard
-        of single letters satisfies perfectly. One producer, so a shard cannot be
-        built wrongly in a fixture and rightly in production.
+        Written out, these tests said `mutate._unbaselined(rows,
+        ["tests.test_paths"])` -- and `_unbaselined` takes
+        `Sequence[Sequence[str]]`, of which a `list[str]` is one. So that
+        type-checks clean and hands it a shard covering `t`, `e`, `s` and
+        nothing real. When `first` became a sequence three of these eight tests
+        went red and five went on passing unchanged, and the five are the
+        dangerous half: they assert a killer is *not* covered, which a shard of
+        single characters satisfies perfectly.
+
+        `tuple[str, ...]` per shard and not `Sequence[str]`, because a `str` is
+        not a `tuple` -- so the shape that was wrong is now a type error at the
+        call site rather than a fixture passing for the wrong reason. That is the
+        whole of the helper: it splits nothing and joins nothing, which is also
+        what lets a caller hand it a parametrized nodeid whole. `WHOLE_SUITE`'s
+        shard is `()`, no names rather than one empty name.
         """
-        return [tuple(only.split()) for only in selections]
+        return list(selections)
 
     def test_a_killer_its_shard_covered_needs_nothing(self) -> None:
         found = self.caught("tests.test_paths.TestA.test_b")
-        self.assertEqual([], mutate._unbaselined([found], self.shards("tests.test_paths")))
+        self.assertEqual([], mutate._unbaselined([found], self.shards(("tests.test_paths",))))
 
     def test_a_killer_no_shard_covered_is_returned(self) -> None:
         """The one the walk produces. `UNWATCHED` is exactly this shape in the
@@ -1344,7 +1350,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
         self.assertEqual(
             ["tests.test_config.TestRejectingAnUnknownKey.test_it"],
-            mutate._unbaselined([found], self.shards("tests.test_paths")),
+            mutate._unbaselined([found], self.shards(("tests.test_paths",))),
         )
 
     def test_the_whole_suite_shard_covers_everything(self) -> None:
@@ -1352,7 +1358,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         shard list holding one covers every test. Read as a plain string it
         matches nothing instead, and every killer would be re-checked."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        self.assertEqual([], mutate._unbaselined([found], self.shards(mutate.WHOLE_SUITE)))
+        self.assertEqual([], mutate._unbaselined([found], self.shards(())))
 
     def test_only_caught_rows_are_asked_about(self) -> None:
         """A survivor has no killer to stand behind, and a `broke` row's is not
@@ -1360,7 +1366,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         send the run off to baseline a test that decided nothing."""
         survivor = mutate.Result(row(), mutate.Verdict("survived"))
         broke = mutate.Result(row(), mutate.Verdict("broke", "d", "tests.test_config.T.t"))
-        covered = self.shards("tests.test_paths")
+        covered = self.shards(("tests.test_paths",))
         self.assertEqual([], mutate._unbaselined([survivor, broke], covered))
 
     def test_a_class_shard_still_covers_its_own_tests(self) -> None:
@@ -1368,7 +1374,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         a class never matched at all when this was spelled by hand, and every row
         it caught was sent for re-baselining."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        covered = self.shards("tests.test_config.TestRejectingAnUnknownKey")
+        covered = self.shards(("tests.test_config.TestRejectingAnUnknownKey",))
         self.assertEqual([], mutate._unbaselined([found], covered))
 
     def test_one_whole_suite_shard_among_several_covers_everything(self) -> None:
@@ -1380,7 +1386,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         run that already covered it.
         """
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        mixed = self.shards(mutate.WHOLE_SUITE, "tests.test_paths")
+        mixed = self.shards((), ("tests.test_paths",))
         self.assertEqual([], mutate._unbaselined([found], mixed))
 
     def test_a_killer_covered_by_one_shard_of_several_needs_nothing(self) -> None:
@@ -1391,7 +1397,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         sweep would drag the run into a re-baseline it does not need.
         """
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        several = self.shards("tests.test_paths", "tests.test_config")
+        several = self.shards(("tests.test_paths",), ("tests.test_config",))
         self.assertEqual([], mutate._unbaselined([found], several))
 
     def test_a_sibling_module_is_not_covered_by_a_prefix_of_its_name(self) -> None:
@@ -1408,7 +1414,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         found = self.caught("tests.test_sync_cli.TestTheRemoteLine.test_it")
         self.assertEqual(
             ["tests.test_sync_cli.TestTheRemoteLine.test_it"],
-            mutate._unbaselined([found], self.shards("tests.test_sync")),
+            mutate._unbaselined([found], self.shards(("tests.test_sync",))),
         )
 
 
@@ -4484,13 +4490,19 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
 
     ARGS = argparse.Namespace(workers=2, memory=mutate.MEMORY, timeout=30.0, each_test=0.0)
 
-    def asked(self, *verdicts: mutate.Verdict) -> tuple[bool, str, list[list[str]]]:
+    def asked(self, *verdicts: mutate.Verdict) -> tuple[bool, str, list[Sequence[str]]]:
         """Drive it with one canned verdict per shard, and record what each
-        lane was asked to run."""
-        seen: list[list[str]] = []
+        lane was asked to run.
+
+        Recorded as it arrived, not re-typed. A `list(shard)` here would let the
+        assertion below pass against a caller that had converted the shard on the
+        way in, which is exactly the conversion this class exists to say is not
+        happening.
+        """
+        seen: list[Sequence[str]] = []
         answers = list(verdicts)
 
-        def borrow(_available: Any, shard: list[str], *rest: Any) -> mutate.Verdict:
+        def borrow(_available: Any, shard: Sequence[str], *rest: Any) -> mutate.Verdict:
             seen.append(shard)
             return answers[len(seen) - 1]
 
@@ -4535,7 +4547,7 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
             Mutation(f"row {n}", "tupferl/sync.py", "a", "b", f"tests.shard{n}") for n in range(2)
         ]
         _, _, seen = self.asked(mutate.Verdict("survived", ""), mutate.Verdict("survived", ""))
-        self.assertEqual([list(s) for s in mutate.baseline_shards(table)], seen)
+        self.assertEqual(mutate.baseline_shards(table), seen)
 
     def test_a_red_shard_says_which_and_why(self) -> None:
         """A red baseline is the one verdict that cannot be diagnosed by
@@ -4853,7 +4865,10 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
 
     def rows(self, *pairs: tuple[str, Sequence[str]]) -> list[Mutation]:
         return [
-            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", tests, first=tuple(first))
+            # `first=first`, not `first=tuple(first)`. The conversion looks like a guard and
+            # is the opposite of one: handed a bare string it explodes it into characters,
+            # which is the very shape `mutants.check` refuses. Every call site writes a tuple.
+            Mutation(f"row {n}", "tupferl/sync.py", "a", "b", tests, first=first)
             for n, (tests, first) in enumerate(pairs)
         ]
 

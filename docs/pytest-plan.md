@@ -1370,8 +1370,17 @@ which joined its result with spaces on the way out, and `_attempt`, which did
 
 `Mutation.tests` beside it is **deliberately still one space-joined string.** It
 holds a *selection* — dotted module and class paths from `mutants.targets_for`
-— and a dotted path cannot contain a space. Converting it too would have been a
-larger diff for a hazard that does not exist there.
+— and a dotted path cannot contain a space, so the hazard does not exist there.
+
+**And the constraint that makes converting it anyway wrong**, which matters more
+than the absent hazard, because "finish the job" is the obvious next PR:
+`mutation.tests` is in the `--json` report. `_persist` writes it and `_recorded`
+feeds `row["tests"]` straight back into `Mutation(...)`, so converting the field
+changes an on-disk schema that every `sweeps/*.json` already carries — and an
+**older** report read back would rebuild rows with a `str` in a
+sequence-typed field, reintroducing exactly the shape this step removed, through
+the resume path, with no type error to show for it. `first` has no such
+constraint: it is never serialised.
 
 ### `str` is a `Sequence[str]`, so the type does not close the hole
 
@@ -1424,7 +1433,7 @@ classes pass unchanged**, which is the point — the old mechanism was the
 identity for every id without a space, so nothing already in the tree could
 have seen it.
 
-Plus three in `tests/test_mutants.py` for the `check` guard, and a sweep of
+Plus two in `tests/test_mutants.py` for the `check` guard, and a sweep of
 `tupferl/merge.py` — 31 rows, 30 caught, 1 survivor already tagged, baseline
 green — to drive the shard path end to end.
 
