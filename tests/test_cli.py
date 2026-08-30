@@ -80,6 +80,7 @@ class TestTheCommandSet:
         assert "invalid choice" in said.getvalue()
 
 
+@pytest.mark.usefixtures("sandbox")
 class TestEveryVerbIsWired:
     """Plan §4's eight verbs all reach code, and a ninth would say so.
 
@@ -98,7 +99,6 @@ class TestEveryVerbIsWired:
     """
 
     @pytest.mark.parametrize("command", COMMANDS)
-    @pytest.mark.usefixtures("sandbox")
     def test_no_planned_verb_falls_through(self, command: str) -> None:
         """Every one of the eight, driven for real in an empty sandbox.
 
@@ -111,7 +111,6 @@ class TestEveryVerbIsWired:
             main([command, *ARGUMENTS.get(command, [])])
         assert NOT_WIRED not in said.getvalue()
 
-    @pytest.mark.usefixtures("sandbox")
     def test_a_verb_with_no_branch_says_so(self) -> None:
         """The precondition for the test above: the guard can fire.
 
@@ -198,6 +197,7 @@ class TestTheFlags:
             build_parser().parse_args([gone])
 
 
+@pytest.mark.usefixtures("sandbox")
 class TestTheRealProcess:
     def test_version_prints_the_package_version(self, sandbox: support.Sandbox) -> None:
         """One version, from one declaration -- `pyproject.toml` reads the same

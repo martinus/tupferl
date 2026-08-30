@@ -3,7 +3,7 @@
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
 and **clusters B1, B2 and B3** with them, which converted the first seventeen
 modules.
-**Of 35 test modules, 18 still run through pytest's `unittest` adapter** — 16 of
+**Of 36 test modules, 18 still run through pytest's `unittest` adapter** — 16 of
 those convert in B4a–B6. The other two never do, and are **not** arrears:
 `tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
 its subject, and `tests/test_sync_properties.py` is converted but exposes a
@@ -1356,7 +1356,7 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 |---|---|---|---|
 | B1 | **Done** — see [B1 as built](#b1-as-built--2026-08-30). `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) — **not done, deliberately**; see B1 as built | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
 | B2 | **Done** — see [B2 as built](#b2-as-built--2026-08-30). `test_config_properties`, `test_merge_properties`, `test_sync_properties`, `test_profiles` | none new | Hypothesis-native. Delete the `__module__`/`__name__`/`__qualname__` dunder hack in `test_sync_properties.py` (it existed for unittest id round-trip in sharding; pytest nodeids come from collection) — keep the `X = Machine.TestCase` assignments, which are the pytest-idiomatic spelling. `profiles.py` untouched. The pyproject mypy-override list stays valid (module names unchanged). |
-| B3 | **Done** — see [B3 as built](#b3-as-built--2026-08-31). `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
+| B3 | **Done** — see [B3 as built](#b3-as-built--2026-08-31). `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture). **Not `requires_git`** — its only user is `test_mutants`, so it belongs to B6; `test_doctor`'s `skipIf` *was* converted | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
 | B4a | `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture (copytree of the cached template + remote-url repair; the `template()`/`two_machines()` functions themselves unchanged) | the overlay both-copies rule and `TestTheSnapshotIsWrittenLast` transfer as-is. |
 | B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
@@ -1940,8 +1940,8 @@ test names survives**, and the growth is `subTest` loops becoming `parametrize`.
 
 ### The machinery landed first, on its own, and that was the right call
 
-`support.SandboxCase` has **nine users left** in B4a and B4b, so it cannot be
-deleted here -- and a `sandbox` fixture written beside it would have been a
+`support.SandboxCase` has **13 classes naming it directly and 36 more reaching
+it through `support.Machine`** left in B4a and B4b, so it cannot be deleted here -- and a `sandbox` fixture written beside it would have been a
 second hand-maintained copy of what a sandbox *is*, free to drift for exactly as
 long as it takes nobody to notice.
 
@@ -1972,12 +1972,36 @@ Here it was loud (`PATH` stayed broken and nine later tests could not find git),
 but it is loud by luck; a test that merely *read* `$HOME` would have passed.
 
 **The rule that follows, and it is cheap: mark the class, not the method.**
-Every class that was a sandbox case carries
-`@pytest.mark.usefixtures("box")`, whether or not its tests take the parameter.
-The decorator is the load-bearing statement -- *this class runs in a sandbox* --
-and it survives somebody later deleting the last `box.` reference from the last
-test in it. B4a, B4b and B5 convert nine more such classes and should do the
-same.
+Every class that was a sandbox case carries `@pytest.mark.usefixtures(...)`
+naming the fixture that carries its sandbox, whether or not its tests take the
+parameter. The decorator is the load-bearing statement -- *this class runs in a
+sandbox* -- and it survives somebody later deleting the last reference from the
+last test in it.
+
+**The first version of this section stated that rule and the diff did not
+follow it**, which is §0's failure mode inside the paragraph that argues against
+§0's failure mode. `test_doctor`, `test_manifest` and `test_cli` had 17 marks
+between them; `test_gitrepo` and `test_conflicts` had **zero**, across six
+converted sandbox classes, and were safe only because every test in them
+happened to take a fixture that depends on `sandbox`. Found by review, not by
+the suite -- nothing could have gone red. There are 24 marks now, and the rule
+names the *property* rather than the identifier `box`, which is a different
+composite type in each module.
+
+**And the leak half is guarded rather than trusted now.**
+`tests/conftest.py`'s `_every_test_puts_the_environment_back` is autouse: it
+fails the test that left `os.environ` changed, instead of the nine downstream
+ones that then cannot find git. Its own first run failed 1711 of 1828 tests and
+was right to -- **pytest writes `PYTEST_CURRENT_TEST` itself**, and the value
+carries the phase, so it reads `(setup)` going in and `(teardown)` coming out.
+That is the single named exclusion. Verified it can fail, against a test that
+sets `PATH` and does not restore it, and that it stays quiet against one that
+does.
+
+It does not catch a test that merely *reads* the real environment, and nothing
+cheap does; that half is what the marks are for. A session-wide replacement of
+`$HOME` looks like the deeper fix and is not -- it turns a loud failure into
+every test silently sharing one home, which is the green run §8 collects.
 
 ### What a fixture removed that a base class could not
 
@@ -2011,10 +2035,29 @@ cannot silently half-convert, because anything unrecognised is reported and
 still says `self.assert`, which does not run; and the whole diff was read
 afterwards, which is where the four real mistakes below were caught.
 
-It is deliberately **not committed**. B4a onwards will want it, and that is an
-argument for keeping it in `/tmp` rather than in `tools/`: a committed converter
-invites running it and trusting it, and every defect this cluster found came
-from a step the converter could not check.
+**It is committed, as `tools/unassert.py`, and the first draft of this section
+argued for the opposite** -- that a committed converter invites running it and
+trusting it. The review took that apart and was right:
+
+- §7 rules out exactly the storage `/tmp` is: "a note there lives on one
+  machine, under one tool, for one person", and it does not survive a reboot.
+  The realistic outcome was not "B4a reuses it" but "B4a writes it again", with
+  a fresh set of the four mistakes below.
+- §7's trigger is "tools exist because the same mistake was made twice". Four
+  clusters remain, each with more assertions than this one.
+- The precedent runs the other way. `mutate --accept` rewrites the tree in bulk
+  and is committed; the answer here has always been *commit it, write the
+  hazard down, checkpoint first* -- never *keep it out of the repository*.
+- And the safety property is **testable**, which is the real answer to the
+  objection: `tests/test_unassert.py` drives it with an unknown method, a
+  wrong-arity call and an unbalanced expression, and asserts each comes back
+  byte-for-byte and reported. A half-conversion still reads `self.assert`,
+  which in a converted class is an `AttributeError`. That is the difference
+  between "trust me, I read it" and "it cannot silently half-convert".
+
+Verified against `main`'s five files that the committed tool reproduces what
+the throwaway one did: 499 `assert` statements and 11 `assertRaises` correctly
+refused.
 
 ### Four mistakes the rewriting made, all found by running the tests
 

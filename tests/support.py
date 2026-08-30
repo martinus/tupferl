@@ -790,17 +790,26 @@ class Sandbox:
 
     What `SandboxCase` used to *be*, extracted so that the class and
     `tests/conftest.py`'s `sandbox` fixture are two adapters over one
-    definition. Both exist through Phase B -- B3 converts five of this base's
-    modules and B4a/B4b the rest -- and two hand-maintained copies of "what a
-    sandbox is" would be free to drift for exactly as long as it takes nobody
-    to notice. Measured cost of not extracting: `env` alone is read 93 times
-    across the five modules B3 converts.
+    definition. Both exist through Phase B -- B3 converted five of this base's
+    modules and B4a/B4b convert the rest -- and two hand-maintained copies of
+    "what a sandbox is" would be free to drift for exactly as long as it takes
+    nobody to notice. Measured cost of not extracting: `env` alone is read 93
+    times across the five modules B3 converted.
+
+    **A module wanting more than this subclasses it** rather than holding one
+    and re-exporting the fields: `@dataclass(frozen=True) class Doctored(Sandbox)`
+    adding `repo` and `remote` inherits `tmp`, `home`, `env` and `write` with no
+    property stubs. The first version of B3 wrote ten of those stubs across five
+    modules, and B4a/B4b would have copied the pattern into nine more.
+
+    No `host` field: nothing reads one, and `env["TUPFERL_HOSTNAME"]` has it for
+    anything that ever needs to. `sandbox()` still takes the argument, because
+    that is the input rather than a fact about the result.
     """
 
     tmp: Path
     home: Path
     env: dict[str, str]
-    host: str
 
     def write(self, where: Path, text: str) -> Path:
         """Write a file, making its parents. Returns it, so calls can chain."""
@@ -813,22 +822,19 @@ class Sandbox:
 def sandbox(host: str = HOST) -> Iterator[Sandbox]:
     """A `Sandbox`, torn down on the way out.
 
-    The temporary directory is torn down by `TemporaryDirectory` rather than by
-    an `rmtree`: if the test fails mid-way the cleanup still runs, and there is
-    no path by which a bug in the cleanup deletes something outside the box it
-    created.
+    Composed from `tempdir` and `sandboxed` rather than repeating either. The
+    first version of this inlined both -- the same `TemporaryDirectory`/`discard`
+    pair and the same `mock.patch.dict(..., clear=True)` -- which is precisely
+    the drift this function exists to prevent, one level further down: a step
+    added to `sandboxed` (a `GIT_CONFIG_NOSYSTEM`, say) would have reached its
+    five callers and silently missed this one.
     """
-    box = tempfile.TemporaryDirectory(prefix="tupferl-test-")
-    try:
-        tmp = Path(box.name)
+    with tempdir() as tmp:
         home = tmp / "home"
         home.mkdir()
         seed_home(home, host)
-        env = sandbox_env(home, host)
-        with mock.patch.dict(os.environ, env, clear=True):
-            yield Sandbox(tmp=tmp, home=home, env=env, host=host)
-    finally:
-        discard(box)
+        with sandboxed(home, host) as env:
+            yield Sandbox(tmp=tmp, home=home, env=env)
 
 
 class SandboxCase(unittest.TestCase):
@@ -836,8 +842,8 @@ class SandboxCase(unittest.TestCase):
 
     **The `unittest` adapter over `sandbox` above**, kept until its last user
     converts (`docs/pytest-plan.md`, clusters B4a and B4b) and deleted in that
-    PR. It holds no setup of its own, so the two spellings cannot disagree
-    about what a sandbox is.
+    PR. It builds no sandbox of its own -- it copies three fields off one -- so
+    the two spellings cannot disagree about what a sandbox *is*.
     """
 
     host = HOST
@@ -854,6 +860,14 @@ class SandboxCase(unittest.TestCase):
         Spelled out rather than `enterContext`, which is 3.11 and this project
         supports 3.10 -- the same reason the rest of this file reaches for
         `ExitStack`.
+
+        **`(None, None, None)` reports every test as having exited cleanly, so
+        `sandbox()` must not care whether the body raised.** It does not today:
+        it is `tempdir` and `sandboxed`, both of which unwind the same way
+        either direction. Said here because the equivalence of the two adapters
+        rests on it, and `discard`'s docstring gestures at exactly the change
+        that would break it -- keeping the tree when a test failed, so a person
+        can look at it.
         """
         made = sandbox(self.host)
         built = made.__enter__()

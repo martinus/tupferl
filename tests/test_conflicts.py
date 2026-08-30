@@ -97,11 +97,12 @@ def sides_for(base: bytes | None, mine: bytes, theirs: bytes) -> conflicts.Sides
 def blank_before(text: str, marker: str) -> None:
     """Assert the line carrying `marker` has an empty line above it.
 
-    Module-level rather than a method, because the two classes that need it are
-    on different bases -- and the copy written inline on the second one omitted
-    the `at > 0` guard, which makes it pass vacuously when the marker lands on
-    the first line: `lines[-1]` is then the last line of the render, which is
-    `""` for anything ending in a newline.
+    Module-level because two classes need it, and because the copy once written
+    inline on the second of them omitted the `at > 0` guard -- which makes it
+    pass vacuously when the marker lands on the first line: `lines[-1]` is then
+    the last line of the render, which is `""` for anything ending in a newline.
+    (It used to say "the two classes are on different bases"; neither has a base
+    at all now, so that is no longer the reason it is not a method.)
 
     It used to take the `TestCase` as its first argument, so that it could call
     `assertGreater` on it. Plain `assert` needs no such thing, which is the
@@ -292,8 +293,9 @@ class TestWhatTheUserSees:
         prompt's only structure is where the blank lines are -- and dropping
         them turns the header, both sides of every hunk and the "more" line into
         one wall of text that reads as if the last section owned the lines above
-        it. Every `assertIn` in this class passes against that wall, which is
-        why none of them could see it.
+        it. Every *substring* assertion in this class passes against that wall,
+        which is why none of them could see it -- the text is all there, in the
+        wrong shape.
         """
         count = conflicts.SHOWN_HUNKS + 2
         text = conflicts.describe(sides_for(*many(count)), colour=False)
@@ -754,21 +756,21 @@ class TestWhichEditor:
 
 
 @dataclass(frozen=True)
-class Configured:
+class Configured(support.Sandbox):
     """A repository whose `core.editor` can be set."""
 
-    box: support.Sandbox
     repo: Path
 
     def set(self, command: str) -> None:
-        support.git(["config", "core.editor", command], self.repo, self.box.env)
+        support.git(["config", "core.editor", command], self.repo, self.env)
 
 
 @pytest.fixture
 def configured(sandbox: support.Sandbox) -> Configured:
-    return Configured(sandbox, support.make_repo(sandbox.home / "r", sandbox.env))
+    return Configured(**vars(sandbox), repo=support.make_repo(sandbox.home / "r", sandbox.env))
 
 
+@pytest.mark.usefixtures("configured")
 class TestReadingGitsConfiguredEditor:
     """`core.editor`, which needs a real repository to be set in.
 
@@ -826,27 +828,24 @@ class TestReadingGitsConfiguredEditor:
 class TestWhichSettler:
     """Plan §3.4's flag set, and the rule for a terminal that is not there."""
 
-    def sides(self) -> conflicts.Sides:
-        return one_conflict()
-
     def test_ours_answers_keep_local_without_asking(self) -> None:
         settler = conflicts.answering(no_input=False, ours=True, theirs=False)
-        assert settler(self.sides()) == conflicts.Answer(conflicts.LOCAL)
+        assert settler(one_conflict()) == conflicts.Answer(conflicts.LOCAL)
 
     def test_theirs_answers_keep_remote_without_asking(self) -> None:
         settler = conflicts.answering(no_input=False, ours=False, theirs=True)
-        assert settler(self.sides()) == conflicts.Answer(conflicts.REMOTE)
+        assert settler(one_conflict()) == conflicts.Answer(conflicts.REMOTE)
 
     def test_no_input_answers_skip(self) -> None:
         settler = conflicts.answering(no_input=True, ours=False, theirs=False)
-        assert settler(self.sides()) == conflicts.Answer(conflicts.SKIP)
+        assert settler(one_conflict()) == conflicts.Answer(conflicts.SKIP)
 
     def test_a_stdin_that_is_not_a_terminal_is_no_input(self) -> None:
         """Nobody is there to press a key. Blocking for ever and reading EOF as
         a decision are both worse than reporting the conflict."""
         with mock.patch("sys.stdin", io.StringIO("l\n")):
             settler = conflicts.answering(no_input=False, ours=False, theirs=False)
-            assert settler(self.sides()) == conflicts.Answer(conflicts.SKIP)
+            assert settler(one_conflict()) == conflicts.Answer(conflicts.SKIP)
 
     def test_with_a_terminal_it_is_the_prompt(self, terminal: support.Terminal) -> None:
         """The half the test above cannot show: with a real terminal the same
@@ -856,7 +855,7 @@ class TestWhichSettler:
         patched = mock.patch("sys.stdin", terminal.source), mock.patch("sys.stdout", spill)
         with patched[0], patched[1], support.deadline(support.PATIENCE, "the prompt never settled"):
             settler = conflicts.answering(no_input=False, ours=False, theirs=False)
-            assert settler(self.sides()) == conflicts.Answer(conflicts.REMOTE)
+            assert settler(one_conflict()) == conflicts.Answer(conflicts.REMOTE)
         assert "1 conflict to settle" in spill.getvalue()
 
 
@@ -1176,9 +1175,7 @@ class TestWhatTheWeakFixturesMissed:
         text = conflicts.describe(sides_for(*many(conflicts.SHOWN_HUNKS + 2)), colour=False)
         assert f"1 of {conflicts.SHOWN_HUNKS + 2}" in text
 
-    def test_an_escape_then_a_key_leaves_the_key_behind(
-        self, prompt: Prompt, terminal: support.Terminal
-    ) -> None:
+    def test_an_escape_then_a_key_leaves_the_key_behind(self, prompt: Prompt) -> None:
         """`ESC` followed by neither `[` nor `O` ends the sequence at one byte.
 
         Typing just `\\x1bl` cannot show it: with the check removed the loop reads
@@ -1325,9 +1322,7 @@ class TestReviewingOneChange:
         assert got == conflicts.SKIP
         assert "end of input" in prompt.out.getvalue()
 
-    def test_the_prompt_is_flushed_before_it_waits_for_a_key(
-        self, prompt: Prompt, terminal: support.Terminal
-    ) -> None:
+    def test_the_prompt_is_flushed_before_it_waits_for_a_key(self, prompt: Prompt) -> None:
         """Watch the call, because the thing that changed is the call.
 
         A buffered stream can hold the question while `one_key` blocks on the
@@ -1347,9 +1342,7 @@ class TestReviewingOneChange:
             conflicts.review(one_change(), prompt.terminal.source, prompt.out)
         assert flushed == [1], "the prompt was not flushed before the read"
 
-    def test_a_keypress_that_is_several_bytes_is_not_a_key(
-        self, prompt: Prompt, terminal: support.Terminal
-    ) -> None:
+    def test_a_keypress_that_is_several_bytes_is_not_a_key(self, prompt: Prompt) -> None:
         """A press of Down is `\x1b[B`, and read as one answer it is not one.
 
         `ask` has the same guard and the same test; this is `review`'s. It also

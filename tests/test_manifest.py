@@ -25,7 +25,7 @@ from tupferl.errors import TupferlError
 
 
 @dataclass(frozen=True)
-class Managed:
+class Managed(support.Sandbox):
     """A sandboxed `$HOME` with an empty repository, and the two questions.
 
     `check` and `refusal` are the same call read two ways -- what a path is
@@ -33,24 +33,8 @@ class Managed:
     below asks one or the other.
     """
 
-    box: support.Sandbox
     repo: Path
     config: Config
-
-    @property
-    def tmp(self) -> Path:
-        return self.box.tmp
-
-    @property
-    def home(self) -> Path:
-        return self.box.home
-
-    @property
-    def env(self) -> dict[str, str]:
-        return self.box.env
-
-    def write(self, where: Path, text: str) -> Path:
-        return self.box.write(where, text)
 
     def check(self, path: Path, config: Config | None = None) -> PurePosixPath:
         return manifest.check(path, self.home, self.repo, config or self.config)
@@ -65,7 +49,7 @@ class Managed:
 def box(sandbox: support.Sandbox) -> Managed:
     repo = paths.repo_dir()
     repo.mkdir(parents=True)
-    return Managed(sandbox, repo, Config())
+    return Managed(**vars(sandbox), repo=repo, config=Config())
 
 
 @pytest.mark.usefixtures("box")

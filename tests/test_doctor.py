@@ -8,17 +8,17 @@ saying ✔ would make `doctor` most reassuring exactly where it knows least.
 
 `Check.ok` has no default for the same reason. In woswoar it defaulted to `None`
 and `assertFalse(status.ok)` passed for `None` too, so no test could tell a
-failure from a skip (woswoar#206). Every assertion below uses `assertIs`.
+failure from a skip (woswoar#206). **Every assertion below is `is True`,
+`is False` or `is None`, never a truthiness test** -- which is `assertIs`'s job
+in the spelling this file used before it was converted, and the one property of
+it worth stating rather than the method name.
 """
 
 from __future__ import annotations
 
-import io
 import os
-from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
 from unittest import mock
 
 import pytest
@@ -30,7 +30,7 @@ from tupferl.doctor import Check
 
 
 @dataclass(frozen=True)
-class Doctored:
+class Doctored(support.Sandbox):
     """A sandboxed home, plus a place to put a remote.
 
     `repo` and `remote` are computed once here rather than in each test because
@@ -39,26 +39,13 @@ class Doctored:
     installation. Building it in the fixture makes that ordering unstateable.
     """
 
-    box: support.Sandbox
     repo: Path
     remote: Path
-
-    @property
-    def tmp(self) -> Path:
-        return self.box.tmp
-
-    @property
-    def home(self) -> Path:
-        return self.box.home
-
-    @property
-    def env(self) -> dict[str, str]:
-        return self.box.env
 
 
 @pytest.fixture
 def box(sandbox: support.Sandbox) -> Doctored:
-    return Doctored(sandbox, paths.repo_dir(), sandbox.tmp / "remote.git")
+    return Doctored(**vars(sandbox), repo=paths.repo_dir(), remote=sandbox.tmp / "remote.git")
 
 
 @pytest.mark.usefixtures("box")
@@ -164,8 +151,13 @@ class TestTheHostnameCheck:
 
     def test_a_name_that_cannot_be_a_directory_fails(self) -> None:
         """Set in the environment rather than in the config file, because that
-        is the path a bad name actually arrives by -- `SandboxCase` has already
-        patched `os.environ`, so this writes into the sandbox copy."""
+        is the path a bad name actually arrives by.
+
+        Safe because the `box` fixture has already patched `os.environ` -- which
+        is why this class carries `usefixtures` as well: the patch is the whole
+        reason this write does not reach the developer's own environment, and it
+        would be invisible from the test's own text otherwise.
+        """
         os.environ["TUPFERL_HOSTNAME"] = ".."
         found = doctor.host(Config())
         assert found.ok is False
@@ -398,26 +390,30 @@ class TestTheDanglingStateCheck:
         assert marker in found.detail
 
 
-class TestTheReport:
-    """The text, from a hand-built list -- so the counting is tested without
-    needing a machine in six different states."""
+#: A hand-built report, so the counting is tested without needing a machine in
+#: six different states. 3 ok, 2 failed and 1 not applicable rather than one of
+#: each: with equal counts, a summary printing them in the wrong order would
+#: still read correctly.
+FOUND = [
+    Check(True, "one", "fine"),
+    Check(True, "two", "fine"),
+    Check(True, "three", "fine"),
+    Check(False, "four", "broken"),
+    Check(False, "five", "broken"),
+    Check(None, "six", "not applicable"),
+]
 
-    found: ClassVar[list[Check]] = [
-        Check(True, "one", "fine"),
-        Check(True, "two", "fine"),
-        Check(True, "three", "fine"),
-        Check(False, "four", "broken"),
-        Check(False, "five", "broken"),
-        Check(None, "six", "not applicable"),
-    ]
+
+class TestTheReport:
+    """The text, from `FOUND` above."""
 
     def test_the_summary_counts_the_three_states_apart(self) -> None:
         """3, 2 and 1 rather than one of each: with equal counts, a summary that
         printed them in the wrong order would still read correctly."""
-        assert "3 ok, 2 failed, 1 not applicable" in doctor.report(self.found)
+        assert "3 ok, 2 failed, 1 not applicable" in doctor.report(FOUND)
 
     def test_each_state_gets_its_own_mark(self) -> None:
-        lines = doctor.report(self.found).splitlines()
+        lines = doctor.report(FOUND).splitlines()
         assert lines[0].startswith("✔")
         assert lines[3].startswith("✘")
         assert lines[5].startswith("-")
@@ -426,13 +422,13 @@ class TestTheReport:
         """What the width computation is *for*. The titles here differ in length
         (`one` against `three`), so a width taken from the shortest -- or from
         the first -- puts the details in different columns."""
-        lines = doctor.report(self.found).splitlines()[: len(self.found)]
-        columns = {line.index(check.detail) for line, check in zip(lines, self.found, strict=True)}
+        lines = doctor.report(FOUND).splitlines()[: len(FOUND)]
+        columns = {line.index(check.detail) for line, check in zip(lines, FOUND, strict=True)}
         assert len(columns) == 1, f"details start at {sorted(columns)}"
 
     def test_the_details_are_all_there(self) -> None:
-        text = doctor.report(self.found)
-        for check in self.found:
+        text = doctor.report(FOUND)
+        for check in FOUND:
             assert check.detail in text
 
 
@@ -445,8 +441,14 @@ def quietly() -> tuple[int, str]:
     builds a fresh instance per test, so a value written by a helper and read by
     an assertion is a value that happens to survive rather than one that is
     passed.
+
+    Through `support.quiet` rather than a raw `redirect_stdout(io.StringIO())`,
+    which is what it was: `main` runs *in this process*, so a mutant that loops
+    while printing fills an unbounded buffer, and that memory is charged to the
+    mutation lane's share. `Spill` is the bound, and its docstring is the
+    argument. It captures stderr too, which nothing here writes.
     """
-    with redirect_stdout(io.StringIO()) as caught:
+    with support.quiet() as caught:
         status = doctor.main()
     return status, caught.getvalue()
 

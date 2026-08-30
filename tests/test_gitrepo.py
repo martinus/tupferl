@@ -229,12 +229,12 @@ class TestIsRepository:
         inside.mkdir()
         assert not gitrepo.is_repository(inside)
 
-    def test_not_a_plain_directory(self, sandbox: support.Sandbox, plain: Path) -> None:
+    def test_not_a_plain_directory(self, sandbox: support.Sandbox) -> None:
         plain = sandbox.tmp / "plain"
         plain.mkdir()
         assert not gitrepo.is_repository(plain)
 
-    def test_a_git_that_cannot_run_answers_no(self, sandbox: support.Sandbox, plain: Path) -> None:
+    def test_a_git_that_cannot_run_answers_no(self, sandbox: support.Sandbox) -> None:
         """Without the `if not found.ok` guard this returns *true* for the
         current directory: `--show-toplevel` printed nothing, `Path("")`
         resolves to the working directory, and the comparison then holds.
@@ -266,15 +266,10 @@ BASE = b"from neither\nshared\n"
 
 
 @dataclass(frozen=True)
-class Conflict:
+class Conflict(support.Sandbox):
     """A repository left mid-merge over `.bashrc`, and the way to add to it."""
 
-    box: support.Sandbox
     repo: Path
-
-    @property
-    def env(self) -> dict[str, str]:
-        return self.box.env
 
     def commit(self, content: bytes, message: str) -> None:
         (self.repo / ".bashrc").write_bytes(content)
@@ -287,7 +282,7 @@ def conflict(sandbox: support.Sandbox) -> Conflict:
     """Two branches that changed the same line, merged into a dirty index."""
     repo = support.make_repo(sandbox.home / "repo", sandbox.env)
     sandbox.write(repo / ".gitignore", "")  # something to commit onto
-    made = Conflict(sandbox, repo)
+    made = Conflict(**vars(sandbox), repo=repo)
     made.commit(BASE, "the base")
     support.git(["branch", "other"], cwd=repo, env=sandbox.env)
     made.commit(OURS, "ours")
@@ -299,6 +294,7 @@ def conflict(sandbox: support.Sandbox) -> Conflict:
     return made
 
 
+@pytest.mark.usefixtures("conflict")
 class TestReadingAConflictedIndex:
     """`gitrepo.version`, and which stage is which side.
 
@@ -350,22 +346,23 @@ class TestReadingAConflictedIndex:
 
 
 @dataclass(frozen=True)
-class Diverging:
+class Diverging(support.Sandbox):
     """A repository and the two ways to put a conflict in it.
 
-    A fixture rather than a base class, which is what this was. The old comment
-    is worth keeping because the hazard it names is a `unittest` one that pytest
-    removes: a base holding tests makes every test run again under each
-    subclass's name. A fixture cannot do that -- there is nothing to inherit --
-    so the rule that had to be remembered is now unstateable.
+    A fixture rather than a base class, which is what this was. The hazard the
+    old comment named is real and is **not** a `unittest` one: a base holding
+    tests makes every test run again under each subclass's name, and *pytest
+    collects inherited test methods exactly the same way* -- measured, two
+    classes deriving one `test_shared` collect as two nodeids. What removes the
+    hazard is the fixture, not the framework: a fixture has nothing to inherit,
+    so the rule that had to be remembered is unstateable rather than merely
+    unenforced.
+
+    Said carefully because the first version of this docstring credited pytest,
+    which would have told B4a and B4b that a shared plain base class is safe.
     """
 
-    box: support.Sandbox
     repo: Path
-
-    @property
-    def env(self) -> dict[str, str]:
-        return self.box.env
 
     def commit(self, name: str, text: bytes, mode: int = 0o644) -> None:
         where = self.repo / name
@@ -390,9 +387,10 @@ class Diverging:
 
 @pytest.fixture
 def index(sandbox: support.Sandbox) -> Diverging:
-    return Diverging(sandbox, support.make_repo(sandbox.home / "r", sandbox.env))
+    return Diverging(**vars(sandbox), repo=support.make_repo(sandbox.home / "r", sandbox.env))
 
 
+@pytest.mark.usefixtures("index")
 class TestReadingTheStagesOfAConflict:
     """`gitrepo.conflicted`, asked directly.
 
@@ -497,17 +495,17 @@ class TestReadingTheStagesOfAConflict:
     def test_a_symlink_is_reported_with_its_own_mode(self, index: Diverging) -> None:
         """`0o120000`, which is what `sync.reconcile` refuses on. Without the
         mode it would look like a plain file and be written *through*."""
-        (index.repo / "link").symlink_to(index.box.home / "target")
+        (index.repo / "link").symlink_to(index.home / "target")
         support.git(["add", "-A"], cwd=index.repo, env=index.env)
         support.git(["commit", "-m", "link"], cwd=index.repo, env=index.env)
         support.git(["branch", "other"], cwd=index.repo, env=index.env)
         (index.repo / "link").unlink()
-        (index.repo / "link").symlink_to(index.box.home / "elsewhere")
+        (index.repo / "link").symlink_to(index.home / "elsewhere")
         support.git(["add", "-A"], cwd=index.repo, env=index.env)
         support.git(["commit", "-m", "relink"], cwd=index.repo, env=index.env)
         support.git(["checkout", "-q", "other"], cwd=index.repo, env=index.env)
         (index.repo / "link").unlink()
-        (index.repo / "link").symlink_to(index.box.home / "third")
+        (index.repo / "link").symlink_to(index.home / "third")
         support.git(["add", "-A"], cwd=index.repo, env=index.env)
         support.git(["commit", "-m", "relink again"], cwd=index.repo, env=index.env)
         support.git(["checkout", "-q", support.BRANCH], cwd=index.repo, env=index.env)
@@ -529,6 +527,7 @@ def plain(sandbox: support.Sandbox) -> Path:
     return where
 
 
+@pytest.mark.usefixtures("plain")
 class TestWhenGitWillNotAnswerAboutConflicts:
     """The two ways `conflicted` gets no answer, and the empty dict both give.
 
@@ -562,6 +561,7 @@ class TestWhenGitWillNotAnswerAboutConflicts:
             assert gitrepo.conflicted(plain) == {}
 
 
+@pytest.mark.usefixtures("index")
 class TestAPathThatIsNotUtf8:
     """A conflicted path whose name is not valid UTF-8.
 
@@ -587,7 +587,7 @@ class TestAPathThatIsNotUtf8:
         assert len(found) == 1
         assert len(next(iter(found.values()))) == 3
 
-    def test_such_a_name_can_be_staged(self, index: Diverging, plain: Path) -> None:
+    def test_such_a_name_can_be_staged(self, index: Diverging) -> None:
         """The same hazard mirrored, and it is a regression this class caught.
 
         `stage` sends its pathspecs on git's *stdin* since #3, and `git()` runs
@@ -609,27 +609,28 @@ class TestAPathThatIsNotUtf8:
 
 
 @dataclass(frozen=True)
-class Clone:
+class Clone(support.Sandbox):
     """A clone that has pushed once, and its remote-tracking ref."""
 
-    box: support.Sandbox
     remote: Path
     repo: Path
     there: str
 
-    @property
-    def tmp(self) -> Path:
-        return self.box.tmp
-
-    @property
-    def env(self) -> dict[str, str]:
-        return self.box.env
-
     def commit(self, text: str, where: Path | None = None) -> None:
-        root = self.repo if where is None else where
-        (root / "file").write_text(text, encoding="utf-8")
-        support.git(["add", "file"], cwd=root, env=self.env)
-        support.git(["commit", "-m", text], cwd=root, env=self.env)
+        commit_in(self.repo if where is None else where, self.env, text)
+
+
+def commit_in(root: Path, env: dict[str, str], text: str) -> None:
+    """A one-line commit, for a caller that has no `Clone` yet.
+
+    Module-level because the fixture below needs it *before* `there` is
+    knowable: the tracking ref is read off the repository after the first push,
+    so building a `Clone` to reach its own `commit` meant constructing one with
+    an empty `there` and throwing it away.
+    """
+    (root / "file").write_text(text, encoding="utf-8")
+    support.git(["add", "file"], cwd=root, env=env)
+    support.git(["commit", "-m", text], cwd=root, env=env)
 
 
 @pytest.fixture
@@ -637,13 +638,13 @@ def clone(sandbox: support.Sandbox) -> Clone:
     remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
     repo = sandbox.tmp / "clone"
     support.git(["clone", str(remote), str(repo)], cwd=sandbox.tmp, env=sandbox.env)
-    made = Clone(sandbox, remote, repo, "")
-    made.commit("first")
+    commit_in(repo, sandbox.env, "first")
     support.git(["push", "origin", "HEAD"], cwd=repo, env=sandbox.env)
     support.git(["fetch", "origin"], cwd=repo, env=sandbox.env)
-    return Clone(sandbox, remote, repo, f"origin/{gitrepo.branch(repo)}")
+    return Clone(**vars(sandbox), remote=remote, repo=repo, there=f"origin/{gitrepo.branch(repo)}")
 
 
+@pytest.mark.usefixtures("clone")
 class TestHowFarApartTwoRefsAre:
     """`distance`, which is the only thing `status` knows about the remote.
 
@@ -794,6 +795,7 @@ def staging(sandbox: support.Sandbox) -> Path:
     return support.make_repo(sandbox.tmp / "repo", sandbox.env)
 
 
+@pytest.mark.usefixtures("staging")
 class TestStagingPastTheArgumentLimit:
     """#3: the pathspecs go on stdin, so `ARG_MAX` does not apply to `add`."""
 
@@ -915,8 +917,8 @@ class TestReadingGitsVersion:
         assert doctor.version_of("") is None
 
     def test_the_floor_is_where_pathspec_from_file_arrives(self) -> None:
-        """Written out rather than imported: `assertEqual(OLDEST_GIT,
-        doctor.OLDEST_GIT)` is a copy of the code and cannot fail. 2.25 is
+        """Written out rather than imported: asserting `doctor.OLDEST_GIT ==
+        doctor.OLDEST_GIT` is a copy of the code and cannot fail. 2.25 is
         January 2020, and `git add --pathspec-from-file` is what needs it."""
         assert doctor.OLDEST_GIT == (2, 25)
 
