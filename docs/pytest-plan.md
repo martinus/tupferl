@@ -1613,6 +1613,22 @@ Nine further not-caught groups have **no baseline row at all**: they are
 Phase A and step 1a added after the baseline sweep ran. They are that work's
 debt, not this cluster's.
 
+### The `/simplify` re-gate
+
+The review changed `tests/test_merge.py` behaviourally, and that module is the
+killer for 15 caught rows of `tupferl/gitrepo.py` and 8 of `tupferl/merge.py`.
+Those two files were re-swept at 12 lanes: **156 rows, 150 caught, 6 survivors
+all tag-excused, 0 BROKE, 0 TIMEOUT -- byte-identical to the baseline.**
+
+Nothing else needed re-gating, and that was measured rather than assumed: of
+every caught row in the three gate sweeps, the ones whose killer lives in a
+converted module are `tools/cpus.py` (2, from `test_cpus`), `tupferl/config.py`
+(27, from `test_config`), and those 23. **No row anywhere is killed by
+`test_packaging`, `test_paths`, `test_ci`, `test_release` or `test_errors`** --
+which is why the 975-row `tools/mutate.py` table did not have to be run again
+for a change to `test_packaging.py`, the thing that would otherwise have made
+this review expensive.
+
 ### The sweep OOM-killed the machine, and that is the first recorded instance
 
 `tools/mutate.py`'s table was run three times before it was believed, and the
