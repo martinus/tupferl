@@ -1202,6 +1202,27 @@ has been dropped.
   so `verdict.py` reads 30% while its classification is exercised end to end.
   Read the mutation numbers instead; that gap is precisely what
   `tools/reached.py` was written to repair.
+- **The sweep mutates the code that decides what to kill, and then runs it.**
+  `_lane` answers "which pids are this lane"; `_end_lane` `SIGKILL`s that
+  answer. A generated table contains `row.group == leader` becoming `!=`, which
+  selects every process the user owns *except* the lane — and the harness
+  killed all of them. A real desktop session died that way on 2026-08-30
+  (#91), and it was diagnosed as an OOM for hours because `killed by SIGKILL`
+  reads as memory pressure. It was `os.kill` in a loop.
+
+  **A guard on the walk cannot fix this, because the walk is what is being
+  mutated.** `_permitted` is therefore a *second* fact read somewhere else:
+  a process that started before this one cannot belong to a lane this one
+  started. It reads `/proc/<pid>/stat` field 22 directly rather than through
+  `_processes`, so one mutation cannot disable both — and when the table
+  reader *is* the thing mutated, the guard refuses nothing, which is the old
+  behaviour rather than a new hazard.
+
+  The general shape, and it is worth more than the instance: **a harness that
+  mutates itself must not route a destructive operation through mutable
+  code.** Ask of any new one — a delete, a kill, a push — what the second,
+  independent fact is that vetoes it.
+
 - **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
   and a process started that way passes the *ignored* disposition to every
   descendant — so `tests/test_merge.py`'s stub, which killed itself with SIGHUP

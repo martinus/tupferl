@@ -864,6 +864,123 @@ def _lane(leader: int, table: dict[int, Process]) -> set[int]:
     return found & set(table)
 
 
+def _born() -> dict[int, float]:
+    """When each visible process started, in a unit comparable within one boot.
+
+    **Read here rather than taken from `_processes`, and that is the whole
+    point.** This is the fact `_end_lane` checks its kill list against, so it
+    must not come from the same code that built the list: one mutation may
+    break the membership walk or this, and it must not be able to break both.
+    #91 is what happens without it -- `_lane`'s `row.group == leader` mutated to
+    `!=` selects every process the user owns *except* the lane, and `_end_lane`
+    sent `SIGKILL` to all of them.
+
+    Two readers for the reason `_processes` gives: `/proc` forks nothing, and
+    macOS has no `/proc` so there it is `ps` or nothing. The unit differs
+    between them -- clock ticks since boot against seconds since the epoch --
+    and neither is ever compared with the other, because a single run reads one
+    of them. Only the *ordering* is used.
+
+    An empty answer is the safe one: `_end_lane` then refuses nothing, which is
+    the behaviour that existed before this and is no worse than it. It is not a
+    licence to skip the check, which is why the caller says so out loud.
+    """
+    if Path("/proc/self/stat").exists():
+        return _born_from_proc()
+    return _born_from_ps()
+
+
+def _born_from_proc() -> dict[int, float]:
+    """`_born` where there is a `/proc`. Field 22 of `proc(5)`, in clock ticks."""
+    found: dict[int, float] = {}
+    for entry in Path("/proc").iterdir():
+        # survivor: branch -- equivalent, and for `_from_proc`'s reason: `/proc` holds no
+        #   all-digit entry that is not a process, the `stat` read below is wrapped in
+        #   `suppress(OSError)`, and the `int(entry.name)` that would raise on `cpuinfo` is inside
+        #   `suppress(ValueError)`. Taking the branch anyway costs a failed open and reaches the
+        #   same table.
+        if not entry.name.isdigit():
+            continue
+        try:
+            said = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # Past the comm field, which may itself hold spaces and brackets. The
+        # index arithmetic is `_from_proc`'s: counting from `pid`, `starttime`
+        # is the twenty-second field, hence twenty-two minus three.
+        fields = said.rpartition(") ")[2].split()
+        # survivor: boundary, branch -- guards a kernel format, not an input, exactly as
+        #   `_from_proc`'s own length check does: `/proc/<pid>/stat` has had at least 52 fields
+        #   since Linux 2.6 and this reads one of the first 22. Both the bound and the comparison
+        #   exist so a future kernel that shortened the line is skipped rather than raising
+        #   `IndexError` inside a kill path -- not a state any fixture on this machine can produce.
+        if len(fields) < 20:
+            continue
+        with suppress(ValueError):
+            found[int(entry.name)] = float(fields[19])
+    return found
+
+
+def _born_from_ps() -> dict[int, float]:
+    """`_born` where there is no `/proc`, which is macOS.
+
+    **`LC_ALL=C`, and it is the whole reason this works.** `lstart` prints the
+    day and month through the process locale, so on this machine real `ps` says
+    `Fr Aug 28 18:41:02 2026` -- German for Friday. `time.strptime` reads `%a`
+    and `%b` through *Python's* locale, which is C unless somebody called
+    `setlocale`, so it expects `Fri` and refuses the line. Every line. The
+    parser then returns nothing, `_born` returns nothing, and `_permitted`
+    refuses nothing -- the guard silently stands down on any machine whose
+    operator does not speak English.
+
+    Found by feeding real `ps` output to it rather than the fixture written for
+    it, which was English because the person writing it was.
+    """
+    listed = subprocess.run(
+        ["ps", "-eo", "pid=,lstart="],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return _parse_lstart(listed.stdout)
+
+
+def _parse_lstart(text: str) -> dict[int, float]:
+    """`ps -o pid=,lstart=` output: a pid and a full date per line.
+
+    `lstart` rather than `etime`, which is an *elapsed* string in
+    ``[[dd-]hh:]mm:ss`` and would have to be parsed into the same order by
+    subtracting it from now -- one more step, on the platform with no way to
+    check the result. `lstart` is an absolute instant and `strptime` reads it.
+
+    **Only under `LC_ALL=C`**, which `_born_from_ps` sets and which is not a
+    detail: the day and month are locale-dependent on the `ps` side and locale-C
+    on the `strptime` side, so without it every line is refused and the guard
+    goes quiet rather than red. See `_born_from_ps`.
+
+    Its own function so the parse can be driven from text on any platform,
+    exactly as `_parse_ps` is: the fallback must not be discovered to be broken
+    on the machine that has nothing else.
+    """
+    found: dict[int, float] = {}
+    for line in text.splitlines():
+        pid, _, when = line.strip().partition(" ")
+        # survivor: branch -- equivalent: everything the guard protects is already inside the
+        #   `suppress` below. Without it a header line reaches `strptime`, which refuses it, and a
+        #   non-numeric pid reaches `int`, which refuses it -- both `ValueError`, both swallowed,
+        #   same empty answer. The guard is here to say which lines are expected, not to prevent a
+        #   raise.
+        if not pid.isdigit():
+            continue
+        # `%c`-shaped and locale-dependent, so a line that will not parse is
+        # skipped rather than raising: an unreadable date must not stop a lane
+        # being killed, it must only stop this *vetoing* the kill.
+        with suppress(ValueError, OverflowError):
+            found[int(pid)] = time.mktime(time.strptime(when.strip(), "%a %b %d %H:%M:%S %Y"))
+    return found
+
+
 def _end_lane(leader: int, members: Iterable[int]) -> None:
     """Kill the group, then everything that left it.
 
@@ -873,20 +990,59 @@ def _end_lane(leader: int, members: Iterable[int]) -> None:
     kill the tree is no longer connected, so a walk done here would find less
     than a walk done a moment earlier.
     """
-    with suppress(OSError):
-        # survivor: drop-call -- tools/mutate.py:702 in _end_lane() -- the call to `os.killpg(...)`
-        #   never happens -- the teardown, and no test may drive it: it sends SIGKILL to a real
-        #   process group, and a fixture that got the group wrong would kill the suite running it.
-        #   Guarded instead by `_lane`, whose membership walk is what decides *which* group -- that
-        #   is where the defect found in #58 was, and it has tests.
-        os.killpg(leader, signal.SIGKILL)
-    for pid in members:
+    if leader != os.getpgrp():
+        with suppress(OSError):
+            # survivor: drop-call -- tools/mutate.py:702 in _end_lane() -- the call to
+            #   `os.killpg(...)` never happens -- the teardown, and no test may drive it: it sends
+            #   SIGKILL to a real process group, and a fixture that got the group wrong would kill
+            #   the suite running it. Guarded instead by `_lane`, whose membership walk decides
+            #   *which* group -- that is where the defect found in #58 was, and it has tests -- and
+            #   now by `_permitted` below, which does not trust that walk.
+            os.killpg(leader, signal.SIGKILL)
+    for pid in _permitted(members):
         with suppress(OSError):
             # survivor: drop-call -- tools/mutate.py:705 in _end_lane() -- the call to
             #   `os.kill(...)` never happens -- same as `mutate.py:702`: the escapee pass, sending
-            #   SIGKILL to processes outside the group. Untestable for the same reason and covered
-            #   by `_lane`'s tests, which decide the list.
+            #   SIGKILL to processes outside the group. Untestable for the same reason, and covered
+            #   by `_permitted`, which *is* testable because it decides rather than signals.
             os.kill(pid, signal.SIGKILL)
+
+
+def _permitted(members: Iterable[int]) -> list[int]:
+    """Those of `members` this process could actually have started.
+
+    **The guard #91 needed, and it is deliberately not a better `_lane`.** A
+    sweep mutates its own source and then runs it, so `_lane`'s membership walk
+    is itself under test: `row.group == leader` becomes `!=`, the walk returns
+    every process the user owns *except* the lane, and the loop above was
+    sending `SIGKILL` to all of it. That is not a bug in `_lane` -- it is the
+    harness doing exactly what a mutation asked. It cost a desktop session.
+
+    So the fix cannot live in the walk. It has to be a *second* fact, read
+    somewhere else, that one mutation cannot break at the same time. This one:
+    **a process that started before this one did cannot belong to a lane this
+    one started.** Every process killed in #91 predated the sweep by hours.
+
+    `_born` reads it straight from `/proc` (or `ps`) rather than through
+    `_processes`, so mutating the table reader does not reach it either -- and
+    when that reader is mutated to return nothing, this refuses nothing, which
+    leaves the old behaviour rather than a new hazard.
+
+    Silent about what it drops, on purpose. A lane is killed on a timeout or a
+    ceiling breach, both of which already print; a veto is either routine (a pid
+    reused between the walk and here) or a mutation under test, and neither
+    wants a line in the middle of somebody else's sweep.
+    """
+    born = _born()
+    mine = born.get(os.getpid())
+    if mine is None:
+        # Nothing to compare against -- an unreadable `/proc/self`, or a `ps`
+        # that did not run. Refusing everything would leave a fork storm alive;
+        # refusing nothing is what happened before this existed.
+        return list(members)
+    # `>=` and not `>`: a lane started in the same clock tick as this process is
+    # ours. The kernel's tick is 10ms and a `Popen` is well inside one.
+    return [pid for pid in members if pid != os.getpid() and born.get(pid, mine) >= mine]
 
 
 class _Lanes:
