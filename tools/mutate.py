@@ -4244,6 +4244,26 @@ def _baseline_is_green(table: list[Mutation], args: argparse.Namespace) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Line-buffered, once, rather than `flush=True` at every print -- and the
+    # difference is not style. A stream that is not a terminal is *block*
+    # buffered, and every documented way of running a sweep redirects to a log,
+    # so a progress line that is not flushed arrives in 8 KiB steps of about a
+    # hundred rows. `_attempt` learned that and passes `flush=True`; the header
+    # prints did not, and a sweep launched detached then sat with an empty log
+    # for its first six minutes -- which is exactly the ambiguity
+    # `tools/watch.py` exists to remove, since silence there reads identically
+    # to progress.
+    #
+    # Remembering `flush=True` at each call site is what already failed, so this
+    # is the depth the fix belongs at. The cost is one write syscall per line
+    # against sweeps measured in minutes.
+    #
+    # `hasattr` because `main` is called under a `StringIO` capture by a dozen
+    # tests, and `io.StringIO` has no `reconfigure`. Asked rather than
+    # suppressed: a missing attribute here is a stream that cannot do this, not
+    # an error to swallow quietly.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(
         prog="python -m tools.mutate",
         description="Run a table of mutations -- from a spec file, or from a diff.",
