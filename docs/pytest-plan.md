@@ -2059,6 +2059,38 @@ Verified against `main`'s five files that the committed tool reproduces what
 the throwaway one did: 499 `assert` statements and 11 `assertRaises` correctly
 refused.
 
+### Gate
+
+Preflight: **1861 tests, 0 failures, 0 skipped.**
+
+`tupferl/` has not been touched since 2026-08-29, so B2's whole-package report
+is an exact row-for-row baseline. **1309 rows in 273s at 38 lanes:**
+
+| | B2 baseline | B3 |
+|---|---:|---:|
+| caught | 1272 | **1272** |
+| survived | 26 | **26** |
+| `BROKE` | 0 | **0** |
+| `TIMEOUT` | 0 | 0 |
+
+**Zero newly-surviving, zero newly-`BROKE`**, and the survivor *set* is
+identical row for row rather than merely the same size. All 26 are excused by a
+tag beside the code.
+
+**`tools/mutate.py` was not swept, and the reason is stronger than B2's.** Its
+generated selection is `tests.test_mutate tests.test_packaging tests.test_profiles
+tests.test_support` -- **no B3 module is in it at all**. The two rows the #96
+table records as "killed by a B3 module" are caught by the harness's *outward
+walk*, not by their selection, so a B3 change cannot reach them by the route the
+gate is about. Both killers still collect under identical nodeids and pass.
+
+The residual risk is stated rather than waved away: the walk could in principle
+turn `caught` into `BROKE` if a converted test started *hanging* under a mutant.
+B3 added no new unbounded wait -- `support.deadline`, `PATIENCE` and `PROMPTED`
+are untouched, and the pty fixtures kept their bounds -- so there is no mechanism
+for it, but that is an argument rather than a measurement, and B6 sweeps that
+whole table anyway.
+
 ### Four mistakes the rewriting made, all found by running the tests
 
 Recorded because each is a shape the next cluster will meet:
