@@ -443,6 +443,22 @@ away.** Collected instances, all real:
   reported "nothing noticed this" — flattering the tests, which is the direction
   every bug in that class has erred.
 - A required CI check that was skipped rather than run, and counted as satisfied.
+- **Asking for a run *by revision* is necessary and not sufficient: zero runs
+  registered reads as zero runs pending.** The entry below says to ask
+  `…/actions/runs?head_sha=$(git rev-parse HEAD)` rather than for the pull
+  request's check list, and that is right — but a poll loop written against it
+  broke the same way. `until [ "$(… | jq '[.workflow_runs[].status] |
+  map(select(. != "completed")) | length')" = "0" ]` is satisfied by an **empty
+  list**, so it fell straight through and reported success having read nothing;
+  the reporting line after it then printed no jobs, and the whole thing exited
+  0. Wait for `.workflow_runs | length` to be non-zero **first**, and treat "no
+  runs" as "keep waiting", never as "nothing is pending".
+
+  It cost nothing here only because the answer was already "there is no run":
+  `ci.yml` triggers on `push` for `main` alone, plus `pull_request`, so pushing
+  a branch with no pull request open starts nothing at all. **CI begins when the
+  PR opens**, and a branch pushed ahead of time buys no overlap.
+
 - `gh pr checks` reporting the **previous** commit's completed run. A poll loop
   that broke when "every check is non-pending" saw a full set of passes seconds
   after a push, before GitHub had registered the new run at all — so a green was
@@ -498,8 +514,12 @@ does not.
 
 `python -m pytest -q` runs the same tests serially, and is the one to reach for
 when a parallel run's output is confusing -- it is what a batch runs, without
-the batching. `python -m unittest discover -s . -t . -p 'test_*.py'` still works
-too, for as long as every test is a `TestCase`, which Phase B ends.
+the batching. **It is now the only serial fallback.** `python -m unittest
+discover -s . -t . -p 'test_*.py'` used to work too, and stopped with Phase B's
+first cluster: it silently loads *nothing* from a pytest-native module. Measured
+across B1 -- 1614 tests before, **1499 after, `OK` both times**, exactly the 115
+in the eight converted modules gone with nothing said. That is the flattering
+failure §8 collects, so reach for `pytest -q`.
 
 ### Layout
 
@@ -514,7 +534,7 @@ too, for as long as every test is a `TestCase`, which Phase B ends.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | still written as stdlib `unittest` `TestCase`s, but **run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0, A and A2 are done, Phase B converts the modules). **A pytest-native module is safe to write now** -- `tools/run_tests.py` collects with pytest as of A2, so a plain `def test_...` is discovered, packed by its module, run and accounted for. What is *not* yet done is the conversion itself: a module converts whole, by hand, one cluster per PR, because a half-converted one is the worst state |
+| `tests/` | **being converted from stdlib `unittest` `TestCase`s to pytest-native, and run by pytest either way**: `tools/verdict.py` classifies pytest reports, so the harness no longer cares how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. **Being converted to pytest** ([`docs/pytest-plan.md`](docs/pytest-plan.md); Phases 0, A, A2 and Phase B's step 1a and cluster B1 are done -- B1 converted `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release` and `test_paths`; the other 25 modules are still `TestCase`s). **A pytest-native module is safe to write now** -- `tools/run_tests.py` collects with pytest as of A2, so a plain `def test_...` is discovered, packed by its module, run and accounted for. What is *not* yet done is the conversion itself: a module converts whole, by hand, one cluster per PR, because a half-converted one is the worst state |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the pytest classifier; `verdict_unittest.py` + `test_verdict_unittest.py` are the one it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` until Phase C |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on |
@@ -568,6 +588,14 @@ Five things are not where a newcomer would guess, all on purpose:
   drives a real sync** except `tests/test_overlays.py`, which asserts the two
   differ before it asserts anything else. The general shape is §2's "two
   symmetric inputs"; this is the spelling it takes here.
+- **A test wanting a throwaway directory uses `tests/support.py`'s `tempdir`,
+  never pytest's `tmp_path`.** `tmp_path` keeps the last three numbered roots
+  per user under `/tmp/pytest-of-<user>`, and a sweep runs thousands of probes
+  as separate processes racing over that numbering. `support.tempdir` removes
+  its own tree in a `finally` and names what survived if the delete fails. This
+  is written here rather than only beside `tests/test_config.py`'s `box`
+  fixture, because it binds every module Phase B has yet to convert and nobody
+  writing one of those will read that docstring first.
 - **Every `raise TupferlError` is checked by a test, not by habit.**
   `tests/test_errors.py` reads them all out with `ast` and asserts plan §5's
   shape: one semicolon (what happened; what to do next), one full stop, one
@@ -739,7 +767,7 @@ measurement pins it.
 
 ### Gotchas
 
-Thirty-five of them, and each is here because it cost somebody an afternoon.
+Forty-eight of them, and each is here because it cost somebody an afternoon.
 Grouped rather than run together: as one flat list of 461 lines this was a
 section a reader scanned past. The entries themselves are unchanged and none
 has been dropped.
@@ -1034,6 +1062,25 @@ has been dropped.
     about. A value that is neither is refused rather than defaulted: a typo that
     silently fell back would report the two as agreeing when only one ever ran.
 
+    **What it can still grade shrinks with every Phase B cluster.** That layer
+    runs `unittest`'s own loader, which refuses a pytest-native module with
+    `calling <class ...> returned <object>, not a test` -- so every row whose selection names a
+    converted module comes back `broke` under it. As of B1 that is
+    `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`,
+    `test_ci`, `test_release` and `test_paths`. The one module that stays
+    `TestCase`-style to the end is `tests/test_verdict_unittest.py`, which dies
+    with its subject in Phase C -- so `tests/test_mutate.py`'s `EITHER_LAYER`
+    row is pointed at it, and is the row to copy when something needs grading
+    by both.
+
+    **It is loud in the sense that the row is not `caught`, and quiet in the
+    sense that it reads like a harness fault.** A `broke` row is never
+    `caught`, so it appears in neither of the two numbers a reader looks at --
+    the entry above about `BROKE` applies here exactly. Somebody diagnosing
+    under this flag after a cluster lands gets a wall of them and no sentence
+    saying why. Recognising the loader's `not a test` `TypeError` and saying
+    so in the detail is one line in that layer, and it is not written yet.
+
 - **`unittest` loads a module's classes alphabetically; pytest collects them in
   definition order.** So the conversion changed which test reaches a mutated
   line *first*, and where one test hangs under a mutation and a sibling fails
@@ -1273,6 +1320,35 @@ has been dropped.
   holds everywhere and add the rest under a plain `if`, labelled at the
   assertion. §2 asks for the label either way; this is the spelling that keeps
   the leg green.
+- **A test that greps a config file must read it with the comments stripped,
+  and this has now cost three tests in two files.** A workflow that explains
+  itself quotes the setting it is explaining, so `"if: always()" in gate_block`
+  is satisfied by the comment `# - \`if: always()\`, because a job whose
+  dependency failed is *skipped*`. Measured: deleting the real `if: always()`
+  line from `ci.yml` left **all 33 tests in `tests/test_ci.py` green**, and the
+  test that could not fail was the one guarding the single required status
+  check.
+
+  The other two are already recorded beside their own code —
+  `test_release.py`'s `settings()` ("the first version of that test failed on
+  its own explanation") and `test_ci.py`'s `mutation.yml` class ("two of four
+  hand-made edits survived"). Three instances is a rule: **strip once, in the
+  parser, and give the stripping its own test with both halves** — a setting
+  that is still there, and a phrase that is only ever prose. Strip too much and
+  everything passes by finding nothing; strip too little and it passes by
+  finding a comment.
+
+  The stripping rule has to be exact rather than approximate, and it is not the
+  same rule in both files: `ci.yml` and `release.yml` have no trailing comments,
+  so whole comment *lines* is exact there, while `mutation.yml`'s class cuts at
+  the first `#` and its comment says why that is exact for it. Check the file
+  before copying either.
+
+  **The way to find one of these is to perturb the file and watch**, which is
+  §2's revert-and-verify with the "fix" being a setting: copy the tree aside,
+  delete the setting, and confirm the test goes red. Seven such probes over
+  `ci.yml` found this one and cleared the other six.
+
 - **A fingerprint of "nothing was written" needs the file's bytes in it.**
   Path, size and mode is the obvious spelling and it cannot fail here: the edit
   a sync test makes is usually one line to upper case, so the file before and
@@ -1409,10 +1485,24 @@ read this file:
     measured.** `_report_headroom` samples the heaviest *single* lane process;
     nothing samples the *sum* of lane RSS at one instant, which is what the host
     feels. "One lane reached 92% of its ceiling" and "the machine was near its
-    limit" are different claims and only the first is in evidence. 150% is
-    calibrated against "126% has never been killed" and no more — **if a sweep
-    is ever OOM-killed, this is the first thing to look at**, and the sampler is
-    the thing to write before arguing about the constant.
+    limit" are different claims and only the first is in evidence.
+
+    **A sweep has now been OOM-killed, so this is no longer hypothetical
+    (#90).** `--all --only tools/mutate.py` at 28 lanes summed its ceilings to
+    79 GiB on a 62 GiB machine and the host's OOM killer took the developer's
+    desktop session; the same table at 40 lanes returned 12 `BROKE` rows, all
+    `killed by SIGKILL`, with the closing line reporting the heaviest lane at
+    **100%** of its ceiling. `broke` fell 12 → 2 → 0 as lanes came down, on
+    identical rows — so a `BROKE` row on a memory-starved sweep says nothing
+    about the line it appears to guard. **Read the headroom line before the
+    verdicts**: at 100% those two facts are one fact, and diagnosing the rows
+    without it buys a permanent guard against something that never happened.
+
+    That table is the exception rather than the rule, and mechanically so: its
+    rows run *nested* harnesses, and `slowest_first` dispatches a file's dearest
+    rows adjacently — the same correlation woswoar#232 measured. Pass
+    `--workers` by hand for it. The sampler is still the thing to write before
+    arguing about the constant.
 
   The counter-argument, which is measured and which `slowest_first` makes worse:
   woswoar#232 was not lanes drifting up independently, it was *three of four

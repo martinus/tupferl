@@ -1,14 +1,15 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-with them; no module has been converted yet.
+and **cluster B1** with them. Eight of the 33 modules are pytest-native; 25 are
+still `TestCase`s.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did
 differently from what it says below is in
-[Phase A as built](#phase-a-as-built--2026-08-30) and
-[Phase A2 as built](#phase-a2-as-built--2026-08-30) — read all three before the
-next phase.
+[Phase A as built](#phase-a-as-built--2026-08-30),
+[Phase A2 as built](#phase-a2-as-built--2026-08-30) and
+[B1 as built](#b1-as-built--2026-08-30) — read all four before the next phase.
 
 **A pytest-native test module is safe to write as of A2**, which was the whole
 point of doing it before Phase B: `tools/run_tests.py` collects with pytest now,
@@ -1328,9 +1329,9 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 
 | PR | modules | machinery converted | notes |
 |---|---|---|---|
-| B1 | `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
+| B1 | **Done** — see [B1 as built](#b1-as-built--2026-08-30). `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) — **not done, deliberately**; see B1 as built | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
 | B2 | `test_config_properties`, `test_merge_properties`, `test_sync_properties`, `test_profiles` | none new | Hypothesis-native. Delete the `__module__`/`__name__`/`__qualname__` dunder hack in `test_sync_properties.py` (it existed for unittest id round-trip in sharding; pytest nodeids come from collection) — keep the `X = Machine.TestCase` assignments, which are the pytest-idiomatic spelling. `profiles.py` untouched. The pyproject mypy-override list stays valid (module names unchanged). |
-| B3 | `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
+| B3 | `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture); `requires_git` → `pytest.mark.skipif` | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
 | B4a | `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture (copytree of the cached template + remote-url repair; the `template()`/`two_machines()` functions themselves unchanged) | the overlay both-copies rule and `TestTheSnapshotIsWrittenLast` transfer as-is. |
 | B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
@@ -1436,6 +1437,227 @@ have seen it.
 Plus two in `tests/test_mutants.py` for the `check` guard, and a sweep of
 `tupferl/merge.py` — 31 rows, 30 caught, 1 survivor already tagged, baseline
 green — to drive the shard path end to end.
+
+## B1 as built — 2026-08-30
+
+Eight modules, 115 collected items before and 237 after -- the growth is
+`subTest` loops becoming `parametrize`, which is a rename of existing cases and
+not new coverage. Nothing disappeared; the mapping is in the PR.
+
+### `tests/conftest.py` was not created, and that is the divergence
+
+The cluster table above says B1 creates it "initially near-empty". It does not,
+because after converting all eight modules **no *fixture* in them is shared**.
+That is narrower than "nothing is shared", and the distinction matters: what B1
+did share it shared through `tests/support.py` and CLAUDE.md, which is where
+those belong. The three fixtures B1 wrote are each used by exactly one file: `only` (an
+`os.environ` holding precisely what a test names) in `test_paths.py`, `box` (a
+throwaway directory) in `test_config.py`, and `merged_under` (a real
+`~/.gitconfig` naming a conflict style) in `test_merge.py`.
+
+An empty `conftest.py` would make a claim -- *shared fixtures live here* -- that
+nothing yet backs, and §0 is about exactly that kind of sentence. B3 is the
+first cluster with machinery two modules genuinely share (`SandboxCase` →
+`sandbox`), so the file arrives in the PR that justifies it, and the table above
+now says so.
+
+**Two things B1 shared as prose rather than as code, and both are deliberate.**
+The comment-stripping rule now has two spellings in two files, and the
+"parametrize over a computed list needs a non-empty companion" invariant has
+four. Both are named as follow-ups below rather than extracted here -- see
+"Declined in the review, and why".
+
+### Declined in the review, and why
+
+The `/simplify` pass raised two structural findings that were not applied, and
+CLAUDE.md §3 asks that a declined finding be argued rather than dropped.
+
+- **A `support.over(argnames, cases)` wrapper refusing an empty case list.**
+  The invariant is real and is currently written four ways (`test_ci`,
+  `test_release`, `test_errors`, `test_config` each guard it differently), and
+  25 modules follow. But it is a *new shared abstraction* introduced in a
+  conversion PR, with only one cluster's worth of evidence about what shape it
+  wants. **B2 is the right home**, with two clusters to validate it against;
+  after B3 the retrofit becomes its own PR, so it should not slip further.
+- **Extracting `settings()` into one shared helper.** `tests/test_ci.py` and
+  `tests/test_release.py` now hold byte-identical strippers. Extracting one
+  invites extracting `jobs()` too -- and those genuinely are two different
+  parsers (a line accumulator against `re.finditer`) for one YAML shape, which
+  needs its own perturbation evidence over both workflows. That is a PR, not a
+  paragraph. What *was* fixed here is the half that made a test unfailable:
+  `test_release.jobs()` now strips in the parser rather than at four call
+  sites, and has the both-halves test it never had.
+
+### The `unittest` verdict layer lost its footing, loudly, and one test moved
+
+`TUPFERL_MUTATE_VERDICT=unittest` drives `unittest`'s own loader, and that
+loader cannot take a pytest-native module back: a plain `class TestX:` is found
+by name and refused with
+
+    TypeError: calling <class 'tests.test_config.TestRejectingAnUnknownKey'>
+    returned <tests.test_config.TestRejectingAnUnknownKey object ...>, not a test
+
+So every row whose *selection* names a converted module now answers `broke`
+under that layer. `tests/test_mutate.py`'s
+`TestWhichVerdictLayerGradesAProbe::test_either_layer_can_actually_grade_a_row`
+was the one test that noticed, and it was right to: its row,
+`UNKNOWN_KEY_GUARD`, selects `tests.test_config`.
+
+**The fix was to move the row, not to weaken the test.** `EITHER_LAYER` mutates
+`tools/verdict_unittest.py` and selects
+`tests.test_verdict_unittest.TestATestThatNoticed` -- the one module this plan
+keeps `TestCase`-style to the end, because it dies with its subject in Phase C.
+So the row lives and dies with the layer it exists to exercise, and it is stable
+through B2–B6. Measured: **0.35s per layer, against `UNKNOWN_KEY_GUARD`'s
+0.66s**, so the move bought headroom rather than spending it.
+
+Two candidate rows were timed before this one was picked; the other, mutating
+`_carrier`'s "did not finish within" message, is also caught by both layers but
+costs **3.4s per layer**, because its killer is a deliberately hanging test.
+That is the kind of number the five "where to arm it" lessons are about, and the
+cheaper row was chosen for it.
+
+### `python -m unittest discover` is no longer a fallback, measured
+
+It ran **1614 tests before this cluster and 1499 after, reporting `OK` both
+times** -- exactly the 115 in the eight converted modules gone, with nothing
+said. Pointed at one converted module alone it prints `Ran 0 tests` and
+`NO TESTS RAN`. CLAUDE.md's "Build & test" line now says `python -m pytest -q`
+and carries those numbers.
+
+### What the conversion did, in one list
+
+- `unittest.TestCase` bases dropped; the classes stay, because their docstrings
+  are where this project keeps its arguments and pytest collects a plain
+  `Test*` class the same way.
+- `self.assertX(...)` → plain `assert`, and `assertRaises(...) as caught` →
+  `pytest.raises(...) as caught` with `caught.exception` becoming
+  `caught.value`.
+- Every `subTest` loop → `pytest.mark.parametrize`. Where the case list is
+  *computed* -- `test_errors`' ast-walk, `test_ci`'s and `test_release`'s hand
+  parse of a workflow -- it is computed once at module level and the companion
+  "the scan found them" test is restated to say what it now also guards: an
+  empty list collects **no cases**, so those tests would not fail, they would
+  cease to exist.
+- `setUp` + `addCleanup` → yield-fixtures. Where the old base ran a helper the
+  test called (`test_paths`' `Environment.only`, `test_merge`'s
+  `merged_under`), the fixture yields a *callable* and holds an
+  `contextlib.ExitStack` that unwinds at teardown.
+- Three dead `if __name__ == "__main__": unittest.main()` blocks deleted,
+  including the one sitting **mid-file** in `test_packaging.py` with a class
+  after it.
+- **No `skipUnless`/`skipIf` at all.** The contract above lists "5 sites →
+  `pytest.mark.skipif`"; none of them is in this cluster -- they are in
+  `test_doctor`, `test_verdict`, `test_run_tests`, `test_mutate` and
+  `support.requires_git`, so B3, B5 and B6 inherit that item and the
+  `--no-skips` check with it. `test_cpus` deliberately has none: its
+  Linux-only half is a plain `if` with a label, because the `macos` leg turned
+  red the one time it was a skip.
+- `test_config`'s throwaway directory goes through `support.tempdir` rather than
+  pytest's `tmp_path`, and the fixture says why: `tmp_path` keeps three numbered
+  roots per user under `/tmp/pytest-of-<user>`, and a sweep races thousands of
+  probe processes over that numbering.
+
+### The review found a test that could not fail, and it was pre-existing
+
+`test_ci.py`'s `test_it_runs_even_when_a_dependency_failed` asserted
+`"if: always()" in gate_block` against the **raw** file, and the gate explains
+itself in a comment that quotes the setting. Measured: deleting the real
+`if: always()` line left all 33 tests in that file green -- a test that could not
+fail, guarding the one required status check.
+
+Found by perturbing a copy of the tree rather than by reading: seven settings
+deleted one at a time from `ci.yml`, six of which went correctly red. `jobs()`
+now parses `settings(workflow())`, the same comment-stripping `test_release.py`
+already had, and `test_the_comment_stripping_leaves_the_settings_alone` states
+both halves of the precondition. All seven probes now fail; the control is
+green. CLAUDE.md has the general rule.
+
+### Gate
+
+Preflight green -- 1737 tests, 0 failures.
+
+The mutation check ran `--all --only <src>` over the **13 source files whose
+sweep selection includes one of the eight converted modules**, computed from
+`mutants.targets_for`/`importers`. Three have no mutable rows
+(`tools/__init__.py`, `tupferl/__init__.py`, `tupferl/errors.py`);
+`tests.test_ci` and `tests.test_release` are reached by no source file at all,
+because what they test is YAML.
+
+**B1 changes no source, so the comparison against the last whole-tree sweep is
+exact for every file that sweep's commit shares with this branch.**
+
+| files | rows | result |
+|---|---:|---|
+| `conflicts.py`, `copies.py`, `gitrepo.py` | 409 | **0 newly not-caught**; one improvement, `copies.py:104` BROKE -> caught; 8 survivors, all tag-excused |
+| `config.py`, `manifest.py`, `merge.py`, `paths.py`, `__main__.py`, `tools/cpus.py` | 230 | 0 newly not-caught |
+| `tools/mutate.py` | 975 | 2 groups where caught fell, both explained below; broke 9 -> 2, timeout 8 -> 6, caught 744 -> 755 |
+
+Baseline green on every run -- checked for the `BASELINE NOT GREEN` line, not
+inferred from the verdicts.
+
+**The two `tools/mutate.py` groups, and neither is B1's:**
+
+- `connector: looked.outcome == "survived" or red` came back `broke` with
+  `killed by SIGKILL`. A memory artefact -- see below.
+- `drop-call: self._ceilings.pop(group, None) -> pass` came back `survived`
+  where the baseline caught it. A/B'd the way step 1a's finding was: the
+  mutation applied to a `main` worktree **and** to this branch, both run against
+  the row's own generated selection. **426 passed on both.** So it survives on
+  `main` too, and moved somewhere between the baseline sweep's commit
+  (`b95db93`) and `main` -- step 1a and A2 rewrote that file heavily. It already
+  carries a `# survivor: drop-call -- TODO` tag.
+
+Nine further not-caught groups have **no baseline row at all**: they are
+`_collected`, `_loadable`'s `_layer()` branch and `_report_headroom`, i.e. code
+Phase A and step 1a added after the baseline sweep ran. They are that work's
+debt, not this cluster's.
+
+### The `/simplify` re-gate
+
+The review changed `tests/test_merge.py` behaviourally, and that module is the
+killer for 15 caught rows of `tupferl/gitrepo.py` and 8 of `tupferl/merge.py`.
+Those two files were re-swept at 12 lanes: **156 rows, 150 caught, 6 survivors
+all tag-excused, 0 BROKE, 0 TIMEOUT -- byte-identical to the baseline.**
+
+Nothing else needed re-gating, and that was measured rather than assumed: of
+every caught row in the three gate sweeps, the ones whose killer lives in a
+converted module are `tools/cpus.py` (2, from `test_cpus`), `tupferl/config.py`
+(27, from `test_config`), and those 23. **No row anywhere is killed by
+`test_packaging`, `test_paths`, `test_ci`, `test_release` or `test_errors`** --
+which is why the 975-row `tools/mutate.py` table did not have to be run again
+for a change to `test_packaging.py`, the thing that would otherwise have made
+this review expensive.
+
+### The sweep OOM-killed the machine, and that is the first recorded instance
+
+`tools/mutate.py`'s table was run three times before it was believed, and the
+reason is CLAUDE.md's `_COMMIT` entry coming true:
+
+| lanes | ceiling each | allowance | result |
+|---|---|---|---|
+| 40 | 2065 MiB | 83 GiB | 12 BROKE, all `SIGKILL`; closing line said the heaviest lane held **100% of its ceiling** |
+| 20 | 4096 MiB | 82 GiB | clean where it ran; heaviest lane 14% |
+| 28 | 2808 MiB | 79 GiB | **took the desktop session with it** |
+| 6 | -- | -- | clean; finished the remainder |
+
+The machine has 62 GiB. `_COMMIT` is 150%, so every one of those allowances is
+over it by design -- the design being that lane peaks do not coincide. On this
+table they do: it runs *nested* harnesses, and `slowest_first` dispatches its
+expensive rows adjacently, which is exactly the correlation woswoar#232
+measured and this file's "Measured, and kept" section already records.
+
+CLAUDE.md said what to do about it before it happened -- "if a sweep is ever
+OOM-killed, this is the first thing to look at, and the sampler is the thing to
+write before arguing about the constant" -- so the finding is that the entry was
+right, and the sampler (sum of lane RSS at one instant, which is what the host
+feels) is now owed. Nothing about it is changed here; a lane count was chosen
+by hand instead.
+
+**Reading the ceiling line is not optional.** The first pass printed `heaviest
+lane process held 2065 MiB of its 2065 MiB ceiling (100%)` and 12 `BROKE` rows,
+and the two facts are one fact. Diagnosing the rows without reading the line
+would have produced a guard against a conversion regression that never happened.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 

@@ -22,13 +22,12 @@ from __future__ import annotations
 
 import os
 import types
-import unittest
 from unittest import mock
 
 from tools import cpus
 
 
-class TestHowManyCpusAreUsable(unittest.TestCase):
+class TestHowManyCpusAreUsable:
     def test_on_this_machine_it_answers_a_share_of_the_host(self) -> None:
         """**Independently derived, and the first version of this was not.**
 
@@ -47,15 +46,15 @@ class TestHowManyCpusAreUsable(unittest.TestCase):
         Where the kernel will say, the stronger claim: `sched_getaffinity` is
         the number `process_cpu_count` exists to agree with, both answering "how
         many CPUs may *this process* use". **Asserted conditionally rather than
-        behind `skipUnless`**, because the `macos` leg runs `--no-skips` and a
+        behind a skip mark**, because the `macos` leg runs `--no-skips` and a
         skip there is a failure -- which is how the first version of this test
         turned that leg red. The half that can only run on Linux is labelled
         here, as §2 asks, rather than being made to look like a skip.
         """
-        self.assertGreaterEqual(cpus.usable_cpus(), 1)
-        self.assertLessEqual(cpus.usable_cpus(), os.cpu_count() or 1)
+        assert cpus.usable_cpus() >= 1
+        assert cpus.usable_cpus() <= (os.cpu_count() or 1)
         if hasattr(os, "sched_getaffinity"):  # Linux; macOS has no such call
-            self.assertEqual(len(os.sched_getaffinity(0)), cpus.usable_cpus())
+            assert len(os.sched_getaffinity(0)) == cpus.usable_cpus()
 
     def test_an_interpreter_that_will_not_say_falls_back(self) -> None:
         """The other half, and the branch the `or` exists for. Deliberately not
@@ -63,7 +62,7 @@ class TestHowManyCpusAreUsable(unittest.TestCase):
         large one is merely slower."""
         stand_in = types.SimpleNamespace(process_cpu_count=lambda: None, cpu_count=lambda: None)
         with mock.patch("tools.cpus.os", stand_in):
-            self.assertEqual(4, cpus.usable_cpus())
+            assert cpus.usable_cpus() == 4
 
     def test_it_prefers_the_count_that_knows_about_affinity(self) -> None:
         """`os.cpu_count()` ignores an affinity mask and a container's quota, so
@@ -74,14 +73,10 @@ class TestHowManyCpusAreUsable(unittest.TestCase):
         """
         stand_in = types.SimpleNamespace(process_cpu_count=lambda: 2, cpu_count=lambda: 16)
         with mock.patch("tools.cpus.os", stand_in):
-            self.assertEqual(2, cpus.usable_cpus())
+            assert cpus.usable_cpus() == 2
 
     def test_without_that_name_it_uses_what_there_is(self) -> None:
         """The 3.10 path: the stand-in has no `process_cpu_count` at all."""
         stand_in = types.SimpleNamespace(cpu_count=lambda: 7)
         with mock.patch("tools.cpus.os", stand_in):
-            self.assertEqual(7, cpus.usable_cpus())
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert cpus.usable_cpus() == 7

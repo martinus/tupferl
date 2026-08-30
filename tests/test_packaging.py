@@ -24,8 +24,10 @@ from __future__ import annotations
 import ast
 import re
 import sys
-import unittest
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from tools import mutate
 from tupferl import config
@@ -78,76 +80,99 @@ def imported(where: Path) -> dict[str, set[str]]:
     return found
 
 
-class TestNothingButTheStandardLibrary(unittest.TestCase):
-    def setUp(self) -> None:
-        self.imports = imported(ROOT / "tupferl")
+def pyproject() -> dict[str, Any]:
+    """`pyproject.toml`, read through the package's own shim.
 
-    def test_the_package_imports_nothing_third_party_but_the_backport(self) -> None:
+    `config.toml()` rather than a direct `tomllib` import, so this reads TOML
+    the way tupferl does -- including on the 3.10 leg, where the module under
+    discussion is the one doing the reading.
+    """
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        loaded: dict[str, Any] = config.toml().load(handle)
+    return loaded
+
+
+@pytest.fixture(scope="module")
+def imports() -> dict[str, set[str]]:
+    """What the package reaches for, by name.
+
+    Module-scoped, and safe to be: `imported` is an `ast.parse` of every
+    `tupferl/*.py` -- measured at 16.4ms -- and it ran four times per pass of
+    this file. Every consumer only reads the dict, and the sandbox's sources
+    cannot change during a probe, so one walk serves all four. Measured saving
+    ~49ms of this module's ~150ms."""
+    return imported(ROOT / "tupferl")
+
+
+@pytest.fixture
+def project() -> dict[str, Any]:
+    """`pyproject.toml`'s `[project]` table."""
+    table: dict[str, Any] = pyproject()["project"]
+    return table
+
+
+def declared(project: dict[str, Any]) -> list[str]:
+    """The declared requirement names, without their markers or versions."""
+    return [re.split(r"[<>=!;\s\[]", one, maxsplit=1)[0] for one in project["dependencies"]]
+
+
+class TestNothingButTheStandardLibrary:
+    def test_the_package_imports_nothing_third_party_but_the_backport(
+        self, imports: dict[str, set[str]]
+    ) -> None:
         """The whole claim, in one assertion. `sys.stdlib_module_names` is the
         interpreter's own list, so this cannot drift from what "standard
         library" means the way a hand-kept set would."""
         outside = {
             name: sorted(files)
-            for name, files in self.imports.items()
+            for name, files in imports.items()
             if name not in sys.stdlib_module_names and name not in ALSO_STDLIB and name != "tupferl"
         }
-        self.assertEqual({BACKPORT: ["config.py"]}, outside)
+        assert outside == {BACKPORT: ["config.py"]}
 
-    def test_the_fixture_can_see_imports_at_all(self) -> None:
+    def test_the_fixture_can_see_imports_at_all(self, imports: dict[str, set[str]]) -> None:
         """The precondition. A walk that found nothing would satisfy the
         assertion above by finding no third-party imports either -- which is
-        `assertEqual` against an empty set, silently."""
-        self.assertIn("pathlib", self.imports)
-        self.assertIn("subprocess", self.imports)
-        self.assertGreater(len(self.imports), 10, self.imports)
+        an equality against an empty set, silently."""
+        assert "pathlib" in imports
+        assert "subprocess" in imports
+        assert len(imports) > 10, imports
 
-    def test_the_one_exception_is_confined_to_the_toml_shim(self) -> None:
+    def test_the_one_exception_is_confined_to_the_toml_shim(
+        self, imports: dict[str, set[str]]
+    ) -> None:
         """`tomli` is allowed because 3.10 has no `tomllib`, and nowhere else
         has that excuse. A second module importing it would mean the shim had
         been copied rather than called."""
-        self.assertEqual({"config.py"}, self.imports[BACKPORT])
+        assert imports[BACKPORT] == {"config.py"}
 
 
-class TestTheDeclarationAgreesWithTheImports(unittest.TestCase):
+class TestTheDeclarationAgreesWithTheImports:
     """`pyproject.toml` against what the package actually reaches for."""
 
-    def setUp(self) -> None:
-        # The package's own shim, so this reads TOML the way tupferl does --
-        # including on 3.10, where the module under discussion is the one doing
-        # the reading.
-        with (ROOT / "pyproject.toml").open("rb") as handle:
-            self.project = config.toml().load(handle)["project"]
+    def test_exactly_one_runtime_dependency_is_declared(self, project: dict[str, Any]) -> None:
+        assert declared(project) == [BACKPORT]
 
-    def names(self) -> list[str]:
-        """The declared requirement names, without their markers or versions."""
-        return [
-            re.split(r"[<>=!;\s\[]", one, maxsplit=1)[0] for one in self.project["dependencies"]
-        ]
-
-    def test_exactly_one_runtime_dependency_is_declared(self) -> None:
-        self.assertEqual([BACKPORT], self.names())
-
-    def test_it_is_declared_only_below_the_version_that_has_it(self) -> None:
+    def test_it_is_declared_only_below_the_version_that_has_it(
+        self, project: dict[str, Any]
+    ) -> None:
         """The marker is the half that makes this a *disappearing* dependency:
         without it, 3.11 and 3.12 would install a backport of a module they
         already ship."""
-        (declared,) = self.project["dependencies"]
-        self.assertIn(f"python_version < '{BACKPORT_UNTIL[0]}.{BACKPORT_UNTIL[1]}'", declared)
+        (one,) = project["dependencies"]
+        assert f"python_version < '{BACKPORT_UNTIL[0]}.{BACKPORT_UNTIL[1]}'" in one
 
-    def test_everything_declared_is_something_the_package_imports(self) -> None:
+    def test_everything_declared_is_something_the_package_imports(
+        self, project: dict[str, Any], imports: dict[str, set[str]]
+    ) -> None:
         """The other direction. A dependency nobody imports is one nobody
         notices going stale, which is why `rich` is sanctioned by the plan and
         still absent from this list."""
-        reached = imported(ROOT / "tupferl")
-        for name in self.names():
-            self.assertIn(name, reached, f"{name} is declared and never imported")
+        for name in declared(project):
+            assert name in imports, f"{name} is declared and never imported"
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestTheTagWidthMatchesTheFormatter(unittest.TestCase):
+class TestTheTagWidthMatchesTheFormatter:
     """`mutate._COLUMNS` is `pyproject.toml`'s `line-length`, and must stay so.
 
     `--accept` writes `# survivor:` tags into real source files, wrapped to
@@ -164,8 +189,4 @@ class TestTheTagWidthMatchesTheFormatter(unittest.TestCase):
     """
 
     def test_the_wrap_width_is_the_formatter_s_line_length(self) -> None:
-        # `config.toml()` for the reason the class above gives: it reads TOML
-        # the way tupferl does, including on the 3.10 leg.
-        with (ROOT / "pyproject.toml").open("rb") as handle:
-            settings = config.toml().load(handle)
-        self.assertEqual(settings["tool"]["ruff"]["line-length"], mutate._COLUMNS)
+        assert pyproject()["tool"]["ruff"]["line-length"] == mutate._COLUMNS

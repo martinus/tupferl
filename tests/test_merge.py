@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
-import unittest
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from unittest import mock
+
+import pytest
 
 from tests import support
 from tupferl import conflicts, gitrepo, merge
@@ -27,16 +27,24 @@ from tupferl.errors import TupferlError
 
 BASE = b"one\ntwo\nthree\n"
 
+#: The fixture `TestTheConflictStyleCannotComeFromTheUser` needs, longer than
+#: `BASE` on purpose: `git merge-file` needs three lines of agreement to keep two
+#: disagreements apart, and the five-line fixture most of this suite uses has
+#: exactly three between its ends.
+LONGER = b"a\nb\nc\nd\ne\nf\ng\n"
+MINE = b"MINE-IS-HERE\nb\nc\nd\ne\nf\ng\n"
+THEIRS = b"THEIRS-IS-HERE\nb\nc\nd\ne\nf\ng\n"
 
-class TestConflictsAreCounted(unittest.TestCase):
+
+class TestConflictsAreCounted:
     def test_a_clean_merge_reports_none(self) -> None:
         got = merge.three_way(".bashrc", BASE, b"ONE\ntwo\nthree\n", b"one\ntwo\nTHREE\n")
-        self.assertEqual(0, got.conflicts)
-        self.assertEqual(b"ONE\ntwo\nTHREE\n", got.data)
+        assert got.conflicts == 0
+        assert got.data == b"ONE\ntwo\nTHREE\n"
 
     def test_both_sides_changing_one_line_is_one_conflict(self) -> None:
         got = merge.three_way(".bashrc", BASE, b"ours\ntwo\nthree\n", b"theirs\ntwo\nthree\n")
-        self.assertEqual(1, got.conflicts)
+        assert got.conflicts == 1
 
     def test_two_disagreements_are_two_conflicts(self) -> None:
         """The count is a count, not a flag. Milestone 4 shows it per file, and a
@@ -44,7 +52,7 @@ class TestConflictsAreCounted(unittest.TestCase):
         one that reported `bool`."""
         base = b"a\nb\nc\nd\ne\nf\ng\n"
         got = merge.three_way(".bashrc", base, b"A\nb\nc\nd\ne\nf\nG\n", b"1\nb\nc\nd\ne\nf\n7\n")
-        self.assertEqual(2, got.conflicts)
+        assert got.conflicts == 2
 
     def test_the_markers_name_the_file_and_not_a_temporary_path(self) -> None:
         """The three sides are written to a throwaway directory, and git labels
@@ -53,13 +61,13 @@ class TestConflictsAreCounted(unittest.TestCase):
         got = merge.three_way(".bashrc", BASE, b"ours\ntwo\nthree\n", b"theirs\ntwo\nthree\n")
         assert got.data is not None
         text = got.data.decode("utf-8")
-        self.assertIn("<<<<<<< .bashrc (this computer)", text)
-        self.assertIn(">>>>>>> .bashrc (the repository)", text)
-        self.assertNotIn("/tmp", text)
-        self.assertNotIn("tupferl-merge-", text)
+        assert "<<<<<<< .bashrc (this computer)" in text
+        assert ">>>>>>> .bashrc (the repository)" in text
+        assert "/tmp" not in text
+        assert "tupferl-merge-" not in text
 
 
-class TestBinaryFilesHaveNoMerge(unittest.TestCase):
+class TestBinaryFilesHaveNoMerge:
     """The case `tests/test_merge_properties.py` excludes from its generator.
 
     git refuses a file with a NUL byte near its start, and the right answer is
@@ -75,44 +83,43 @@ class TestBinaryFilesHaveNoMerge(unittest.TestCase):
         sweep is what found it. 0 in particular matters: `report` prints the
         count, and "0 to settle" reads as nothing to do."""
         got = merge.three_way(".keyring", b"\x00base\n", b"\x00ours\n", b"\x00theirs\n")
-        self.assertEqual(1, got.conflicts)
-        self.assertIsNone(got.data)
+        assert got.conflicts == 1
+        assert got.data is None
 
-    def test_one_binary_side_is_enough(self) -> None:
+    @pytest.mark.parametrize("side", ["base", "ours", "theirs"])
+    def test_one_binary_side_is_enough(self, side: str) -> None:
         """Text on two sides and binary on the third is still not mergeable, and
         `all()` over the three sides is what says so."""
-        for side in ("base", "ours", "theirs"):
-            with self.subTest(side=side):
-                sides = {"base": b"a\n", "ours": b"b\n", "theirs": b"c\n"}
-                sides[side] = b"\x00\n"
-                got = merge.three_way(".keyring", sides["base"], sides["ours"], sides["theirs"])
-                self.assertEqual(1, got.conflicts)
+        sides = {"base": b"a\n", "ours": b"b\n", "theirs": b"c\n"}
+        sides[side] = b"\x00\n"
+        got = merge.three_way(".keyring", sides["base"], sides["ours"], sides["theirs"])
+        assert got.conflicts == 1
 
     def test_a_nul_past_gits_probe_is_still_text(self) -> None:
         """git looks at the first 8000 bytes and no further, and so does
         `is_text`. A probe that read the whole file would refuse to merge a file
         git merges happily -- measured at 7999 (refused) and 8000 (merged)."""
-        self.assertFalse(merge.is_text(b"x" * (merge.PROBE - 1) + b"\x00"))
-        self.assertTrue(merge.is_text(b"x" * merge.PROBE + b"\x00"))
+        assert not merge.is_text(b"x" * (merge.PROBE - 1) + b"\x00")
+        assert merge.is_text(b"x" * merge.PROBE + b"\x00")
 
 
-class TestAMissingSnapshotIsAnEmptyBase(unittest.TestCase):
+class TestAMissingSnapshotIsAnEmptyBase:
     def test_two_machines_that_added_the_same_file_conflict(self) -> None:
         """No snapshot means no common ancestor, so nothing in the data says
         which side is newer. Taking one silently is the loss this refuses."""
         got = merge.three_way(".bashrc", None, b"from A\n", b"from B\n")
-        self.assertEqual(1, got.conflicts)
+        assert got.conflicts == 1
 
     def test_identical_additions_over_no_base_still_merge(self) -> None:
         """Both machines wrote the same bytes, so there is nothing to decide --
         and a merge that conflicted here would make the common "I set this up
         the same way twice" case need a human."""
         got = merge.three_way(".bashrc", None, b"same\n", b"same\n")
-        self.assertEqual(0, got.conflicts)
-        self.assertEqual(b"same\n", got.data)
+        assert got.conflicts == 0
+        assert got.data == b"same\n"
 
 
-class TestAMergeThatCouldNotRun(unittest.TestCase):
+class TestAMergeThatCouldNotRun:
     def test_git_failing_is_an_error_and_not_a_conflict(self) -> None:
         """A merge that never happened must not look like one that happened
         badly: sync *skips* a conflict and carries on, which for a git that will
@@ -129,13 +136,16 @@ class TestAMergeThatCouldNotRun(unittest.TestCase):
         the obvious spelling of this fixture would have merged successfully and
         the test would have failed for the wrong reason. Measured both ways.
         """
-        with mock.patch.dict(os.environ, {"PATH": ""}), self.assertRaises(TupferlError) as caught:
+        with (
+            mock.patch.dict(os.environ, {"PATH": ""}),
+            pytest.raises(TupferlError) as caught,
+        ):
             merge.three_way(".bashrc", BASE, b"ours\n", b"theirs\n")
-        self.assertIn(".bashrc", str(caught.exception))
-        self.assertIn("not installed", str(caught.exception))
+        assert ".bashrc" in str(caught.value)
+        assert "not installed" in str(caught.value)
 
 
-class TestAGitThatDiedRatherThanAnswered(unittest.TestCase):
+class TestAGitThatDiedRatherThanAnswered:
     def test_a_signal_killed_git_is_an_error_not_a_conflict_count(self) -> None:
         """`git merge-file` reports conflicts *as its exit status*, so the guard
         has to reject a status that is not a count. A process killed by a signal
@@ -169,17 +179,13 @@ class TestAGitThatDiedRatherThanAnswered(unittest.TestCase):
             )
             stub.chmod(0o755)
             with mock.patch.dict(os.environ, {"PATH": f"{box}:{os.environ['PATH']}"}):
-                self.assertEqual(-1, gitrepo.git(["merge-file"]).code)
-                with self.assertRaises(TupferlError) as caught:
+                assert gitrepo.git(["merge-file"]).code == -1
+                with pytest.raises(TupferlError) as caught:
                     merge.three_way(".bashrc", BASE, b"ours\n", b"theirs\n")
-        self.assertIn(".bashrc", str(caught.exception))
+        assert ".bashrc" in str(caught.value)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestTheUnifiedDiff(unittest.TestCase):
+class TestTheUnifiedDiff:
     """`unified`, which `tupferl diff` and the conflict prompt's `[d]` share.
 
     It lives in `merge.py` beside `labels_for`, whose labels are also what the
@@ -190,28 +196,28 @@ class TestTheUnifiedDiff(unittest.TestCase):
 
     def test_the_labels_name_the_file_and_the_two_sides(self) -> None:
         said = merge.unified(".bashrc", b"a\n", b"b\n")
-        self.assertIn("--- .bashrc (this computer)", said)
-        self.assertIn("+++ .bashrc (the repository)", said)
+        assert "--- .bashrc (this computer)" in said
+        assert "+++ .bashrc (the repository)" in said
 
     def test_the_first_argument_is_the_minus_side(self) -> None:
         """Asymmetric inputs, because symmetric ones cannot tell a diff from a
         diff computed backwards -- CLAUDE.md §2."""
         said = merge.unified("x", b"mine\n", b"theirs\n")
-        self.assertIn("-mine", said)
-        self.assertIn("+theirs", said)
+        assert "-mine" in said
+        assert "+theirs" in said
 
     def test_identical_bytes_produce_nothing(self) -> None:
         """Empty, which is what `inspection.shows` reads as "nothing to show"
         -- so an empty-string answer here is load-bearing rather than tidy."""
-        self.assertEqual("", merge.unified("x", b"same\n", b"same\n"))
+        assert merge.unified("x", b"same\n", b"same\n") == ""
 
     def test_bytes_that_are_not_utf8_still_diff(self) -> None:
         """`diff_bytes` rather than decoding first. A latin-1 dotfile is not
         hostile input, and refusing to show it is refusing the one file the
         user asked about."""
         said = merge.unified("x", b"caf\xe9\n", b"cafe\n")
-        self.assertIn("+cafe", said)
-        self.assertIn("\ufffd", said)
+        assert "+cafe" in said
+        assert "\ufffd" in said
 
     def test_a_carriage_return_stays_inside_its_line(self) -> None:
         """`split(b"\n")` and not `splitlines()`, which on bytes also breaks on
@@ -231,23 +237,23 @@ class TestTheUnifiedDiff(unittest.TestCase):
           both. On bytes the difference is `\r` and nothing else.
         """
         said = merge.unified("x", b"one\rtwo\n", b"one\rTWO\n")
-        self.assertIn("-one\rtwo", said)
-        self.assertIn("+one\rTWO", said)
+        assert "-one\rtwo" in said
+        assert "+one\rTWO" in said
 
 
-class TestKeepingBothVersions(unittest.TestCase):
+class TestKeepingBothVersions:
     """`merge.keep_both`, the conflict prompt's `[b]`."""
 
     def test_it_keeps_both_sides_of_every_hunk(self) -> None:
         got = merge.keep_both(".bashrc", BASE, b"alpha\nMINE\ngamma\n", b"alpha\nTHEIRS\ngamma\n")
-        self.assertEqual(b"alpha\nMINE\nTHEIRS\ngamma\n", got)
+        assert got == b"alpha\nMINE\nTHEIRS\ngamma\n"
 
     def test_it_leaves_no_markers(self) -> None:
         """The property, stated apart from the bytes: a union merge that kept a
         marker would put `<<<<<<<` into the file on both computers."""
         got = merge.keep_both(".bashrc", BASE, b"alpha\nMINE\ngamma\n", b"alpha\nTHEIRS\ngamma\n")
-        self.assertNotIn(b"<<<<<<<", got)
-        self.assertNotIn(b"=======", got)
+        assert b"<<<<<<<" not in got
+        assert b"=======" not in got
 
     def test_a_binary_side_is_refused_rather_than_returned_empty(self) -> None:
         """The guard the prompt can never reach -- `[b]` is not offered for a file
@@ -255,12 +261,35 @@ class TestKeepingBothVersions(unittest.TestCase):
         `bytes`. Returning `None` from here would be a `TypeError` two frames
         later, in `sync.settled`, about a file rather than about the merge.
         """
-        with self.assertRaises(TupferlError) as raised:
+        with pytest.raises(TupferlError) as raised:
             merge.keep_both(".icon", b"\x00base", b"\x00mine", b"\x00theirs")
-        self.assertIn(".icon", str(raised.exception))
+        assert ".icon" in str(raised.value)
 
 
-class TestTheConflictStyleCannotComeFromTheUser(unittest.TestCase):
+def merged_under(style: str) -> merge.Merged:
+    """`three_way` run as if the user's `~/.gitconfig` named a conflict style.
+
+    A real config file with `GIT_CONFIG_GLOBAL` pointing at it, because that is
+    how an ordinary user's setting reaches git and `-c` reproduces nothing --
+    see the class below.
+
+    A plain function rather than a fixture, because the environment only has to
+    hold for the `three_way` call: it returns `Merged`, which is bytes and a
+    count, and `conflicts.hunks` below is pure over the `Sides` it is given.
+    Scoping the patch to the call is what a fixture yielding a callable could
+    not do.
+    """
+    with support.tempdir(prefix="tupferl-conflictstyle-") as box:
+        written = box / "gitconfig"
+        written.write_text(f"[merge]\n\tconflictstyle = {style}\n", encoding="utf-8")
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": str(written), "GIT_CONFIG_SYSTEM": os.devnull},
+        ):
+            return merge.three_way(".bashrc", LONGER, MINE, THEIRS)
+
+
+class TestTheConflictStyleCannotComeFromTheUser:
     """A user's `merge.conflictStyle` must not reach the markers `hunks` parses.
 
     This guard existed as `-c merge.conflictStyle=merge` and was inert. Measured
@@ -279,49 +308,26 @@ class TestTheConflictStyleCannotComeFromTheUser(unittest.TestCase):
     wrongly.
     """
 
-    #: Long enough that the two changed lines are not one hunk: `git merge-file`
-    #: needs three lines of agreement to keep two disagreements apart, and this
-    #: file's usual five-line fixture has exactly three between its ends.
-    LINES = b"a\nb\nc\nd\ne\nf\ng\n"
-    MINE = b"MINE-IS-HERE\nb\nc\nd\ne\nf\ng\n"
-    THEIRS = b"THEIRS-IS-HERE\nb\nc\nd\ne\nf\ng\n"
-
-    def merged_under(self, style: str) -> merge.Merged:
-        """`three_way` run as if the user's `~/.gitconfig` said `style`."""
-        box = tempfile.TemporaryDirectory(prefix="tupferl-conflictstyle-")
-        self.addCleanup(box.cleanup)
-        config = Path(box.name) / "gitconfig"
-        config.write_text(f"[merge]\n\tconflictstyle = {style}\n", encoding="utf-8")
-        patched = mock.patch.dict(
-            os.environ,
-            {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_SYSTEM": os.devnull},
-        )
-        patched.start()
-        self.addCleanup(patched.stop)
-        return merge.three_way(".bashrc", self.LINES, self.MINE, self.THEIRS)
-
-    def test_no_setting_puts_a_base_section_in_the_markers(self) -> None:
-        for style in ("merge", "diff3", "zdiff3"):
-            with self.subTest(style=style):
-                got = self.merged_under(style)
-                self.assertEqual(1, got.conflicts)
-                self.assertIsNotNone(got.data)
-                assert got.data is not None
-                self.assertNotIn(b"|||||||", got.data)
+    @pytest.mark.parametrize("style", ["merge", "diff3", "zdiff3"])
+    def test_no_setting_puts_a_base_section_in_the_markers(self, style: str) -> None:
+        got = merged_under(style)
+        assert got.conflicts == 1
+        assert got.data is not None
+        assert b"|||||||" not in got.data
 
     def test_the_two_sides_are_still_attributed_to_the_right_computers(self) -> None:
         """The consequence, rather than the marker: what the prompt would show."""
-        got = self.merged_under("zdiff3")
+        got = merged_under("zdiff3")
         assert got.data is not None
         sides = conflicts.Sides(
             PurePosixPath(".bashrc"),
-            Blob(self.LINES, False),
-            Blob(self.MINE, False),
-            Blob(self.THEIRS, False),
+            Blob(LONGER, False),
+            Blob(MINE, False),
+            Blob(THEIRS, False),
             got.data,
             got.conflicts,
         )
         found = conflicts.hunks(sides)
-        self.assertEqual(1, len(found))
-        self.assertEqual([b"MINE-IS-HERE"], found[0].mine)
-        self.assertEqual([b"THEIRS-IS-HERE"], found[0].theirs)
+        assert len(found) == 1
+        assert found[0].mine == [b"MINE-IS-HERE"]
+        assert found[0].theirs == [b"THEIRS-IS-HERE"]
