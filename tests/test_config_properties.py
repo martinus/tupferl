@@ -18,8 +18,8 @@ Two properties, and they are chosen to be the ones an example test is worst at:
 from __future__ import annotations
 
 import json
-import unittest
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -48,7 +48,7 @@ PATTERNS = st.text(
 VALID: dict[type, tuple[str, object]] = {str: ('"x"', "x"), int: ("1", 1), list: ("[]", [])}
 
 
-class TestUnknownKeysAreAlwaysRefused(unittest.TestCase):
+class TestUnknownKeysAreAlwaysRefused:
     @given(key=KEYS)
     def test_any_key_outside_the_table_raises(self, key: str) -> None:
         """And any key *inside* it is accepted, in the same property.
@@ -61,28 +61,24 @@ class TestUnknownKeysAreAlwaysRefused(unittest.TestCase):
         """
         if key in KNOWN:
             literal, expected = VALID[KNOWN[key]]
-            self.assertEqual(expected, getattr(parse(f"{key} = {literal}\n", WHERE), key))
+            assert getattr(parse(f"{key} = {literal}\n", WHERE), key) == expected
             return
-        with self.assertRaises(TupferlError) as caught:
+        with pytest.raises(TupferlError) as caught:
             parse(f"{key} = 1\n", WHERE)
-        self.assertIn(key, str(caught.exception))
+        assert key in str(caught.value)
 
 
-class TestAcceptedFilesRoundTrip(unittest.TestCase):
+class TestAcceptedFilesRoundTrip:
     @given(patterns=st.lists(PATTERNS, max_size=8), limit=st.integers(min_value=1, max_value=2**40))
     def test_what_goes_in_comes_back_out(self, patterns: list[str], limit: int) -> None:
         text = f"ignore = {json.dumps(patterns)}\nmax_file_size = {limit}\n"
         found = parse(text, WHERE)
-        self.assertEqual(patterns, found.ignore)
-        self.assertEqual(limit, found.max_file_size)
+        assert found.ignore == patterns
+        assert found.max_file_size == limit
 
     @given(limit=st.integers(max_value=0))
     def test_no_non_positive_limit_is_ever_accepted(self, limit: int) -> None:
         """The boundary from the other side. `max_file_size = 0` has an example
         test; this says there is no negative value that slips through either."""
-        with self.assertRaises(TupferlError):
+        with pytest.raises(TupferlError):
             parse(f"max_file_size = {limit}\n", WHERE)
-
-
-if __name__ == "__main__":
-    unittest.main()

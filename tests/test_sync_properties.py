@@ -171,9 +171,9 @@ class SyncMachine(RuleBasedStateMachine):
         """Property 4: sync until nothing moves, then both files equal the model.
 
         Four syncs, alternating: one to push each machine's own edits, and one
-        more each to take in what the other pushed. `assert` rather than
-        `unittest`'s methods because a `RuleBasedStateMachine` is not a
-        `TestCase`; Hypothesis reports the failing sequence either way.
+        more each to take in what the other pushed. Plain `assert`, because a
+        `RuleBasedStateMachine` is not a test class at all -- Hypothesis calls
+        these itself and reports the failing sequence either way.
         """
         try:
             for who in (0, 1, 0, 1):
@@ -191,18 +191,16 @@ SyncMachine.TestCase.settings = settings(
     deadline=None,
 )
 
-#: Named so `unittest` discovery finds it. The class Hypothesis generates is the
-#: test; this is the whole of the plumbing.
+#: Named so discovery finds it. The class Hypothesis generates is the test; this
+#: assignment is the whole of the plumbing.
 #:
-#: The three dunders are not decoration. Hypothesis builds `TestCase` inside its
-#: own module, so the test's id is `hypothesis.stateful.SyncMachine.TestCase...`
-#: -- and `tools/run_tests.py` shards by re-loading ids, which then fails to
-#: import. Its accounting check caught it ("1 discovered tests never ran"), which
-#: is the failure mode that check exists for: a serial run passed.
+#: **The name it is bound to here is the name in the id**, which is why this
+#: line is all there is. Under `unittest` it was not: a loader asks the class
+#: what module it is in, Hypothesis builds `TestCase` inside `hypothesis.
+#: stateful`, and the id that came back could not be re-imported -- so three
+#: dunders were rewritten here to say otherwise. pytest takes the name from the
+#: module namespace it collected, so there is nothing to correct.
 TestSyncIsIdempotentAndConverges = SyncMachine.TestCase
-TestSyncIsIdempotentAndConverges.__module__ = __name__
-TestSyncIsIdempotentAndConverges.__name__ = "TestSyncIsIdempotentAndConverges"
-TestSyncIsIdempotentAndConverges.__qualname__ = "TestSyncIsIdempotentAndConverges"
 
 
 #: The lines after the first, which no rule below ever touches. They exist so
@@ -329,8 +327,5 @@ ChoiceMachine.TestCase.settings = settings(
     deadline=None,
 )
 
-#: Renamed for discovery, for the reason spelled out above `SyncMachine`'s own.
+#: Named for discovery, for the reason spelled out above `SyncMachine`'s own.
 TestAChoiceIsNeverSilentlyLost = ChoiceMachine.TestCase
-TestAChoiceIsNeverSilentlyLost.__module__ = __name__
-TestAChoiceIsNeverSilentlyLost.__name__ = "TestAChoiceIsNeverSilentlyLost"
-TestAChoiceIsNeverSilentlyLost.__qualname__ = "TestAChoiceIsNeverSilentlyLost"

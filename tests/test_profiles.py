@@ -17,36 +17,33 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import unittest
 
+import pytest
 from hypothesis import settings
 
 from tests import profiles, support
 from tools import mutate
 
 
-class TestTheProfilesExist(unittest.TestCase):
-    def test_all_three_are_registered(self) -> None:
-        for name in ("dev", "ci", "mutation"):
-            with self.subTest(profile=name):
-                self.assertIsNotNone(settings.get_profile(name))
+class TestTheProfilesExist:
+    @pytest.mark.parametrize("name", ["dev", "ci", "mutation"])
+    def test_all_three_are_registered(self, name: str) -> None:
+        assert settings.get_profile(name) is not None
 
     def test_the_mutation_profile_is_the_cheap_one(self) -> None:
         """Cheaper than `ci`, which is the point of having it."""
-        self.assertLess(
-            settings.get_profile("mutation").max_examples,
-            settings.get_profile("ci").max_examples,
+        assert settings.get_profile("mutation").max_examples < (
+            settings.get_profile("ci").max_examples
         )
 
-    def test_the_non_interactive_profiles_are_derandomised(self) -> None:
-        for name in ("ci", "mutation"):
-            with self.subTest(profile=name):
-                self.assertTrue(settings.get_profile(name).derandomize)
+    @pytest.mark.parametrize("name", ["ci", "mutation"])
+    def test_the_non_interactive_profiles_are_derandomised(self, name: str) -> None:
+        assert settings.get_profile(name).derandomize
 
     def test_the_default_is_not(self) -> None:
         """A developer's run should find new falsifying examples; that is the
         whole reason to run these at all locally."""
-        self.assertFalse(settings.get_profile("dev").derandomize)
+        assert not settings.get_profile("dev").derandomize
 
 
 #: Asks a fresh interpreter what each profile says, so the answer is the module's
@@ -59,7 +56,20 @@ ASK = (
 )
 
 
-class TestTheProfilesDoNotDependOnTheAmbientEnvironment(unittest.TestCase):
+def ask(**env: str) -> str:
+    """What a fresh interpreter says the profiles are, under `env`."""
+    done = subprocess.run(
+        [sys.executable, "-c", ASK],
+        cwd=support.ROOT,
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.strip()
+
+
+class TestTheProfilesDoNotDependOnTheAmbientEnvironment:
     """The failure this file was written for, found by CI rather than here.
 
     Hypothesis registers and loads a derandomised profile of its own when it sees
@@ -72,32 +82,19 @@ class TestTheProfilesDoNotDependOnTheAmbientEnvironment(unittest.TestCase):
     `tests.profiles` is imported long before any test runs.
     """
 
-    def ask(self, **env: str) -> str:
-        done = subprocess.run(
-            [sys.executable, "-c", ASK],
-            cwd=support.ROOT,
-            env={**os.environ, **env},
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return done.stdout.strip()
-
     def test_the_profiles_are_the_same_with_and_without_ci(self) -> None:
-        without = self.ask(CI="")
-        with_ci = self.ask(CI="true")
-        self.assertEqual(without, with_ci)
+        assert ask(CI="") == ask(CI="true")
 
     def test_and_they_are_the_ones_this_module_asserts(self) -> None:
         """The precondition: two identical answers prove nothing if the answer
         itself is wrong, or if the subprocess failed to say anything useful."""
-        self.assertIn("'dev': (False, 200)", self.ask(CI="true"))
+        assert "'dev': (False, 200)" in ask(CI="true")
 
 
-class TestTheWiring(unittest.TestCase):
+class TestTheWiring:
     def test_the_harness_and_the_profiles_agree_on_the_variable(self) -> None:
         """The drift that would cost hours per sweep and fail nothing."""
-        self.assertEqual(profiles.ENV, mutate._PROFILE)
+        assert profiles.ENV == mutate._PROFILE
 
     def test_the_harness_asks_for_a_profile_that_exists(self) -> None:
         """The name the harness actually passes, not one retyped here.
@@ -105,8 +102,4 @@ class TestTheWiring(unittest.TestCase):
         `load_profile` on an unregistered name raises inside the probe, where it
         surfaces as `BROKE` on every row rather than as the typo it is.
         """
-        self.assertIsNotNone(settings.get_profile(mutate._MUTATION_PROFILE))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert settings.get_profile(mutate._MUTATION_PROFILE) is not None
