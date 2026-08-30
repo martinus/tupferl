@@ -28,6 +28,15 @@ its module rather than once per run, so it has to stay cheap or idempotent.
 `tests/support.py`'s cached two-machine template already is; a new one that is
 not would be paid for silently.
 
+**A scope is a packing key and never a selector**, and the difference is not a
+nicety. `tests/test_sync.py::TestX` happens to select exactly the tests it holds;
+`tests/test_sync.py` -- the scope a test outside any class packs under -- selects
+the *whole file*, the classes in it included. So a batch is handed the ids of
+its scopes rather than their names: ids partition, which is the property `pack`
+assumes and the property the accounting check below is stated in. Handing over
+names instead ran a class twice for any module holding a bare function beside
+one, and only the duplicate check at the bottom of `main` ever saw it.
+
 What this adds over `python -m pytest` is an accounting check. A parallel runner
 has a failure mode a serial one does not: a batch that dies before it reports,
 leaving a run that is green because nothing ran. So every id handed to a batch
@@ -546,7 +555,10 @@ class _Recorder:
 
 
 def run_batch(names: list[str], out: Path) -> int:
-    """Run some scopes and write what happened to `out` as JSON.
+    """Run the tests named on the command line, and write what happened as JSON.
+
+    Ids rather than the scopes they were packed under -- see the dispatch in
+    `main`, where a scope name turned out not to be a selector.
 
     The file *is* the interface: only ids travel back to the parent, because
     shipping the tracebacks too would print every failure twice. They go to this
@@ -731,8 +743,23 @@ def main(argv: list[str] | None = None) -> int:
         def run(indexed: tuple[int, list[str]]) -> dict[str, Any]:
             index, names = indexed
             out = Path(tmp) / f"{index}.json"
+            # **The ids, not the scope names, and that distinction is the whole
+            # of a bug this had.** A scope name is a *packing* key; it is not a
+            # selector. `tests/test_x.py::TestY` happens to select exactly its
+            # own tests, but `tests/test_x.py` -- the scope a test outside any
+            # class packs under -- selects the whole file, classes included. So
+            # a module holding a bare function *and* a class dispatched that
+            # class's tests to two batches and ran them twice. Measured: green
+            # for a file of only functions, green for a file of only classes,
+            # `::error::1 tests ran more than once` for one file with both.
+            #
+            # Ids partition by construction, which is what `pack` assumes and
+            # what the accounting check is stated in. The argv cost is nothing:
+            # 1607 ids over 128 batches is ~13 each, and the largest single
+            # scope in this tree is 20 -- about 1.2 KB against a 2 MiB bound.
+            chosen = [tid for name in names for tid in scopes[name]]
             proc = subprocess.run(
-                [sys.executable, "-m", "tools.run_tests", "--worker", *names, "--out", str(out)],
+                [sys.executable, "-m", "tools.run_tests", "--worker", *chosen, "--out", str(out)],
                 cwd=ROOT,
             )
             if not out.exists():
@@ -791,10 +818,12 @@ def main(argv: list[str] | None = None) -> int:
         for tid in sorted(missing):
             print(paint.paint(f"  never ran: {tid}", paint.BAD))
         ok = False
-    # survivor: branch -- tools/run_tests.py:424 in main() -- the `if` is never taken -- unreachable
-    #   through `pack`, which places each scope in exactly one batch -- so no test id can be
-    #   reported twice and `len(ran) - len(set(ran))` is always 0. The guard is there for a future
-    #   batching rule that overlapped, which is the change it exists to catch.
+    # survivor: branch -- the `if` is never taken -- unreachable, because a batch is handed the
+    #   *ids* of its scopes and each id belongs to exactly one scope, which `pack` places in
+    #   exactly one batch. **It was reachable once**, and this guard is the only thing that saw
+    #   it: handing a worker the scope *name* made `tests/test_x.py` select the classes in that
+    #   file as well, so a module with a bare function beside a class ran the class twice. Not a
+    #   future batching rule, then -- a past one.
     if duplicated := len(ran) - len(set(ran)):
         # survivor: drop-call -- tools/run_tests.py:425 in main() -- the call to `print(...)` never
         #   happens -- same as `run_tests.py:424` -- the line only runs when a test id was reported

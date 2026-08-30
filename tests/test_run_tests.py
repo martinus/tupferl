@@ -20,10 +20,16 @@ need an `os.chdir` and would then import from inside it -- which is the mistake
 CLAUDE.md records as having made the old verdict layer unmeasurable. A nested
 `pytest.main` is merely untidy; the `chdir` is the hazard.
 
-`discover(root=...)` is the seam that makes the exception safe.
+`discover(root=...)` is the seam that makes the one exception safe.
 `TestTheWorkflowsExcludesStillNameSomething` collects the **real** tree from the
 real working directory, so nothing is chdir'd and nothing is imported that this
 process had not already imported.
+
+It does not generalise to a throwaway tree, which is the tempting next step and
+does not work: those trees also call their package `tests`, and this process
+imported the real one long ago, so a collect over the copy resolves
+`tests.test_x` against the original and reports `ModuleNotFoundError`. A second
+copy of this tree can only be driven from a second process.
 """
 
 from __future__ import annotations
@@ -663,6 +669,95 @@ class TestWhatABatchReports(Tree):
         self.assertEqual(1, done.returncode, done.stdout + done.stderr)
         self.assertFalse(out.exists(), "a report was written for a run that never happened")
         self.assertIn("USAGE_ERROR", done.stderr)
+
+
+class TestAPytestNativeModule(Tree):
+    """The claim Phase A2 exists to make true, driven rather than asserted.
+
+    **Nothing here drove one until this class, and that is exactly why the bug
+    below survived the phase that introduced it.** Every other fixture in this
+    file is a `unittest.TestCase`, so no batch was ever handed a module *scope*
+    -- a test outside any class is what packs under the file -- and the one
+    shape that breaks is a file holding both.
+
+    Measured, before the dispatch was changed: a file of only functions is
+    green, a file of only classes is green, and one file with both reports
+    `::error::1 tests ran more than once` and exits 1. Handing a worker the
+    scope name `tests/test_native.py` tells pytest to run the whole file, so
+    the class in it runs in that batch *and* in its own.
+
+    Phase B converts 33 modules to this shape. Its first mixed one would have
+    found it, at the cost of a session spent suspecting the conversion.
+
+    **Driven end to end, and there is no in-process shortcut for it.** Calling
+    `discover(self.tree)` to assert the two scopes directly looks safe -- the
+    root is a parameter, so nothing is chdir'd -- and it is not: the throwaway
+    tree's package is also called `tests`, which this process imported long ago,
+    so pytest resolves `tests.test_native` against the *real* one and reports
+    `ModuleNotFoundError`. `discover(root=...)` is a seam for pointing at a real
+    tree, which is what `TestTheWorkflowsExcludesStillNameSomething` does; it is
+    not one for pointing at a second copy of this one.
+    """
+
+    #: Deliberately all three shapes at once, and pytest-native throughout:
+    #: a bare function, a `parametrize` whose ids carry `[...]`, and a plain
+    #: class that is not a `TestCase`. Five tests in two scopes.
+    NATIVE = (
+        "import pytest\n"
+        "\n"
+        "\n"
+        "def test_a_plain_function():\n"
+        "    assert True\n"
+        "\n"
+        "\n"
+        '@pytest.mark.parametrize("n, doubled", [(1, 2), (2, 4), (3, 6)])\n'
+        "def test_a_parametrized_case(n, doubled):\n"
+        "    assert n * 2 == doubled\n"
+        "\n"
+        "\n"
+        "class TestBesideThem:\n"
+        "    def test_in_a_class(self):\n"
+        "        assert True\n"
+    )
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.add("test_native.py", self.NATIVE)
+
+    def test_every_test_runs_exactly_once(self) -> None:
+        """The count is the assertion, not the exit status alone: five tests in
+        two scopes, and the class's one must not be run by both."""
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 5 tests", done.stdout)
+        self.assertNotIn("ran more than once", done.stdout)
+        self.assertNotIn("never ran", done.stdout)
+
+    def test_only_reaches_it_by_its_module_name(self) -> None:
+        """`--only` speaks dotted names and a module scope is a bare file, so
+        this is the one selector shape `dotted` has to get right for a
+        pytest-native module -- and it takes the class in the same file with it,
+        because `selects` is anchored at a dot."""
+        done = self.run_it("--only", "tests.test_native")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("Ran 5 tests", done.stdout)
+
+    def test_a_failing_parametrized_case_is_named_with_its_parameters(self) -> None:
+        """Which case failed, not which function. A parametrized id is also the
+        first thing in this tree that can contain a space, which is why
+        `--worker` takes a list and nothing joins these into a string."""
+        self.add(
+            "test_native.py",
+            "import pytest\n"
+            "\n"
+            "\n"
+            '@pytest.mark.parametrize("word", ["fine", "not fine"])\n'
+            "def test_each_word(word):\n"
+            '    assert word == "fine"\n',
+        )
+        done = self.run_it("--jobs", "2")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("FAIL: tests/test_native.py::test_each_word[not fine]", done.stdout)
 
 
 class TestTheWaysARunIsRefusedRatherThanRunEmpty(Tree):

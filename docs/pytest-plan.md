@@ -965,8 +965,20 @@ newly-surviving/newly-BROKE rows against Phase A's sweep for that file
 The design above survived in every part a reader would check: one in-process
 `--collect-only` in the parent, `file::Class` scopes from `item.parent`, the
 same worker command line, the same five-key JSON, dotted `--only`/`--exclude`,
-and the docstring rewritten. Two details came out differently from the letter of
-it, both deliberately:
+and the docstring rewritten.
+
+**One of those went wrong before it was put right, and the correction is worth
+more than the design note.** A2 as merged handed each worker its scope *names*
+rather than the nodeids the design specified, as an argv saving. A scope name is
+a packing key and not a selector: `tests/x.py::TestY` selects exactly its own
+tests, but `tests/x.py` -- the scope a test outside any class packs under --
+selects the whole file, classes included. A module with a bare function beside a
+class therefore ran that class twice. See "The dispatch that was not a
+selection" below; the design's `<nodeids…>` was right and the optimisation was
+not.
+
+Two further details came out differently from the letter of it, both
+deliberately:
 
 - **the translation goes the other way.** The design said `--only`/`--exclude`
   would be "translated to nodeid prefixes"; the build translates each *scope*
@@ -1114,6 +1126,44 @@ what a person types after `--only` and what "could not import …" prints);
 it); and narrowing the parent's collect under `--only` (0.42 s → 0.20 s, which
 matters only to the interactive loop).
 
+### The dispatch that was not a selection — 2026-08-30, after A2 merged
+
+**A2's headline claim had no test behind it.** "A pytest-native module is safe
+to write now" was asserted by `dotted`'s unit tests and demonstrated by nothing:
+every fixture in `tests/test_run_tests.py` is a `unittest.TestCase`, so no batch
+was ever handed a *module* scope. Driving one by hand, immediately before
+Phase B:
+
+| module shape | result |
+|---|---|
+| bare functions + `parametrize`, no class | green |
+| classes only (the suite as it stands) | green |
+| **a bare function *and* a class in one file** | **red — `::error::1 tests ran more than once`** |
+
+The cause is above: a scope name is a packing key, not a selector. `main` hands
+each batch the *ids* of its scopes now, which partition by construction, and the
+module docstring states that distinction where the dispatch happens.
+
+Three things worth keeping from it:
+
+- **It failed loudly.** The duplicate check at the bottom of `main` caught it and
+  turned the run red. Its `# survivor:` tag said the branch was "unreachable
+  through `pack` … there for a future batching rule that overlapped" — true of an
+  all-classes suite, and wrong. The tag now records that it was a *past* rule,
+  and that this guard is the only thing that ever saw the bug.
+- **The claim is driven now, not asserted.** `TestAPytestNativeModule` runs a
+  file holding a bare function, a `parametrize`, and a plain non-`TestCase`
+  class, and checks all five tests run once. Two of its three tests fail with
+  the dispatch reverted; the third guards a different thing — a parametrized id
+  can contain a space, which is why `--worker` takes a list and nothing joins
+  these into a string.
+- **An in-process `discover` over a *throwaway* tree does not work**, which is
+  the tempting way to assert the partition directly. Those trees also call their
+  package `tests`, and the process running the test imported the real one long
+  ago, so the collect resolves `tests.test_x` against the original and reports
+  `ModuleNotFoundError`. `discover(root=...)` is a seam for pointing at a real
+  tree, not at a second copy of this one. Both docstrings say so.
+
 ### Evidence
 
 | | HEAD (`23fb988`, `unittest`) | this branch (pytest) |
@@ -1152,11 +1202,18 @@ has been measured on its own: the parent now pays one whole-tree collect
 (Phase 0's S5 measured that at 500 ms, which is a third of the difference), and
 each of 128 batches pays pytest's startup instead of `unittest`'s. Both are
 per-run constants rather than per-test, so the share should fall as the suite
-grows. Nothing here was optimised, and the obvious lever -- collecting once in
-the parent and handing each worker its ids rather than its scopes -- was not
-taken, because it would put a nodeid per test on a command line that today
-carries one per scope, and `ARG_MAX` is a limit CLAUDE.md already records
-being got wrong twice.
+grows. Nothing here was optimised.
+
+**One paragraph that used to stand here was wrong twice over, and it is left in
+corrected rather than deleted.** It said that handing each worker its ids rather
+than its scopes was not taken because "it would put a nodeid per test on a
+command line that today carries one per scope, and `ARG_MAX` is a limit
+CLAUDE.md already records being got wrong twice". Wrong about the cost: the
+argv is *per batch*, and 1607 ids over 128 batches is about 13 each, ~1.2 KB for
+the largest single scope in this tree, against a 2 MiB bound. And wrong about
+the trade, because it was never a speed question at all -- passing scope names
+was a correctness bug, and the ids are what the runner passes now. Invoking a
+recorded hazard is not the same as measuring one.
 
 Phase 0's 20.7 s figure for the `unittest` runner does not reproduce here at
 all -- the same binary measures ~28.5 s on this machine today -- which is the
