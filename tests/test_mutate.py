@@ -3537,6 +3537,30 @@ class TestWhatMayBeSignalled(unittest.TestCase):
             self.assertEqual([], mutate._permitted([7]))
 
 
+class TestWhichClockIsRead(unittest.TestCase):
+    """`_born`'s dispatch: `/proc` where there is one, `ps` where there is not."""
+
+    def test_it_prefers_proc_where_there_is_one(self) -> None:
+        with (
+            mock.patch.object(mutate, "_born_from_proc", lambda: {11: 1.0}),
+            mock.patch.object(mutate, "_born_from_ps", lambda: {22: 2.0}),
+        ):
+            got = mutate._born()
+        # The assertion is conditional rather than skipped, because the macos
+        # job runs `--no-skips`: on a machine with no `/proc` the other reader
+        # is the right answer and this test still says something true.
+        expected = {11: 1.0} if Path("/proc/self/stat").exists() else {22: 2.0}
+        self.assertEqual(expected, got)
+
+    def test_it_falls_back_to_ps_where_there_is_none(self) -> None:
+        """The macOS half, driven on every platform by taking `/proc` away."""
+        with (
+            mock.patch.object(Path, "exists", lambda self: False),
+            mock.patch.object(mutate, "_born_from_ps", lambda: {22: 2.0}),
+        ):
+            self.assertEqual({22: 2.0}, mutate._born())
+
+
 class TestTheKillListIsVettedForReal(unittest.TestCase):
     """`_end_lane` end to end, against the exact list #91's mutant produces.
 
@@ -3661,6 +3685,29 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         got = mutate._parse_lstart("  431 Sat Aug 30 17:28:03 2026\n 9999 Sat Aug 30 17:28:04 2026")
         self.assertEqual([431, 9999], sorted(got))
         self.assertLess(got[431], got[9999], "the two instants did not order")
+
+    def test_the_ps_reader_reads_this_machine_s_own_ps(self) -> None:
+        """**Driven on real `ps`, and the fixture above is why that matters.**
+
+        `lstart` prints the day and month through the *process* locale while
+        `strptime` reads them through *Python's*, which is C. On this machine
+        real `ps` says `Fr Aug 28 18:41:02 2026` -- German -- and every line was
+        refused, so the parser returned nothing, `_born` returned nothing and
+        `_permitted` refused nothing. The guard stood down in silence on any
+        machine whose operator does not speak English.
+
+        The hand-written fixture could not see it, because the person who wrote
+        it wrote English. `_born_from_ps` pins `LC_ALL=C` and this drives the
+        fork to prove it, which is CLAUDE.md §2's "prefer driving the real
+        thing".
+
+        Linux `ps` supports `lstart` too, so this runs everywhere rather than
+        only on the platform that needs it -- the fallback must not be
+        discovered to be broken on the machine that has nothing else.
+        """
+        born = mutate._born_from_ps()
+        self.assertIn(os.getpid(), born, "real ps output parsed to nothing")
+        self.assertGreater(len(born), 1)
 
     def test_a_line_it_cannot_read_is_skipped_rather_than_raising(self) -> None:
         """An unreadable date must not stop a lane being killed -- it must only

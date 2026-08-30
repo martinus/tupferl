@@ -912,9 +912,26 @@ def _born_from_proc() -> dict[int, float]:
 
 
 def _born_from_ps() -> dict[int, float]:
-    """`_born` where there is no `/proc`, which is macOS."""
+    """`_born` where there is no `/proc`, which is macOS.
+
+    **`LC_ALL=C`, and it is the whole reason this works.** `lstart` prints the
+    day and month through the process locale, so on this machine real `ps` says
+    `Fr Aug 28 18:41:02 2026` -- German for Friday. `time.strptime` reads `%a`
+    and `%b` through *Python's* locale, which is C unless somebody called
+    `setlocale`, so it expects `Fri` and refuses the line. Every line. The
+    parser then returns nothing, `_born` returns nothing, and `_permitted`
+    refuses nothing -- the guard silently stands down on any machine whose
+    operator does not speak English.
+
+    Found by feeding real `ps` output to it rather than the fixture written for
+    it, which was English because the person writing it was.
+    """
     listed = subprocess.run(
-        ["ps", "-eo", "pid=,lstart="], capture_output=True, text=True, check=False
+        ["ps", "-eo", "pid=,lstart="],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "LC_ALL": "C"},
     )
     return _parse_lstart(listed.stdout)
 
@@ -926,6 +943,11 @@ def _parse_lstart(text: str) -> dict[int, float]:
     ``[[dd-]hh:]mm:ss`` and would have to be parsed into the same order by
     subtracting it from now -- one more step, on the platform with no way to
     check the result. `lstart` is an absolute instant and `strptime` reads it.
+
+    **Only under `LC_ALL=C`**, which `_born_from_ps` sets and which is not a
+    detail: the day and month are locale-dependent on the `ps` side and locale-C
+    on the `strptime` side, so without it every line is refused and the guard
+    goes quiet rather than red. See `_born_from_ps`.
 
     Its own function so the parse can be driven from text on any platform,
     exactly as `_parse_ps` is: the fallback must not be discovered to be broken
