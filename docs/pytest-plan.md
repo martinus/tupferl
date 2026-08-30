@@ -1,9 +1,11 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **Phase 0 executed** (2026-08-30); Phases A onwards not started. The
-measured answers are in [Spike results](#spike-results--measured-2026-08-30),
-which corrects three expectations this plan was written with — read it before
-Phase A.
+Status: **Phases 0 and A executed** (2026-08-30); A2 onwards not started. The
+measured answers to the spikes are in
+[Spike results](#spike-results--measured-2026-08-30), which corrects three
+expectations this plan was written with. What Phase A did differently from what
+it says below is in [Phase A as built](#phase-a-as-built--2026-08-30) — read
+both before the next phase.
 
 ## Context for the executing agent
 
@@ -784,6 +786,14 @@ that same PR).
 
 1. Before editing: record the module's collected item count and test list
    (`python -m pytest --collect-only -q tests/test_X.py`).
+1a. **Before the first `parametrize` lands, make `Mutation.first`,
+   `Killers.known` and `Learned.recent` hold sequences.** Phase A closed the
+   argv half of this — `mutate._run` JSON-encodes `first` because a
+   parametrized nodeid can contain spaces — and deliberately left the three
+   in-harness fields space-joined, because nothing in the tree produced such an
+   id yet. A parametrized test is exactly what produces one, and it shreds
+   silently: half a nodeid selects nothing, and selecting nothing is not an
+   error to pytest. The comment in `mutate._attempt` says so at the `.split()`.
 2. Convert by hand. `subTest` → `pytest.mark.parametrize` where the cases are
    static; where the case list is computed (e.g. `test_errors`' ast-walk over
    every `raise TupferlError`), compute it at module level and parametrize

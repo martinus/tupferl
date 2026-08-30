@@ -194,7 +194,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
         killer = report.results[0].verdict.killer
         self.assertTrue(
-            killer.startswith("tests.test_config."),
+            killer.startswith("tests/test_config.py::"),
             f"caught, but not by the module the walk had to reach: {killer}",
         )
         self.assertTrue(report.widened)
@@ -355,7 +355,21 @@ if __name__ == "__main__":
 #: kept". This module's own name, so it cannot go stale without this file
 #: being edited -- and if it is renamed, the test that depends on it is right
 #: here rather than somewhere that would fail mysteriously.
-REAL = "tests.test_mutate.TestRememberingWhatCaughtEachMutation.test_a_remembered_test_runs_first"
+#:
+#: A **pytest nodeid**, because that is what `mutate._loadable` asks pytest
+#: about and what a killers cache written by a sweep holds. Spelled with the
+#: unittest dots it would simply be dropped as an id that no longer resolves,
+#: and every assertion below would read "" -- which is how these four classes
+#: failed when the backend changed, correctly.
+REAL = (
+    "tests/test_mutate.py::TestRememberingWhatCaughtEachMutation::test_a_remembered_test_runs_first"
+)
+
+#: The class holding it, spelled the way a **selection** is spelled: dotted,
+#: because `mutants.targets_for` builds selections out of module names. The two
+#: formats meeting in one comparison is exactly what `mutate._reaches` is for,
+#: so this is written out rather than derived from `REAL`.
+REAL_CLASS = "tests.test_mutate.TestRememberingWhatCaughtEachMutation"
 
 
 def row(
@@ -561,7 +575,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         self,
         each: float,
         wait: float = BOUND,
-        first: str = "",
+        first: tuple[str, ...] = (),
         names: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Drive the real probe, in a real subprocess, on a real fifo.
@@ -602,7 +616,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                     "0",
                     "0",
                     str(each),
-                    first,
+                    json.dumps(list(first)),
                     # A baseline's shape: these tests are about what one named
                     # selection reports, and a walk would run the sandbox's
                     # other modules under each of them.
@@ -761,9 +775,10 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
         times = found.times or {}
         self.assertTrue(times, "the run recorded no test timings at all")
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
-        # exactly what should have been measured.
+        # exactly what should have been measured. Keyed by nodeid, which is what
+        # the ids `Killers` orders by are.
         self.assertTrue(
-            any(name.startswith("tests.test_paths.") for name in times), sorted(times)[:5]
+            any(name.startswith("tests/test_paths.py::") for name in times), sorted(times)[:5]
         )
         self.assertTrue(all(seconds >= 0 for seconds in times.values()))
 
@@ -811,8 +826,7 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         """`tests.test_mutate.TestX` selects `tests.test_mutate.TestX.test_y`.
         Comparing module names made this never match, so any row selected at
         class granularity silently lost the prefix."""
-        klass = REAL.rsplit(".", 1)[0]
-        self.assertEqual(REAL, self.ahead(klass).first)
+        self.assertEqual(REAL, self.ahead(REAL_CLASS).first)
 
     def test_a_row_that_cannot_reach_it_still_does_not_pay(self) -> None:
         """The guard the two above must not break: a test in a module that does
@@ -874,7 +888,7 @@ class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
             # timeout -- proving the discovery worked, at thirty seconds a run.
             each=2,
             wait=30,
-            first="tests.test_hang.TestOne.test_is_fine",
+            first=("tests.test_hang.TestOne.test_is_fine",),
             names=(),
         )
         # Two tests in that module, and the prefix names one of them -- so it
@@ -4896,12 +4910,19 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
     KILLER = "tests.test_sync.TestTheDecisionTable.test_it"
     FRONT = "tests.test_sync.TestSomethingElse.test_other"
 
-    def first_for(self, mutation: Mutation) -> str:
-        """What `_attempt` hands `_run` as its `first`, for one row."""
-        seen: list[str] = []
+    def first_for(self, mutation: Mutation) -> list[str]:
+        """What `_attempt` hands `_run` as its `first`, for one row.
+
+        A list, because that is the slot's shape now: `_run` JSON-encodes it
+        rather than joining it with spaces, so that a nodeid containing one
+        survives the argv. Read here as the list it is -- `str()` on it and a
+        `split()` afterwards would compare the repr's brackets and quotes and
+        agree with almost nothing.
+        """
+        seen: list[list[str]] = []
 
         def watch(*args: object, **kw: object) -> mutate.Verdict:
-            seen.append(str(kw["first"]))
+            seen.append([str(name) for name in typing.cast(Sequence[str], kw["first"])])
             return mutate.Verdict("caught", "probe", killer=self.KILLER)
 
         learned = mutate.Learned()
@@ -4929,7 +4950,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
     def test_a_recorded_killer_runs_before_the_learned_front(self) -> None:
         """The row this exists for. `exact` is what `Killers.ahead_of` sets when
         it found this row's own killer."""
-        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        got = self.first_for(self.row(first=self.KILLER, exact=True))
         self.assertEqual([self.KILLER, self.FRONT], got)
 
     def test_a_general_prefix_runs_after_it(self) -> None:
@@ -4937,7 +4958,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         the test above. The cheap prefix is *not* about this row -- it is the
         tests that catch a lot per second across the table -- so the learned
         front, which is at least about this row's neighbours, precedes it."""
-        got = self.first_for(self.row(first=self.KILLER, exact=False)).split()
+        got = self.first_for(self.row(first=self.KILLER, exact=False))
         self.assertEqual([self.FRONT, self.KILLER], got)
 
     def test_the_learned_front_still_follows_a_killer_rather_than_being_dropped(
@@ -4948,7 +4969,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         guess before the whole selection. It costs nothing when the killer is
         right, because the killer has already answered by then.
         """
-        got = self.first_for(self.row(first=self.KILLER, exact=True)).split()
+        got = self.first_for(self.row(first=self.KILLER, exact=True))
         self.assertIn(self.FRONT, got, "the learned front was dropped, not demoted")
 
 
