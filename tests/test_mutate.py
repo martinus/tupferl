@@ -3471,6 +3471,188 @@ class TestWhatPsIsAskedFor(unittest.TestCase):
         self.assertEqual(2048 * 1024, mutate._parse_ps("7 1 7 2048\n")[7].resident)
 
 
+class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
+    """`_Lanes.crowded`: the sum across lanes at one instant, which is #90.
+
+    **The number `_COMMIT` was calibrated without.** That constant lets the
+    lanes' ceilings add up to 150% of the budget on the argument that peaks are
+    not simultaneous, and nothing measured whether they were -- so the first
+    time they did, the host's OOM killer took a desktop session rather than the
+    sweep. `widest` cannot answer it: it is the heaviest *single* process, which
+    `verdict.cap` already bounds, and a machine dies from the sum of honest
+    lanes.
+
+    Driven by calling `_sample` once against a stubbed process table rather than
+    by starting real lanes, because the claim is arithmetic -- what gets added to
+    what -- and a real fixture could not make two lanes hold chosen amounts at a
+    chosen instant.
+    """
+
+    def setUp(self) -> None:
+        mutate._WATCHED.forget()
+        self.addCleanup(mutate._WATCHED.forget)
+
+    class Once:
+        """A stop event that lets the sampling loop run exactly once.
+
+        `_sample` is `while not stop.wait(_SAMPLE)`, so a *set* `threading.Event`
+        runs the body **zero** times -- which is how the first version of these
+        tests read 0 and looked like a broken sampler. Returning `False` once and
+        `True` afterwards is what "one pass, no sleeping" actually spells.
+        """
+
+        def __init__(self) -> None:
+            self.waited = 0
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.waited += 1
+            return self.waited > 1
+
+    def sampled(self, table: dict[int, Any], members: dict[int, set[int]], start: int = 0) -> int:
+        """One `_sample` pass over `table`, and what it made of the crowd.
+
+        `members` maps each watched leader to the pids `_lane` would find for
+        it, and every leader is given a ceiling far above anything in `table`,
+        so the kill branch is never the thing under test.
+        """
+        lanes = mutate._Lanes()
+        lanes._crowd = start
+        lanes._ceilings = dict.fromkeys(members, 1 << 40)
+        stop = self.Once()
+        with (
+            mock.patch.object(mutate, "_processes", lambda: table),
+            mock.patch.object(mutate, "_lane", lambda leader, tbl: members[leader]),
+            mock.patch.object(mutate, "_end_lane", lambda *rest: None),
+        ):
+            lanes._sample(stop)  # type: ignore[arg-type]
+        assert stop.waited == 2, "the sampler did not run exactly one pass"
+        return lanes.crowded()
+
+    def table(self, **held: int) -> dict[int, Any]:
+        """A process table where pid `n` holds `held[f"p{n}"]` bytes resident."""
+        return {
+            int(name[1:]): mutate.Process(parent=1, group=1, resident=size, address=size)
+            for name, size in held.items()
+        }
+
+    def test_it_adds_the_lanes_up_rather_than_taking_the_heaviest(self) -> None:
+        """**The whole point, and the one assertion `widest` would pass.** Two
+        lanes of 100 MiB each are 200 MiB to the machine and 100 MiB to
+        `_report_headroom`. Sized unequally so that "the sum" and "twice the
+        first" are also different answers."""
+        got = self.sampled(self.table(p10=100 << 20, p20=300 << 20), {10: {10}, 20: {20}})
+        self.assertEqual(400 << 20, got)
+
+    def test_a_lane_inside_its_ceiling_is_still_counted(self) -> None:
+        """The loop `continue`s past a lane that is within its ceiling, and that
+        `continue` is *before* where a running total would have been kept. Every
+        honest lane takes that branch, so a total kept there would count only
+        the lanes about to be killed -- which is the old behaviour with more
+        code."""
+        # Far inside its ceiling, so the kill branch is not reached at all.
+        got = self.sampled(self.table(p10=7 << 20), {10: {10}})
+        self.assertEqual(7 << 20, got)
+
+    def test_a_process_in_two_lanes_is_counted_once(self) -> None:
+        """A pid reachable from two leaders -- `_lane` unions a process group
+        with every descendant, so a lane reparented under another appears in
+        both. Adding the per-lane sums would report 600 MiB of a machine that
+        holds 400."""
+        got = self.sampled(
+            self.table(p10=100 << 20, p20=100 << 20, p30=200 << 20),
+            {10: {10, 30}, 20: {20, 30}},
+        )
+        self.assertEqual(400 << 20, got)
+
+    def test_it_keeps_the_worst_instant_rather_than_the_last(self) -> None:
+        """A high-water mark. The machine died at the peak, not at whatever was
+        true when the sweep finished."""
+        got = self.sampled(self.table(p10=5 << 20), {10: {10}}, start=900 << 20)
+        self.assertEqual(900 << 20, got)
+
+    def test_a_fresh_sampler_has_no_crowd_mark(self) -> None:
+        self.assertEqual(0, mutate._Lanes().crowded())
+
+    def test_forget_starts_a_fresh_crowd_mark(self) -> None:
+        """`_WATCHED` is a singleton and a process may call `run` twice, so
+        without this the second run reports the first one's peak -- the same
+        reason `widest` is reset, and it was reset in the same place."""
+        mutate._WATCHED._crowd = 77 << 20
+        self.assertEqual(77 << 20, mutate._WATCHED.crowded())
+        mutate._WATCHED.forget()
+        self.assertEqual(0, mutate._WATCHED.crowded())
+
+    def said(self, crowd: int, budget: int, terminal: bool = False) -> str:
+        with (
+            mock.patch.object(mutate._WATCHED, "_crowd", crowd),
+            mock.patch.object(mutate, "_budget", lambda: budget),
+            support.quiet(terminal) as spill,
+        ):
+            mutate._report_crowding()
+        return spill.getvalue()
+
+    def test_the_line_names_what_was_held_and_what_there_was(self) -> None:
+        said = self.said(41000 << 20, 53000 << 20)
+        self.assertIn("41000 MiB", said)
+        self.assertIn("53000 MiB", said)
+        self.assertIn("77%", said)
+
+    def test_it_says_resident_because_that_is_what_the_host_counts(self) -> None:
+        """Address space would be the wrong number by 25x -- the storm that
+        prompted `_Lanes` held 26 GB resident against 961 GB of address space,
+        and only one of those is a reason anything dies."""
+        self.assertIn("resident", self.said(100 << 20, 1000 << 20))
+
+    def test_nothing_sampled_says_nothing(self) -> None:
+        """A zero here would be a measurement reported as a result -- the shape
+        `_report_headroom` exists to correct, in the same run."""
+        self.assertEqual("", self.said(0, 53000 << 20))
+
+    def test_a_crowded_machine_is_shouted_and_a_roomy_one_is_not(self) -> None:
+        """The half that makes it worth printing. Without it the line reads the
+        same whether the sweep used a tenth of the machine or all of it."""
+        tight = self.said(50000 << 20, 52000 << 20, terminal=True)
+        roomy = self.said(5000 << 20, 52000 << 20, terminal=True)
+        self.assertIn(paint.ODD, tight, "a 96% crowd was muttered")
+        self.assertNotIn(paint.ODD, roomy, "a 10% crowd was shouted")
+
+    def test_the_threshold_itself_counts_as_crowded(self) -> None:
+        """Exactly at `_TIGHT`, the only input that tells `>=` from `>`."""
+        at = int(mutate._TIGHT * (52000 << 20))
+        self.assertIn(paint.ODD, self.said(at, 52000 << 20, terminal=True))
+
+    def test_a_machine_that_reports_no_memory_is_said_nothing_about(self) -> None:
+        """`_budget` can answer 0 -- a machine publishing no `/proc/meminfo`, no
+        cgroup and no `sysconf`, where `_BLIND_LANES` is the fallback. Dividing
+        by it is a `ZeroDivisionError` in the reporting line of a sweep that has
+        otherwise finished, which is the worst place to raise."""
+        self.assertEqual("", self.said(900 << 20, 0))
+
+    def test_a_machine_that_reports_one_byte_is_still_reported_on(self) -> None:
+        """The other side of `<= 0`, and the only input that tells it from
+        `<= 1`: a budget of exactly one byte is absurd but it is a *reading*,
+        and a reading gets reported. Without this the guard may quietly widen
+        until it swallows real machines."""
+        self.assertIn("900 MiB", self.said(900 << 20, 1))
+
+    def test_it_is_still_said_when_there_is_no_ceiling_to_report_against(self) -> None:
+        """The two lines go quiet for different reasons, so one must not be
+        nested inside the other. `_report_headroom` says nothing when no lane
+        process was measured or when there is no ceiling -- and a run with no
+        ceiling is exactly one where "was the machine big enough" is the only
+        question left. Nested, this figure disappeared with the other."""
+        with (
+            mock.patch.object(mutate._WATCHED, "_crowd", 900 << 20),
+            mock.patch.object(mutate._WATCHED, "_widest", 0),
+            mock.patch.object(mutate, "_budget", lambda: 52000 << 20),
+            support.quiet() as spill,
+        ):
+            mutate._report_headroom(0)
+        said = spill.getvalue()
+        self.assertIn("900 MiB", said, "the crowd went quiet with the headroom line")
+        self.assertNotIn("ceiling", said, "a headroom line was printed with nothing to report")
+
+
 class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
     """`_Lanes` measures every lane, not only one it is about to kill.
 

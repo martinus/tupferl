@@ -160,19 +160,19 @@ EACH_TEST = 30.0
 #: sweeps, whole-tree ones included. The heaviest single lane process ran 14-18%
 #: of its ceiling on `--only tupferl/` and 92% on a whole-tree run.
 #:
-#: **That calibration has since been falsified, and this constant is now known
-#: to be unsafe on one table -- see #90.** `--all --only tools/mutate.py` at 28
-#: lanes let the ceilings sum to 79 GiB on a 62 GiB machine and the host's OOM
-#: killer took the developer's desktop session; at 40 lanes the same table
-#: returned 12 `BROKE` rows, every one `killed by SIGKILL`, with the closing
-#: line reporting the heaviest lane at **100%** of its ceiling. `broke` fell
-#: 12 -> 2 -> 0 as lanes came down, on identical rows.
+#: **A sweep did kill a desktop session (2026-08-30), and this constant was
+#: blamed for it wrongly** -- recorded because the wrong diagnosis is the more
+#: instructive half. The cause was #91: a mutant of `_lane` inverts the lane's
+#: membership test, and `_end_lane` then `SIGKILL`s every process the *user*
+#: owns. It was `os.kill` in a loop, not the OOM killer.
 #:
-#: The reason it is that table and not `--only tupferl/` is mechanical: its rows
-#: run *nested* harnesses, and `slowest_first` dispatches a file's dearest rows
-#: adjacently -- so the peaks this constant assumes are independent are, there,
-#: in flight together. Until the sampler below exists, pass `--workers` by hand
-#: for it.
+#: What ruled memory out is now measurable, which is the point of
+#: `_report_crowding` below: that table's lanes hold **924 MiB between them at
+#: 8 lanes**, so ~3.2 GiB at the 28 that killed the session, on a 62 GiB machine
+#: that showed 55 GiB free afterwards. No exhaustion anywhere near it.
+#:
+#: So this constant is **not** known to be wrong. It is known to be unmeasured,
+#: which is what #90 is now about and what the line below finally prints.
 #:
 #: **Not applied to `_affordable`**, which divides by what a lane is *measured*
 #: to use rather than by its ceiling. That number already assumes peaks are
@@ -933,6 +933,17 @@ class _Lanes:
         #: ceiling big enough", and one process coming close is the whole
         #: answer -- `verdict.cap` bounds each process separately.
         self._widest = 0
+        #: The most *resident* memory every watched lane held **between them at
+        #: one instant** -- the number the host feels, and the one `_COMMIT` was
+        #: calibrated without. `_widest` cannot stand in for it: it answers "was
+        #: one lane's ceiling big enough", and a machine dies from the sum of
+        #: honest lanes rather than from one runaway. See #90, which this exists
+        #: to make answerable.
+        #:
+        #: Resident and not address space, for the reason `_processes` gives:
+        #: the OOM killer counts resident, and the storm that prompted `_Lanes`
+        #: held 26 GB of it against 961 GB of address space.
+        self._crowd = 0
 
     def watch(self, group: int, ceiling: int) -> None:
         """Count `group` against `ceiling` from now on. ``0`` is no cap."""
@@ -958,10 +969,16 @@ class _Lanes:
         with self._lock:
             return self._widest
 
+    def crowded(self) -> int:
+        """The most resident memory every lane held between them at one instant."""
+        with self._lock:
+            return self._crowd
+
     def forget(self) -> None:
         """Start a fresh high-water mark, so one run does not report another's."""
         with self._lock:
             self._widest = 0
+            self._crowd = 0
 
     def release(self, group: int) -> int:
         """Stop counting, and say what it held if this is what killed it."""
@@ -985,8 +1002,15 @@ class _Lanes:
             if not watched:
                 continue
             table = _processes()
+            #: Every watched lane's members, unioned rather than added up. A pid
+            #: reachable from two leaders -- a lane that reparented under
+            #: another, which `_lane`'s descendant walk makes possible -- would
+            #: otherwise be counted twice, and the whole point of this figure is
+            #: that it can be compared against the machine.
+            crowd: set[int] = set()
             for leader, ceiling in watched.items():
                 members = _lane(leader, table)
+                crowd |= members
                 held = sum(table[pid].resident for pid in members)
                 # Recorded for every lane, not only for one that is killed.
                 # Until this existed the only address-space figure anywhere was
@@ -1018,6 +1042,16 @@ class _Lanes:
                     self._killed[leader] = held
                 # survivor: drop-call -- TODO: why is this acceptable?
                 _end_lane(leader, members)
+            # After the loop, so it is one instant rather than a running total,
+            # and outside the per-lane `continue`s above, which skip a lane that
+            # is inside its ceiling -- exactly the lanes this has to count.
+            # survivor: branch -- equivalent: with `crowd` empty the sum is 0 and `max(mark, 0)` is
+            #   `mark`, because the mark starts at 0 and never falls. So taking the branch anyway
+            #   reaches the same answer, and what the guard actually saves is the lock -- acquired
+            #   once a second per sweep, which is real and is not observable from any assertion.
+            if crowd:
+                with self._lock:
+                    self._crowd = max(self._crowd, sum(table[pid].resident for pid in crowd))
 
 
 #: One per process, because `_run` is what registers and it has no run-wide
@@ -2340,12 +2374,59 @@ def _report_headroom(ceiling: int) -> None:
     """
     widest = _WATCHED.widest()
     # survivor: off-by-one -- TODO: why is this acceptable?
-    if not widest or ceiling <= 0:
+    if widest and ceiling > 0:
+        share = widest / ceiling
+        said = (
+            f"heaviest lane process held {widest >> 20} MiB of its {ceiling >> 20} MiB "
+            f"ceiling ({share:.0%}, sampled, ~3% under)"
+        )
+        print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
+    # Outside that `if`, and not inside it: the two lines answer different
+    # questions and go quiet for different reasons. Nested, a run with no
+    # ceiling to report against would also lose the figure that says whether the
+    # *machine* was big enough -- the one thing #90 is about.
+    _report_crowding()
+
+
+def _report_crowding() -> None:
+    """Say what every lane held *between them*, against what the machine has.
+
+    **The number `_COMMIT` was set without.** That constant lets the lanes'
+    ceilings add up to 150% of the budget on the argument that peaks are not
+    simultaneous, and until this line existed nothing anywhere measured whether
+    they were -- so when a sweep killed a desktop session, memory was the
+    obvious suspect and there was no way to clear it.
+
+    This is what cleared it. `--all --only tools/mutate.py` holds **924 MiB
+    across 8 lanes**, so about 3.2 GiB at the 28 that were running, on a 62 GiB
+    machine with 55 GiB free afterwards. The kill was #91 -- a mutant of `_lane`
+    inverting the membership test that `_end_lane` then `SIGKILL`s -- and not
+    memory at all.
+
+    It is deliberately a *different* question from the line above.
+    `_report_headroom` asks "was one lane's ceiling big enough", which
+    `verdict.cap` bounds per process; this asks "was the machine big enough",
+    which nothing bounds at all. A sweep can be comfortable on the first and
+    fatal on the second -- the run that prompted #90 reported its heaviest lane
+    at 14% of its ceiling in one configuration and killed the desktop in
+    another.
+
+    Against `_budget()` rather than against the sum of ceilings, because the
+    budget is what `_share` divided and therefore the number a reader would
+    check the arithmetic against. Silent when nothing was sampled, for the
+    reason `_report_headroom` gives: a zero here would be a measurement
+    reported as a result.
+    """
+    crowd = _WATCHED.crowded()
+    if not crowd:
         return
-    share = widest / ceiling
+    budget = _budget()
+    if budget <= 0:  # pragma: no cover - a machine that publishes no memory at all
+        return
+    share = crowd / budget
     said = (
-        f"heaviest lane process held {widest >> 20} MiB of its {ceiling >> 20} MiB "
-        f"ceiling ({share:.0%}, sampled, ~3% under)"
+        f"every lane held {crowd >> 20} MiB between them at once, "
+        f"of {budget >> 20} MiB usable ({share:.0%}, sampled, resident) -- see #90"
     )
     print(paint.paint(said, paint.ODD if share >= _TIGHT else paint.QUIET))
 

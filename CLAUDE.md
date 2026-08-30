@@ -1487,22 +1487,29 @@ read this file:
     feels. "One lane reached 92% of its ceiling" and "the machine was near its
     limit" are different claims and only the first is in evidence.
 
-    **A sweep has now been OOM-killed, so this is no longer hypothetical
-    (#90).** `--all --only tools/mutate.py` at 28 lanes summed its ceilings to
-    79 GiB on a 62 GiB machine and the host's OOM killer took the developer's
-    desktop session; the same table at 40 lanes returned 12 `BROKE` rows, all
-    `killed by SIGKILL`, with the closing line reporting the heaviest lane at
-    **100%** of its ceiling. `broke` fell 12 → 2 → 0 as lanes came down, on
-    identical rows — so a `BROKE` row on a memory-starved sweep says nothing
-    about the line it appears to guard. **Read the headroom line before the
-    verdicts**: at 100% those two facts are one fact, and diagnosing the rows
-    without it buys a permanent guard against something that never happened.
+    **The sampler exists now** (`_report_crowding`), and every run prints what
+    the lanes held between them against what the machine had. Until it did, this
+    constant was the obvious suspect when a sweep killed a desktop session on
+    2026-08-30 — and it was the wrong one.
 
-    That table is the exception rather than the rule, and mechanically so: its
-    rows run *nested* harnesses, and `slowest_first` dispatches a file's dearest
-    rows adjacently — the same correlation woswoar#232 measured. Pass
-    `--workers` by hand for it. The sampler is still the thing to write before
-    arguing about the constant.
+    **That mis-diagnosis is the entry worth keeping.** `killed by SIGKILL` in a
+    row's detail reads as "the machine ran out of memory", and the harness's own
+    message says so *first* — but it says something else second, which is the
+    true half here: "or a harness running inside it killed the session it was
+    in". The cause was #91: a mutant of `_lane` inverts the lane's membership
+    test, and `_end_lane` `SIGKILL`s everything it returns, which is then every
+    process the user owns. `os.kill` in a loop, not the OOM killer.
+
+    The numbers that settled it, and none was available before the sampler:
+    that table holds **924 MiB across 8 lanes**, so ~3.2 GiB at the 28 that were
+    running, on a 62 GiB machine showing 55 GiB free afterwards.
+
+    Two things to carry forward. **A `SIGKILL` row is a question, not an
+    answer** — cross it against the summed figure before believing memory, and
+    look at *which* rows died: seven of the thirteen mutated the guard
+    machinery itself, which is not a coincidence any memory story explains. And
+    **`_COMMIT` is not known to be wrong**; it is known to be unmeasured, which
+    is all #90 now claims.
 
   The counter-argument, which is measured and which `slowest_first` makes worse:
   woswoar#232 was not lanes drifting up independently, it was *three of four
