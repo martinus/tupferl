@@ -373,6 +373,19 @@ committed; the only recovery is writing it again from memory.
 
 ## 7. Writing things down
 
+- **Everything worth remembering goes in the repository, and never into an
+  assistant's private memory.** Agent tooling offers a local memory store; it is
+  not used for this project. A note there lives on one machine, under one tool,
+  for one person: nobody else can read it, no PR reviews it, and nothing ever
+  catches it going stale — which §0 says is worse than not having written it at
+  all. A note here arrives through a PR someone reads, and is corrected by the
+  same review that notices it stopped being true.
+
+  Where, specifically: a fact about the code goes in a docstring or a comment
+  beside it; a fact about *how the work is done* goes in this file; a measured
+  result goes in this file's "Measured" or "Measured dead ends" sections or in
+  `docs/`; and anything somebody should act on later is an issue (§4), not a
+  note anywhere.
 - **Comments explain *why*, especially why an obvious alternative was rejected.**
   A wrong "why" is worse than none — if you are not sure why a line is there, say
   that instead of inventing a reason.
@@ -463,6 +476,25 @@ python -m tools.run_tests                 # the suite, sharded across cores
 ruff check . && ruff format --check . && mypy tupferl tests tools \
   && python -m tools.run_tests            # the preflight, exactly what CI runs
 ```
+
+**`python` in every command above means the project's virtualenv, and bare
+`python` is usually not it.** `.venv/` is gitignored, so nothing in the tree says
+it exists, and `which python` answers the system one unless it has been
+activated -- which is how half a session of pytest spikes came to be run against
+the wrong interpreter. Measured here on 2026-08-30:
+
+| | `.venv/bin/python` | `/usr/bin/python` |
+|---|---|---|
+| pytest | **9.1.1** -- the floor `pyproject.toml` pins | 8.4.2 |
+| hypothesis, mypy, ruff | present | absent |
+
+The version is not a detail: `tools/verdict.py` classifies pytest *report
+objects*, and `pyproject.toml` records the measured 8-against-9 difference in
+`TestCase.subTest`'s report shape that the floor exists for. So when a pytest
+behaviour looks surprising, ask
+`python -c "import pytest; print(pytest.__version__)"` before believing it --
+the answer is the difference between a spike that means something and one that
+does not.
 
 `python -m pytest -q` runs the same tests serially, and is the one to reach for
 when a parallel run's output is confusing -- it is what a batch runs, without
