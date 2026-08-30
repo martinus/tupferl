@@ -1865,8 +1865,30 @@ and generate **0 rows** between them, and `tools/mutate.py` is in scope because
 `test_profiles.py` imports it.
 
 `tupferl/` has not been touched since 2026-08-29, so the whole-tree report of
-2026-08-30 10:04 is an exact row-for-row baseline for the six files that do
-generate rows. Preflight and sweep numbers are below.
+2026-08-30 10:04 is an exact row-for-row baseline. That made the whole package
+cheaper to run than the six files separately -- **1309 rows in 441s at 38
+lanes**, against six invocations each paying their own baseline shard -- so the
+gate is wider than the contract asks for rather than narrower.
+
+| | baseline | B2 |
+|---|---:|---:|
+| caught | 1271 | **1272** |
+| survived | 26 | **26** |
+| `BROKE` | 1 | **0** |
+| `TIMEOUT` | 0 | 0 |
+
+**Zero newly-surviving and zero newly-`BROKE`**, which is the contract. The
+survivor *set* is identical row for row, not merely the same size -- all 26 are
+excused by a tag beside the code, and the sweep exits 0 over them. One row moved
+the other way: `tupferl/copies.py:104` was `broke` in the baseline and is
+`caught` here.
+
+Preflight: **1781 tests, 0 failures, 0 skipped**. The sweep's own load lines
+read `heaviest lane process held 555 MiB of its 2068 MiB ceiling (27%)` and
+`every lane held 3587 MiB between them at once, of 52297 MiB usable (7%)`, with
+an independent watchdog seeing `MemAvailable` no lower than 48829 MiB -- worth
+recording because this is the first sweep since [#91](https://github.com/martinus/tupferl/issues/91),
+where the harness's kill list was the thing at fault rather than memory.
 
 `tools/mutate.py` was **not** swept, on the rule the [#96
 section](#96-is-a-prerequisite-of-b6-and-of-no-other-cluster) already states and
