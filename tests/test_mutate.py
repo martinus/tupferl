@@ -709,7 +709,23 @@ class TestWhichRememberedIdsStillResolve(unittest.TestCase):
 
     def test_asking_about_nothing_asks_pytest_nothing(self) -> None:
         """`ahead_of` calls this with an empty set on every fresh cache, and
-        asking pytest what it collects is a subprocess and half a second."""
+        asking pytest what it collects is a subprocess and half a second.
+
+        **The `cache_clear` is what makes this able to fail**, and without it
+        the test was decoration. `_collected` is `functools.cache`d, so once any
+        earlier test in the same process has asked for this tree, the guard
+        under test can be removed and the fall-through hits the cache instead of
+        `subprocess.run` -- the mock is never called either way and the
+        assertion holds.
+
+        Measured, with `if not wanted:` mutated to `if False:`: the whole
+        module passed 371 for 371 with this line absent, and fails 5 with it
+        present. Identical on `main`, so this is not something the pytest
+        conversion introduced -- it is a latent order dependency the sweep
+        happened to catch by running the killer first, through
+        `Killers.ahead_of`, before anything had warmed the cache.
+        """
+        mutate._collected.cache_clear()
         with mock.patch.object(subprocess, "run") as never:
             self.assertEqual(set(), mutate._loadable([]))
         never.assert_not_called()
