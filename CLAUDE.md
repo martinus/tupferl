@@ -443,6 +443,22 @@ away.** Collected instances, all real:
   reported "nothing noticed this" — flattering the tests, which is the direction
   every bug in that class has erred.
 - A required CI check that was skipped rather than run, and counted as satisfied.
+- **Asking for a run *by revision* is necessary and not sufficient: zero runs
+  registered reads as zero runs pending.** The entry below says to ask
+  `…/actions/runs?head_sha=$(git rev-parse HEAD)` rather than for the pull
+  request's check list, and that is right — but a poll loop written against it
+  broke the same way. `until [ "$(… | jq '[.workflow_runs[].status] |
+  map(select(. != "completed")) | length')" = "0" ]` is satisfied by an **empty
+  list**, so it fell straight through and reported success having read nothing;
+  the reporting line after it then printed no jobs, and the whole thing exited
+  0. Wait for `.workflow_runs | length` to be non-zero **first**, and treat "no
+  runs" as "keep waiting", never as "nothing is pending".
+
+  It cost nothing here only because the answer was already "there is no run":
+  `ci.yml` triggers on `push` for `main` alone, plus `pull_request`, so pushing
+  a branch with no pull request open starts nothing at all. **CI begins when the
+  PR opens**, and a branch pushed ahead of time buys no overlap.
+
 - `gh pr checks` reporting the **previous** commit's completed run. A poll loop
   that broke when "every check is non-pending" saw a full set of passes seconds
   after a push, before GitHub had registered the new run at all — so a green was
