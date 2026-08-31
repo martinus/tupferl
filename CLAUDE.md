@@ -1664,23 +1664,35 @@ read this file:
   than failing. A `BROKE` row is never `caught`, so that line is unguarded on
   the runs where it fires.
 
-  **A second instance, and this one is worse because a cold machine always gets
-  the bad answer.** `tools/mutate.py`'s `_attempt`, the `drop-call` on the
-  `source.write_text(_applied(...))` that applies the mutant: run *alone* and
-  cold it is `TIMEOUT` at 300s in **5 of 5 attempts across two trees** — three
-  on a branch, two on `main`, so it is not anybody's diff. In a whole-table
-  sweep of `main` it came back `caught` in 3.5s, by
-  `TestABatchSweepEndToEnd::test_a_batch_run_writes_its_report_and_marks_itself_done`;
-  in the same sweep of a branch it timed out.
+  **A second instance was claimed here and then withdrawn, and the withdrawal is
+  the more useful entry.** `tools/mutate.py`'s `_attempt`, the `drop-call` on
+  the write that applies the mutant, was reported as `TIMEOUT` at 300s in "5 of
+  5 attempts across two trees" and filed as #107. **Every one of those five runs
+  omitted `failfast`.** `mutate.run`'s signature is `failfast: bool = False` and
+  `main` passes `failfast=True` for a generated table, so a hand-driven
+  `mutate.run([row], ...)` keeps going after the first failing test where a
+  sweep stops at it. Re-run with the flag a sweep sets, on the same row and the
+  same tree:
 
-  The mechanism is the one above with the consequence sharpened: drop that write
-  and the probe's nested harness never applies *its* mutations, so every nested
-  row survives and walks the whole suite. Whether the killer is reached before
-  that happens is decided by `Killers.ahead_of` and `Learned` — and
-  `sweeps/killers.json` is gitignored and machine-local, so **the first sweep on
-  any fresh machine reports this row unguarded** and every later one may not.
-  Filed as #107; do not tag it, because a tag excusing a row the suite often
-  *does* catch would be reported spent half the time and silence it the rest.
+  | arm | without `failfast` | with it |
+  |---|---|---|
+  | selection as generated | `TIMEOUT` 300.0s | **`caught` 0.8s** |
+  | recorded killer on `first` | `caught` 1.7s | `caught` 1.7s |
+  | killer's module as the selection | `TIMEOUT` 300.0s | **`caught` 0.8s** |
+
+  So the rule, and it is not specific to this flag: **a single-row reproduction
+  has to be driven with the arguments the sweep uses, or it is answering a
+  different question.** `run`'s defaults are tuned for a hand-written spec —
+  `failfast=False` is right there, because "a red baseline is a thing you want
+  the whole of" — and every one of them is a way for a reproduction to diverge
+  from the run it is meant to explain. Read `main`'s call, not the signature.
+
+  What is left unexplained is one observation, not five: a whole-table sweep of
+  a branch reported that row `TIMEOUT` while the same sweep of `main` reported
+  it `caught` in 3.5s, both with `failfast` on. `failfast` stops at the first
+  *failing* test and not at a slow passing one, so a front that puts slow
+  passers ahead of the fast failure would spend the budget — which is a
+  hypothesis and is recorded as one. #107 carries it, at P3.
 
 - **Historical — the lane count was held at 16 by a constant (`_LANES`, now
   removed), and lifting it was worth 30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind
