@@ -403,9 +403,9 @@ class TestBackgroundGitIsOff:
         assert got.stdout.strip() == want
 
     def test_the_probe_can_come_back_empty(self, git_box: Repo) -> None:
-        """The precondition. Three `assertEqual`s against a `git config` that
-        answered *anything* would pass if `--get` always printed the value asked
-        for; this shows it does not, so the three above are reading real
+        """The precondition. The three cases above, against a `git config` that
+        answered *anything*, would pass if `--get` always printed the value
+        asked for; this shows it does not, so the three are reading real
         settings rather than an echo."""
         got = asked(git_box, "gc.nosuchsetting")
         assert got.returncode == 1
@@ -583,8 +583,8 @@ class TestTheTwoMachineTemplate:
         assert after.hits == before.hits + 2
 
     def test_a_copy_starts_where_a_built_one_did(self, copy: Copies) -> None:
-        """The equivalence the whole change rests on: what `setUp` used to build
-        by running `init`, `add` and `sync` is what a copy now holds.
+        """The equivalence the whole change rests on: what the fixture used to
+        build by running `init`, `add` and `sync` is what a copy now holds.
 
         Asserted through the tool rather than by comparing trees -- commit
         hashes and timestamps differ between a build and a copy and always will,

@@ -276,10 +276,9 @@ class TestWhetherAProcessIsThere:
         outcome. Driven against a real child because the property is the
         kernel's, not the code's: `wait` timing out is the child surviving.
         """
-        child = running
-        assert watch.alive(child.pid)
+        assert watch.alive(running.pid)
         with pytest.raises(subprocess.TimeoutExpired):
-            child.wait(timeout=0.5)
+            running.wait(timeout=0.5)
 
     def test_one_is_a_pid_and_not_a_group(self) -> None:
         """The guard's boundary, pinned where the kernel will answer anywhere.
@@ -721,22 +720,22 @@ class TestTheCommandLine:
         the count, and that the stream is clean.
         """
         before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_utime
-        watcher = subprocess.Popen(
+        child = subprocess.Popen(
             command(box, str(running.pid), "--interval", "0.05"),
             cwd=REPO,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        request.addfinalizer(watcher.kill)
+        request.addfinalizer(child.kill)
         time.sleep(1.0)
         # Before the terminate, because "it exited on its own" and "it was still
         # watching" are the two answers here and terminating erases the
         # difference. Returning on a `working` line is a watcher that stops at
         # the first sign of life, which is worse than not running it.
-        assert watcher.poll() is None, "the watcher returned instead of carrying on"
-        watcher.terminate()
-        out = watcher.communicate(timeout=10)[0]
+        assert child.poll() is None, "the watcher returned instead of carrying on"
+        child.terminate()
+        out = child.communicate(timeout=10)[0]
         assert "Traceback" not in out
         assert out.count("working:") == 1, out
         # The sleep, measured rather than read. Dropping it changes no output at
@@ -765,17 +764,17 @@ class TestTheCommandLine:
         arrived it is none. The three are far enough apart that a loaded machine
         cannot turn one into another.
         """
-        watcher = subprocess.Popen(
+        child = subprocess.Popen(
             command(box, str(running.pid), "--interval", "0.05", "--stale", "0.1"),
             cwd=REPO,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        request.addfinalizer(watcher.kill)
+        request.addfinalizer(child.kill)
         time.sleep(1.0)
-        watcher.terminate()
-        out = watcher.communicate(timeout=10)[0]
+        child.terminate()
+        out = child.communicate(timeout=10)[0]
         assert "Traceback" not in out
         said = out.count("STALLED")
         assert said >= 1, out
