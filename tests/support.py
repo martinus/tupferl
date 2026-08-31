@@ -1019,7 +1019,7 @@ def template() -> Path:
     return root
 
 
-def two_machines(into: Path) -> tuple[Computer, Computer, Path]:
+def copy_template(into: Path) -> tuple[Computer, Computer, Path]:
     """A copy of `template()` at `into`: two machines and their bare remote.
 
     Two things in the copy still name the tree it came from, and both are fixed
@@ -1043,19 +1043,23 @@ def two_machines(into: Path) -> tuple[Computer, Computer, Path]:
     return first, second, remote
 
 
-class TwoMachines(unittest.TestCase):
+@dataclass(frozen=True)
+class TwoMachines:
     """Two `$HOME`s and one bare remote, with `.bashrc` already managed and
     synced from the first -- plan §3.5's daily flow, at the point where a second
     computer can be brought up.
 
-    Not `SandboxCase`, which patches `os.environ` for *one* machine: each
+    Not a `Sandbox`, which patches `os.environ` for *one* machine: each
     `Computer` carries its own environment, and `run`/`call` apply it per
-    command, which is how two hostnames coexist without two processes.
+    command, which is how two hostnames coexist without two processes. That is
+    also why this is a plain dataclass rather than a subclass of `Sandbox` --
+    there is no single `home` or `env` here to inherit, and a `home` field
+    naming one of the two would be read as naming the pair.
 
-    **The tree is copied, not built** (#19). `setUp` used to run a real `init`,
-    `add` and `sync` for each of the 146 tests that inherit this; it now copies
-    `template()`, which is 4.3 ms against 120.4 ms. See there for the numbers and
-    for why the template is per *process* rather than per class.
+    **The tree is copied, not built** (#19). This fixture used to run a real
+    `init`, `add` and `sync` for each of the 146 tests that take it; it now
+    copies `template()`, which is 4.3 ms against 120.4 ms. See there for the
+    numbers and for why the template is per *process* rather than per class.
 
     The build itself runs in-process, which is the older half of the same
     argument: it was three subprocesses until the property tests demonstrated the
@@ -1065,16 +1069,15 @@ class TwoMachines(unittest.TestCase):
     the exit status beyond "it worked", which is the only thing a subprocess
     would add; the tests that *do* still use `run`.
 
-    Here rather than in a test module because three of them build it, and a
+    Here rather than in a test module because five of them build it, and a
     fixture that drifts between them is one where a failure in one file cannot be
     reproduced in another.
     """
 
-    def setUp(self) -> None:
-        box = tempdir()
-        self.tmp = box.__enter__()
-        self.addCleanup(box.__exit__, None, None, None)
-        self.first, self.second, self.remote = two_machines(self.tmp)
+    tmp: Path
+    first: Computer
+    second: Computer
+    remote: Path
 
     def diverge(self, name: str, mine: bytes, theirs: bytes) -> None:
         """Make the two machines disagree about `name`, with `machine-a` pushing.
@@ -1088,7 +1091,48 @@ class TwoMachines(unittest.TestCase):
         """
         (self.first.home / name).write_bytes(mine)
         (self.second.home / name).write_bytes(theirs)
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.first.call("sync") == 0, "the pushing machine's sync failed"
+
+
+@contextmanager
+def two_machines() -> Iterator[TwoMachines]:
+    """A `TwoMachines`, torn down on the way out.
+
+    Composed from `tempdir` and `copy_template` rather than repeating either,
+    for the reason `sandbox()` gives one level down: the two adapters over this
+    -- `TwoMachinesCase` and `tests/conftest.py`'s fixture -- must not be able to
+    disagree about what the fixture *is*.
+    """
+    with tempdir() as tmp:
+        first, second, remote = copy_template(tmp)
+        yield TwoMachines(tmp=tmp, first=first, second=second, remote=remote)
+
+
+class TwoMachinesCase(unittest.TestCase):
+    """The `unittest` adapter over `two_machines` above.
+
+    Kept until its last user converts (`docs/pytest-plan.md`, cluster B4b) and
+    deleted in that PR. It builds nothing of its own -- it copies four fields off
+    one `TwoMachines` -- so the two spellings cannot disagree.
+
+    Named with the `Case` suffix `SandboxCase` already established, so that the
+    definition can keep the good name. The rename cost 23 call sites in the four
+    modules B4b converts, and it is a pure substitution: B4b then deletes the
+    class rather than renaming anything back.
+    """
+
+    def setUp(self) -> None:
+        made = two_machines()
+        self.box = made.__enter__()
+        self.addCleanup(made.__exit__, None, None, None)
+        self.tmp = self.box.tmp
+        self.first = self.box.first
+        self.second = self.box.second
+        self.remote = self.box.remote
+
+    def diverge(self, name: str, mine: bytes, theirs: bytes) -> None:
+        """See `TwoMachines.diverge`."""
+        self.box.diverge(name, mine, theirs)
 
 
 def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
@@ -1193,27 +1237,38 @@ def regions(middles: list[str]) -> str:
     ).decode()
 
 
-class Machine(SandboxCase):
+@dataclass(frozen=True)
+class Machine(Sandbox):
     """A sandboxed home with a bare remote beside it, and the CLI pointed there.
 
     The one-machine fixture, here rather than in a test module because two of
     them build it -- `test_manage.py` for the repository commands and
-    `test_sync.py` for the engine. `Computer` above is the same idea for the
-    *two*-machine tests, which cannot use this one: `SandboxCase` patches
+    `test_sync_cli.py` for the engine. `Computer` above is the same idea for the
+    *two*-machine tests, which cannot use this one: a `Sandbox` patches
     `os.environ` for a single `$HOME`, and two hostnames have to exist at once.
     """
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.remote = make_remote(self.tmp / "remote.git", self.env)
-        self.repo = paths.repo_dir()
+    remote: Path
+    repo: Path
+
+    @property
+    def host(self) -> str:
+        """This machine's name, read back out of its own environment.
+
+        Rather than a fourth field. `Sandbox`'s docstring already declines to
+        carry one on the grounds that `env["TUPFERL_HOSTNAME"]` has it, and a
+        copy here could disagree with the environment the CLI actually runs
+        under -- which is the only thing `stored` and `snapshot` are asking
+        about.
+        """
+        return self.env["TUPFERL_HOSTNAME"]
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return run_cli(list(args), self.env)
 
     def init(self) -> subprocess.CompletedProcess[str]:
         done = self.run_cli("init", str(self.remote))
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        assert done.returncode == 0, done.stdout + done.stderr
         return done
 
     def log(self) -> list[str]:
@@ -1228,3 +1283,57 @@ class Machine(SandboxCase):
     def snapshot(self, name: str) -> Path:
         """Where this machine's merge base for `name` lives."""
         return paths.snapshot_dir(self.repo, self.host) / name
+
+
+@contextmanager
+def machine(host: str = HOST) -> Iterator[Machine]:
+    """A `Machine`, torn down on the way out.
+
+    `repo_dir()` is asked of `tupferl.paths` under this machine's environment
+    rather than retyped as `.local/share/tupferl/repo`, for the reason
+    `Computer.__init__` gives: a test that spells the layout out itself cannot
+    notice the layout changing. It has to be asked *inside* `sandbox()`, which
+    is what patches `os.environ` for it to read.
+    """
+    with sandbox(host) as box:
+        remote = make_remote(box.tmp / "remote.git", box.env)
+        yield Machine(**vars(box), remote=remote, repo=paths.repo_dir())
+
+
+class MachineCase(SandboxCase):
+    """The `unittest` adapter over `machine` above.
+
+    Kept until its last user converts (`docs/pytest-plan.md`, cluster B4b) and
+    deleted in that PR. `enterSandbox` is the whole of it: `SandboxCase.setUp`
+    already assigns `tmp`, `home` and `env` off whatever that returns, and a
+    `Machine` *is* a `Sandbox`.
+    """
+
+    box: Machine
+
+    def enterSandbox(self) -> Machine:
+        """`machine(self.host)`, unwound by `addCleanup`. See `SandboxCase.enterSandbox`."""
+        made = machine(self.host)
+        built = made.__enter__()
+        self.addCleanup(made.__exit__, None, None, None)
+        return built
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.remote = self.box.remote
+        self.repo = self.box.repo
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return self.box.run_cli(*args)
+
+    def init(self) -> subprocess.CompletedProcess[str]:
+        return self.box.init()
+
+    def log(self) -> list[str]:
+        return self.box.log()
+
+    def stored(self, name: str, host: bool = False) -> Path:
+        return self.box.stored(name, host)
+
+    def snapshot(self, name: str) -> Path:
+        return self.box.snapshot(name)

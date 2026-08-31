@@ -394,7 +394,7 @@ class TestTheTwoMachineTemplate(unittest.TestCase):
     def copy(self) -> tuple[support.Computer, support.Computer, Path]:
         box = tempfile.TemporaryDirectory(prefix="tupferl-copies-")
         self.addCleanup(support.discard, box)
-        return support.two_machines(Path(box.name))
+        return support.copy_template(Path(box.name))
 
     def test_two_copies_do_not_share_a_remote(self) -> None:
         """The contamination test, and it is driven rather than asserted from

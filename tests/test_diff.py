@@ -44,7 +44,7 @@ THEIRS = "one\nfrom the repo\nthree\nfour\nfive\n"
 CONTROL = "set number\nset expandtab\n"
 
 
-class Machine(support.TwoMachines):
+class Machine(support.TwoMachinesCase):
     """`machine-b`, synced, with `.bashrc` and `.vimrc` both managed."""
 
     def setUp(self) -> None:
@@ -381,7 +381,7 @@ class TestWhichSideTheDiffPutsOnTheMinus(unittest.TestCase):
                 self.assertNotEqual(minus[4:], plus[4:], "both headers name the same side")
 
 
-class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
+class TestShowingTheDiffThroughTheUsersPager(support.TwoMachinesCase):
     """`core.pager`, honoured so that a machine already set up for `delta` needs
     nothing here.
 

@@ -51,7 +51,7 @@ START = "one\ntwo\nthree\nfour\nfive\n"
 CONTROL = "set number\nset expandtab\n"
 
 
-class TestTheThreeShapesOfOneVerb(support.TwoMachines):
+class TestTheThreeShapesOfOneVerb(support.TwoMachinesCase):
     """`status`, `--all` and `--diff` over one walk.
 
     They were three verbs. Folding them is only worth anything if each shape
@@ -152,7 +152,7 @@ class TestTheThreeShapesOfOneVerb(support.TwoMachines):
         self.assertIn("--- .bashrc", self.said("status", "--diff", ".bashrc"))
 
 
-class Machine(support.TwoMachines):
+class Machine(support.TwoMachinesCase):
     """`machine-b` synced and holding two managed files, ready to diverge.
 
     Both machines end up agreeing about `.bashrc` and `.vimrc`, so any line

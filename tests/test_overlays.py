@@ -57,10 +57,10 @@ OVERLAY = "one\nTWO on machine-b only\nthree\nfour\nfive\n"
 RESHARED = "one\ntwo\nthree\nfour\nFIVE edited on machine-a\n"
 
 
-class OverlaidOnB(support.TwoMachines):
+class OverlaidOnB(support.TwoMachinesCase):
     """`.bashrc` shared by both machines, and overridden on `machine-b`.
 
-    `support.TwoMachines` leaves it managed and synced from `machine-a` holding
+    `support.TwoMachinesCase` leaves it managed and synced from `machine-a` holding
     `SHARED`; this brings the second machine up and has it adopt an overlay.
     The state every test below starts from is the one the weak fixture cannot
     reach: **both** copies exist and they differ.
@@ -249,7 +249,7 @@ class TestRemoveHost(OverlaidOnB):
         self.assertTrue((self.second.home / ".bashrc").is_file())
 
 
-class TestAnOverlayWithNoSharedCopy(support.TwoMachines):
+class TestAnOverlayWithNoSharedCopy(support.TwoMachinesCase):
     """`add --host` for a file that was never shared -- the other arm of every
     branch in `remove --host`, and the case where dropping the overlay stops the
     file being managed on this machine at all."""
@@ -286,7 +286,7 @@ class TestAnOverlayWithNoSharedCopy(support.TwoMachines):
         self.assertFalse(self.first.snapshot(".vimrc").exists())
 
 
-class TestTwoHostsOverrideTheSameFile(support.TwoMachines):
+class TestTwoHostsOverrideTheSameFile(support.TwoMachinesCase):
     """Both machines override `.bashrc`, which is plan §3.3's motivating case --
     a different git email at work and at home, one shared file underneath."""
 

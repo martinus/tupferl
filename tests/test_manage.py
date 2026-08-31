@@ -28,7 +28,7 @@ from tupferl.errors import TupferlError
 #: The one-machine fixture, now in `tests/support.py` because `test_sync.py`
 #: builds the same one. Bound here so the six `class Test...(Machine)` below read
 #: as they always did.
-Machine = support.Machine
+Machine = support.MachineCase
 
 
 class TestInit(Machine):
@@ -1159,7 +1159,7 @@ class TestAddingSomethingThatHoldsACredential(support.SandboxCase):
         self.assertIn(".ssh/id_ed25519", self.stored())
 
 
-class TestRemoveTakesTheNameListPrints(support.TwoMachines):
+class TestRemoveTakesTheNameListPrints(support.TwoMachinesCase):
     """#27's other caller. `remove` goes through `manifest.relative` too.
 
     The unit cases are in `test_manifest.TestTurningWhatWasTypedIntoAName`;

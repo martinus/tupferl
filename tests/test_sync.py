@@ -497,7 +497,7 @@ class TestWhatAnAnswerMeansOnDisk(unittest.TestCase):
 MANAGED = ".bashrc"
 
 
-class TestBeingAskedBeforeAChangeIsStored(support.TwoMachines):
+class TestBeingAskedBeforeAChangeIsStored(support.TwoMachinesCase):
     """The per-file review: `sync` shows what this computer changed and asks.
 
     Only what *this* computer changed. An incoming change is applied without
@@ -617,7 +617,7 @@ class TestBeingAskedBeforeAChangeIsStored(support.TwoMachines):
         self.assertIn("line 59", said, "[d] did not show the rest")
 
 
-class TestWhenTheReviewDoesNotHappen(support.TwoMachines):
+class TestWhenTheReviewDoesNotHappen(support.TwoMachinesCase):
     """Every way a run says "do not ask me", and the one that says it by being
     a pipe.
 
