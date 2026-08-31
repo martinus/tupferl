@@ -2214,9 +2214,78 @@ Three notes worth keeping:
 `if __name__ == "__main__": unittest.main()`, both dead since Phase A2. Deleted,
 which is the same note B6 has for `test_mutate.py`'s.
 
+### The gate found a hole in the verdict layer, and it is Phase B's, not B4a's
+
+The first `tupferl/` sweep came back **1179 caught, 26 survived, 104 `BROKE`**
+against B3's 1283 / 26 / 0 -- the survivor set identical row for row, and 104
+rows that had been answers reduced to nothing. Every one of the 104 was a
+`setup failed`, and every one was blamed on a module this cluster converted.
+
+The cause is a line `tools/verdict.py` drew by *phase*:
+
+| where the assertion lives | pytest phase | was |
+|---|---|---|
+| `unittest`'s instance `setUp` | ``call`` -- pytest runs it inside `runtest` | `noticed` |
+| the same code as a function-scoped fixture | ``setup`` | **`broke`** |
+
+So a fixture asserting its own precondition -- "the template's `init` failed" --
+stopped being an answer the moment the module converted. A `BROKE` row is never
+`caught`, so 104 lines of `tupferl/` read as guarded by nothing, from a change
+that weakened no test.
+
+**Phase cannot tell the two apart**, which is why the original rule was written
+that way and why it was not simply wrong: pytest reports a session-wide
+fixture's failure as the ``setup`` phase of every affected test, exactly as it
+reports a per-test one. What separates them is *scope*, and
+`pytest_fixture_setup` carries it. The rule is now: a **function-scoped**
+fixture failing is that test noticing; `setUpClass`, `setUpModule`, their
+teardowns and any wider fixture stay `broke`, with their existing tests
+unchanged and still green.
+
+Three things worth carrying to B4b, B5 and B6:
+
+- **This was always going to happen at whichever cluster first converted a
+  fixture that asserts.** B1 and B2 had no fixtures; B3's did not assert. It is
+  not a B4a defect and the remaining clusters would each have met it.
+- **It is invisible without a baseline to compare against.** 104 `BROKE` rows
+  read as a harness having a bad day, which CLAUDE.md already records as their
+  characteristic failure -- a `BROKE` row appears in neither of the two numbers
+  a reader looks at. What made it legible was that B3's whole-package report
+  existed and said 0.
+- **`tests/test_verdict.py` gained the row it was missing**, in
+  `TestWhatThisAssumesOfPytest`: that pytest calls `pytest_fixture_setup` for
+  every fixture, lets a wrapper see the exception, and that `FixtureDef.scope`
+  is the string the rule reads. Neither is a documented guarantee; both are
+  measured against pytest 9.1.1. A release that moved either would send every
+  function-scoped failure back to `broke` silently.
+
 ### Gate
 
-Preflight: **1894 tests, 0 failures, 0 skipped**, from 1861.
+Preflight: **1898 tests, 0 failures, 0 skipped**, from 1861.
+
+`tupferl/` has not been touched since 2026-08-29, so B3's whole-package report
+is an exact row-for-row baseline. **1309 rows in 279s at 37 lanes:**
+
+| | B3 baseline | B4a |
+|---|---:|---:|
+| caught | 1283 | **1283** |
+| survived | 26 | **26** |
+| `BROKE` | 0 | **0** |
+| `TIMEOUT` | 0 | 0 |
+
+**Zero newly-surviving, zero newly-`BROKE`**, and the survivor *set* is
+identical row for row rather than merely the same size.
+
+Two `tools/` files changed as well, so `--base main` swept every changed source
+line in the diff: **33 of 33 caught**, including all 20 rows of
+`unassert.flatten` and the new `verdict.pytest_fixture_setup`.
+
+**`tools/unassert.py` swept whole reports 21 survivors and 9 `BROKE`, and none
+of them is this PR's.** They are on `_scan`, `convert` and `main` -- lines B3
+wrote, which B3's gate could not have covered because it was `--only tupferl/`.
+Said here rather than filed: the file dies with Phase C, and an issue closed by
+a deletion is the backlog §4 warns about. Whoever sweeps `tools/` whole before
+then should expect them.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
