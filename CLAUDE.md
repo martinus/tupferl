@@ -604,8 +604,8 @@ Five things are not where a newcomer would guess, all on purpose:
   writing one of those will read that docstring first.
 - **A converted test class keeps `@pytest.mark.usefixtures("...")` for its
   sandbox even when no test in it names the fixture.** A test can depend on a
-  base class for a *side effect* and never mention it: `SandboxCase.setUp`
-  patches `os.environ`, so a test that sets `PATH` and reads the result looks,
+  base class for a *side effect* and never mention it: the sandbox patches
+  `os.environ`, so a test that sets `PATH` and reads the result looks,
   in its own text, like a test needing nothing. Converted by giving each test
   the fixtures its body mentions, that test gets none -- and runs against the
   developer's real environment, which is the failure `tests/support.py`'s
@@ -615,18 +615,20 @@ Five things are not where a newcomer would guess, all on purpose:
 
   So the decorator goes on the class and is the load-bearing statement -- *this
   class runs in a sandbox* -- rather than an inference from whether some method
-  still happens to use the value. B4a converted 21 such classes; **20 name one
-  of the three `unittest` adapters directly (1 `SandboxCase`, 1 `MachineCase`,
-  18 `TwoMachinesCase`) and 38 reach one counting the module-local bases in
-  between**, all of them in B4b, B5 and B6. Both numbers are worth having: the
-  first is what a grep finds, the second is how many classes actually run in a
-  sandbox they never mention.
+  still happens to use the value. B4a converted 21 such classes and B4b 36
+  more, which carry **35 marks** -- `test_sync_cli`'s `TestTheRemoteLine` is
+  pure and needs none, and saying so is the point: the mark states a property,
+  so a class that lacks one has to be a class the property is false of.
 
-  All three names gained their `Case` suffix in B4a, when the fixture
-  *definitions* took the unsuffixed ones -- so the sentence this replaced would
-  now count **nothing at all**, which is the failure mode §0 is about wearing
-  its most flattering face: a grep that comes back empty reads as work
-  finished.
+  **The three `unittest` adapters this rule was written about no longer exist.**
+  `SandboxCase`, `MachineCase` and `TwoMachinesCase` were deleted in B4b with
+  their last users, so the counts that used to sit here -- 20 classes naming one
+  directly, 38 reaching one through a module-local base -- are now zero by
+  construction rather than by progress. That is the shape §0 warns about at its
+  most flattering: a grep coming back empty reads as work finished. What is left
+  to convert is `test_support`, `test_paint`, `test_watch`, `test_reached`
+  (B5) and the four harness modules (B6), and `docs/pytest-plan.md`'s status
+  line is the number to read rather than a count kept here.
 
   **The leak half is guarded rather than trusted.** `tests/conftest.py`'s
   `_every_test_puts_the_environment_back` is autouse and fails the test that
@@ -1479,8 +1481,8 @@ read this file:
 - **Copy the two-machine fixture rather than building it — 120.4ms to 4.3ms,
   24% off the serial suite** (#19). `support.template()`
   builds the tree once per *process* and `copy_template` copies it; 146 of the
-  suite's tests take it, as a `two_machines` fixture where they are converted
-  and through `support.TwoMachinesCase` where they are not.
+  suite's tests take it, all of them through the `two_machines` fixture since
+  B4b converted the last `TestCase` user.
 
   | | median |
   |---|---|

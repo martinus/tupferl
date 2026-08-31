@@ -2429,6 +2429,134 @@ changed source line **95 of 96 caught, 1 excused by a tag, 0 `BROKE`**.
 
 Preflight after: **1915 tests, 0 failures, 0 skipped.**
 
+## B4b as built — 2026-08-31
+
+Four modules, 2228 lines in and 2507 out, 36 classes, **408 assertions** --
+comparable to B3's 506 and the last cluster of end-to-end sync tests. 127
+collected items before, 132 after; **every one of the 127 distinct test names
+survives**, and the growth is two `subTest` loops becoming `parametrize`.
+
+| module | before | after |
+|---|---:|---:|
+| `test_sync_cli` | 42 | 47 |
+| `test_sync_commits` | 40 | 40 |
+| `test_sync_conflicts` | 26 | 26 |
+| `test_overlays` | 19 | 19 |
+
+**This is the cluster that deletes machinery rather than adding it.**
+`SandboxCase`, `MachineCase` and `TwoMachinesCase` each carried a sentence
+saying they die when their last user converts; that user was here, and all
+three are gone -- 117 lines, in their own commit, with a grep across `tests/`,
+`tools/` and the docs behind it rather than an assumption. What is left is the
+extraction B3 and B4a did *for* them: `Sandbox`, `Machine` and `TwoMachines`
+are the definitions and `tests/conftest.py` is the one remaining adapter.
+
+Their docstrings are not deleted with them. B4a's rename argument -- "B4b
+deletes both classes, so the rename is 24 lines that die in the next PR" --
+is now a claim about the past, and each of the three places that made it says
+what happened rather than being quietly cut, which is §0's rule applied to a
+paragraph that has come true.
+
+### 20 fixtures, and the one shape that repeats
+
+Twenty module-local fixtures where there were twenty `setUp`s, plus four frozen
+dataclasses over a `support` base where the `setUp` had methods beside it:
+`OneMachine` (`test_sync_cli`), `Conflicted` (`test_sync_conflicts`),
+`TwoCommits` and `Victimised` (`test_sync_commits`), and `Merging`, which
+subclasses `Sandbox` rather than `TwoMachines`.
+
+`Victimised` is the one worth naming: two fixtures in `test_sync_commits` set
+`self.victim` -- a file **outside** the repository that a settled symlink could
+have been written through -- and a frozen dataclass has nowhere to put it. One
+field on one shared subclass, rather than a second dataclass per fixture.
+
+Three method-to-function conversions, all in `test_sync_commits`, and all of the
+same kind: a helper that read `self` only to reach the box.
+
+- `raising(kind)` and `breaking(box)` are `@contextlib.contextmanager`s where
+  they were `addCleanup` pairs. That is not cosmetic:
+  `test_the_next_sync_still_works_afterwards` used to call `self.stack.close()`
+  half way through to say "and now the settler works again", which is a `with`
+  block ending exactly there.
+- `collide(box, name)` takes what it acts on.
+
+Four class attributes became module constants (`LINK`, `SWAPPED`, `TWIN`,
+`SHARED`), because neither a `parametrize` decorator nor a fixture can see a
+class attribute, and `test_sync_cli`'s `THERE` had to move for exactly that
+reason when `test_every_line_names_the_ref` was parametrized.
+
+### `assertContains` is gone, and it was `SandboxCase`'s only real method
+
+Eleven call sites, all in `test_sync_cli.py`, and all now
+`assert needle in haystack`. The helper's docstring argued that `assertIn`
+"prints both sides, which for a multi-line report is a wall of text with the
+interesting part in the middle" -- true of `unittest`, and pytest's assertion
+rewriting prints the same two sides with the needle in the failure line. The
+helper was work pytest already does.
+
+`tools/unassert.py` refused all eleven by name (`assertContains: no rule for
+it`), which is the property B3 committed it for, and the two `assertRaises`
+with them. **13 of 408 left for a person** -- and, as in B4a, every defect this
+cluster found came from a step the tool cannot check.
+
+### Two dead entry points, and the second one was hiding between two classes
+
+`test_sync_conflicts.py` and `test_sync_commits.py` each carried a mid-file
+`if __name__ == "__main__": unittest.main()`, dead since Phase A2 -- the same
+note B4a wrote for `test_sync.py` and `test_manage.py`, and B6 still has for
+`test_mutate.py`. Both are deleted.
+
+`test_sync_cli.py` also carried `NAME = PurePosixPath(".bashrc")` and its
+import, read by nothing before this change either. Fixed here because the diff
+already rewrote the block it was in (CLAUDE.md §4), and said out loud because a
+silent deletion of an unused constant is indistinguishable from one that had a
+user the grep missed.
+
+### One thing ruff caught that the suite could not
+
+`said(machine, *args)` was a method on `TestWhatSyncSaysAboutTheRemote` and is a
+module-level function now -- and five of its callers assign to a local called
+`said`. In a method that shadowed nothing; at module level it makes the *name*
+local to the function, so `said = said(...)` reads an unbound local and raises.
+
+ruff's F823 named all five before anything ran. Worth recording because the
+class of mistake -- a method becoming a function, and its callers' locals
+colliding with the new global -- is one every remaining cluster can make, and
+the failure would have been an `UnboundLocalError` in a test whose text gives no
+hint why.
+
+### Gate
+
+Preflight: **1920 tests, 0 failures, 0 skipped**, from 1915.
+
+**No file under `tupferl/` or `tools/` is touched by this PR**, so `--base main`
+generates no rows at all and the whole-package sweep is the entire acceptance
+instrument -- which is the right shape for a pure test conversion, and worth
+saying because a `--base` run reporting "0 rows, 0 survivors" would otherwise
+read as evidence.
+
+`tupferl/` has not moved since 2026-08-29, so B3's and B4a's reports are exact
+row-for-row baselines. **1309 rows in 279s at 37 lanes**, baseline green:
+
+| | B3 | B4a | B4b |
+|---|---:|---:|---:|
+| caught | 1283 | 1283 | **1283** |
+| survived | 26 | 26 | **26** |
+| `BROKE` | 0 | 0 | **0** |
+| `TIMEOUT` | 0 | 0 | **0** |
+
+The survivor *set* is identical to **both** earlier runs, label for label, not
+merely the same size -- checked as a set difference in each direction rather
+than by comparing the counts, which is the check that would have missed a
+survivor swapping for another.
+
+Two numbers worth keeping beside it: the heaviest lane held **556 MiB of its
+2064 MiB ceiling (27%)**, against the 92% B4a's whole-tree figure records, and
+the verdict-layer fix B4a landed is what keeps the 104 rows it recovered in the
+`caught` column here -- this is the first cluster to convert fixtures *with*
+that fix already in place, and it is the run that shows it holds for a second
+cluster's worth of them.
+
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
 **Goal:** the pytest-only end state. **PR scope:**
