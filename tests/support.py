@@ -34,7 +34,6 @@ import sys
 import tempfile
 import termios
 import time
-import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -42,6 +41,7 @@ from functools import lru_cache
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from hypothesis import strategies as st
 
 from tupferl import manifest, paths
@@ -510,7 +510,13 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
 #: issue #3 will want -- must not be updatable in one file and forgotten in
 #: another. Only `tests/test_mutants.py` uses it today; the rest of the suite
 #: treats git as the hard requirement plan §5 makes it.
-requires_git = unittest.skipUnless(shutil.which("git"), "git required")
+#:
+#: A `pytest.mark.skipif` since B6, where its one user converted. It reads as
+#: `unittest.skipUnless`'s inverse -- `skipif(which(...) is None)` -- because
+#: pytest has no `skipunless`, and getting the polarity wrong here would skip
+#: the class on every machine that *has* git, which is every machine this runs
+#: on: green, silent, and testing nothing. `--no-skips` is what would say so.
+requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git required")
 
 #: What the refusing hook writes. Two lines: the first is the reason, the second
 #: is the trailer `gitrepo.reason` must drop -- which is the shape git's own
