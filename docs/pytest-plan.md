@@ -2385,7 +2385,48 @@ projection, and both docstrings named the same trap), `START` aliased to
 `support.STARTS_AS` in both modules -- they were byte-identical to the template
 they must match -- and two inline re-implementations of `Synced.diff` replaced.
 
-Preflight after: **1908 tests, 0 failures, 0 skipped.**
+**And the review's own new lines were swept, which found five more.** The
+`--base main` run over them came back 76 caught, 4 `SURVIVED`, 1 `BROKE` --
+every one in code written an hour earlier, which is the argument for the sweep
+going *last* rather than for it being a formality.
+
+The `BROKE` had a root worth removing. `_scan` skipped a comment by `find`ing
+its newline, and `str.find` answers `-1` for "not there" -- which is exactly a
+comment on the last line of a file with no trailing newline, one of this
+module's own fixtures. Any mutation mishandling the sentinel assigned `i = -1`
+and the loop ran backwards for ever. It is a flag and `i += 1` now, the way a
+string already is, so `i` only ever increases. **CLAUDE.md's `RLIM_INFINITY`
+lesson in a second spelling: a sentinel is not a number.**
+
+That moved the hang rather than removing the class of it -- every `i += 1` in a
+scanner loop is an infinite loop when mutated, and the file already carried 9
+such rows from B3. An autouse module bound at `support.bounded(5.0)` makes those
+tests *fail* instead, on a module that runs in 0.04s. On the module rather than
+a class, which is CLAUDE.md's five "where to arm it" lessons taken together.
+
+Of the survivors, one was a second `if not why:` a mutation could make
+unconditional; it is an `else` now. One was `bracket`'s SyntaxError arm, which
+no whole call can reach -- every argument of a call that parses is an expression
+that parses -- so it is driven directly. Two were the arity window, which
+**nothing was reaching**: the wrong-arity fixture uses `assertRaises`, which is
+not in `FORMS`, so it stopped at "no rule for it" one branch earlier. And two
+were parity: a comment is skipped one character at a time, so a mutation
+stepping *two* lands on the newline or steps over it depending on the comment's
+length, and one 17-character fixture answers for exactly one parity. Four
+lengths answer for both.
+
+**One equivalent survivor is tagged**, and one process failure is recorded with
+it: the parity test appeared to fail and had not. Writing the file, running
+`ruff format` and running pytest inside one second is the stale-`.pyc` gotcha
+CLAUDE.md already carries -- and the probe that then "caught" an equivalent
+mutation was reading the same stale bytecode, which is the flattering direction.
+Every verdict here was re-taken with `__pycache__` cleared between runs.
+
+Final gate: the `tupferl/` package unchanged at **1283 caught / 26 survived / 0
+`BROKE`**, survivor set identical to B3 row for row; `--base main` over every
+changed source line **95 of 96 caught, 1 excused by a tag, 0 `BROKE`**.
+
+Preflight after: **1915 tests, 0 failures, 0 skipped.**
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
