@@ -203,24 +203,40 @@ def mutable(path: str) -> bool:
 #: coverage that no verdict will ever mention again, so a name added on
 #: suspicion is worse than a `BROKE` row, which at least shows up as not-caught.
 UNBOUNDED: dict[str, tuple[str, ...]] = {
+    # Derived from a sweep, not from a reading of the code, and re-derivable the
+    # same way: `python -m tools.mutate --all --only tools/mutate.py`, then every
+    # scope holding a row whose outcome is neither `caught` nor `survived`.
+    # Measured on 2026-08-31 over 1030 rows with a green baseline -- 795 caught,
+    # 216 survived, **19 answered nothing** -- and these nine names hold all 19.
     "tools/mutate.py": (
-        # The memory guard. #91 fixed the half that decides what to *kill*;
-        # this is the half that decides what to count, and a probe whose count
-        # is wrong has no guard at all.
-        #
-        # **Not `_lane`, `_from_proc` or `_parse_ps`**, which #96 proposed
-        # alongside it and which the tree refutes: none of them appears among
-        # the unanswered rows that issue measured, and three of their rows carry
-        # a *written* equivalence -- somebody read them, so they are answerable
-        # and excluding them would throw a real verdict away for a hazard that
-        # is not there. #91's own fix is what makes them safe: `_permitted`
-        # vetoes a kill from a second fact these do not supply.
+        # Who a lane *is*, which the kill path reads. 12 of the 19, and the
+        # largest group by some way: `_lane` 7, `_born` 4, `_born_from_proc` 1.
+        # #91 is the mechanism -- get membership or process age wrong and the
+        # nested harness `SIGKILL`s the wrong set, taking its own probes with it.
+        "_lane",
+        "_born",
+        "_born_from_proc",
+        # The `/proc` twin above is what this machine runs, so it is the one a
+        # sweep here can reach; this is the same function on macOS, where no
+        # sweep runs at all. Included on that symmetry and not on evidence,
+        # which is the one place this list departs from its own rule -- stated
+        # because the alternative is an exclusion that silently means something
+        # different on the platform nobody sweeps.
+        "_born_from_ps",
+        # The memory guard, proven by `release` dropping `self._stop.set()`.
+        # The whole class, because every method of it is machinery the probe
+        # below depends on and a list of lines would rot on every edit.
         "_Lanes",
-        # The sandbox pool. A dropped `put` drains the queue and every later
-        # borrower waits on it for ever -- a hang, so `BROKE` by the per-test
-        # alarm rather than by memory, and unanswerable for the same reason.
+        # The sandbox pool: 4 of the 19, all of them a borrow that never comes
+        # back or a pool with nothing in it. Every later borrower then waits for
+        # ever -- a hang, so `TIMEOUT` rather than `BROKE`, and unanswerable for
+        # the same reason. `_lent` and `_on_a_spare` exist so that this can be
+        # said without naming `_borrow`'s and `_attempt`'s callers whole:
+        # `_attempt` decides the measured `first`/`Learned` row ordering, which
+        # is exactly what wants mutating.
         "_sandboxes",
         "_lent",
+        "_on_a_spare",
         # The work queue a lane takes its next row from.
         "Work.take",
     ),

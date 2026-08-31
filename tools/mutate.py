@@ -908,11 +908,6 @@ def _born_from_proc() -> dict[int, float]:
     """`_born` where there is a `/proc`. Field 22 of `proc(5)`, in clock ticks."""
     found: dict[int, float] = {}
     for entry in Path("/proc").iterdir():
-        # survivor: branch -- equivalent, and for `_from_proc`'s reason: `/proc` holds no
-        #   all-digit entry that is not a process, the `stat` read below is wrapped in
-        #   `suppress(OSError)`, and the `int(entry.name)` that would raise on `cpuinfo` is inside
-        #   `suppress(ValueError)`. Taking the branch anyway costs a failed open and reaches the
-        #   same table.
         if not entry.name.isdigit():
             continue
         try:
@@ -923,11 +918,6 @@ def _born_from_proc() -> dict[int, float]:
         # index arithmetic is `_from_proc`'s: counting from `pid`, `starttime`
         # is the twenty-second field, hence twenty-two minus three.
         fields = said.rpartition(") ")[2].split()
-        # survivor: boundary, branch -- guards a kernel format, not an input, exactly as
-        #   `_from_proc`'s own length check does: `/proc/<pid>/stat` has had at least 52 fields
-        #   since Linux 2.6 and this reads one of the first 22. Both the bound and the comparison
-        #   exist so a future kernel that shortened the line is skipped rather than raising
-        #   `IndexError` inside a kill path -- not a state any fixture on this machine can produce.
         if len(fields) < 20:
             continue
         with suppress(ValueError):
@@ -1489,6 +1479,23 @@ def _lent(available: queue.Queue[Path]) -> Iterator[Path]:
         yield root
     finally:
         available.put(root)
+
+
+def _on_a_spare(tests: Sequence[str], timeout: float, memory: int, each: float) -> Verdict:
+    """`_borrow`, in a pool built for it and thrown away after.
+
+    Its own function so `mutants.UNBOUNDED` can name it, which is the whole
+    reason it is not two lines inside `run`. `_sandboxes(1)` becoming
+    `_sandboxes(0)` is a pool with nothing in it, so the `get` below never
+    returns -- the same unanswerable row as a dropped `put`, arriving through
+    the pool's *size* instead. Naming `run` would have excluded the orchestration
+    of the whole sweep to reach it.
+
+    Off the main thread, as `_sandboxes` requires: the borrower is the pool task,
+    never the caller.
+    """
+    with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_borrow, spare, tests, timeout, memory, each).result()
 
 
 def _borrow(
@@ -2351,9 +2358,7 @@ def run(
         # nothing else to read, and it is the case this run cannot repeat.
         for line in _loose_evidence(results, loose):
             print(paint.paint(line, paint.QUIET), flush=True)
-        # survivor: off-by-one -- TODO: why is this acceptable?
-        with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
-            loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
+        loose_verdict = _on_a_spare(loose, timeout, memory, each)
         if loose_verdict.outcome != "survived":
             # Only these rows, never the whole run: every other verdict rests on
             # a shard that *was* green, and voiding those would throw away
