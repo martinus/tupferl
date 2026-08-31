@@ -56,8 +56,6 @@ from tools import reached
 #: which is the hole the helper exists to close rather than a second one.
 BOUND = support.bounded(20.0)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
 
 def results(*rows: tuple[str, int, str]) -> dict[str, Any]:
     """A `--json` report holding `(path, line, outcome)` rows."""
@@ -85,13 +83,13 @@ def run_it(
     report: dict[str, Any], cov: dict[str, Any], *extra: str
 ) -> subprocess.CompletedProcess[str]:
     """One driven `tools/reached.py` run over two throwaway JSON files."""
-    with tempfile.TemporaryDirectory() as box:
-        r, c = Path(box) / "r.json", Path(box) / "c.json"
+    with support.tempdir(prefix="tupferl-reached-") as box:
+        r, c = box / "r.json", box / "c.json"
         r.write_text(json.dumps(report), encoding="utf-8")
         c.write_text(json.dumps(cov), encoding="utf-8")
         return subprocess.run(
             [sys.executable, "-m", "tools.reached", str(r), str(c), *extra],
-            cwd=REPO_ROOT,
+            cwd=support.ROOT,
             capture_output=True,
             text=True,
             timeout=BOUND,
@@ -410,7 +408,7 @@ class TestTheCommandLine:
                     str(Path(box) / "absent.json"),
                     str(Path(box) / "gone.json"),
                 ],
-                cwd=REPO_ROOT,
+                cwd=support.ROOT,
                 capture_output=True,
                 text=True,
                 timeout=BOUND,

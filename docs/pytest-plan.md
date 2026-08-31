@@ -1,8 +1,7 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1, B2, B3, B4a, B4b and B5** with them, which converted the
-first twenty-nine modules.
+and **clusters B1, B2, B3, B4a, B4b and B5** with them.
 **Of 36 test modules, 6 still run through pytest's `unittest` adapter** — 4 of
 those convert in B6. The other two never do, and are **not** arrears:
 `tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
@@ -2632,6 +2631,140 @@ that no longer exists -- CLAUDE.md §1's reason for putting a generated analysis
 last. Re-run whole: **1309 rows in 278s, 1283 caught / 26 survived / 0 `BROKE` /
 0 `TIMEOUT`**, baseline green, and the survivor set identical to B3's, B4a's and
 this cluster's own pre-review run, label for label.
+
+## B5 as built — 2026-08-31
+
+Four modules, 2314 lines in and 2735 out. 147 collected items before, 211
+after; **every one of the 147 distinct test names survives**, and the growth is
+eight `subTest` loops becoming `parametrize` plus five new tests, all of them
+guards the review asked for.
+
+| module | before | after |
+|---|---:|---:|
+| `test_support` | 40 | 61 |
+| `test_paint` | 22 | 59 |
+| `test_watch` | 55 | 61 |
+| `test_reached` | 30 | 30 |
+
+Preflight: **1984 tests, 0 failures, 0 skipped**, from 1920.
+
+### The cluster's real subject was two constants, and there were six
+
+The B5 row asked for "`test_watch`'s bound-vs-alarm numbers (the 30s trap)
+re-checked against `bounded`". They were wrong. `BOUND = 20` there and in
+`test_reached` beats the *default* alarm and nothing else -- `--each-test` is a
+flag, so at `--each-test 10` a 20s bound sits back above a 10s alarm, the two
+race, the alarm wins, and the row is filed `BROKE`, which is never `caught`. It
+was sitting in the file whose own docstring records the seven `main`/`alive`
+rows it cost the first time.
+
+Both were routed through `support.bounded`, a two-entry tuple named them, and
+**the review found four more the tuple could not see**:
+
+| | |
+|---|---|
+| `tests/test_mutate.py:60` | `BOUND = 20`, reached at `timeout=wait` through a parameter default |
+| `tests/test_verdict.py:122` | `timeout=30` |
+| `tests/test_verdict.py:179` | `timeout=60`, reached from a test body |
+| `tests/test_verdict_unittest.py:126` | `timeout=30` |
+| `tests/test_watch.py:738, 777` | `communicate(timeout=10)` -- in the file being fixed |
+
+`test_mutate.py`'s is the one that settles the design question. Three screens
+below that constant its `collect` docstring reads *"that is the third instance
+of one mistake here"* and counts the other three by hand. **Counting instances
+in prose is what a person does instead of a check**, so the check is written:
+`test_support.TestEveryWaitOnAChildIsBounded` walks every `timeout=` handed to
+`run`, `Popen`, `communicate` or `wait` under `tests/`, follows a name to what
+it was assigned -- parameter defaults included -- and insists it reaches
+`support.bounded`. 21 sites today, with a `FLOOR` under the count for
+`tests/test_errors.py`'s reason.
+
+Two decisions in its shape are worth keeping. Asking *what is being called*
+keeps `argparse.Namespace(timeout=60.0)` out with no exception list. And the one
+shape it must let through is structural rather than listed: a `timeout=` inside
+`with pytest.raises(...)` is the assertion, which is what
+`running.wait(timeout=0.5)` is.
+
+Verified by reverting all four sites at once: `4 more items, first extra item:
+'test_mutate.py:905 timeout=wait'`.
+
+### `tests.support` is imported here, and it is not free
+
+`bounded` lives in `tests/support.py`, so `test_watch` and `test_reached` import
+it -- and `support` imports `tupferl.paths`, `manifest` and `__main__`, while
+`tools/mutants.py`'s index is transitive. So those three sources' sweep
+selections gained two modules. Measured, one run each rather than an interleaved
+pair: `--only tupferl/` went **278s to 298s**.
+
+The altitude review's deeper fix is a leaf module holding `ALARM`, `SHARE`,
+`bounded`, `Spill` and `Screen`, which `support.py` re-exports -- `tests/profiles.py`
+is the precedent. **Not done here**: it moves five names every converted module
+already reads through `support`, and B6 converts the four modules that would
+have to move with it. It is the right change to make *with* B6, not before it.
+
+The same import let `test_watch` drop a nested `Screen` for `support.Screen` --
+two copies of "a `StringIO` that claims `isatty`", one of them a paraphrase of
+the other's docstring.
+
+### `tools/unassert.py` was wrong about these two files, harmlessly
+
+Its docstring claims "argument order is `actual == expected`". That is an
+assumption about the *file*: it flips `assertEqual(a, b)` to `b == a`, right for
+this repository's `(expected, actual)` convention and backwards for
+`test_reached.py` and `test_watch.py`, which are `martinus/woswoar` ports written
+the other way round. The output was yoda -- `assert 1 == split.total`.
+
+Nothing changed meaning, and `ruff --fix` (SIM300) put **27 of them back in
+`test_reached.py` alone**. It does not put all of them back: a dict, set or list
+literal on the left is not a SIM300 constant, so four survived and were flipped
+by hand. The tool now says to expect a ruff pass *and* a hand pass, and to check
+which convention the file uses before reading the diff.
+
+### The conversion mistake this cluster made, and what found it
+
+The structural rewriter added a fixture parameter to any test whose body
+*mentioned* the fixture's name -- and `running` is an ordinary English word, so
+**five tests in `test_watch.py` took a fixture they never touch**, each spawning
+a real `time.sleep(30)` child, blocking on a byte from it, then killing and
+reaping it. None of the five called `self.running()` on `main`.
+
+Nothing failed. It was found by an `ast` pass over the four modules asking which
+test parameters are never read -- the same check that found B5's other
+conversion defect, two locals named `watcher` shadowing the new module-level
+`watcher()`, which is B4b's sixth-`said` lesson arriving in a new file. **Run
+both passes on every remaining cluster**: unread parameters, and locals that
+shadow a name the conversion moved to module scope.
+
+The one unread parameter that is *correct* is `test_support`'s poison, and it is
+CLAUDE.md's rule rather than an exception: it went onto the class as
+`@pytest.mark.usefixtures("poisoned")`, because a test that reads the patched
+environment and names no fixture would otherwise get none.
+
+### Gate
+
+`tupferl/` has not moved since 2026-08-29, so B3's, B4a's and B4b's reports are
+exact row-for-row baselines.
+
+GATE_PLACEHOLDER
+
+### One macOS leg failed, and it was not this cluster
+
+`test_mutate.py::TestTheHarnessAnswersBothWays::test_the_walk_catches_what_the_selection_missed`
+tripped its 12s `NESTED` bound on the `macos` leg, once. Diagnosed before
+re-running, because a re-run that passes proves nothing on its own:
+
+- `tools/verdict.py` sorts the walk and it stops at the first module that
+  notices, which is `tests/test_config.py`. All four of this cluster's modules
+  sort after it, so however much slower they got, that test never runs them.
+- Measured: the test is **1.33s on `main` and 1.38s on the branch**, two runs
+  each.
+- The identical branch content was green on `macos` one commit earlier, and
+  `main` is green on its last fifteen runs.
+
+The re-run passed. What is left is a real but pre-existing weakness -- a 12s
+bound against a 0.66s honest wait *on this machine*, and a macOS runner is not
+this machine. Filed rather than tuned blind (§5): raising it without knowing the
+runner's honest wait would be a fix built on the wrong mechanism.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 

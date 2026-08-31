@@ -89,10 +89,6 @@ BOUND = support.bounded(20.0)
 IMPATIENT = 0.5
 
 
-#: The tree, for a subprocess that must import `tools.watch` by module path.
-REPO = Path(watch.__file__).resolve().parent.parent
-
-
 @dataclass(frozen=True)
 class Box:
     """A scratch log and report path, the two files a `Watch` reads."""
@@ -229,7 +225,7 @@ def run_watch(box: Box, *extra: str) -> subprocess.CompletedProcess[str]:
     for being slow rather than for hanging.
     """
     return subprocess.run(
-        command(box, *extra), cwd=REPO, capture_output=True, text=True, timeout=BOUND
+        command(box, *extra), cwd=support.ROOT, capture_output=True, text=True, timeout=BOUND
     )
 
 
@@ -303,7 +299,7 @@ class TestWhetherAProcessIsThere:
         with mock.patch("os.kill", side_effect=PermissionError):
             assert watch.alive(4242)
 
-    def test_pid_one_is_alive_though_it_is_not_ours(self, running: subprocess.Popen[bytes]) -> None:
+    def test_pid_one_is_alive_though_it_is_not_ours(self) -> None:
         """`PermissionError` means the process exists and belongs to somebody
         else, which is alive for this purpose. Reporting it dead would be the
         same false negative the pattern match was a false positive.
@@ -472,9 +468,7 @@ class TestWhatCountsAsProgress:
         box.log.write_bytes(b"caught one\ncaught \xff\xfe two\n")
         assert watch.counted(box.log, re.compile("^caught")) == 2
 
-    def test_a_log_that_does_not_exist_yet_is_zero_rather_than_an_error(
-        self, box: Box, running: subprocess.Popen[bytes]
-    ) -> None:
+    def test_a_log_that_does_not_exist_yet_is_zero_rather_than_an_error(self, box: Box) -> None:
         """A job that has not opened its log is at zero rows. Treating absence as
         a failure would put a line on the stream nobody can act on."""
         assert watch.counted(box.root / "not-yet", ANY) == 0
@@ -573,7 +567,7 @@ class TestAJobCanStopWithoutEnding:
         assert "FINISHED" in line
         assert status == 0
 
-    def test_a_death_outranks_a_stall(self, box: Box, running: subprocess.Popen[bytes]) -> None:
+    def test_a_death_outranks_a_stall(self, box: Box) -> None:
         """Both are true of a dead job -- it has certainly stopped progressing --
         and only one of them tells the reader to stop waiting."""
         watching = watcher(box, reaped(), stale=60.0)
@@ -638,9 +632,7 @@ class TestEveryAnswerIsColoured:
         box.done.write_text("{}", encoding="utf-8")
         assert "FINISHED" in coloured(watcher(box, reaped()))
 
-    def test_a_reworded_answer_simply_goes_unpainted(
-        self, running: subprocess.Popen[bytes]
-    ) -> None:
+    def test_a_reworded_answer_simply_goes_unpainted(self) -> None:
         """The failure mode chosen at `SHOUT`, asserted so it stays chosen. A
         word the table does not know gets no colour rather than a guessed one:
         a wrong colour on a line saying `DIED` costs a reader an hour."""
@@ -722,7 +714,7 @@ class TestTheCommandLine:
         before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_utime
         child = subprocess.Popen(
             command(box, str(running.pid), "--interval", "0.05"),
-            cwd=REPO,
+            cwd=support.ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -735,7 +727,7 @@ class TestTheCommandLine:
         # the first sign of life, which is worse than not running it.
         assert child.poll() is None, "the watcher returned instead of carrying on"
         child.terminate()
-        out = child.communicate(timeout=10)[0]
+        out = child.communicate(timeout=support.bounded(10.0))[0]
         assert "Traceback" not in out
         assert out.count("working:") == 1, out
         # The sleep, measured rather than read. Dropping it changes no output at
@@ -766,7 +758,7 @@ class TestTheCommandLine:
         """
         child = subprocess.Popen(
             command(box, str(running.pid), "--interval", "0.05", "--stale", "0.1"),
-            cwd=REPO,
+            cwd=support.ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -774,15 +766,13 @@ class TestTheCommandLine:
         request.addfinalizer(child.kill)
         time.sleep(1.0)
         child.terminate()
-        out = child.communicate(timeout=10)[0]
+        out = child.communicate(timeout=support.bounded(10.0))[0]
         assert "Traceback" not in out
         said = out.count("STALLED")
         assert said >= 1, out
         assert said < 10, out
 
-    def test_it_reads_the_pid_the_job_wrote(
-        self, box: Box, running: subprocess.Popen[bytes]
-    ) -> None:
+    def test_it_reads_the_pid_the_job_wrote(self, box: Box) -> None:
         """The step that feeds this tool, which never worked by hand.
 
         `... & echo $! > sweep.pid` looks equivalent to the job writing it and
@@ -870,17 +860,17 @@ class TestTheCommandLine:
                 "--pidfile-wait",
                 str(IMPATIENT),
             ),
-            cwd=REPO,
+            cwd=support.ROOT,
             capture_output=True,
             text=True,
-            # `BOUND`, not 60, for the reason `ran` gives: these two build
+            # `BOUND`, not 60, for the reason `run_watch` gives: these two build
             # their own `subprocess.run` because they need `env=` and
-            # `rusage`, and they kept 60 when `ran` was brought down. That
+            # `rusage`, and they kept 60 when `run_watch` was brought down. That
             # is twice the harness's per-test alarm, so a mutant stopping
             # `_await_pid`'s deadline firing hangs to 60s and is filed
             # `BROKE` -- measured at 60.15s and 60.12s on a copy.
             timeout=BOUND,
-            env={**os.environ, "PYTHONPATH": str(REPO)},
+            env={**os.environ, "PYTHONPATH": str(support.ROOT)},
         )
         assert ran.returncode == 1
         burned = resource.getrusage(resource.RUSAGE_CHILDREN).ru_utime - before
@@ -904,17 +894,17 @@ class TestTheCommandLine:
                 "--pidfile-wait",
                 str(IMPATIENT),
             ),
-            cwd=REPO,
+            cwd=support.ROOT,
             capture_output=True,
             text=True,
-            # `BOUND`, not 60, for the reason `ran` gives: these two build
+            # `BOUND`, not 60, for the reason `run_watch` gives: these two build
             # their own `subprocess.run` because they need `env=` and
-            # `rusage`, and they kept 60 when `ran` was brought down. That
+            # `rusage`, and they kept 60 when `run_watch` was brought down. That
             # is twice the harness's per-test alarm, so a mutant stopping
             # `_await_pid`'s deadline firing hangs to 60s and is filed
             # `BROKE` -- measured at 60.15s and 60.12s on a copy.
             timeout=BOUND,
-            env={**os.environ, "PYTHONPATH": str(REPO)},
+            env={**os.environ, "PYTHONPATH": str(support.ROOT)},
         )
         assert ran.returncode == 1
         assert "no usable pid" in ran.stderr

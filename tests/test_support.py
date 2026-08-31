@@ -14,6 +14,7 @@ the code: a variable added there is poisoned by this fixture the same day.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import os
 import signal
@@ -33,24 +34,147 @@ from tests import support
 from tools import mutate
 from tupferl import conflicts, paths
 
-#: The test modules whose driven subprocesses are bounded against the harness's
-#: alarm. Named rather than discovered: what is being asserted is that *these*
-#: two go through `support.bounded`, and a walk that found nothing would pass.
+#: The two modules B5 routed, and what `bound_of` demonstrates on.
+#:
+#: A hand-written pair, and that is now honest because it carries no
+#: guarantee: `TestEveryWaitOnAChildIsBounded` is the guard, and it discovers
+#: what to check. These two are the demonstration that the *spelling* the walk
+#: insists on has the effect it claims -- a constant written
+#: `support.bounded(...)` really does come out smaller in a child whose alarm
+#: is tighter. Every other routed constant is spelled identically, so a third
+#: entry here would buy two more interpreter spawns and no new fact.
 DRIVEN = ("tests.test_watch", "tests.test_reached")
 
+#: What a `timeout=` on one of these is: a fixture waiting on a child process.
+#:
+#: `argparse.Namespace(timeout=60.0)` in `test_mutate.py` is *not* one -- that
+#: is the harness's own `--timeout` setting in a fake `args` -- and asking what
+#: is being called keeps it out with no exception list to maintain.
+WAITS_ON_A_CHILD = ("run", "Popen", "communicate", "wait")
 
-def bound_of(module: str, armed: str | None) -> float:
-    """`module.BOUND` as computed by a fresh interpreter with `armed` in force.
+#: The fewest waits the walk may find before it is believed.
+#:
+#: `tests/test_errors.py`'s `FLOOR` is the precedent and the reason: a walk that
+#: matched nothing would pass every assertion below, and "this suite waits on no
+#: child process" is the one answer that cannot be true. Set well under the 21
+#: found on 2026-08-31 so that deleting a test is not a failure here.
+FLOOR = 12
+
+
+def _called(node: ast.Call) -> str:
+    """The attribute or name being called, for `x.run(...)` and `run(...)`."""
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return node.func.id if isinstance(node.func, ast.Name) else ""
+
+
+def _under_raises(tree: ast.Module) -> set[int]:
+    """The lines inside a `with pytest.raises(...)`, where a timeout is the point.
+
+    `running.wait(timeout=0.5)` in `test_watch.py` is not a guard against a
+    hang -- the `TimeoutExpired` it raises *is* the assertion, and bounding it
+    against the harness's alarm would be bounding the subject. That is the one
+    shape the rule below has to let through, and it is recognised structurally
+    rather than listed.
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With) and any(
+            isinstance(item.context_expr, ast.Call) and _called(item.context_expr) == "raises"
+            for item in node.items
+        ):
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return lines
+
+
+def waits_on_a_child(tree: ast.Module) -> Iterator[ast.expr]:
+    """Every `timeout=` this module hands to something that waits on a child."""
+    skip = _under_raises(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _called(node) not in WAITS_ON_A_CHILD:
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "timeout" and keyword.value.lineno not in skip:
+                yield keyword.value
+
+
+def _bound_to(name: str, tree: ast.Module) -> ast.expr | None:
+    """What `name` is assigned at module level, or defaulted to as a parameter.
+
+    The parameter arm is not hypothetical: `test_mutate.py` spells its bound
+    `def collect(self, each, wait=BOUND)` and then `timeout=wait`, so a reader
+    that stopped at the call site would see a bare name and conclude nothing.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return node.value
+        if isinstance(node, ast.FunctionDef):
+            taking = node.args.args + node.args.kwonlyargs
+            given = [*node.args.defaults, *(d for d in node.args.kw_defaults if d)]
+            for argument, default in zip(taking[len(taking) - len(given) :], given, strict=True):
+                if argument.arg == name:
+                    return default
+    return None
+
+
+def routed(value: ast.expr, tree: ast.Module) -> bool:
+    """Whether `value` reaches `support.bounded`, following one name at a time.
+
+    `support.PROMPTED` and `support.PATIENCE` count without being followed:
+    they are `bounded` calls in `support.py`, and `TestBoundingAFixture...`
+    above is what holds them there.
+    """
+    if isinstance(value, ast.Call):
+        return ast.unparse(value.func) in ("bounded", "support.bounded")
+    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+        if value.value.id == "support":
+            return True
+        if value.value.id == "self":
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    for statement in node.body:
+                        if isinstance(statement, ast.Assign) and any(
+                            isinstance(t, ast.Name) and t.id == value.attr
+                            for t in statement.targets
+                        ):
+                            return routed(statement.value, tree)
+        return False
+    if isinstance(value, ast.Name):
+        found = _bound_to(value.id, tree)
+        return found is not None and routed(found, tree)
+    return False
+
+
+def every_wait() -> Iterator[tuple[str, int, str, bool]]:
+    """`(module, line, source, routed)` for every wait in `tests/`."""
+    for found in sorted(Path(support.ROOT, "tests").glob("*.py")):
+        tree = ast.parse(found.read_text(encoding="utf-8"))
+        for value in waits_on_a_child(tree):
+            yield found.name, value.lineno, ast.unparse(value), routed(value, tree)
+
+
+def bounds_when_armed(armed: str | None) -> dict[str, float]:
+    """Every `DRIVEN` module's `BOUND`, as a fresh interpreter computes it.
 
     A subprocess rather than `importlib.reload`, which would rebind the globals
     of a module this same run is about to execute tests from.
+
+    **One child for all of `DRIVEN`, not one per module**, which is the whole
+    difference between this and the first version: a spawn is 0.16s, all of it
+    importing pytest and `tests.support`, and four of them were 0.65s -- 86% of
+    everything B5 added to the serial suite, for two facts. Two children is one
+    per environment, which is the floor, since the environment is what is being
+    varied.
     """
     environ = dict(os.environ)
     environ.pop(support.ALARM, None)
     if armed is not None:
         environ[support.ALARM] = armed
+    asking = "\n".join(f"import {m}; print('{m}', {m}.BOUND)" for m in DRIVEN)
     done = subprocess.run(
-        [sys.executable, "-c", f"import {module} as m; print(m.BOUND)"],
+        [sys.executable, "-c", asking],
         cwd=support.ROOT,
         env=environ,
         capture_output=True,
@@ -58,7 +182,8 @@ def bound_of(module: str, armed: str | None) -> float:
         check=True,
         timeout=support.PROMPTED,
     )
-    return float(done.stdout)
+    said = (line.split() for line in done.stdout.splitlines())
+    return {name: float(value) for name, value in said}
 
 
 #: A factory handing back one fresh copy of the two-machine template per call.
@@ -101,9 +226,9 @@ class Repo(Boxed):
 @pytest.fixture
 def boxed() -> Iterator[Boxed]:
     """`support.tempdir` rather than a bare `TemporaryDirectory`, which is what
-    `Boxed.setUp` used: the rule CLAUDE.md states for a throwaway directory, and
-    it upgrades the cleanup to `discard`, so a tree that will not go names what
-    survived instead of raising an errno."""
+    this fixture's `unittest` ancestor used: the rule CLAUDE.md states for a
+    throwaway directory, and it upgrades the cleanup to `discard`, so a tree
+    that will not go names what survived instead of raising an errno."""
     with support.tempdir(prefix="tupferl-support-") as box:
         home = box / "home"
         home.mkdir()
@@ -126,11 +251,11 @@ def git_box(boxed: Boxed) -> Repo:
 
 
 @pytest.fixture
-def stuck() -> Iterator[tuple[tempfile.TemporaryDirectory[str], Path]]:
+def stuck() -> Iterator[tempfile.TemporaryDirectory[str]]:
     """A real tree holding a real pack temporary, whose cleanup refuses.
 
-    The original `cleanup` is kept and registered, so the tree still goes
-    away when the test ends: a test about a leaked tree that leaked one
+    The original `cleanup` is kept and called in a `finally`, so the tree still
+    goes away when the test ends: a test about a leaked tree that leaked one
     would be its own bug.
 
     A raw `TemporaryDirectory` rather than `support.tempdir`, which is the one
@@ -148,7 +273,7 @@ def stuck() -> Iterator[tuple[tempfile.TemporaryDirectory[str], Path]]:
 
     box.cleanup = refuse  # type: ignore[method-assign]
     try:
-        yield box, root
+        yield box
     finally:
         really()
 
@@ -164,9 +289,9 @@ def copy() -> Iterator[Copies]:
     with contextlib.ExitStack() as stack:
 
         def made() -> tuple[support.Computer, support.Computer, Path]:
-            box = tempfile.TemporaryDirectory(prefix="tupferl-copies-")
-            stack.callback(support.discard, box)
-            return support.copy_template(Path(box.name))
+            return support.copy_template(
+                stack.enter_context(support.tempdir(prefix="tupferl-copies-"))
+            )
 
         yield made
 
@@ -236,13 +361,27 @@ def now_armed() -> float:
     return signal.getitimer(signal.ITIMER_REAL)[0]
 
 
+@pytest.mark.usefixtures("poisoned")
 class TestTheSandboxReplacesTheEnvironment:
-    def test_no_poisoned_value_survives(self, poisoned: Boxed) -> None:
-        with support.sandboxed(poisoned.home):
+    """Every test here runs with `ENV_KEYS` pointed at `/poison`.
+
+    On the class, which is CLAUDE.md's rule and not a style: the mark states
+    *this class runs poisoned*, and `test_the_poison_really_would_be_visible`
+    never names the fixture -- it reads the environment the fixture patched.
+    Converted by giving each test the fixtures its body mentions, that test
+    would get none and would silently assert against the developer's own.
+
+    The tests that need the *paths* take `boxed`, which is the same object:
+    `poisoned` is `boxed` with the patch around it, so pytest hands back one
+    instance for both names.
+    """
+
+    def test_no_poisoned_value_survives(self, boxed: Boxed) -> None:
+        with support.sandboxed(boxed.home):
             leaked = [name for name, value in os.environ.items() if value.startswith(POISON)]
         assert leaked == []
 
-    def test_every_path_resolves_inside_the_sandbox(self, poisoned: Boxed) -> None:
+    def test_every_path_resolves_inside_the_sandbox(self, boxed: Boxed) -> None:
         """The property that matters, stated as paths rather than as variables.
 
         `ENV_KEYS` is the list of what gets cleared, but clearing is only the
@@ -250,12 +389,12 @@ class TestTheSandboxReplacesTheEnvironment:
         answer inside the box -- so this asks them, rather than asking about the
         environment a second time.
         """
-        with support.sandboxed(poisoned.home):
+        with support.sandboxed(boxed.home):
             answers = [paths.home(), paths.repo_dir(), paths.state_dir(), paths.backup_dir()]
         for answer in answers:
-            assert answer.is_relative_to(poisoned.home), f"{answer} is outside {poisoned.home}"
+            assert answer.is_relative_to(boxed.home), f"{answer} is outside {boxed.home}"
 
-    def test_the_poison_really_would_be_visible(self, poisoned: Boxed) -> None:
+    def test_the_poison_really_would_be_visible(self) -> None:
         """The precondition, asserted rather than assumed.
 
         Without this, both tests above pass just as well against a fixture that
@@ -265,9 +404,9 @@ class TestTheSandboxReplacesTheEnvironment:
         """
         assert paths.repo_dir().is_relative_to(POISON)
 
-    def test_the_hostname_is_the_sandbox_one(self, poisoned: Boxed) -> None:
+    def test_the_hostname_is_the_sandbox_one(self, boxed: Boxed) -> None:
         """Not the real machine's, which differs per developer and per CI leg."""
-        with support.sandboxed(poisoned.home, host="other-host"):
+        with support.sandboxed(boxed.home, host="other-host"):
             assert paths.hostname() == "other-host"
 
 
@@ -442,32 +581,32 @@ class TestATreeThatWillNotGo:
     """
 
     def test_the_message_names_the_file_that_survived(
-        self, stuck: tuple[tempfile.TemporaryDirectory[str], Path]
+        self, stuck: tempfile.TemporaryDirectory[str]
     ) -> None:
         """`tmp_pack_abcdef` is a writer's signature: git wrote it, and no test
         did. That name in the error is the whole point of #17's second half."""
-        assert "tmp_pack_abcdef" in str(raised(stuck[0]))
+        assert "tmp_pack_abcdef" in str(raised(stuck))
 
     def test_it_keeps_the_original_error_rather_than_replacing_it(
-        self, stuck: tuple[tempfile.TemporaryDirectory[str], Path]
+        self, stuck: tempfile.TemporaryDirectory[str]
     ) -> None:
         """The errno and the wording git's own failure produced are what a
         reader searches for. A wrapper that dropped them would send them looking
         for a different bug."""
-        boom = raised(stuck[0])
+        boom = raised(stuck)
         assert "Directory not empty" in str(boom)
         assert boom.__cause__ is REFUSED
 
     def test_it_says_the_writer_outlived_its_command(
-        self, stuck: tuple[tempfile.TemporaryDirectory[str], Path]
+        self, stuck: tempfile.TemporaryDirectory[str]
     ) -> None:
         """The sentence that stops the next reader diagnosing the sync engine,
         which is what #17 says cost the most both times it happened."""
-        boom = raised(stuck[0])
+        boom = raised(stuck)
         assert "outliving the command that started it" in str(boom)
 
     def test_a_long_listing_is_cut_and_says_how_much_it_cut(
-        self, stuck: tuple[tempfile.TemporaryDirectory[str], Path]
+        self, stuck: tempfile.TemporaryDirectory[str]
     ) -> None:
         """A whole surviving tree is hundreds of paths, and a message nobody
         reads to the end names nothing.
@@ -478,10 +617,10 @@ class TestATreeThatWillNotGo:
         `repo`, `.git`, `objects` and the pack temporary -- so 13 files make 17,
         of which `NAMED_WHEN_STUCK` are named and 5 are not.
         """
-        box, root = stuck
+        root = Path(stuck.name)
         for number in range(13):
             (root / f"file{number:03d}").write_text("x")
-        boom = str(raised(box))
+        boom = str(raised(stuck))
         assert "and 5 more" in boom
         # The cut is real: `file012` sorts last and must not have been named.
         assert "file012" not in boom
@@ -725,29 +864,26 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
         return its argument, and every assertion above would still pass."""
         assert support.ALARM == mutate._ALARM
 
-    @pytest.mark.parametrize("module", DRIVEN)
-    def test_a_driven_bound_follows_the_alarm_that_was_armed(self, module: str) -> None:
-        """The two modules that bound a driven subprocess read the armed alarm.
+    def test_a_driven_bound_follows_the_alarm_that_was_armed(self) -> None:
+        """A routed constant really is smaller in a child whose alarm is tighter.
 
-        `bounded` being right is the class above; this is that the two callers
-        go through it. B5 found both spelling their bound as a bare `20`, which
-        beats the 30s *default* and nothing else -- at `--each-test 10` the
-        bound is back above the alarm, the harness wins the race, and the row is
-        filed `BROKE`, which is never `caught`. That is exactly the seven
-        `main`/`alive` rows `test_watch.run_watch` records, arriving again by
-        the route `bounded` was written to close.
+        `bounded` being right is the class above, and that every wait is
+        *spelled* through it is `TestEveryWaitOnAChildIsBounded` below. This is
+        the third thing neither covers: that a module-level constant, evaluated
+        at import in a real child, reads the environment `_run` set.
 
-        Asked of a real import in a real environment rather than of the source,
-        because what has to be true is the *value* a sweep's child computes. A
-        source check would pass against `support.bounded(20.0) if False else 20`
-        and against any other spelling that reaches the same wrong number.
+        Asked of a real import rather than of the source, because what has to be
+        true is the value a sweep's child computes. A source check would pass
+        against `support.bounded(20.0) if False else 20`.
 
         Both halves, because "always small" would satisfy the first alone: with
         nothing armed the file's own number has to stand, which is every
         ordinary run of the suite.
         """
-        assert bound_of(module, "10") < 10.0
-        assert bound_of(module, None) == 20.0
+        tight, loose = bounds_when_armed("10"), bounds_when_armed(None)
+        assert set(tight) == set(DRIVEN), tight
+        assert all(seconds < 10.0 for seconds in tight.values()), tight
+        assert all(seconds == 20.0 for seconds in loose.values()), loose
 
     def test_the_sandbox_carries_the_name_through(self) -> None:
         """`support.environment` builds from nothing, so a name not in `CARRIES`
@@ -781,6 +917,64 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
 
 
 @pytest.mark.usefixtures("_alarm_put_back")
+class TestEveryWaitOnAChildIsBounded:
+    """No fixture in `tests/` waits on a child process against a bare number.
+
+    **The list this replaced could not see the bugs it was written for.** B5
+    routed `test_watch.py`'s and `test_reached.py`'s `BOUND` through `bounded`
+    and named the two in a tuple; the same defect was live in four more places,
+    including `tests/test_mutate.py`, whose own docstring narrates the mistake
+    three times ("that is the third instance of one mistake here") and then
+    spells its bound `BOUND = 20`. A hand-written list is a record of what
+    somebody remembered.
+
+    So this walks instead, the way `tests/test_errors.py` walks every
+    `raise TupferlError`: find every `timeout=` handed to something that waits
+    on a child, follow the name to what it was assigned, and insist it reaches
+    `support.bounded`. What that buys is not tidiness -- a bound at or above
+    the alarm loses the race, the row is filed `BROKE`, and `BROKE` is never
+    `caught`, so the line the bound was written to guard is guarded by nothing
+    while the summary counts it in neither of the two numbers a reader looks at.
+    """
+
+    def test_the_walk_finds_the_waits_there_are(self) -> None:
+        """The precondition, and it is the whole reason the test below can fail.
+
+        A resolver that matched nothing -- a renamed helper, a `subprocess`
+        alias this does not know -- would report zero unrouted waits and read as
+        a clean bill of health. That is CLAUDE.md's zero-iteration trap with the
+        loop moved into a walk.
+        """
+        assert len(list(every_wait())) >= FLOOR
+
+    def test_no_wait_is_left_against_a_bare_number(self) -> None:
+        unrouted = [
+            f"{name}:{line} timeout={said}" for name, line, said, ok in every_wait() if not ok
+        ]
+        assert unrouted == []
+
+    def test_the_walk_can_tell_a_bare_number_from_a_routed_one(self) -> None:
+        """`routed` against both answers, since the test above is a negative one
+        and would hold just as well against a resolver that says yes to
+        everything. Written as source rather than driven, because what is under
+        test is the reader."""
+        tree = ast.parse("import subprocess\nBARE = 20\nsubprocess.run([], timeout=BARE)\n")
+        assert [routed(v, tree) for v in waits_on_a_child(tree)] == [False]
+        tree = ast.parse(
+            "import subprocess\nOK = support.bounded(20.0)\nsubprocess.run([], timeout=OK)\n"
+        )
+        assert [routed(v, tree) for v in waits_on_a_child(tree)] == [True]
+
+    def test_a_timeout_that_is_the_assertion_is_left_alone(self) -> None:
+        """The one shape the rule lets through, pinned so it stays that shape."""
+        tree = ast.parse(
+            "import pytest, subprocess\n"
+            "with pytest.raises(subprocess.TimeoutExpired):\n"
+            "    child.wait(timeout=0.5)\n"
+        )
+        assert list(waits_on_a_child(tree)) == []
+
+
 class TestABoundGivesTheHarnessItsAlarmBack:
     """`deadline` restores the `ITIMER_REAL` it found, rather than clearing it.
 

@@ -182,9 +182,8 @@ class TestEverythingElseGetsTheBytes:
         """`isatty` on a closed file raises `ValueError`. Printing is not the
         thing a tool is for, and a colour decision must never be what ends a run
         -- the answer is simply no."""
-        stream = pipe
-        stream.close()
-        assert not paint.coloured(stream)
+        pipe.close()
+        assert not paint.coloured(pipe)
 
     def test_something_that_is_not_a_stream_at_all(self) -> None:
         """A stand-in for stdout that does not implement `isatty`. Same
