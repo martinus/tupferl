@@ -193,8 +193,8 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
             walk=self.WALK,
             strict=False,
         )
-        self.assertFalse(report.baseline_red, "the untouched tree is not green")
-        self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
+        assert not report.baseline_red, "the untouched tree is not green"
+        assert [result.verdict.outcome for result in report.results] == ["caught"]
 
     def test_an_unwatched_bug_survives(self) -> None:
         """The other answer. Without this, `test_a_deliberate_bug_is_caught`
@@ -203,9 +203,9 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         report = mutate.run(
             [UNWATCHED], baseline=True, workers=1, summarise=False, walk=self.WALK, strict=False
         )
-        self.assertFalse(report.baseline_red)
-        self.assertEqual(["survived"], [result.verdict.outcome for result in report.results])
-        self.assertFalse(report.widened, "a report that did not walk claimed it had")
+        assert not report.baseline_red
+        assert [result.verdict.outcome for result in report.results] == ["survived"]
+        assert not report.widened, "a report that did not walk claimed it had"
 
     def test_the_walk_catches_what_the_selection_missed(self) -> None:
         """The walk, end to end through the real harness, on the fixture built to
@@ -227,14 +227,13 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
         pass never corrected a survivor in them.
         """
         report = mutate.run([UNWATCHED], baseline=True, workers=1, summarise=False, strict=False)
-        self.assertFalse(report.baseline_red, "the untouched tree is not green")
-        self.assertEqual(["caught"], [result.verdict.outcome for result in report.results])
+        assert not report.baseline_red, "the untouched tree is not green"
+        assert [result.verdict.outcome for result in report.results] == ["caught"]
         killer = report.results[0].verdict.killer
-        self.assertTrue(
-            killer.startswith("tests/test_config.py::"),
-            f"caught, but not by the module the walk had to reach: {killer}",
+        assert killer.startswith("tests/test_config.py::"), (
+            f"caught, but not by the module the walk had to reach: {killer}"
         )
-        self.assertTrue(report.widened)
+        assert report.widened
 
     def test_the_working_tree_is_untouched(self) -> None:
         """CLAUDE.md §6: the harness must never edit the tree it is run from.
@@ -253,7 +252,7 @@ class TestTheHarnessAnswersBothWays(unittest.TestCase):
             walk=self.WALK,
             strict=False,
         )
-        self.assertEqual(before, where.read_bytes())
+        assert where.read_bytes() == before
 
 
 class TestTheDocumentedExampleIsReal(unittest.TestCase):
@@ -308,18 +307,18 @@ class TestGeneratingFromADiff(unittest.TestCase):
             encoding="utf-8",
         )
         touched = mutants.changed_lines("main", self.tree)
-        self.assertEqual({"tupferl/thing.py"}, set(touched))
+        assert set(touched) == {"tupferl/thing.py"}
         # The added lines, not the whole file: a generator that ignored the diff
         # would offer the first function's lines too.
-        self.assertNotIn(2, touched["tupferl/thing.py"])
-        self.assertIn(6, touched["tupferl/thing.py"])
+        assert 2 not in touched["tupferl/thing.py"]
+        assert 6 in touched["tupferl/thing.py"]
 
     def test_tests_are_never_mutated(self) -> None:
         """Breaking a test proves nothing about the fix, and the run would then
         report the assertion it removed."""
-        self.assertFalse(mutants.mutable("tests/test_config.py"))
-        self.assertTrue(mutants.mutable("tupferl/config.py"))
-        self.assertTrue(mutants.mutable("tools/mutate.py"))
+        assert not mutants.mutable("tests/test_config.py")
+        assert mutants.mutable("tupferl/config.py")
+        assert mutants.mutable("tools/mutate.py")
 
 
 class TestWhatASandboxDoesNotCopy(unittest.TestCase):
@@ -366,8 +365,8 @@ class TestWhatASandboxDoesNotCopy(unittest.TestCase):
             copy = self.sandbox(tree)
             for name in self.KEPT_OUT:
                 with self.subTest(name=name):
-                    self.assertFalse((copy / name).exists(), f"{name} was copied")
-            self.assertTrue((copy / self.KEPT / "__init__.py").is_file(), "the tree was not copied")
+                    assert not (copy / name).exists(), f"{name} was copied"
+            assert (copy / self.KEPT / "__init__.py").is_file(), "the tree was not copied"
 
     def test_a_nested_one_is_kept_out_too(self) -> None:
         """`shutil.ignore_patterns` matches the base name at any depth. A
@@ -380,8 +379,8 @@ class TestWhatASandboxDoesNotCopy(unittest.TestCase):
             (deep / "tmp").write_text("x", encoding="utf-8")
 
             copy = self.sandbox(tree)
-            self.assertTrue((copy / self.KEPT / "somewhere").is_dir(), "the tree was not copied")
-            self.assertFalse((copy / self.KEPT / "somewhere" / ".hypothesis").exists())
+            assert (copy / self.KEPT / "somewhere").is_dir(), "the tree was not copied"
+            assert not (copy / self.KEPT / "somewhere" / ".hypothesis").exists()
 
 
 if __name__ == "__main__":
@@ -438,8 +437,8 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         one = row()
         cached = self.cache({mutate._key(one): REAL})
         (ahead,) = cached.ahead_of([one])
-        self.assertEqual((REAL,), ahead.first)
-        self.assertEqual("tests.test_sync", ahead.tests)
+        assert ahead.first == (REAL,)
+        assert ahead.tests == "tests.test_sync"
 
     def test_a_remembered_test_is_marked_as_exact(self) -> None:
         """The flag `_attempt` reads to decide whether this goes in front of the
@@ -452,7 +451,7 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         """
         one = row()
         (ahead,) = self.cache({mutate._key(one): REAL}).ahead_of([one])
-        self.assertTrue(ahead.exact, "a remembered killer was not marked exact")
+        assert ahead.exact, "a remembered killer was not marked exact"
 
     def test_the_cheap_prefix_is_not_marked_as_exact(self) -> None:
         """The other half. The prefix is what a row with *no* remembered killer
@@ -461,7 +460,7 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         not claim the precedence an exact killer has earned."""
         with support.quiet():
             (ahead,) = mutate.Killers(None).ahead_of([row()])
-        self.assertFalse(ahead.exact, "the general prefix claimed to be exact")
+        assert not ahead.exact, "the general prefix claimed to be exact"
 
     def test_the_whole_selection_is_kept_behind_it(self) -> None:
         """The safety argument, asserted rather than assumed. Substituting the
@@ -471,8 +470,8 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         one = row()._replace(tests="tests.test_sync tests.test_sync_cli")
         cached = self.cache({mutate._key(one): REAL})
         (ahead,) = cached.ahead_of([one])
-        self.assertEqual("tests.test_sync tests.test_sync_cli", ahead.tests)
-        self.assertEqual((REAL,), ahead.first)
+        assert ahead.tests == "tests.test_sync tests.test_sync_cli"
+        assert ahead.first == (REAL,)
 
     def test_the_selection_stays_identical_across_rows(self) -> None:
         """`run` shards the baseline check by distinct `tests` string, so a
@@ -484,7 +483,7 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         rows = [row(old=f"a{n}") for n in range(5)]
         cached = self.cache({mutate._key(r): REAL for r in rows})
         ahead = cached.ahead_of(rows)
-        self.assertEqual(1, len({r.tests for r in ahead}), "the baseline would shard per row")
+        assert len({r.tests for r in ahead}) == 1, "the baseline would shard per row"
 
     def test_a_test_that_no_longer_exists_is_dropped(self) -> None:
         """A renamed test leaves its module in place, so `unittest`'s loader
@@ -495,19 +494,19 @@ class TestRememberingWhatCaughtEachMutation(unittest.TestCase):
         cached = self.cache({mutate._key(one): "tests.test_mutate.NoSuchClass.no_such_test"})
         with support.quiet():
             (ahead,) = cached.ahead_of([one])
-        self.assertEqual((), ahead.first)
+        assert ahead.first == ()
 
     def test_a_module_that_no_longer_exists_is_dropped_too(self) -> None:
         one = row()
         cached = self.cache({mutate._key(one): "tests.test_gone.Class.test_x"})
         with support.quiet():
             (ahead,) = cached.ahead_of([one])
-        self.assertEqual((), ahead.first)
+        assert ahead.first == ()
 
     def test_a_row_nothing_is_remembered_about_is_left_alone(self) -> None:
         (ahead,) = mutate.Killers(None).ahead_of([row()])
-        self.assertEqual((), ahead.first)
-        self.assertEqual("tests.test_sync", ahead.tests)
+        assert ahead.first == ()
+        assert ahead.tests == "tests.test_sync"
 
 
 class TestTheKeyIsContentNotPosition(unittest.TestCase):
@@ -516,16 +515,14 @@ class TestTheKeyIsContentNotPosition(unittest.TestCase):
 
     def test_the_same_edit_at_a_different_line_is_the_same_key(self) -> None:
         moved = row(label="tupferl/sync.py:900 in f()")._replace(span=(9000, 9001))
-        self.assertEqual(mutate._key(row()), mutate._key(moved))
+        assert mutate._key(moved) == mutate._key(row())
 
     def test_a_different_edit_at_the_same_line_is_a_different_key(self) -> None:
         """Otherwise two operators' rows on one line would share an entry, and
         the second would run a test chosen for the first."""
-        self.assertNotEqual(mutate._key(row()), mutate._key(row(new="c")))
-        self.assertNotEqual(mutate._key(row()), mutate._key(row(path="tupferl/manage.py")))
-        self.assertNotEqual(
-            mutate._key(row()), mutate._key(row()._replace(operator="return-value"))
-        )
+        assert mutate._key(row(new="c")) != mutate._key(row())
+        assert mutate._key(row(path="tupferl/manage.py")) != mutate._key(row())
+        assert mutate._key(row()._replace(operator="return-value")) != mutate._key(row())
 
 
 class TestWhatTheCacheLearns(unittest.TestCase):
@@ -538,12 +535,12 @@ class TestWhatTheCacheLearns(unittest.TestCase):
             return cache.known
 
     def test_a_catch_is_remembered(self) -> None:
-        self.assertEqual({mutate._key(row()): REAL}, self.learned("caught", REAL))
+        assert self.learned("caught", REAL) == {mutate._key(row()): REAL}
 
     def test_a_survivor_forgets_whatever_used_to_catch_it(self) -> None:
         """Keeping it would put a test that cannot help at the front of every
         future run of this row, for ever."""
-        self.assertEqual({}, self.learned("survived", ""))
+        assert self.learned("survived", "") == {}
 
     def test_a_run_that_asked_nothing_changes_nothing(self) -> None:
         """`broke` and `timeout` are not answers, so they are not evidence that
@@ -551,9 +548,7 @@ class TestWhatTheCacheLearns(unittest.TestCase):
         outcomes: tuple[mutate.Outcome, ...] = ("broke", "timeout")
         for outcome in outcomes:
             with self.subTest(outcome=outcome):
-                self.assertEqual(
-                    {mutate._key(row()): "tests.test_old.C.t"}, self.learned(outcome, "")
-                )
+                assert self.learned(outcome, "") == {mutate._key(row()): "tests.test_old.C.t"}
 
 
 class TestTheKillerIsRecordedAtAll(unittest.TestCase):
@@ -566,10 +561,10 @@ class TestTheKillerIsRecordedAtAll(unittest.TestCase):
             [UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, strict=False
         )
         (result,) = found.results
-        self.assertEqual("caught", result.verdict.outcome)
-        self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
+        assert result.verdict.outcome == "caught"
+        assert result.verdict.killer, "nothing recorded the killing test"
         # The claim: it loads. `str(test)` -- "method (dotted.id)" -- does not.
-        self.assertEqual({result.verdict.killer}, mutate._loadable([result.verdict.killer]))
+        assert mutate._loadable([result.verdict.killer]) == {result.verdict.killer}
 
 
 class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
@@ -594,28 +589,28 @@ class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
         `test_the_source_handed_over_is_the_one_named`'s claim, and keeping the
         two apart is why renaming that file cannot change a branch about
         cache validity."""
-        self.assertEqual("pytest", self.layer(None))
-        self.assertEqual("pytest", self.layer("pytest"))
+        assert self.layer(None) == "pytest"
+        assert self.layer("pytest") == "pytest"
 
     def test_the_classifier_it_replaced_can_still_be_asked_for(self) -> None:
-        self.assertEqual("unittest", self.layer("unittest"))
+        assert self.layer("unittest") == "unittest"
 
     def test_a_name_that_is_neither_is_refused_rather_than_defaulted(self) -> None:
         with self.assertRaises(SystemExit) as caught:
             self.layer("pytst")
         # The alternatives are in the message, so a typo answers itself rather
         # than sending the reader to this file.
-        self.assertIn("pytest", str(caught.exception))
-        self.assertIn("unittest", str(caught.exception))
+        assert "pytest" in str(caught.exception)
+        assert "unittest" in str(caught.exception)
 
     def test_the_source_handed_over_is_the_one_named(self) -> None:
         """The two backends are two files, not two branches inside one -- so a
         row diagnosed under `unittest` really is graded by the code that was
         here before, rather than by today's with a flag set."""
         with mock.patch.dict(os.environ, {mutate._VERDICT: "unittest"}):
-            self.assertIn("unittest.TextTestResult", mutate._probe())
+            assert "unittest.TextTestResult" in mutate._probe()
         with mock.patch.dict(os.environ, {mutate._VERDICT: "pytest"}):
-            self.assertIn("pytest_runtest_makereport", mutate._probe())
+            assert "pytest_runtest_makereport" in mutate._probe()
 
     def test_either_layer_can_actually_grade_a_row(self) -> None:
         """Which file is read is not the claim; that `_run` can drive it is.
@@ -646,12 +641,10 @@ class TestWhichVerdictLayerGradesAProbe(unittest.TestCase):
                     strict=False,
                 )
                 (result,) = found.results
-                self.assertEqual(
-                    "caught",
-                    result.verdict.outcome,
-                    f"{layer} could not grade a row: {result.verdict.detail}",
+                assert result.verdict.outcome == "caught", (
+                    f"{layer} could not grade a row: {result.verdict.detail}"
                 )
-                self.assertTrue(result.verdict.killer, "nothing recorded the killing test")
+                assert result.verdict.killer, "nothing recorded the killing test"
 
 
 class TestTwoSpellingsOfTheSameTest(unittest.TestCase):
@@ -666,19 +659,15 @@ class TestTwoSpellingsOfTheSameTest(unittest.TestCase):
     """
 
     def test_a_nodeid_becomes_the_dotted_id(self) -> None:
-        self.assertEqual(
-            "tests.test_sync.TestX.test_y", mutate._dotted("tests/test_sync.py::TestX::test_y")
-        )
+        assert mutate._dotted("tests/test_sync.py::TestX::test_y") == "tests.test_sync.TestX.test_y"
 
     def test_a_file_with_no_node_parts_is_still_a_module(self) -> None:
-        self.assertEqual("tests.test_sync", mutate._dotted("tests/test_sync.py"))
+        assert mutate._dotted("tests/test_sync.py") == "tests.test_sync"
 
     def test_an_id_that_is_already_dotted_is_left_alone(self) -> None:
         """Both spellings reach these filters while both backends exist, and
         translating twice would be as wrong as not translating at all."""
-        self.assertEqual(
-            "tests.test_sync.TestX.test_y", mutate._dotted("tests.test_sync.TestX.test_y")
-        )
+        assert mutate._dotted("tests.test_sync.TestX.test_y") == "tests.test_sync.TestX.test_y"
 
     def test_a_selection_covers_a_killer_in_either_spelling(self) -> None:
         for killer in (
@@ -686,15 +675,13 @@ class TestTwoSpellingsOfTheSameTest(unittest.TestCase):
             "tests.test_sync.TestX.test_y",
         ):
             with self.subTest(killer=killer):
-                self.assertTrue(mutate._reaches(killer, "tests.test_sync"))
+                assert mutate._reaches(killer, "tests.test_sync")
 
     def test_it_still_refuses_a_neighbour_whose_name_is_a_prefix(self) -> None:
         """`selects` anchors at a dot so `--only tests.test_sync` does not drag
         `tests/test_sync_chunks.py` under the same policy. Translating the
         spellings must not lose that -- and a substring match would."""
-        self.assertFalse(
-            mutate._reaches("tests/test_sync_chunks.py::T::test_it", "tests.test_sync")
-        )
+        assert not mutate._reaches("tests/test_sync_chunks.py::T::test_it", "tests.test_sync")
 
 
 class TestWhichRememberedIdsStillResolve(unittest.TestCase):
@@ -707,14 +694,14 @@ class TestWhichRememberedIdsStillResolve(unittest.TestCase):
 
     def test_a_real_nodeid_survives_and_a_renamed_one_does_not(self) -> None:
         found = mutate._loadable([REAL, "tests/test_mutate.py::TestNothing::test_gone"])
-        self.assertEqual({REAL}, found)
+        assert found == {REAL}
 
     def test_a_cache_from_the_other_backend_is_dropped_rather_than_handed_over(self) -> None:
         """`sweeps/killers.json` written before the conversion holds dotted ids,
         and the file is machine-local and gitignored -- so the first sweep after
         it simply runs at yesterday's speed. Handed to pytest instead, those
         ids are a usage error that refuses the run."""
-        self.assertEqual(set(), mutate._loadable([_dotted_form(REAL)]))
+        assert mutate._loadable([_dotted_form(REAL)]) == set()
 
     def test_asking_about_nothing_asks_pytest_nothing(self) -> None:
         """`ahead_of` calls this with an empty set on every fresh cache, and
@@ -736,7 +723,7 @@ class TestWhichRememberedIdsStillResolve(unittest.TestCase):
         """
         mutate._collected.cache_clear()
         with mock.patch.object(subprocess, "run") as never:
-            self.assertEqual(set(), mutate._loadable([]))
+            assert mutate._loadable([]) == set()
         never.assert_not_called()
 
 
@@ -779,21 +766,21 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine(unittest.TestCase):
         nothing -- silently, because selecting nothing is not an error to
         pytest."""
         argv, _ = self.spawn(first=["a.py::T::test_one[a b]", "b.py::T::test_two"])
-        self.assertEqual(["a.py::T::test_one[a b]", "b.py::T::test_two"], json.loads(argv[8]))
+        assert json.loads(argv[8]) == ["a.py::T::test_one[a b]", "b.py::T::test_two"]
 
     def test_an_empty_prefix_is_still_a_list(self) -> None:
         """`verdict.main` reads the slot with `json.loads` unconditionally, so
         an empty prefix has to be `[]` rather than the empty string it was."""
         argv, _ = self.spawn()
-        self.assertEqual([], json.loads(argv[8]))
+        assert json.loads(argv[8]) == []
 
     def test_the_selection_comes_after_the_walk_flag_and_not_inside_it(self) -> None:
         """The trap `first`'s own slot exists for: an empty selection *means*
         the whole suite, so anything that slid into it would turn "run
         everything" into "run these"."""
         argv, _ = self.spawn(first=["a.py::T::test_one"], walk=True)
-        self.assertEqual("1", argv[9])
-        self.assertEqual(["tests.test_paths"], argv[10:])
+        assert argv[9] == "1"
+        assert argv[10:] == ["tests.test_paths"]
 
     def test_the_suite_runs_with_pytest_plugin_autoload_off(self) -> None:
         """Measured at 79.5 ms a probe, and it belongs here rather than in the
@@ -801,8 +788,8 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine(unittest.TestCase):
         sandbox contract is `mutate`'s to own, and a host project that needs an
         autoloaded plugin changes it in one place."""
         _, env = self.spawn()
-        self.assertEqual("1", env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"])
-        self.assertEqual("1", env["PYTHONDONTWRITEBYTECODE"])
+        assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 #: A test module that hangs on a blocking read, and one that does not. Written
@@ -904,7 +891,7 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
                 text=True,
                 timeout=wait,
             )
-            self.assertTrue(report.is_file(), done.stderr[-800:])
+            assert report.is_file(), done.stderr[-800:]
             return dict(json.loads(report.read_text(encoding="utf-8")))
 
     def test_a_hung_test_is_interrupted_rather_than_waited_out(self) -> None:
@@ -913,16 +900,16 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         retries a syscall interrupted by a signal, so this only works because the
         handler *raises* rather than setting a flag."""
         found = self.collect(ALARM)
-        self.assertEqual(2, found["ran"], "the run did not get past the hung test")
+        assert found["ran"] == 2, "the run did not get past the hung test"
 
     def test_it_is_never_counted_as_the_test_noticing(self) -> None:
         """The whole safety argument. `noticed` is what `caught` is made of."""
         found = self.collect(ALARM)
-        self.assertEqual([], found["noticed"])
+        assert found["noticed"] == []
         broke = [str(line) for line in found["broke"]]
-        self.assertEqual(1, len(broke), broke)
-        self.assertIn("test_hangs_on_a_fifo", broke[0])
-        self.assertIn("did not finish", broke[0])
+        assert len(broke) == 1, broke
+        assert "test_hangs_on_a_fifo" in broke[0]
+        assert "did not finish" in broke[0]
 
     def test_zero_disables_it(self) -> None:
         """So a platform without `SIGALRM`, or someone debugging a genuinely slow
@@ -941,8 +928,8 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
     def test_zero_arms_nothing(self) -> None:
         """The same claim without a subprocess at all, because the one above can
         only ever say "it did not finish in three seconds"."""
-        self.assertEqual(0.0, verdict.each_test(0))
-        self.assertEqual(2.0, verdict.each_test(2))
+        assert verdict.each_test(0) == 0.0
+        assert verdict.each_test(2) == 2.0
 
 
 class TestTheCheapPrefix(unittest.TestCase):
@@ -970,7 +957,7 @@ class TestTheCheapPrefix(unittest.TestCase):
             | {"r0": "tests.m.C.rare"},
             {"tests.m.C.slow": 0.40, "tests.m.C.quick": 0.02, "tests.m.C.rare": 0.001},
         )
-        self.assertEqual(["tests.m.C.quick", "tests.m.C.rare", "tests.m.C.slow"], cache.prefix())
+        assert cache.prefix() == ["tests.m.C.quick", "tests.m.C.rare", "tests.m.C.slow"]
 
     def test_it_stops_at_the_budget(self) -> None:
         """Every row pays this up front, so it is bounded in seconds rather than
@@ -980,14 +967,14 @@ class TestTheCheapPrefix(unittest.TestCase):
             {f"tests.m.C.t{n}": 0.2 for n in range(20)},
         )
         chosen = cache.prefix()
-        self.assertLessEqual(sum(0.2 for _ in chosen), mutate.PREFIX)
-        self.assertLess(len(chosen), 20)
+        assert sum(0.2 for _ in chosen) <= mutate.PREFIX
+        assert len(chosen) < 20
 
     def test_a_test_with_no_measured_cost_is_not_guessed_at(self) -> None:
         """A killer recorded before costs existed has no denominator, and
         inventing one would put it anywhere at all in the order."""
         cache = self.cache({"k": "tests.m.C.unmeasured"}, {})
-        self.assertEqual([], cache.prefix())
+        assert cache.prefix() == []
 
     def test_nothing_is_covered_twice(self) -> None:
         """Greedy credits a test only with rows nothing before it caught, or the
@@ -997,7 +984,7 @@ class TestTheCheapPrefix(unittest.TestCase):
             {"a": "tests.m.C.one", "b": "tests.m.C.one", "c": "tests.m.C.two"},
             {"tests.m.C.one": 0.01, "tests.m.C.two": 0.02},
         )
-        self.assertEqual(["tests.m.C.one", "tests.m.C.two"], cache.prefix())
+        assert cache.prefix() == ["tests.m.C.one", "tests.m.C.two"]
 
 
 class TestWhichRowsGetThePrefix(unittest.TestCase):
@@ -1016,14 +1003,14 @@ class TestWhichRowsGetThePrefix(unittest.TestCase):
         one = self.rows("tests.test_mutate")[0]
         cache.known = {mutate._key(one): REAL}
         (ahead,) = cache.ahead_of([one])
-        self.assertEqual((REAL,), ahead.first)
+        assert ahead.first == (REAL,)
 
     def test_a_row_with_nothing_remembered_gets_the_prefix(self) -> None:
         cache = self.cache()
         cache.known = {"someone-else": REAL}
         with support.quiet():
             (ahead,) = cache.ahead_of(self.rows("tests.test_mutate"))
-        self.assertEqual((REAL,), ahead.first)
+        assert ahead.first == (REAL,)
 
     def test_the_prefix_is_cut_to_what_the_row_can_reach(self) -> None:
         """A test in a module that does not import the mutated file cannot see
@@ -1032,7 +1019,7 @@ class TestWhichRowsGetThePrefix(unittest.TestCase):
         cache.known = {"someone-else": REAL}
         with support.quiet():
             (ahead,) = cache.ahead_of(self.rows("tests.test_paths"))
-        self.assertEqual((), ahead.first)
+        assert ahead.first == ()
 
 
 class TestTheCacheLearnsFromARealRun(unittest.TestCase):
@@ -1048,20 +1035,18 @@ class TestTheCacheLearnsFromARealRun(unittest.TestCase):
     def test_a_run_measures_the_tests_it_ran(self) -> None:
         found = swept_once(baseline=True)
         times = found.times or {}
-        self.assertTrue(times, "the run recorded no test timings at all")
+        assert times, "the run recorded no test timings at all"
         # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
         # exactly what should have been measured. Keyed by nodeid, which is what
         # the ids `Killers` orders by are.
-        self.assertTrue(
-            any(name.startswith("tests/test_paths.py::") for name in times), sorted(times)[:5]
-        )
-        self.assertTrue(all(seconds >= 0 for seconds in times.values()))
+        assert any(name.startswith("tests/test_paths.py::") for name in times), sorted(times)[:5]
+        assert all(seconds >= 0 for seconds in times.values())
 
     def test_they_reach_the_cache(self) -> None:
         found = swept_once(baseline=True)
         cache = mutate.Killers(None)
         cache.learn(found)
-        self.assertEqual(found.times or {}, cache.cost)
+        assert cache.cost == (found.times or {})
 
 
 class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
@@ -1095,18 +1080,18 @@ class TestThePrefixReachesTheExpensiveRows(unittest.TestCase):
         into the selection it would make an empty list non-empty, and "run
         everything" would become "run the prefix" -- see `verdict.collect`.
         """
-        self.assertEqual((REAL,), self.ahead(mutate.WHOLE_SUITE).first)
+        assert self.ahead(mutate.WHOLE_SUITE).first == (REAL,)
 
     def test_a_selection_naming_a_class_still_matches_its_tests(self) -> None:
         """`tests.test_mutate.TestX` selects `tests.test_mutate.TestX.test_y`.
         Comparing module names made this never match, so any row selected at
         class granularity silently lost the prefix."""
-        self.assertEqual((REAL,), self.ahead(REAL_CLASS).first)
+        assert self.ahead(REAL_CLASS).first == (REAL,)
 
     def test_a_row_that_cannot_reach_it_still_does_not_pay(self) -> None:
         """The guard the two above must not break: a test in a module that does
         not import the mutated file cannot see the mutation."""
-        self.assertEqual((), self.ahead("tests.test_paths").first)
+        assert self.ahead("tests.test_paths").first == ()
 
 
 class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
@@ -1147,7 +1132,7 @@ class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
             support.quiet(),
         ):
             report = mutate.run([caught], baseline=False, workers=1)
-        self.assertTrue(report.widened, "a walked report did not claim the guarantee")
+        assert report.widened, "a walked report did not claim the guarantee"
 
     def test_an_empty_selection_behind_a_prefix_still_discovers(self) -> None:
         """The protocol half: an empty selection plus a prefix must run the
@@ -1169,7 +1154,7 @@ class TestEverySurvivorHasRunTheWholeSuite(unittest.TestCase):
         # Two tests in that module, and the prefix names one of them -- so it
         # runs twice, once in front and once as discovery reaches it. Anything
         # less than three means the empty selection stopped discovering.
-        self.assertEqual(3, found["ran"])
+        assert found["ran"] == 3
 
 
 class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
@@ -1189,7 +1174,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
             )
         )
         found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
-        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
+        assert [r.verdict.outcome for r in found.results] == ["caught"]
 
     def test_a_prefix_that_misses_falls_through_to_the_selection(self) -> None:
         """The safety argument, driven rather than asserted on a data structure:
@@ -1197,7 +1182,7 @@ class TestARowActuallyRunsWithItsPrefix(unittest.TestCase):
         answer."""
         one = UNKNOWN_KEY_GUARD._replace(first=("tests.test_paths.TestWhereTheRepositoryGoes",))
         found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
-        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
+        assert [r.verdict.outcome for r in found.results] == ["caught"]
 
     # The `WHOLE_SUITE` case is *not* driven through `mutate.run` here. It would
     # discover and run this entire suite inside a mutation sandbox -- ~50s, for a
@@ -1271,24 +1256,24 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
         return seen
 
     def test_workers_reaches_the_run(self) -> None:
-        self.assertEqual(1, self.asked("--workers", "1")["workers"])
+        assert self.asked("--workers", "1")["workers"] == 1
 
     def test_memory_reaches_the_run(self) -> None:
-        self.assertEqual(0, self.asked("--memory", "0")["memory"])
+        assert self.asked("--memory", "0")["memory"] == 0
 
     def test_the_timeout_reaches_the_run(self) -> None:
-        self.assertEqual(7.0, self.asked("--timeout", "7")["timeout"])
+        assert self.asked("--timeout", "7")["timeout"] == 7.0
 
     def test_the_per_test_alarm_reaches_the_run(self) -> None:
-        self.assertEqual(3.0, self.asked("--each-test", "3")["each"])
+        assert self.asked("--each-test", "3")["each"] == 3.0
 
     def test_no_baseline_reaches_the_run(self) -> None:
-        self.assertFalse(self.asked("--no-baseline")["baseline"])
+        assert not self.asked("--no-baseline")["baseline"]
 
     def test_the_baseline_is_on_by_default(self) -> None:
         """The other half: a wiring that hard-coded `False` would pass the test
         above and quietly stop checking the untouched tree."""
-        self.assertTrue(self.asked()["baseline"])
+        assert self.asked()["baseline"]
 
     def test_json_is_written_and_marked_done(self) -> None:
         """Not through the `run` stub -- this one drives the real thing, because
@@ -1298,11 +1283,9 @@ class TestASpecFileGetsTheFlagsItWasGiven(unittest.TestCase):
             box = Path(name)
             report = box / "out.json"
             mutate.main([str(self.spec(box)), "--no-baseline", "--json", str(report)])
-            self.assertTrue(report.is_file(), "--json wrote nothing")
-            self.assertIn("results", json.loads(report.read_text(encoding="utf-8")))
-            self.assertTrue(
-                report.with_suffix(".json.done").is_file(), "the run left no done marker"
-            )
+            assert report.is_file(), "--json wrote nothing"
+            assert "results" in json.loads(report.read_text(encoding="utf-8"))
+            assert report.with_suffix(".json.done").is_file(), "the run left no done marker"
 
 
 class TestWhatASpecFileExitsWith(unittest.TestCase):
@@ -1342,7 +1325,7 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
     SURVIVES = ("PROBE = 8000", "PROBE = 1")
 
     def test_a_caught_table_exits_zero(self) -> None:
-        self.assertEqual(0, self.status(*self.CAUGHT))
+        assert self.status(*self.CAUGHT) == 0
 
     def test_a_surviving_table_exits_one(self) -> None:
         """The other half. Without it, "always returns 0" passes the test above
@@ -1361,7 +1344,7 @@ class TestWhatASpecFileExitsWith(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-exit-") as name, support.quiet():
             spec = self.spec(Path(name), *self.SURVIVES)
             with mock.patch.object(mutate, "_attempt", lambda *a, **k: survived):
-                self.assertEqual(1, mutate.main([str(spec), "--no-baseline"]))
+                assert mutate.main([str(spec), "--no-baseline"]) == 1
 
 
 class TestWhichKillersNothingBaselined(unittest.TestCase):
@@ -1404,23 +1387,22 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
 
     def test_a_killer_its_shard_covered_needs_nothing(self) -> None:
         found = self.caught("tests.test_paths.TestA.test_b")
-        self.assertEqual([], mutate._unbaselined([found], self.shards(("tests.test_paths",))))
+        assert mutate._unbaselined([found], self.shards(("tests.test_paths",))) == []
 
     def test_a_killer_no_shard_covered_is_returned(self) -> None:
         """The one the walk produces. `UNWATCHED` is exactly this shape in the
         real harness: selected on `tests.test_paths`, caught in `test_config`."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        self.assertEqual(
-            ["tests.test_config.TestRejectingAnUnknownKey.test_it"],
-            mutate._unbaselined([found], self.shards(("tests.test_paths",))),
-        )
+        assert mutate._unbaselined([found], self.shards(("tests.test_paths",))) == [
+            "tests.test_config.TestRejectingAnUnknownKey.test_it"
+        ]
 
     def test_the_whole_suite_shard_covers_everything(self) -> None:
         """`WHOLE_SUITE` is the *empty* selection and means "run the lot", so a
         shard list holding one covers every test. Read as a plain string it
         matches nothing instead, and every killer would be re-checked."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
-        self.assertEqual([], mutate._unbaselined([found], self.shards(())))
+        assert mutate._unbaselined([found], self.shards(())) == []
 
     def test_only_caught_rows_are_asked_about(self) -> None:
         """A survivor has no killer to stand behind, and a `broke` row's is not
@@ -1429,7 +1411,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         survivor = mutate.Result(row(), mutate.Verdict("survived"))
         broke = mutate.Result(row(), mutate.Verdict("broke", "d", "tests.test_config.T.t"))
         covered = self.shards(("tests.test_paths",))
-        self.assertEqual([], mutate._unbaselined([survivor, broke], covered))
+        assert mutate._unbaselined([survivor, broke], covered) == []
 
     def test_a_class_shard_still_covers_its_own_tests(self) -> None:
         """`run_tests.selects` rather than comparing module names: a shard naming
@@ -1437,7 +1419,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         it caught was sent for re-baselining."""
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
         covered = self.shards(("tests.test_config.TestRejectingAnUnknownKey",))
-        self.assertEqual([], mutate._unbaselined([found], covered))
+        assert mutate._unbaselined([found], covered) == []
 
     def test_one_whole_suite_shard_among_several_covers_everything(self) -> None:
         """`any`, not `all`. With a single shard the two agree, which is why the
@@ -1449,7 +1431,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         """
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
         mixed = self.shards((), ("tests.test_paths",))
-        self.assertEqual([], mutate._unbaselined([found], mixed))
+        assert mutate._unbaselined([found], mixed) == []
 
     def test_a_killer_covered_by_one_shard_of_several_needs_nothing(self) -> None:
         """The second `any`, and the same trap. A killer is baselined if *some*
@@ -1460,7 +1442,7 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         """
         found = self.caught("tests.test_config.TestRejectingAnUnknownKey.test_it")
         several = self.shards(("tests.test_paths",), ("tests.test_config",))
-        self.assertEqual([], mutate._unbaselined([found], several))
+        assert mutate._unbaselined([found], several) == []
 
     def test_a_sibling_module_is_not_covered_by_a_prefix_of_its_name(self) -> None:
         """The dot `run_tests.selects` anchors on, and the reason a bare
@@ -1474,10 +1456,9 @@ class TestWhichKillersNothingBaselined(unittest.TestCase):
         both spellings agree there.
         """
         found = self.caught("tests.test_sync_cli.TestTheRemoteLine.test_it")
-        self.assertEqual(
-            ["tests.test_sync_cli.TestTheRemoteLine.test_it"],
-            mutate._unbaselined([found], self.shards(("tests.test_sync",))),
-        )
+        assert mutate._unbaselined([found], self.shards(("tests.test_sync",))) == [
+            "tests.test_sync_cli.TestTheRemoteLine.test_it"
+        ]
 
 
 class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
@@ -1546,31 +1527,31 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         """The announcement, which is the only sign a run gives that the walk
         reached past what was baselined. Deleting it survived the sweep."""
         self.report("survived")
-        self.assertIn("caught a row without being baselined", self.said)
-        self.assertIn("1 test(s)", self.said)
+        assert "caught a row without being baselined" in self.said
+        assert "1 test(s)" in self.said
 
     def test_it_says_when_the_check_came_back_red(self) -> None:
         """The other line, and the more important one: a row silently demoted to
         `broke` with nothing said about why reads as the harness malfunctioning
         rather than as the guarantee working."""
         self.report("caught")
-        self.assertIn("NOT GREEN", self.said)
-        self.assertIn("reported broke", self.said)
+        assert "NOT GREEN" in self.said
+        assert "reported broke" in self.said
 
     def test_a_green_check_leaves_the_verdict_alone(self) -> None:
         """The common case, and the one that must stay cheap: the test was not
         baselined, it is green anyway, the row is caught and stays caught."""
         found = self.report("survived")
-        self.assertEqual(["caught"], [r.verdict.outcome for r in found.results])
-        self.assertEqual(self.KILLER, found.results[0].verdict.killer)
+        assert [r.verdict.outcome for r in found.results] == ["caught"]
+        assert found.results[0].verdict.killer == self.KILLER
 
     def test_a_red_check_refuses_the_verdict(self) -> None:
         """The failure this exists for. Caught by a test that also fails
         untouched is not an answer, and reporting it as one is the false
         `caught` this module is built to make impossible."""
         found = self.report("caught")
-        self.assertEqual(["broke"], [r.verdict.outcome for r in found.results])
-        self.assertIn("also fails untouched", found.results[0].verdict.detail)
+        assert [r.verdict.outcome for r in found.results] == ["broke"]
+        assert "also fails untouched" in found.results[0].verdict.detail
 
     def test_the_rest_of_the_run_is_not_voided(self) -> None:
         """Only the rows that test caught. Every other verdict rests on a shard
@@ -1578,14 +1559,14 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         found nothing wrong with -- which is what setting `baseline_red` would
         do."""
         found = self.report("caught")
-        self.assertFalse(found.baseline_red, "one loose test voided the whole run")
+        assert not found.baseline_red, "one loose test voided the whole run"
 
     def test_the_killers_traceback_is_printed_when_the_check_is_red(self) -> None:
         """The diagnosable case, and the easier of the two: the extra shard also
         says what went wrong, so this is corroboration rather than the only
         evidence."""
         self.report("caught")
-        self.assertIn("dJk9 marker", self.said)
+        assert "dJk9 marker" in self.said
 
     def test_the_killers_traceback_is_printed_when_the_check_is_green(self) -> None:
         """The case this was written for, and the one with nothing else to read.
@@ -1600,8 +1581,8 @@ class TestARowCaughtByAnUnbaselinedTest(unittest.TestCase):
         printing only on the red one would have told that run nothing.
         """
         self.report("survived")
-        self.assertIn("dJk9 marker", self.said)
-        self.assertIn(f"{self.KILLER} caught 1 row(s)", self.said)
+        assert "dJk9 marker" in self.said
+        assert f"{self.KILLER} caught 1 row(s)" in self.said
 
 
 class TestWhatAnUnbaselinedKillerIsMadeToSay(unittest.TestCase):
@@ -1623,17 +1604,17 @@ class TestWhatAnUnbaselinedKillerIsMadeToSay(unittest.TestCase):
         rests on it, and the label says where to look first."""
         rows = [self.caught("t.A.test_x", f"tupferl/sync.py:{n} in f()") for n in (7, 8, 9)]
         head, _ = mutate._loose_evidence(rows, ["t.A.test_x"])
-        self.assertIn("t.A.test_x", head)
-        self.assertIn("caught 3 row(s)", head)
-        self.assertIn("tupferl/sync.py:7 in f()", head)
+        assert "t.A.test_x" in head
+        assert "caught 3 row(s)" in head
+        assert "tupferl/sync.py:7 in f()" in head
 
     def test_it_prints_one_traceback_and_not_one_per_row(self) -> None:
         """24 copies of one traceback is the noise `Verdict.why`'s docstring
         refuses, and the count above already carries the rest."""
         rows = [self.caught("t.A.test_x", f"tupferl/sync.py:{n} in f()") for n in (7, 8, 9)]
         said = mutate._loose_evidence(rows, ["t.A.test_x"])
-        self.assertEqual(2, len(said))
-        self.assertEqual(1, "\n".join(said).count("boom"))
+        assert len(said) == 2
+        assert "\n".join(said).count("boom") == 1
 
     def test_a_row_with_no_traceback_says_so(self) -> None:
         """A `caught` verdict takes `why` from `verdict.py`'s `reasons`, and that
@@ -1643,8 +1624,8 @@ class TestWhatAnUnbaselinedKillerIsMadeToSay(unittest.TestCase):
         said = mutate._loose_evidence(
             [self.caught("t.A.test_x", "x:1 in f()", why="")], ["t.A.test_x"]
         )
-        self.assertIn("no traceback recorded", "\n".join(said))
-        self.assertNotIn("boom", "\n".join(said))
+        assert "no traceback recorded" in "\n".join(said)
+        assert "boom" not in "\n".join(said)
 
     def test_a_killer_matching_no_row_is_skipped_rather_than_guessed_at(self) -> None:
         """Unreachable from `run`, which passes the names `_unbaselined` derived
@@ -1652,16 +1633,16 @@ class TestWhatAnUnbaselinedKillerIsMadeToSay(unittest.TestCase):
         with nothing under it -- would attribute the *next* killer's traceback to
         this one, which is the exact misreading the block exists to prevent."""
         rows = [self.caught("t.A.test_x", "x:1 in f()")]
-        self.assertEqual([], mutate._loose_evidence(rows, ["t.B.test_gone"]))
+        assert mutate._loose_evidence(rows, ["t.B.test_gone"]) == []
 
     def test_each_killer_gets_its_own_entry(self) -> None:
         """Two loose killers is two separate questions. Folding them into one
         block would attribute one test's traceback to the other's rows."""
         rows = [self.caught("t.A.test_x", "x:1 in f()"), self.caught("t.B.test_y", "x:2 in g()")]
         said = mutate._loose_evidence(rows, ["t.A.test_x", "t.B.test_y"])
-        self.assertEqual(4, len(said))
-        self.assertIn("t.A.test_x", said[0])
-        self.assertIn("t.B.test_y", said[2])
+        assert len(said) == 4
+        assert "t.A.test_x" in said[0]
+        assert "t.B.test_y" in said[2]
 
 
 class TestMovingTheKillerToTheFront(unittest.TestCase):
@@ -1682,9 +1663,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
     def test_the_last_killer_comes_first(self) -> None:
         learned = mutate.Learned()
         learned.saw("tests.test_sync.TestTheDecisionTable.test_it")
-        self.assertEqual(
-            ("tests.test_sync.TestTheDecisionTable.test_it",), learned.ahead(self.row())
-        )
+        assert learned.ahead(self.row()) == ("tests.test_sync.TestTheDecisionTable.test_it",)
 
     def test_the_newest_wins(self) -> None:
         """Move-to-*front*, not append. Without the reordering this is a queue,
@@ -1693,9 +1672,10 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         learned = mutate.Learned()
         for name in ("a", "b", "c"):
             learned.saw(f"tests.test_sync.T.test_{name}")
-        self.assertEqual(
-            ("tests.test_sync.T.test_c", "tests.test_sync.T.test_b", "tests.test_sync.T.test_a"),
-            learned.ahead(self.row()),
+        assert learned.ahead(self.row()) == (
+            "tests.test_sync.T.test_c",
+            "tests.test_sync.T.test_b",
+            "tests.test_sync.T.test_a",
         )
 
     def test_seeing_one_again_moves_it_rather_than_repeating_it(self) -> None:
@@ -1704,10 +1684,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         learned = mutate.Learned()
         for name in ("a", "b", "a"):
             learned.saw(f"tests.test_sync.T.test_{name}")
-        self.assertEqual(
-            ("tests.test_sync.T.test_a", "tests.test_sync.T.test_b"),
-            learned.ahead(self.row()),
-        )
+        assert learned.ahead(self.row()) == ("tests.test_sync.T.test_a", "tests.test_sync.T.test_b")
 
     def test_it_is_bounded(self) -> None:
         """Or it grows to the size of the suite, and every row pays for the whole
@@ -1716,7 +1693,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         learned = mutate.Learned(keep=3)
         for index in range(10):
             learned.saw(f"tests.test_sync.T.test_{index}")
-        self.assertEqual(3, len(learned.ahead(self.row())))
+        assert len(learned.ahead(self.row())) == 3
 
     def test_a_test_the_row_cannot_reach_is_not_offered(self) -> None:
         """The guard `Killers.ahead_of` gives: a test in a module that does not
@@ -1724,7 +1701,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         pure cost."""
         learned = mutate.Learned()
         learned.saw("tests.test_paths.T.test_it")
-        self.assertEqual((), learned.ahead(self.row(tests="tests.test_sync")))
+        assert learned.ahead(self.row(tests="tests.test_sync")) == ()
 
     def test_a_whole_suite_row_reaches_everything(self) -> None:
         """`WHOLE_SUITE` is the *empty* selection and means "run the lot", so
@@ -1732,17 +1709,14 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         matches nothing and the row is offered none of them."""
         learned = mutate.Learned()
         learned.saw("tests.test_paths.T.test_it")
-        self.assertEqual(
-            ("tests.test_paths.T.test_it",),
-            learned.ahead(self.row(tests=mutate.WHOLE_SUITE)),
-        )
+        assert learned.ahead(self.row(tests=mutate.WHOLE_SUITE)) == ("tests.test_paths.T.test_it",)
 
     def test_what_the_row_already_remembers_is_not_repeated(self) -> None:
         """`first` runs in order, so naming a test twice costs a run and buys
         nothing."""
         learned = mutate.Learned()
         learned.saw("tests.test_sync.T.test_it")
-        self.assertEqual((), learned.ahead(self.row(first=("tests.test_sync.T.test_it",))))
+        assert learned.ahead(self.row(first=("tests.test_sync.T.test_it",))) == ()
 
     def test_an_empty_killer_is_not_learned(self) -> None:
         """A survivor and a `broke` row both carry `killer=""`.
@@ -1755,7 +1729,7 @@ class TestMovingTheKillerToTheFront(unittest.TestCase):
         """
         learned = mutate.Learned()
         learned.saw("")
-        self.assertEqual([], learned.recent, "an empty killer took a slot")
+        assert learned.recent == [], "an empty killer took a slot"
 
 
 class TestWhatAnOutcomeMeans(unittest.TestCase):
@@ -1779,10 +1753,8 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
         the outcomes here instead of deriving them is how this guard rots on the
         next one.
         """
-        self.assertEqual(
-            set(typing.get_args(mutate.Outcome)),
-            set(mutate.MEANING),
-            "MEANING and Outcome have drifted apart",
+        assert set(mutate.MEANING) == set(typing.get_args(mutate.Outcome)), (
+            "MEANING and Outcome have drifted apart"
         )
 
     def test_only_a_real_verdict_counts_as_answered(self) -> None:
@@ -1790,21 +1762,21 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
         `timeout` are the run failing to put the question, and folding either
         into an answer is the false `caught` this module exists to prevent."""
         answered = {name for name, what in mutate.MEANING.items() if what.answered}
-        self.assertEqual({"caught", "survived"}, answered)
+        assert answered == {"caught", "survived"}
 
     def test_only_a_caught_row_leaves_a_sweep_clean(self) -> None:
         """A survivor is the finding; a broken or timed-out row is a question
         never put. Neither may report the table as done -- it would claim the
         table was complete while it was smaller than it looked."""
         clean = {name for name, what in mutate.MEANING.items() if what.clean}
-        self.assertEqual({"caught"}, clean)
+        assert clean == {"caught"}
 
     def test_a_non_answer_is_not_evidence_that_a_line_ran(self) -> None:
         """What `tools/reached.py` reads it for: it crosses survivors with
         coverage, and a row that never got to ask is not evidence its line was
         executed."""
         usable = {name for name, what in mutate.MEANING.items() if what.usable}
-        self.assertEqual({"caught", "survived"}, usable)
+        assert usable == {"caught", "survived"}
 
     def test_the_readers_go_through_the_table(self) -> None:
         """The point of the table is that nothing keeps its own copy. Asserted on
@@ -1812,10 +1784,8 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
         right while every reader ignored it."""
         for outcome, what in mutate.MEANING.items():
             verdict = mutate.Verdict(outcome, "d")  # type: ignore[arg-type]
-            self.assertEqual(what.answered, verdict.answered, outcome)
-            self.assertEqual(
-                what.clean, mutate.Report([mutate.Result(row(), verdict)]).clean, outcome
-            )
+            assert verdict.answered == what.answered, outcome
+            assert mutate.Report([mutate.Result(row(), verdict)]).clean == what.clean, outcome
 
     #: An outcome that does not exist, standing in for the *next* one.
     #:
@@ -1839,21 +1809,19 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
     def test_answered_follows_a_new_outcome(self) -> None:
         verdict = mutate.Verdict(self.INVENTED, "d")  # type: ignore[arg-type]
         with self.imagined():
-            self.assertTrue(verdict.answered, "`answered` is not reading the table")
+            assert verdict.answered, "`answered` is not reading the table"
 
     def test_clean_follows_a_new_outcome(self) -> None:
         verdict = mutate.Verdict(self.INVENTED, "d")  # type: ignore[arg-type]
         with self.imagined():
-            self.assertTrue(
-                mutate.Report([mutate.Result(row(), verdict)]).clean,
-                "`clean` is not reading the table",
+            assert mutate.Report([mutate.Result(row(), verdict)]).clean, (
+                "`clean` is not reading the table"
             )
 
     def test_reached_follows_a_new_outcome(self) -> None:
         with self.imagined():
-            self.assertTrue(
-                reached.Row("l", "p.py", 1, self.INVENTED).answered,
-                "`reached` is not reading the table",
+            assert reached.Row("l", "p.py", 1, self.INVENTED).answered, (
+                "`reached` is not reading the table"
             )
 
     def test_every_outcome_says_what_colour_it_is(self) -> None:
@@ -1867,14 +1835,14 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
     def test_the_two_real_verdicts_do_not_share_one(self) -> None:
         """`caught` and `SURVIVED` are the good news and the finding, and the
         whole value of the channel is telling them apart at a glance."""
-        self.assertNotEqual(mutate.MEANING["caught"].colour, mutate.MEANING["survived"].colour)
+        assert mutate.MEANING["survived"].colour != mutate.MEANING["caught"].colour
 
     def test_an_outcome_that_forgets_to_say_claims_nothing(self) -> None:
         """The default, chosen the way `reached.Row.answered` chooses its own:
         an outcome this build has never heard of gets the colour that makes no
         claim, rather than the one that says everything is fine."""
         invented = mutate.Meaning("FUTURE", answered=True, clean=True, usable=True)
-        self.assertEqual(paint.QUIET, invented.colour)
+        assert invented.colour == paint.QUIET
 
     #: A colour nothing in the tree uses, so finding it in a line proves the
     #: line asked the table rather than agreeing with it by coincidence. Every
@@ -1894,7 +1862,7 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
         found = [mutate.Result(row(), mutate.Verdict("survived", "d"))]
         with self.repainted(), support.quiet(terminal=True) as said:
             mutate._summarise(found)
-        self.assertIn(self.MAGENTA, said.getvalue(), "the survivor list keeps its own colour")
+        assert self.MAGENTA in said.getvalue(), "the survivor list keeps its own colour"
 
     def test_reached_reads_the_table_for_colour_too(self) -> None:
         """The fifth reader, in the other module. It already imports `MEANING`
@@ -1902,7 +1870,7 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
         survivor = reached.Row("l", "p.py", 1, "survived")
         with self.repainted(), support.quiet(terminal=True) as said:
             reached._summarise([survivor], reached.Split([survivor], []), 0)
-        self.assertIn(self.MAGENTA, said.getvalue(), "reached keeps its own colour")
+        assert self.MAGENTA in said.getvalue(), "reached keeps its own colour"
 
     def test_reached_reads_the_same_table(self) -> None:
         """The fourth copy, in another module. It imports `MEANING` rather than
@@ -1910,8 +1878,8 @@ class TestWhatAnOutcomeMeans(unittest.TestCase):
         read conservatively -- a report from a newer `mutate` is not evidence."""
         for outcome, what in mutate.MEANING.items():
             seen = reached.Row("l", "p.py", 1, outcome)
-            self.assertEqual(what.usable, seen.answered, outcome)
-        self.assertFalse(reached.Row("l", "p.py", 1, "from-the-future").answered)
+            assert seen.answered == what.usable, outcome
+        assert not reached.Row("l", "p.py", 1, "from-the-future").answered
 
 
 class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
@@ -1944,29 +1912,29 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         labels are what someone opens a file to look at, and each has been
         printed by a version of this function that dropped the other."""
         said = self.summarised([self.survivor("a.py:1 in f()"), self.survivor("b.py:2 in g()")])
-        self.assertIn("2 survived", said)
-        self.assertIn("a.py:1 in f()", said)
-        self.assertIn("b.py:2 in g()", said)
+        assert "2 survived" in said
+        assert "a.py:1 in f()" in said
+        assert "b.py:2 in g()" in said
 
     def test_the_selection_is_named_beside_each_label(self) -> None:
         """Which tests the row ran against. Without it a survivor cannot be
         told from a row that was pointed at the wrong suite -- which is the
         error `tools/README.md` says points the expensive way, at rewriting a
         test that was never weak."""
-        self.assertIn("tests.test_sync", self.summarised([self.survivor()]))
+        assert "tests.test_sync" in self.summarised([self.survivor()])
 
     def test_the_instruction_to_suspect_the_fixture_is_printed(self) -> None:
         """The one line of the paragraph that says what to *do*, and the only
         one that is not derived from the results -- so it is also the one a
         `print`-dropping mutation removes with no other symptom."""
-        self.assertIn("Suspect the fixture", self.summarised([self.survivor()]))
+        assert "Suspect the fixture" in self.summarised([self.survivor()])
 
     def test_a_clean_run_says_none_of_it(self) -> None:
         """The precondition. Without it every assertion above is equally
         satisfied by a function that prints the paragraph unconditionally, and
         `if survivors:` becoming `if True:` would survive all four."""
         said = self.summarised([mutate.Result(row(), mutate.Verdict("caught", ""))])
-        self.assertEqual("", said)
+        assert said == ""
 
     def test_rows_that_asked_nothing_get_their_own_paragraph(self) -> None:
         """Counted separately and never as survivors -- the error this module
@@ -1974,9 +1942,9 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         are three separate prints and each is a line a reader needs."""
         broke = mutate.Result(row(label="c.py:3 in h()"), mutate.Verdict("broke", "no such name"))
         said = self.summarised([broke])
-        self.assertIn("1 asked nothing", said)
-        self.assertIn("c.py:3 in h()", said)
-        self.assertIn("no such name", said)
+        assert "1 asked nothing" in said
+        assert "c.py:3 in h()" in said
+        assert "no such name" in said
 
     def test_an_unanswered_row_is_not_counted_as_a_survivor(self) -> None:
         """Both paragraphs from one table, so the two counts are visibly about
@@ -1985,8 +1953,8 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         said = self.summarised(
             [self.survivor(), mutate.Result(row(), mutate.Verdict("timeout", "30s"))]
         )
-        self.assertIn("1 survived", said)
-        self.assertIn("1 asked nothing", said)
+        assert "1 survived" in said
+        assert "1 asked nothing" in said
 
     def tagged(self, body: str, needle: str) -> tuple[Path, mutate.Result]:
         box = Path(tempfile.mkdtemp(prefix="tupferl-sum-"))
@@ -2016,8 +1984,8 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         box, broke = self.tagged("y = 2  # survivor: branch -- cannot be answered\n", "y = 2")
         with support.quiet() as said:
             mutate._summarise([broke], mutate.sort_survivors([broke], box))
-        self.assertNotIn("asked nothing", said.getvalue())
-        self.assertIn("1 survivor(s) excused", said.getvalue())
+        assert "asked nothing" not in said.getvalue()
+        assert "1 survivor(s) excused" in said.getvalue()
 
     def test_an_untagged_row_that_asked_nothing_is_still_listed(self) -> None:
         """The precondition. Without it the assertion above is satisfied by a
@@ -2025,8 +1993,8 @@ class TestTheParagraphAPullRequestQuotes(unittest.TestCase):
         box, broke = self.tagged("y = 2\n", "y = 2")
         with support.quiet() as said:
             mutate._summarise([broke], mutate.sort_survivors([broke], box))
-        self.assertIn("1 asked nothing", said.getvalue())
-        self.assertIn("tupferl/sync.py:3 in h()", said.getvalue())
+        assert "1 asked nothing" in said.getvalue()
+        assert "tupferl/sync.py:3 in h()" in said.getvalue()
 
 
 class GeneratedTable(unittest.TestCase):
@@ -2128,16 +2096,15 @@ class TestWhichFileASweepReachesFirst(GeneratedTable):
         first and the largest, so a table that came back in path order would
         look identical to one that was never sorted."""
         grouped = mutate.by_size(self.rows({"a.py": 5, "b.py": 1, "c.py": 3}))
-        self.assertEqual(["b.py", "c.py", "a.py"], list(grouped))
+        assert list(grouped) == ["b.py", "c.py", "a.py"]
 
     def test_every_row_survives_the_ordering(self) -> None:
         """A sort that drops rows would still pass the assertion above. The
         table is a work list before it is an order."""
         table = self.rows({"a.py": 5, "b.py": 1, "c.py": 3})
-        self.assertEqual(
-            sorted(row.label for row in table),
-            sorted(row.label for rows in mutate.by_size(table).values() for row in rows),
-        )
+        assert sorted(
+            row.label for rows in mutate.by_size(table).values() for row in rows
+        ) == sorted(row.label for row in table)
 
     def test_a_file_keeps_its_rows_together_and_in_order(self) -> None:
         """Contiguity is load-bearing twice: `sweep.finished` counts a file down
@@ -2145,19 +2112,19 @@ class TestWhichFileASweepReachesFirst(GeneratedTable):
         consecutive rows sitting in the same function. Interleaving them is a
         measured dead end -- see CLAUDE.md."""
         grouped = mutate.by_size(self.rows({"a.py": 3, "b.py": 1}))
-        self.assertEqual(["a.py:0 x", "a.py:1 x", "a.py:2 x"], [r.label for r in grouped["a.py"]])
+        assert [r.label for r in grouped["a.py"]] == ["a.py:0 x", "a.py:1 x", "a.py:2 x"]
 
     def test_files_of_the_same_size_keep_a_stable_order(self) -> None:
         """Nothing about size separates them, so the answer must not depend on
         dictionary iteration luck -- a table that reorders equal files between
         runs would make two sweeps of one tree incomparable."""
         even = {"c.py": 2, "a.py": 2, "b.py": 2}
-        self.assertEqual(["a.py", "b.py", "c.py"], list(mutate.by_size(self.rows(even))))
+        assert list(mutate.by_size(self.rows(even))) == ["a.py", "b.py", "c.py"]
 
     def test_an_empty_table_is_not_an_error(self) -> None:
         """`--base main` on a diff that touches no mutable file. `generated`
         passes whatever it has."""
-        self.assertEqual({}, mutate.by_size([]))
+        assert mutate.by_size([]) == {}
 
     def test_the_generated_table_itself_comes_back_smallest_first(self) -> None:
         """The fix, rather than the rule it uses.
@@ -2169,12 +2136,10 @@ class TestWhichFileASweepReachesFirst(GeneratedTable):
         """
         table, _ = self.table(self.repository())
         reached = [path for path, _ in itertools.groupby(row.path for row in table)]
-        self.assertEqual(
-            ["tupferl/wee.py", "tupferl/many.py"],
-            reached,
-            "the smaller file did not come first",
+        assert reached == ["tupferl/wee.py", "tupferl/many.py"], (
+            "the smaller file did not come first"
         )
-        self.assertEqual(2, len(reached), "a file's rows were split rather than kept together")
+        assert len(reached) == 2, "a file's rows were split rather than kept together"
 
 
 class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
@@ -2197,13 +2162,13 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
         """
         box = self.repository()
         table, _ = self.table(box, only=["wee", "many"])
-        self.assertEqual({"tupferl/many.py", "tupferl/wee.py"}, {row.path for row in table})
+        assert {row.path for row in table} == {"tupferl/many.py", "tupferl/wee.py"}
 
     def test_only_drops_what_it_does_not_name(self) -> None:
         """The other half: a filter that kept everything passes the test above."""
         box = self.repository()
         table, _ = self.table(box, only=["wee"])
-        self.assertEqual({"tupferl/wee.py"}, {row.path for row in table})
+        assert {row.path for row in table} == {"tupferl/wee.py"}
 
     def test_a_selection_matching_nothing_refuses_rather_than_runs_empty(self) -> None:
         """An empty table is a sweep that reports every row caught, because
@@ -2211,15 +2176,15 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
         box = self.repository()
         with self.assertRaises(SystemExit) as raised:
             self.table(box, only=["no-such-file"])
-        self.assertIn("nothing mutable changed", str(raised.exception))
+        assert "nothing mutable changed" in str(raised.exception)
 
     def test_it_says_how_many_files_lines_and_mutants(self) -> None:
         """The header a reader uses to tell a table of three rows from one of
         three hundred before waiting for either."""
         box = self.repository()
         table, said = self.table(box)
-        self.assertIn("2 file(s)", said)
-        self.assertIn(f"-> {len(table)} mutants", said)
+        assert "2 file(s)" in said
+        assert f"-> {len(table)} mutants" in said
 
     def imported(self) -> Path:
         """The repository above, plus a test module that imports one of the two.
@@ -2245,16 +2210,16 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
         as long for no extra signal."""
         table, _ = self.table(self.imported())
         by_path = {row.path: row.tests for row in table}
-        self.assertEqual("tests.test_wee", by_path["tupferl/wee.py"])
-        self.assertEqual(mutate.WHOLE_SUITE, by_path["tupferl/many.py"])
+        assert by_path["tupferl/wee.py"] == "tests.test_wee"
+        assert by_path["tupferl/many.py"] == mutate.WHOLE_SUITE
 
     def test_the_notice_is_only_for_the_file_nothing_imports(self) -> None:
         """The other half of the branch. Printed for every file, the line stops
         distinguishing the slow rows from the ordinary ones -- and it exists
         only to make that difference visible before the wait."""
         _, said = self.table(self.imported())
-        self.assertIn("nothing imports tupferl/many.py", said)
-        self.assertNotIn("nothing imports tupferl/wee.py", said)
+        assert "nothing imports tupferl/many.py" in said
+        assert "nothing imports tupferl/wee.py" not in said
 
     def test_a_file_nothing_imports_says_its_rows_run_the_whole_suite(self) -> None:
         """`targets_for` finds no importer, so the rows fall back to the whole
@@ -2266,10 +2231,9 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
         """
         box = self.repository()
         table, said = self.table(box)
-        self.assertIn("nothing imports tupferl/wee.py", said)
-        self.assertTrue(
-            all(row.tests == mutate.WHOLE_SUITE for row in table),
-            "the fixture no longer takes the fallback, so the notice proves nothing",
+        assert "nothing imports tupferl/wee.py" in said
+        assert all(row.tests == mutate.WHOLE_SUITE for row in table), (
+            "the fixture no longer takes the fallback, so the notice proves nothing"
         )
 
     def test_a_capped_table_says_what_it_dropped_and_from_where(self) -> None:
@@ -2279,9 +2243,9 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
         box = self.repository()
         whole, _ = self.table(box)
         table, said = self.table(box, limit=2)
-        self.assertEqual(2, len(table))
-        self.assertIn("--limit 2", said)
-        self.assertIn(f"{len(whole) - 2} not run", said)
+        assert len(table) == 2
+        assert "--limit 2" in said
+        assert f"{len(whole) - 2} not run" in said
         # **The counts, not just the names.** `share[path] = share.get(path, 0)
         # + 1` is six mutations' worth of arithmetic, and a report naming the
         # right files with the wrong numbers reads exactly like a right one.
@@ -2293,15 +2257,15 @@ class TestWhatTheGeneratedTableSaysBeforeItRuns(GeneratedTable):
         # have to add up to what was dropped and be listed in a settled order.
         listed = said.split("not run (", 1)[1].split(").", 1)[0]
         pairs = [entry.rsplit(" ", 1) for entry in listed.split(", ")]
-        self.assertEqual(2, len(pairs), "one file cannot show the order of the list")
-        self.assertEqual(sorted(path for path, _ in pairs), [path for path, _ in pairs])
-        self.assertEqual(len(whole) - 2, sum(int(count) for _, count in pairs))
+        assert len(pairs) == 2, "one file cannot show the order of the list"
+        assert [path for path, _ in pairs] == sorted(path for path, _ in pairs)
+        assert sum(int(count) for _, count in pairs) == len(whole) - 2
 
     def test_an_uncapped_table_says_nothing_about_a_cap(self) -> None:
         """The other half. A line that always appears is one nobody reads."""
         box = self.repository()
         _, said = self.table(box)
-        self.assertNotIn("not run", said)
+        assert "not run" not in said
 
 
 class TestABatchSweepEndToEnd(unittest.TestCase):
@@ -2457,18 +2421,17 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         box = self.repository()
         report = box / "r.json"
         code, said = self.sweep(box, report)
-        self.assertEqual(0, code, said)
+        assert code == 0, said
         written = json.loads(report.read_text(encoding="utf-8"))
         outcomes = [row["outcome"] for row in written["results"]]
-        self.assertEqual(["caught"] * len(outcomes), outcomes, said)
-        self.assertEqual(
-            {"tupferl/tiny.py", "tupferl/zeta.py"},
-            {row["path"] for row in written["results"]},
-            "the batch did not cover both files",
-        )
+        assert outcomes == ["caught"] * len(outcomes), said
+        assert {row["path"] for row in written["results"]} == {
+            "tupferl/tiny.py",
+            "tupferl/zeta.py",
+        }, "the batch did not cover both files"
 
-        self.assertTrue(written["widened"], "a swept report dropped the guarantee")
-        self.assertTrue(report.with_suffix(".json.done").is_file(), "no done marker")
+        assert written["widened"], "a swept report dropped the guarantee"
+        assert report.with_suffix(".json.done").is_file(), "no done marker"
 
     def test_a_redirected_sweep_carries_no_escape_codes(self) -> None:
         """The guarantee `tools/watch.py` rests on, driven through a whole run.
@@ -2487,9 +2450,9 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         """
         box = self.repository()
         code, said = self.sweep(box, box / "r.json")
-        self.assertEqual(0, code, said)
-        self.assertNotIn("\x1b", said, "a captured run was painted")
-        self.assertIn("L0 caught    tupferl/tiny.py:", said)
+        assert code == 0, said
+        assert "\x1b" not in said, "a captured run was painted"
+        assert "L0 caught    tupferl/tiny.py:" in said
 
     def test_the_same_sweep_on_a_terminal_is_coloured(self) -> None:
         """The half that stops the test above from being satisfied by a tool
@@ -2500,8 +2463,8 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         """
         box = self.repository()
         code, said = self.sweep(box, box / "r.json", terminal=True)
-        self.assertEqual(0, code, said)
-        self.assertIn(f"{paint.GOOD}caught", said, "a terminal run was not painted")
+        assert code == 0, said
+        assert f"{paint.GOOD}caught" in said, "a terminal run was not painted"
 
     def test_the_colour_does_not_move_the_column(self) -> None:
         """Pad first, paint second. `f"{painted:9}"` counts the escape bytes as
@@ -2518,7 +2481,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         box = self.repository()
         _, coloured = self.sweep(box, box / "r.json", terminal=True)
         bare = re.sub(r"\x1b\[[0-9;]*m", "", coloured)
-        self.assertIn("L0 caught    tupferl/tiny.py:", bare)
+        assert "L0 caught    tupferl/tiny.py:" in bare
         # The counter keeps its width too: `[1/8]`, not `[1/8] ` shifted by the
         # escapes that were around it.
         self.assertRegex(bare, r"\[\d+/8\] L0 caught    tupferl/tiny\.py:")
@@ -2534,20 +2497,20 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         """
         box = self.repository()
         code, said = self.sweep(box, box / "r.json", extra=["--limit", "2"])
-        self.assertEqual(0, code, said)
-        self.assertIn("--limit 2", said)
-        self.assertIn("not run", said)
+        assert code == 0, said
+        assert "--limit 2" in said
+        assert "not run" in said
         # The file names, not just a number: a reader deciding whether the cap
         # mattered needs to know *which* file went unswept.
-        self.assertIn("tupferl/tiny.py", said)
-        self.assertIn("Counts below are out of what ran", said)
+        assert "tupferl/tiny.py" in said
+        assert "Counts below are out of what ran" in said
 
     def test_an_uncapped_run_says_none_of_it(self) -> None:
         """The precondition, without which the assertions above are equally
         satisfied by a run that prints the warning unconditionally."""
         box = self.repository()
         _, said = self.sweep(box, box / "r.json")
-        self.assertNotIn("not run", said)
+        assert "not run" not in said
 
     def test_it_writes_after_every_row_and_again_at_the_end(self) -> None:
         """The point of recording per row: a crash costs one row, not one file.
@@ -2566,10 +2529,10 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         """
         box = self.repository()
         code, said = self.sweep(box, box / "r.json")
-        self.assertEqual(0, code, said)
-        self.assertGreaterEqual(len(self.wrote), 3, f"writes: {self.wrote}\n{said}")
-        self.assertLess(self.wrote[0], self.wrote[-1], f"nothing was written mid-run: {self.wrote}")
-        self.assertEqual(self.wrote[-1], max(self.wrote), "the last write was not the complete one")
+        assert code == 0, said
+        assert len(self.wrote) >= 3, f"writes: {self.wrote}\n{said}"
+        assert self.wrote[0] < self.wrote[-1], f"nothing was written mid-run: {self.wrote}"
+        assert max(self.wrote) == self.wrote[-1], "the last write was not the complete one"
 
         # **A write after every row**, which is the claim "recorded per row"
         # makes and the three assertions above do not: they hold just as well
@@ -2578,10 +2541,8 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         # file does not turn this into a test of the number 5.
         written = json.loads((box / "r.json").read_text(encoding="utf-8"))
         rows = len(written["results"])
-        self.assertEqual(
-            list(range(1, rows + 1)),
-            self.wrote[:rows],
-            f"a row landed without a write; {rows} rows, writes {self.wrote}",
+        assert self.wrote[:rows] == list(range(1, rows + 1)), (
+            f"a row landed without a write; {rows} rows, writes {self.wrote}"
         )
 
     def test_the_pidfile_is_cleared_when_the_run_is_over(self) -> None:
@@ -2590,7 +2551,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         box = self.repository()
         report = box / "r.json"
         self.sweep(box, report)
-        self.assertFalse(mutate._pidfile(report).is_file(), "the run left its pidfile behind")
+        assert not mutate._pidfile(report).is_file(), "the run left its pidfile behind"
 
     def test_a_red_baseline_reaches_the_report(self) -> None:
         """The one thing the end-of-sweep write carries that the per-file writes
@@ -2635,9 +2596,8 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         finally:
             os.chdir(here)
         written = json.loads(report.read_text(encoding="utf-8"))
-        self.assertTrue(
-            written["baseline_red"],
-            f"a red baseline never reached the report\n{spill.getvalue()}",
+        assert written["baseline_red"], (
+            f"a red baseline never reached the report\n{spill.getvalue()}"
         )
 
     def test_a_real_sweep_feeds_the_killer_forward(self) -> None:
@@ -2661,12 +2621,12 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         report = box / "r.json"
         with mock.patch.object(mutate.Learned, "ahead", watched):
             code, said = self.sweep(box, report)
-        self.assertEqual(0, code, said)
-        self.assertTrue(any(fed), f"nothing was ever fed forward: {fed}")
+        assert code == 0, said
+        assert any(fed), f"nothing was ever fed forward: {fed}"
         outcomes = [
             row["outcome"] for row in json.loads(report.read_text(encoding="utf-8"))["results"]
         ]
-        self.assertEqual(["caught"] * len(outcomes), outcomes, "the ordering changed an answer")
+        assert outcomes == ["caught"] * len(outcomes), "the ordering changed an answer"
 
     def truncated(self, box: Path, report: Path, keep: int) -> list[str]:
         """Run a real sweep, then cut the report to its first `keep` rows.
@@ -2724,27 +2684,23 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
                 cut = at
                 break
             first[twin] = at
-        self.assertIsNotNone(cut, f"the fixture has no colliding pair; see MODULE\n{every}")
+        assert cut is not None, f"the fixture has no colliding pair; see MODULE\n{every}"
         keep = typing.cast(int, cut)
 
         kept = self.truncated(box, report, keep)
         self.wrote = []
         code, said = self.sweep(box, report)
-        self.assertEqual(0, code, said)
+        assert code == 0, said
 
         again = json.loads(report.read_text(encoding="utf-8"))
-        self.assertEqual(
-            sorted(every),
-            sorted(row["label"] for row in again["results"]),
-            f"the resumed report is not the whole table\n{said}",
+        assert sorted(row["label"] for row in again["results"]) == sorted(every), (
+            f"the resumed report is not the whole table\n{said}"
         )
         # `self.wrote[0]` is the size of the first write of the second run: the
         # rows carried over plus the one just answered. Anything larger means
         # rows were carried that this run did not do and did not keep.
-        self.assertEqual(
-            len(every) - len(kept),
-            max(self.wrote) - len(kept),
-            f"the second run did not re-run exactly the missing rows\n{said}",
+        assert max(self.wrote) - len(kept) == len(every) - len(kept), (
+            f"the second run did not re-run exactly the missing rows\n{said}"
         )
         # Summed across the printed lines, because the count is per file and
         # the cut leaves two files partly recorded. Asserting on one line would
@@ -2753,11 +2709,9 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         # `-?\d+`, not `\d+`. Without the sign this reads "-2" as 2, and the
         # counter's `+ 1` becoming `- 1` then prints -2 and -1 where 2 and 1
         # belong and still sums to 3. The mutation survived on exactly that.
-        self.assertEqual(
-            len(kept),
-            sum(int(n) for n in re.findall(r"(-?\d+) row\(s\) already recorded", said)),
-            f"the skip lines do not account for every recorded row\n{said}",
-        )
+        assert sum(int(n) for n in re.findall(r"(-?\d+) row\(s\) already recorded", said)) == len(
+            kept
+        ), f"the skip lines do not account for every recorded row\n{said}"
 
     def test_the_per_row_writes_are_silent_and_the_last_one_is_not(self) -> None:
         """`announce`, which nothing asserted: both its mutants survived.
@@ -2770,11 +2724,11 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         box = self.repository()
         report = box / "r.json"
         code, said = self.sweep(box, report)
-        self.assertEqual(0, code, said)
+        assert code == 0, said
         rows = len(json.loads(report.read_text(encoding="utf-8"))["results"])
         wrote = said.count("wrote ")
-        self.assertLess(wrote, rows, f"a line per row reached the log\n{said}")
-        self.assertGreaterEqual(wrote, 1, f"no write was ever announced\n{said}")
+        assert wrote < rows, f"a line per row reached the log\n{said}"
+        assert wrote >= 1, f"no write was ever announced\n{said}"
 
     def test_the_skipped_files_are_listed_in_order(self) -> None:
         """`sorted`, and **the fixture is what makes it observable.**
@@ -2806,13 +2760,11 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         # work when that order is not already alphabetical. Asserted, because
         # this is exactly what was silently untrue before the rename.
         appeared = list(dict.fromkeys(row["path"] for row in written["results"]))
-        self.assertNotEqual(
-            sorted(appeared), appeared, "the fixture no longer distinguishes the two orders"
-        )
+        assert appeared != sorted(appeared), "the fixture no longer distinguishes the two orders"
 
         listed = re.findall(r"(\S+): -?\d+ row\(s\) already recorded", said)
-        self.assertEqual(2, len(listed), f"both files should be listed\n{said}")
-        self.assertEqual(sorted(listed), listed, f"the skip lines are not in order\n{said}")
+        assert len(listed) == 2, f"both files should be listed\n{said}"
+        assert listed == sorted(listed), f"the skip lines are not in order\n{said}"
 
     def test_a_batch_sweep_without_a_report_runs_and_writes_nothing(self) -> None:
         """`if args.json:` around the per-row write, which every other test here
@@ -2835,9 +2787,9 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         finally:
             os.chdir(here)
         said = spill.getvalue()
-        self.assertEqual(0, code, said)
-        self.assertIn("caught", said, f"no row was reported\n{said}")
-        self.assertEqual([], sorted(box.glob("*.json")), "a run with no --json wrote one anyway")
+        assert code == 0, said
+        assert "caught" in said, f"no row was reported\n{said}"
+        assert sorted(box.glob("*.json")) == [], "a run with no --json wrote one anyway"
 
     def test_a_crash_during_a_write_leaves_the_previous_report(self) -> None:
         """`_persist` renames into place, so the report is never half-written.
@@ -2870,14 +2822,14 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
 
         with mock.patch.object(Path, "write_text", half), self.assertRaises(MemoryError):
             mutate._persist(mutate.Report([], widened=True), report, announce=False)
-        self.assertEqual(before, report.read_text(encoding="utf-8"), "the report was damaged")
-        self.assertNotIn(report, opened, "the report itself was opened for writing")
-        self.assertEqual(real, Path.write_text, "the patch leaked")
+        assert report.read_text(encoding="utf-8") == before, "the report was damaged"
+        assert report not in opened, "the report itself was opened for writing"
+        assert Path.write_text == real, "the patch leaked"
 
         # And the precondition: a write that *completes* still replaces it, or
         # the assertion above is satisfied by a `_persist` that never writes.
         mutate._persist(mutate.Report([], widened=True), report, announce=False)
-        self.assertEqual([], json.loads(report.read_text(encoding="utf-8"))["results"])
+        assert json.loads(report.read_text(encoding="utf-8"))["results"] == []
 
     def tags(self, box: Path) -> int:
         return sum(
@@ -2918,12 +2870,10 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
                 code, said = self.sweep(
                     box, box / "r.json", extra=["--accept", *narrow], scope=scope
                 )
-                self.assertIn(
-                    "a reason nothing in this run reaches",
-                    marked.read_text(encoding="utf-8"),
-                    f"a run deleted a written reason\n{said}",
-                )
-                self.assertEqual(0, code, said)
+                assert "a reason nothing in this run reaches" in marked.read_text(
+                    encoding="utf-8"
+                ), f"a run deleted a written reason\n{said}"
+                assert code == 0, said
 
     def test_accept_does_not_tag_a_row_that_already_has_one(self) -> None:
         """`fresh` is *untagged by definition*, so a second `--accept` writes
@@ -2934,7 +2884,7 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         self.sweep(box, box / "r.json", extra=["--accept"])
         first = self.tags(box)
         self.sweep(box, box / "r2.json", extra=["--accept"])
-        self.assertEqual(first, self.tags(box), "a second --accept tagged the same rows again")
+        assert self.tags(box) == first, "a second --accept tagged the same rows again"
 
     def test_a_second_run_skips_the_file_already_recorded(self) -> None:
         """Resume, which is the reason any of this records per file.
@@ -2949,11 +2899,11 @@ class TestABatchSweepEndToEnd(unittest.TestCase):
         report = box / "r.json"
         self.sweep(box, report)
         code, said = self.sweep(box, report)
-        self.assertIn("already recorded, skipping", said)
-        self.assertNotIn("in one pool", said, "the second run swept anyway")
-        self.assertEqual(0, code, said)
+        assert "already recorded, skipping" in said
+        assert "in one pool" not in said, "the second run swept anyway"
+        assert code == 0, said
         written = json.loads(report.read_text(encoding="utf-8"))
-        self.assertGreaterEqual(len(written["results"]), 4, "the resume lost rows")
+        assert len(written["results"]) >= 4, "the resume lost rows"
 
 
 class TestASweepRecordsAsItGoes(unittest.TestCase):
@@ -3009,7 +2959,7 @@ class TestASweepRecordsAsItGoes(unittest.TestCase):
         )
         with mock.patch.object(mutate, "_run_generated", straight_through), support.quiet():
             done = mutate.sweep([one], args)
-        self.assertEqual([True], fired, "the mid-run callback never ran")
+        assert fired == [True], "the mid-run callback never ran"
         self.midway = midway[0]
         return done
 
@@ -3017,8 +2967,8 @@ class TestASweepRecordsAsItGoes(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-sweep-") as name:
             box = Path(name)
             report = self.sweep(box)
-            self.assertTrue((box / "out.json").is_file(), "the sweep recorded nothing")
-            self.assertTrue(report.widened, "a swept report dropped the guarantee")
+            assert (box / "out.json").is_file(), "the sweep recorded nothing"
+            assert report.widened, "a swept report dropped the guarantee"
 
     def test_what_it_wrote_claims_the_guarantee(self) -> None:
         """The durable half, asserted on both writes.
@@ -3032,9 +2982,9 @@ class TestASweepRecordsAsItGoes(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tupferl-sweep-") as name:
             box = Path(name)
             self.sweep(box)
-            self.assertTrue(self.midway["widened"], f"the mid-run write: {self.midway}")
+            assert self.midway["widened"], f"the mid-run write: {self.midway}"
             written = json.loads((box / "out.json").read_text(encoding="utf-8"))
-            self.assertTrue(written["widened"], written)
+            assert written["widened"], written
 
 
 class TestASpecFileWithNothingInIt(unittest.TestCase):
@@ -3053,7 +3003,7 @@ class TestASpecFileWithNothingInIt(unittest.TestCase):
             where.write_text("x = 1\n", encoding="utf-8")
             with self.assertRaises(SystemExit) as raised:
                 mutate.main([str(where)])
-        self.assertIn("MUTATIONS", str(raised.exception))
+        assert "MUTATIONS" in str(raised.exception)
 
 
 class TestWhoOwnsTheMachine(unittest.TestCase):
@@ -3127,14 +3077,14 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
     def test_a_machine_with_room_gets_what_is_actually_free(self) -> None:
         """Not half of what exists. The whole point: an idle machine is measured
         rather than assumed to be half somebody else's."""
-        self.assertEqual((14 << 30) - (1 << 30), self.budget(14 << 30))
+        assert self.budget(14 << 30) == (14 << 30) - (1 << 30)
 
     def test_a_busy_machine_gets_less_and_that_is_the_half_that_matters(self) -> None:
         """The direction a change like this is never tested in. Without it,
         every assertion above is equally satisfied by "always take nearly
         everything", which is the version that gets a laptop OOM-killed."""
-        self.assertEqual((3 << 30) - (1 << 30), self.budget(3 << 30))
-        self.assertLess(self.budget(3 << 30), self.budget(14 << 30))
+        assert self.budget(3 << 30) == (3 << 30) - (1 << 30)
+        assert self.budget(3 << 30) < self.budget(14 << 30)
 
     def test_a_cgroup_limit_still_binds_under_a_roomy_host(self) -> None:
         """Inside a container `/proc/meminfo` reports the **host's** numbers, so
@@ -3144,13 +3094,13 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         confined = mock.patch.object(mutate, "_visible_memory", lambda: 4 << 30)
         roomy = self.meminfo(self.kernel_says((60 << 30) // 1024))
         with confined, roomy, mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual((4 << 30) - (1 << 30), mutate._budget())
+            assert mutate._budget() == (4 << 30) - (1 << 30)
 
     def test_a_kernel_that_will_not_say_falls_back_to_halving(self) -> None:
         """macOS has no `/proc/meminfo`, and the `macos` CI leg is what proves
         this arm stays reachable -- the same argument `tupferl/config.py`'s
         `tomli` fallback rests on."""
-        self.assertEqual(self.VISIBLE // 2, self.budget(None))
+        assert self.budget(None) == self.VISIBLE // 2
 
     def test_a_malformed_available_line_is_refused(self) -> None:
         """A value that is not a number, or a unit that is not `kB`, is not a
@@ -3162,18 +3112,18 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         an `and` for an `or` survives."""
         for said in ("MemAvailable: lots kB", "MemAvailable: 4096", "MemAvailable: 4096 MB"):
             with self.subTest(said=said), self.meminfo(said + "\n"):
-                self.assertEqual(0, mutate._unclaimed(), f"{said!r} was read as a number")
+                assert mutate._unclaimed() == 0, f"{said!r} was read as a number"
 
     def test_mem_free_is_not_mistaken_for_mem_available(self) -> None:
         """An old kernel writes no `MemAvailable`. Reading `MemFree` instead
         would size the pool from whatever the page cache has not taken, which on
         any machine that has read a file is a small number and a wrong one."""
         with self.meminfo(self.kernel_says(None, free_kb=200)):
-            self.assertEqual(0, mutate._unclaimed())
+            assert mutate._unclaimed() == 0
 
     def test_a_shared_machine_keeps_half_for_the_person_using_it(self) -> None:
         """The fallback rule, unchanged, on a machine that cannot be measured."""
-        self.assertEqual(self.VISIBLE // 2, self.budget(None))
+        assert self.budget(None) == self.VISIBLE // 2
 
     def test_a_ci_runner_is_not_shared(self) -> None:
         """Nobody is waiting for their editor on a CI runner, and every CI
@@ -3184,23 +3134,23 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         holds for any value of it, which is CLAUDE.md §2's copy-of-the-code by
         name. The sweep found it -- both mutations of `_SPARE` survived.
         """
-        self.assertEqual(self.VISIBLE - (1 << 30), self.budget(CI="true"))
+        assert self.budget(CI="true") == self.VISIBLE - (1 << 30)
 
     def test_a_cgroup_limit_means_the_share_is_already_carved_out(self) -> None:
         """Halving a cgroup limit double-counts the same reservation: the
         container has no other half to leave, because nobody else is in it."""
         with mock.patch.object(mutate, "_confined", lambda: 1 << 30):
-            self.assertEqual(self.VISIBLE - (1 << 30), self.budget())
+            assert self.budget() == self.VISIBLE - (1 << 30)
 
     def test_being_told_beats_both(self) -> None:
         asked = 12 << 30
-        self.assertEqual(asked, self.budget(**{mutate._TOTAL: str(asked)}))
-        self.assertEqual(asked, self.budget(CI="true", **{mutate._TOTAL: str(asked)}))
+        assert self.budget(**{mutate._TOTAL: str(asked)}) == asked
+        assert self.budget(CI="true", **{mutate._TOTAL: str(asked)}) == asked
 
     def test_nonsense_in_the_variable_is_ignored_rather_than_obeyed(self) -> None:
         for said in ("", "0", "-1", "lots"):
             with self.subTest(said=said):
-                self.assertEqual(self.VISIBLE // 2, self.budget(**{mutate._TOTAL: said}))
+                assert self.budget(**{mutate._TOTAL: said}) == self.VISIBLE // 2
 
     def test_a_tiny_dedicated_machine_never_drops_under_the_floor(self) -> None:
         """Otherwise subtracting `_SPARE` hands it less than one lane's ceiling
@@ -3208,7 +3158,7 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         opposite of the point."""
         tiny = mock.patch.object(mutate, "_visible_memory", lambda: (1 << 30) + (1 << 20))
         with tiny, mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
-            self.assertEqual(mutate._FLOOR, mutate._budget())
+            assert mutate._budget() == mutate._FLOOR
 
     def test_the_run_says_which_rule_it_used(self) -> None:
         """A lane count nobody can account for is what sent this author reading
@@ -3221,13 +3171,13 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
         """
         busy = self.meminfo(self.kernel_says((3 << 30) // 1024))
         with busy, mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIn("unclaimed", mutate._why())
-            self.assertIn(str(3 << 10), mutate._why(), "it does not say how much")
+            assert "unclaimed" in mutate._why()
+            assert str(3 << 10) in mutate._why(), "it does not say how much"
         silent = self.meminfo(None)
         with silent, mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIn("shared", mutate._why())
+            assert "shared" in mutate._why()
         with self.meminfo(None), mock.patch.dict(os.environ, {"CI": "true"}, clear=True):
-            self.assertIn("dedicated", mutate._why())
+            assert "dedicated" in mutate._why()
         with mock.patch.dict(os.environ, {mutate._TOTAL: "123"}, clear=True):
             # `mutate._TOTAL`, not the literal. This asserted `"--budget"` and
             # passed for a release, naming a flag the parser has never had --
@@ -3235,7 +3185,7 @@ class TestWhoOwnsTheMachine(unittest.TestCase):
             # "unrecognized arguments". A test that pins prose has to pin it
             # against the thing it describes, or it guards the wrong name just
             # as firmly as the right one.
-            self.assertEqual(mutate._TOTAL, mutate._why())
+            assert mutate._why() == mutate._TOTAL
 
 
 class TestReadingACgroupLimit(unittest.TestCase):
@@ -3258,16 +3208,16 @@ class TestReadingACgroupLimit(unittest.TestCase):
             return mutate._confined()
 
     def test_a_real_limit_below_the_host_total_counts(self) -> None:
-        self.assertEqual(2 << 30, self.confined(str(2 << 30)))
+        assert self.confined(str(2 << 30)) == 2 << 30
 
     def test_cgroup_v2_writes_max_for_no_limit(self) -> None:
-        self.assertEqual(0, self.confined("max"))
+        assert self.confined("max") == 0
 
     def test_cgroup_v1_writes_a_sentinel_near_two_to_the_sixty_three(self) -> None:
         """Which is what this machine's `memory.limit_in_bytes` actually holds:
         9223372036854771712. Read as a limit it would look like the largest
         dedicated machine ever built."""
-        self.assertEqual(0, self.confined("9223372036854771712"))
+        assert self.confined("9223372036854771712") == 0
 
 
 class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
@@ -3284,11 +3234,11 @@ class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
         would be guessing -- a v1 sentinel would read as a machine with eight
         exabytes."""
         with mock.patch("os.sysconf", side_effect=OSError):
-            self.assertEqual(0, mutate._confined())
+            assert mutate._confined() == 0
 
     def test_no_cgroup_file_means_the_host_bounds_us(self) -> None:
         with mock.patch("pathlib.Path.read_text", side_effect=OSError):
-            self.assertEqual(0, mutate._confined())
+            assert mutate._confined() == 0
 
     def test_a_shared_machine_is_reported_as_the_empty_string(self) -> None:
         """`dedicated` returns a *reason*, and "no reason" has to be falsy for
@@ -3296,13 +3246,13 @@ class TestWhenTheMachineCannotSayHowBigItIs(unittest.TestCase):
         prints it."""
         alone = mock.patch.object(mutate, "_confined", lambda: 0)
         with mock.patch.dict(os.environ, {}, clear=True), alone:
-            self.assertEqual("", mutate.dedicated())
+            assert mutate.dedicated() == ""
 
     def test_a_budget_of_one_byte_is_still_a_budget(self) -> None:
         """The boundary on `int(said) > 0`. A fixture using a comfortable number
         cannot tell that from `> 1`."""
         with mock.patch.dict(os.environ, {mutate._TOTAL: "1"}, clear=True):
-            self.assertEqual(1, mutate._budget())
+            assert mutate._budget() == 1
 
 
 class TestEveryReaderGivesTheFourFieldsThatDecideMembership(unittest.TestCase):
@@ -3319,9 +3269,9 @@ class TestEveryReaderGivesTheFourFieldsThatDecideMembership(unittest.TestCase):
 
     def test_this_process_is_found_with_its_parentage_and_memory(self) -> None:
         me = mutate._processes()[os.getpid()]
-        self.assertEqual(os.getppid(), me.parent)
-        self.assertEqual(os.getpgrp(), me.group)
-        self.assertGreater(me.resident, 0, "no resident memory read for this process")
+        assert me.parent == os.getppid()
+        assert me.group == os.getpgrp()
+        assert me.resident > 0, "no resident memory read for this process"
 
 
 @unittest.skipUnless(Path("/proc/self/stat").exists(), "there is no /proc here")
@@ -3340,8 +3290,8 @@ class TestWhereThereIsAProc(unittest.TestCase):
         question is unanswerable while every assertion about `resident` still
         passes."""
         me = mutate._from_proc()[os.getpid()]
-        self.assertGreater(me.resident, 0)
-        self.assertGreater(me.address, me.resident, "address space is not above resident")
+        assert me.resident > 0
+        assert me.address > me.resident, "address space is not above resident"
 
     def test_the_group_is_read_where_a_session_would_not_do(self) -> None:
         """`pgid` and `sid` sit next to each other in `/proc/<pid>/stat`, and
@@ -3358,8 +3308,8 @@ class TestWhereThereIsAProc(unittest.TestCase):
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         seen = mutate._from_proc()[child.pid]
-        self.assertEqual(child.pid, seen.group, "the process group was read from another field")
-        self.assertNotEqual(os.getsid(0), seen.group, "the fixture cannot tell the two apart")
+        assert seen.group == child.pid, "the process group was read from another field"
+        assert seen.group != os.getsid(0), "the fixture cannot tell the two apart"
 
     def test_the_two_readers_agree_on_resident(self) -> None:
         """`resident` is read in pages from `/proc` and in kibibytes from `ps`,
@@ -3372,10 +3322,8 @@ class TestWhereThereIsAProc(unittest.TestCase):
         """
         mine = mutate._from_proc()[os.getpid()]
         theirs = mutate._from_ps()[os.getpid()]
-        self.assertLess(
-            max(mine.resident, theirs.resident) / min(mine.resident, theirs.resident),
-            2.0,
-            f"proc says {mine.resident} resident and ps says {theirs.resident}",
+        assert max(mine.resident, theirs.resident) / min(mine.resident, theirs.resident) < 2.0, (
+            f"proc says {mine.resident} resident and ps says {theirs.resident}"
         )
 
     #: Comfortably above one sampling interval and far below the harness's own
@@ -3409,15 +3357,13 @@ class TestWhereThereIsAProc(unittest.TestCase):
         deadline = time.monotonic() + self.PATIENCE
         while not mutate._WATCHED.widest() and time.monotonic() < deadline:
             time.sleep(mutate._SAMPLE / 4)
-        self.assertGreater(
-            mutate._WATCHED.widest(), 0, "a live lane was watched and never measured"
-        )
+        assert mutate._WATCHED.widest() > 0, "a live lane was watched and never measured"
 
     def test_the_two_readers_agree_on_parentage(self) -> None:
         mine = mutate._from_proc()[os.getpid()]
         theirs = mutate._from_ps()[os.getpid()]
-        self.assertEqual(mine.parent, theirs.parent)
-        self.assertEqual(mine.group, theirs.group)
+        assert theirs.parent == mine.parent
+        assert theirs.group == mine.group
 
 
 class TestWhatPsIsAskedFor(unittest.TestCase):
@@ -3440,27 +3386,25 @@ class TestWhatPsIsAskedFor(unittest.TestCase):
             text=True,
             check=False,
         )
-        self.assertEqual(0, listed.returncode, listed.stderr)
+        assert listed.returncode == 0, listed.stderr
         return listed.stdout
 
     def test_the_four_fields_are_read_from_real_output(self) -> None:
         table = mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss"))
-        self.assertIn(os.getpid(), table, "ps produced no process table")
-        self.assertEqual(os.getppid(), table[os.getpid()].parent)
-        self.assertGreater(table[os.getpid()].resident, 0)
+        assert os.getpid() in table, "ps produced no process table"
+        assert table[os.getpid()].parent == os.getppid()
+        assert table[os.getpid()].resident > 0
 
     def test_no_address_space_is_invented(self) -> None:
         """0 rather than a guess, so `_report_headroom` stays silent where there
         is no enforced ceiling to compare against."""
-        self.assertEqual(
-            0, mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss"))[os.getpid()].address
-        )
+        assert mutate._parse_ps(self.ran("pid", "ppid", "pgid", "rss"))[os.getpid()].address == 0
 
     def test_a_fifth_column_is_refused_rather_than_misread(self) -> None:
         """`vsz` is not asked for, so a row carrying it is not this reader's
         output. Taking the first four fields of it anyway would be reading a
         format nobody promised."""
-        self.assertEqual({}, mutate._parse_ps("7 1 7 2048 4096\n"))
+        assert mutate._parse_ps("7 1 7 2048 4096\n") == {}
 
     def test_a_line_that_is_not_numbers_is_skipped(self) -> None:
         """`ps` writes a header when asked without `=`, and a machine may print
@@ -3474,15 +3418,15 @@ class TestWhatPsIsAskedFor(unittest.TestCase):
         them, and it is also the realistic one: a column that failed to render
         leaves numbers beside it.
         """
-        self.assertEqual({}, mutate._parse_ps("PID PPID PGID RSS VSZ\nnot a process\n"))
-        self.assertEqual({}, mutate._parse_ps("123 456 789 abc def\n"))
-        self.assertEqual({}, mutate._parse_ps("123 456 789 1024 zzz\n"))
+        assert mutate._parse_ps("PID PPID PGID RSS VSZ\nnot a process\n") == {}
+        assert mutate._parse_ps("123 456 789 abc def\n") == {}
+        assert mutate._parse_ps("123 456 789 1024 zzz\n") == {}
 
     def test_the_kibibytes_are_multiplied_and_not_divided(self) -> None:
         """`ps` reports KiB. A divide leaves a number that is still positive,
         which is all an assertion of "greater than zero" can see -- so this
         pins the arithmetic against a known input instead."""
-        self.assertEqual(2048 * 1024, mutate._parse_ps("7 1 7 2048\n")[7].resident)
+        assert mutate._parse_ps("7 1 7 2048\n")[7].resident == 2048 * 1024
 
 
 class TestWhatMayBeSignalled(unittest.TestCase):
@@ -3510,34 +3454,34 @@ class TestWhatMayBeSignalled(unittest.TestCase):
             [4321, 4322, 999],
             {mine: 5000.0, 4321: 5001.0, 4322: 5002.0, 999: 12.0},
         )
-        self.assertEqual([4321, 4322], got, "something older than the sweep was permitted")
+        assert got == [4321, 4322], "something older than the sweep was permitted"
 
     def test_this_process_is_never_signalled(self) -> None:
         """Its own start time is equal to its own, so `>=` alone would let the
         harness kill itself -- and `_end_lane`'s `killpg` had the same hole."""
         mine = os.getpid()
-        self.assertEqual([], self.permitted([mine], {mine: 5000.0}))
+        assert self.permitted([mine], {mine: 5000.0}) == []
 
     def test_the_same_tick_counts_as_ours(self) -> None:
         """`>=` and not `>`, and this is the only input that tells them apart.
         A tick is 10ms and a `Popen` is well inside one, so a lane born in the
         sweep's own tick is the sweep's."""
         mine = os.getpid()
-        self.assertEqual([7], self.permitted([7], {mine: 5000.0, 7: 5000.0}))
+        assert self.permitted([7], {mine: 5000.0, 7: 5000.0}) == [7]
 
     def test_a_pid_that_has_gone_is_still_permitted(self) -> None:
         """It exited between the walk and here. `os.kill` on it is an `OSError`
         the caller already suppresses; refusing it would be the guard deciding
         something it has no evidence about."""
         mine = os.getpid()
-        self.assertEqual([7], self.permitted([7], {mine: 5000.0}))
+        assert self.permitted([7], {mine: 5000.0}) == [7]
 
     def test_an_unreadable_self_refuses_nothing(self) -> None:
         """No `/proc/self`, or a `ps` that did not run. Refusing everything
         would leave a fork storm alive, which is the failure `_Lanes` exists to
         stop -- so the guard stands down rather than inverting into a different
         hazard. It is the behaviour that existed before it."""
-        self.assertEqual([1, 2, 3], self.permitted([1, 2, 3], {}))
+        assert self.permitted([1, 2, 3], {}) == [1, 2, 3]
 
     def test_it_reads_the_clock_itself_rather_than_the_process_table(self) -> None:
         """The independence is the design. `_processes` is what `_lane` walks,
@@ -3548,7 +3492,7 @@ class TestWhatMayBeSignalled(unittest.TestCase):
             mock.patch.object(mutate, "_processes", lambda: {}),
             mock.patch.object(mutate, "_born", lambda: {os.getpid(): 5000.0, 7: 12.0}),
         ):
-            self.assertEqual([], mutate._permitted([7]))
+            assert mutate._permitted([7]) == []
 
 
 class TestWhichClockIsRead(unittest.TestCase):
@@ -3564,7 +3508,7 @@ class TestWhichClockIsRead(unittest.TestCase):
         # job runs `--no-skips`: on a machine with no `/proc` the other reader
         # is the right answer and this test still says something true.
         expected = {11: 1.0} if Path("/proc/self/stat").exists() else {22: 2.0}
-        self.assertEqual(expected, got)
+        assert got == expected
 
     def test_it_falls_back_to_ps_where_there_is_none(self) -> None:
         """The macOS half, driven on every platform by taking `/proc` away."""
@@ -3572,7 +3516,7 @@ class TestWhichClockIsRead(unittest.TestCase):
             mock.patch.object(Path, "exists", lambda self: False),
             mock.patch.object(mutate, "_born_from_ps", lambda: {22: 2.0}),
         ):
-            self.assertEqual({22: 2.0}, mutate._born())
+            assert mutate._born() == {22: 2.0}
 
 
 class TestTheKillListIsVettedForReal(unittest.TestCase):
@@ -3635,14 +3579,14 @@ class TestTheKillListIsVettedForReal(unittest.TestCase):
         # this process's own start *after* the bystander's and before the lane's
         # -- which is what a real sweep looks like from the bystander's side.
         real = mutate._born()
-        self.assertIn(bystander.pid, real, "the reader could not see the bystander")
+        assert bystander.pid in real, "the reader could not see the bystander"
         lane = self.sleeper()
         fake = {os.getpid(): 500.0, bystander.pid: 100.0, lane.pid: 900.0}
         with mock.patch.object(mutate, "_born", lambda: dict(fake)):
             mutate._end_lane(lane.pid, [bystander.pid, lane.pid])
         lane.wait(timeout=support.PATIENCE)
-        self.assertTrue(self.alive(bystander), "a process older than the sweep was killed")
-        self.assertFalse(self.alive(lane), "the lane itself was not killed")
+        assert self.alive(bystander), "a process older than the sweep was killed"
+        assert not self.alive(lane), "the lane itself was not killed"
 
 
 class TestWhenEachProcessStarted(unittest.TestCase):
@@ -3654,8 +3598,8 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         """Driven against the real machine rather than a fixture, because the
         claim is that the field being read is the one meant."""
         born = mutate._born()
-        self.assertIn(os.getpid(), born, "the reader did not find this process")
-        self.assertIn(os.getppid(), born, "the reader did not find its parent")
+        assert os.getpid() in born, "the reader did not find this process"
+        assert os.getppid() in born, "the reader did not find its parent"
 
     def test_the_processes_do_not_all_report_the_same_instant(self) -> None:
         """**The field is a start time, and this is what says so.**
@@ -3672,7 +3616,7 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         is ever used.
         """
         born = mutate._born()
-        self.assertGreater(len(set(born.values())), 1, "every process reports the same start time")
+        assert len(set(born.values())) > 1, "every process reports the same start time"
 
     def test_a_child_started_now_is_not_older_than_this_process(self) -> None:
         """The ordering, which is the only property `_permitted` uses. A weaker
@@ -3682,8 +3626,8 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         born = mutate._born()
-        self.assertIn(child.pid, born)
-        self.assertGreaterEqual(born[child.pid], born[os.getpid()])
+        assert child.pid in born
+        assert born[child.pid] >= born[os.getpid()]
         # And strictly later than the oldest process on the machine. "The
         # values differ" is not enough on its own: `/proc/<pid>/stat` field 20
         # is `num_threads`, which also differs between processes and is not a
@@ -3691,14 +3635,14 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         # a one-threaded init and the guard permits it. Measured: that
         # off-by-one survived every other test in this class.
         if 1 in born:  # absent only where this user cannot see init
-            self.assertGreater(born[child.pid], born[1], "a child is not younger than init")
+            assert born[child.pid] > born[1], "a child is not younger than init"
 
     def test_the_ps_reader_parses_what_ps_prints(self) -> None:
         """macOS's half, driven from text on every platform. The date shape is
         `ps -o lstart=`'s, which is `%c`-like and fixed by BSD `ps`."""
         got = mutate._parse_lstart("  431 Sat Aug 30 17:28:03 2026\n 9999 Sat Aug 30 17:28:04 2026")
-        self.assertEqual([431, 9999], sorted(got))
-        self.assertLess(got[431], got[9999], "the two instants did not order")
+        assert sorted(got) == [431, 9999]
+        assert got[431] < got[9999], "the two instants did not order"
 
     def test_the_ps_reader_reads_this_machine_s_own_ps(self) -> None:
         """**Driven on real `ps`, and the fixture above is why that matters.**
@@ -3720,14 +3664,14 @@ class TestWhenEachProcessStarted(unittest.TestCase):
         discovered to be broken on the machine that has nothing else.
         """
         born = mutate._born_from_ps()
-        self.assertIn(os.getpid(), born, "real ps output parsed to nothing")
-        self.assertGreater(len(born), 1)
+        assert os.getpid() in born, "real ps output parsed to nothing"
+        assert len(born) > 1
 
     def test_a_line_it_cannot_read_is_skipped_rather_than_raising(self) -> None:
         """An unreadable date must not stop a lane being killed -- it must only
         stop this vetoing the kill. A header line, a locale this cannot parse,
         and a pid column with no date all take that path."""
-        self.assertEqual({}, mutate._parse_lstart("  PID STARTED\n  431 not a date at all\n"))
+        assert mutate._parse_lstart("  PID STARTED\n  431 not a date at all\n") == {}
 
 
 class TestTheLogIsReadableWhileItIsBeingWritten(unittest.TestCase):
@@ -3765,14 +3709,14 @@ class TestTheLogIsReadableWhileItIsBeingWritten(unittest.TestCase):
         spill = self.Recording()
         with redirect_stdout(spill), redirect_stderr(io.StringIO()), suppress(SystemExit):
             mutate.main(["--list", "--base", "HEAD"])
-        self.assertEqual({"line_buffering": True}, spill.asked)
+        assert spill.asked == {"line_buffering": True}
 
     def test_a_stream_that_cannot_be_reconfigured_is_not_an_error(self) -> None:
         """A dozen tests here call `main` under `support.quiet`, whose capture
         is a plain `StringIO` with no `reconfigure`. Asked rather than
         suppressed, so this is the behaviour rather than a swallowed
         `AttributeError` -- and without the guard those tests all raise."""
-        self.assertFalse(hasattr(io.StringIO(), "reconfigure"))
+        assert not hasattr(io.StringIO(), "reconfigure")
         with support.quiet(), suppress(SystemExit):
             mutate.main(["--list", "--base", "HEAD"])
 
@@ -3847,7 +3791,7 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
         `_report_headroom`. Sized unequally so that "the sum" and "twice the
         first" are also different answers."""
         got = self.sampled(self.table(p10=100 << 20, p20=300 << 20), {10: {10}, 20: {20}})
-        self.assertEqual(400 << 20, got)
+        assert got == 400 << 20
 
     def test_a_lane_inside_its_ceiling_is_still_counted(self) -> None:
         """The loop `continue`s past a lane that is within its ceiling, and that
@@ -3857,7 +3801,7 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
         code."""
         # Far inside its ceiling, so the kill branch is not reached at all.
         got = self.sampled(self.table(p10=7 << 20), {10: {10}})
-        self.assertEqual(7 << 20, got)
+        assert got == 7 << 20
 
     def test_a_process_in_two_lanes_is_counted_once(self) -> None:
         """A pid reachable from two leaders -- `_lane` unions a process group
@@ -3868,25 +3812,25 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
             self.table(p10=100 << 20, p20=100 << 20, p30=200 << 20),
             {10: {10, 30}, 20: {20, 30}},
         )
-        self.assertEqual(400 << 20, got)
+        assert got == 400 << 20
 
     def test_it_keeps_the_worst_instant_rather_than_the_last(self) -> None:
         """A high-water mark. The machine died at the peak, not at whatever was
         true when the sweep finished."""
         got = self.sampled(self.table(p10=5 << 20), {10: {10}}, start=900 << 20)
-        self.assertEqual(900 << 20, got)
+        assert got == 900 << 20
 
     def test_a_fresh_sampler_has_no_crowd_mark(self) -> None:
-        self.assertEqual(0, mutate._Lanes().crowded())
+        assert mutate._Lanes().crowded() == 0
 
     def test_forget_starts_a_fresh_crowd_mark(self) -> None:
         """`_WATCHED` is a singleton and a process may call `run` twice, so
         without this the second run reports the first one's peak -- the same
         reason `widest` is reset, and it was reset in the same place."""
         mutate._WATCHED._crowd = 77 << 20
-        self.assertEqual(77 << 20, mutate._WATCHED.crowded())
+        assert mutate._WATCHED.crowded() == 77 << 20
         mutate._WATCHED.forget()
-        self.assertEqual(0, mutate._WATCHED.crowded())
+        assert mutate._WATCHED.crowded() == 0
 
     def said(self, crowd: int, budget: int, terminal: bool = False) -> str:
         with (
@@ -3899,47 +3843,47 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
 
     def test_the_line_names_what_was_held_and_what_there_was(self) -> None:
         said = self.said(41000 << 20, 53000 << 20)
-        self.assertIn("41000 MiB", said)
-        self.assertIn("53000 MiB", said)
-        self.assertIn("77%", said)
+        assert "41000 MiB" in said
+        assert "53000 MiB" in said
+        assert "77%" in said
 
     def test_it_says_resident_because_that_is_what_the_host_counts(self) -> None:
         """Address space would be the wrong number by 25x -- the storm that
         prompted `_Lanes` held 26 GB resident against 961 GB of address space,
         and only one of those is a reason anything dies."""
-        self.assertIn("resident", self.said(100 << 20, 1000 << 20))
+        assert "resident" in self.said(100 << 20, 1000 << 20)
 
     def test_nothing_sampled_says_nothing(self) -> None:
         """A zero here would be a measurement reported as a result -- the shape
         `_report_headroom` exists to correct, in the same run."""
-        self.assertEqual("", self.said(0, 53000 << 20))
+        assert self.said(0, 53000 << 20) == ""
 
     def test_a_crowded_machine_is_shouted_and_a_roomy_one_is_not(self) -> None:
         """The half that makes it worth printing. Without it the line reads the
         same whether the sweep used a tenth of the machine or all of it."""
         tight = self.said(50000 << 20, 52000 << 20, terminal=True)
         roomy = self.said(5000 << 20, 52000 << 20, terminal=True)
-        self.assertIn(paint.ODD, tight, "a 96% crowd was muttered")
-        self.assertNotIn(paint.ODD, roomy, "a 10% crowd was shouted")
+        assert paint.ODD in tight, "a 96% crowd was muttered"
+        assert paint.ODD not in roomy, "a 10% crowd was shouted"
 
     def test_the_threshold_itself_counts_as_crowded(self) -> None:
         """Exactly at `_TIGHT`, the only input that tells `>=` from `>`."""
         at = int(mutate._TIGHT * (52000 << 20))
-        self.assertIn(paint.ODD, self.said(at, 52000 << 20, terminal=True))
+        assert paint.ODD in self.said(at, 52000 << 20, terminal=True)
 
     def test_a_machine_that_reports_no_memory_is_said_nothing_about(self) -> None:
         """`_budget` can answer 0 -- a machine publishing no `/proc/meminfo`, no
         cgroup and no `sysconf`, where `_BLIND_LANES` is the fallback. Dividing
         by it is a `ZeroDivisionError` in the reporting line of a sweep that has
         otherwise finished, which is the worst place to raise."""
-        self.assertEqual("", self.said(900 << 20, 0))
+        assert self.said(900 << 20, 0) == ""
 
     def test_a_machine_that_reports_one_byte_is_still_reported_on(self) -> None:
         """The other side of `<= 0`, and the only input that tells it from
         `<= 1`: a budget of exactly one byte is absurd but it is a *reading*,
         and a reading gets reported. Without this the guard may quietly widen
         until it swallows real machines."""
-        self.assertIn("900 MiB", self.said(900 << 20, 1))
+        assert "900 MiB" in self.said(900 << 20, 1)
 
     def test_it_is_still_said_when_there_is_no_ceiling_to_report_against(self) -> None:
         """The two lines go quiet for different reasons, so one must not be
@@ -3955,8 +3899,8 @@ class TestWhatEveryLaneHeldBetweenThem(unittest.TestCase):
         ):
             mutate._report_headroom(0)
         said = spill.getvalue()
-        self.assertIn("900 MiB", said, "the crowd went quiet with the headroom line")
-        self.assertNotIn("ceiling", said, "a headroom line was printed with nothing to report")
+        assert "900 MiB" in said, "the crowd went quiet with the headroom line"
+        assert "ceiling" not in said, "a headroom line was printed with nothing to report"
 
 
 class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
@@ -3983,16 +3927,16 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         `forget` in `setUp`, so the value `__init__` sets is unobservable to
         them -- three mutants of it survived the sweep, including one that
         removed the assignment and left `widest` raising `AttributeError`."""
-        self.assertEqual(0, mutate._Lanes().widest())
+        assert mutate._Lanes().widest() == 0
 
     def test_forget_starts_a_fresh_mark(self) -> None:
         """`_WATCHED` is a module-level singleton and a process may call `run`
         more than once -- a spec file calling `verify` twice is the shape that
         does it. Without this the second run reports the first one's peak."""
         mutate._WATCHED._widest = 123 << 20
-        self.assertEqual(123 << 20, mutate._WATCHED.widest())
+        assert mutate._WATCHED.widest() == 123 << 20
         mutate._WATCHED.forget()
-        self.assertEqual(0, mutate._WATCHED.widest())
+        assert mutate._WATCHED.widest() == 0
 
     def said(self, widest: int, ceiling: int, terminal: bool = False) -> str:
         held = mock.patch.object(mutate._WATCHED, "_widest", widest)
@@ -4005,22 +3949,22 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         nothing without the ceiling, and the ceiling was already printed at the
         top of a run that may have scrolled."""
         said = self.said(1892 << 20, 2053 << 20)
-        self.assertIn("1892 MiB", said)
-        self.assertIn("2053 MiB", said)
-        self.assertIn("92%", said)
+        assert "1892 MiB" in said
+        assert "2053 MiB" in said
+        assert "92%" in said
 
     def test_it_says_the_figure_is_sampled_and_low(self) -> None:
         """A number presented as exact invites being divided into. This one is
         the *current* size read once a second, and measured 3% under the
         kernel's own high-water over a sweep."""
-        self.assertIn("sampled", self.said(1892 << 20, 2053 << 20))
+        assert "sampled" in self.said(1892 << 20, 2053 << 20)
 
     def test_the_threshold_itself_counts_as_thin(self) -> None:
         """Exactly at `_TIGHT`, which is the only input that tells `>=` from
         `>`. The pair below uses 95% and 10% and cannot see the difference; the
         mutant survived the sweep against them."""
         at = int(mutate._TIGHT * (2000 << 20))
-        self.assertIn(paint.ODD, self.said(at, 2000 << 20, terminal=True))
+        assert paint.ODD in self.said(at, 2000 << 20, terminal=True)
 
     def test_a_thin_margin_is_shouted_and_a_roomy_one_is_not(self) -> None:
         """The half that makes the line worth printing at all. Without it the
@@ -4028,9 +3972,9 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         test away from killing every lane."""
         tight = self.said(1900 << 20, 2000 << 20, terminal=True)
         roomy = self.said(200 << 20, 2000 << 20, terminal=True)
-        self.assertIn(paint.ODD, tight, "a 95% margin was muttered")
-        self.assertNotIn(paint.ODD, roomy, "a 10% margin was shouted")
-        self.assertIn(paint.QUIET, roomy)
+        assert paint.ODD in tight, "a 95% margin was muttered"
+        assert paint.ODD not in roomy, "a 10% margin was shouted"
+        assert paint.QUIET in roomy
 
     def ran(self, *patched: Any) -> str:
         """One real `run`, with the rows stubbed out.
@@ -4059,7 +4003,7 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         """A `run` that reports without forgetting prints the *previous* run's
         peak. Set one, and insist it does not come out."""
         mutate._WATCHED._widest = 999 << 20
-        self.assertNotIn("999 MiB", self.ran(), "a mark from an earlier run was reported")
+        assert "999 MiB" not in self.ran(), "a mark from an earlier run was reported"
 
     def test_a_run_reports_its_headroom_at_all(self) -> None:
         """The other half of the wiring, and it needs its own test: with
@@ -4072,19 +4016,19 @@ class TestWhatTheHeaviestLaneHeld(unittest.TestCase):
         the picture and leaves only "was the report reached".
         """
         held = mock.patch.object(mutate._WATCHED, "widest", lambda: 512 << 20)
-        self.assertIn("512 MiB", self.ran(held), "run never reported its headroom")
+        assert "512 MiB" in self.ran(held), "run never reported its headroom"
 
     def test_a_run_that_sampled_nothing_says_nothing(self) -> None:
         """Lanes that each finish inside one sampling interval leave no reading.
         Printing "0 MiB of 2053 MiB (0%)" would report a measurement that was
         never taken as though it were a result -- which is the shape this whole
         change exists to correct."""
-        self.assertEqual("", self.said(0, 2053 << 20))
+        assert self.said(0, 2053 << 20) == ""
 
     def test_no_ceiling_means_no_share_to_report(self) -> None:
         """`--memory 0` is "no cap", and a percentage of nothing is a
         ZeroDivisionError rather than a fact."""
-        self.assertEqual("", self.said(1892 << 20, 0))
+        assert self.said(1892 << 20, 0) == ""
 
 
 class TestWhyAProbeThatWroteNothingDied(unittest.TestCase):
@@ -4098,14 +4042,14 @@ class TestWhyAProbeThatWroteNothingDied(unittest.TestCase):
     """
 
     def test_an_ordinary_exit_names_the_status(self) -> None:
-        self.assertEqual("the probe exited 3 without writing a report", mutate._signalled(3))
+        assert mutate._signalled(3) == "the probe exited 3 without writing a report"
 
     def test_a_clean_exit_with_no_report_is_still_an_exit(self) -> None:
         """Zero is on the boundary, and it is the side that is not a signal:
         `subprocess` spells a signal as a *negative* number, so `>= 0` and `> 0`
         differ exactly here -- and under `> 0` a probe that exited 0 would be
         reported as killed by signal 0, which is not a signal at all."""
-        self.assertEqual("the probe exited 0 without writing a report", mutate._signalled(0))
+        assert mutate._signalled(0) == "the probe exited 0 without writing a report"
 
     def test_a_kill_says_which_signal_and_what_it_usually_means(self) -> None:
         """`SIGKILL` is the one that matters: it is what the host OOM killer
@@ -4114,9 +4058,9 @@ class TestWhyAProbeThatWroteNothingDied(unittest.TestCase):
         the second, and a message naming the wrong one costs more than a message
         naming none."""
         said = mutate._signalled(-signal.SIGKILL)
-        self.assertIn("killed by SIGKILL", said)
-        self.assertIn("ran out of memory", said)
-        self.assertIn("killed the session it was in", said)
+        assert "killed by SIGKILL" in said
+        assert "ran out of memory" in said
+        assert "killed the session it was in" in said
 
     def test_any_other_signal_is_named_without_the_guess(self) -> None:
         """The other half. Without it, a `_signalled` that appended the
@@ -4124,15 +4068,15 @@ class TestWhyAProbeThatWroteNothingDied(unittest.TestCase):
         would tell a reader their machine was out of memory every time a probe
         timed out."""
         said = mutate._signalled(-signal.SIGTERM)
-        self.assertIn("killed by SIGTERM", said)
-        self.assertNotIn("ran out of memory", said)
+        assert "killed by SIGTERM" in said
+        assert "ran out of memory" not in said
 
     def test_a_number_that_is_not_a_signal_does_not_raise(self) -> None:
         """`signal.Signals(-returncode)` raises for a number outside the set,
         and this runs inside the handler for a probe that already failed --
         where an exception replaces the row's reason with a traceback about the
         reason."""
-        self.assertIn("killed by ?", mutate._signalled(-999))
+        assert "killed by ?" in mutate._signalled(-999)
 
 
 class TestTheLastThingARunManagedToSay(unittest.TestCase):
@@ -4152,23 +4096,23 @@ class TestTheLastThingARunManagedToSay(unittest.TestCase):
         return mutate._tail(noise)
 
     def test_the_last_line_is_what_comes_back(self) -> None:
-        self.assertEqual("the last one", self.tail("first\nsecond\nthe last one\n"))
+        assert self.tail("first\nsecond\nthe last one\n") == "the last one"
 
     def test_trailing_blank_lines_are_not_the_last_line(self) -> None:
         """A process that dies mid-write leaves them, and "" as a reason reads
         as a row nobody can explain rather than as one that said something."""
-        self.assertEqual("real", self.tail("real\n\n\n   \n"))
+        assert self.tail("real\n\n\n   \n") == "real"
 
     def test_a_log_with_nothing_in_it_is_empty_rather_than_an_error(self) -> None:
         """`_run` spells this `_tail(noise) or _signalled(...)`, so the empty
         string is what hands the question on. An `IndexError` from the last-line
         read would replace the row's reason with a traceback."""
-        self.assertEqual("", self.tail(""))
+        assert self.tail("") == ""
 
     def test_a_log_that_was_never_written_is_empty_too(self) -> None:
         """The `OSError` arm. A probe killed before it opened its log leaves no
         file at all, which is precisely the case `_signalled` exists for."""
-        self.assertEqual("", mutate._tail(Path("/nonexistent/noise.log")))
+        assert mutate._tail(Path("/nonexistent/noise.log")) == ""
 
     def test_bytes_that_are_not_utf8_do_not_stop_the_report(self) -> None:
         """`errors="replace"`. A probe's log is whatever the tests under it
@@ -4179,7 +4123,7 @@ class TestTheLastThingARunManagedToSay(unittest.TestCase):
         self.addCleanup(shutil.rmtree, box, True)
         noise = box / "noise.log"
         noise.write_bytes(b"fine\nbroken \xff\xfe here\n")
-        self.assertIn("broken", mutate._tail(noise))
+        assert "broken" in mutate._tail(noise)
 
 
 class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
@@ -4246,23 +4190,21 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
     def test_a_row_with_no_tag_is_unread(self) -> None:
         box, results = self.rows("x = 1\ny = 2\n", "y = 2")
         found = mutate.sort_survivors(results, box)
-        self.assertEqual(results, found.fresh)
-        self.assertEqual([], found.accepted)
+        assert found.fresh == results
+        assert found.accepted == []
 
     def test_a_tag_on_the_line_excuses_it(self) -> None:
         box, results = self.rows("x = 1\ny = 2  # survivor: branch -- it cannot matter\n", "y = 2")
         found = mutate.sort_survivors(results, box)
-        self.assertEqual([], found.fresh)
-        self.assertEqual([(results[0], "it cannot matter")], found.accepted)
+        assert found.fresh == []
+        assert found.accepted == [(results[0], "it cannot matter")]
 
     def test_a_tag_on_the_line_above_excuses_it_too(self) -> None:
         """Both forms, because a trailing tag is unreadable on a long line and a
         tag above one is ambiguous after another statement -- so the second is
         taken only where the whole line is the comment."""
         box, results = self.rows("x = 1\n# survivor: branch -- it cannot matter\ny = 2\n", "y = 2")
-        self.assertEqual(
-            [(results[0], "it cannot matter")], mutate.sort_survivors(results, box).accepted
-        )
+        assert mutate.sort_survivors(results, box).accepted == [(results[0], "it cannot matter")]
 
     def test_a_wrapped_tag_reads_as_one_sentence(self) -> None:
         """The reason is the whole value of the record, and one that had to fit
@@ -4279,8 +4221,8 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
             "longer road"
         )
         written = mutate.tag("branch", why, "    ")
-        self.assertGreater(len(written), 1, "the reason did not wrap")
-        self.assertTrue(all(len(line) <= 100 for line in written), written)
+        assert len(written) > 1, "the reason did not wrap"
+        assert all(len(line) <= 100 for line in written), written
         body = "\n".join([*written, "    y = 2"]) + "\n"
         box = self.tree(body)
         at = body.index("y = 2")
@@ -4296,7 +4238,7 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
             ),
             mutate.Verdict("survived", ""),
         )
-        self.assertEqual(why, mutate.sort_survivors([row], box).accepted[0][1])
+        assert mutate.sort_survivors([row], box).accepted[0][1] == why
 
     def test_a_comment_block_is_not_crossed_by_a_blank_line(self) -> None:
         """A tag reaches the statement under it, not across an unrelated comment
@@ -4304,7 +4246,7 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
         excuse whatever ended up beneath it."""
         body = "# survivor: branch -- about something else\n\ny = 2\n"
         box, results = self.rows(body, "y = 2")
-        self.assertEqual(results, mutate.sort_survivors(results, box).fresh)
+        assert mutate.sort_survivors(results, box).fresh == results
 
     def test_a_tag_is_spent_only_when_it_excuses_nothing(self) -> None:
         """One tag answers every operator it names, and one operator covers
@@ -4337,8 +4279,8 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
             )
 
         found = mutate.sort_survivors([row("caught"), row("survived")], box)
-        self.assertEqual(1, len(found.accepted))
-        self.assertEqual([], found.spent, "a tag still excusing a survivor was called spent")
+        assert len(found.accepted) == 1
+        assert found.spent == [], "a tag still excusing a survivor was called spent"
 
     def test_a_tag_for_another_operator_does_not_excuse_this_one(self) -> None:
         """**The measurement the format rests on.** Mutations average 2.1 per
@@ -4347,12 +4289,12 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
         excuse a live guard about half the time it was used, and would go on
         excusing operators `mutants.py` has not learnt yet."""
         box, results = self.rows("y = 2  # survivor: arith -- about the other one\n", "y = 2")
-        self.assertEqual(results, mutate.sort_survivors(results, box).fresh)
+        assert mutate.sort_survivors(results, box).fresh == results
 
     def test_one_tag_can_name_several_operators(self) -> None:
         body = "y = 2  # survivor: arith, branch -- both are the same argument\n"
         box, results = self.rows(body, "y = 2")
-        self.assertEqual(1, len(mutate.sort_survivors(results, box).accepted))
+        assert len(mutate.sort_survivors(results, box).accepted) == 1
 
     def test_a_row_that_asked_nothing_is_excused_on_the_same_terms(self) -> None:
         """**Not caught, rather than `survived`.** `broke` and `timeout` were
@@ -4376,8 +4318,8 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
                 body = "y = 2  # survivor: branch -- a fork bomb\n"
                 box, results = self.rows(body, "y = 2", outcome=outcome)
                 found = mutate.sort_survivors(results, box)
-                self.assertEqual([], found.fresh)
-                self.assertEqual([(results[0], "a fork bomb")], found.accepted)
+                assert found.fresh == []
+                assert found.accepted == [(results[0], "a fork bomb")]
 
     def test_a_tag_on_a_row_the_suite_now_catches_is_reported_as_spent(self) -> None:
         """The direction the hash record could not see at all. Its key ignores
@@ -4388,17 +4330,17 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
         body = "y = 2  # survivor: branch -- no longer true\n"
         box, results = self.rows(body, "y = 2", outcome="caught")
         found = mutate.sort_survivors(results, box)
-        self.assertEqual([], found.fresh)
-        self.assertEqual([], found.accepted)
-        self.assertEqual(1, len(found.spent))
-        self.assertIn("now caught", found.spent[0])
+        assert found.fresh == []
+        assert found.accepted == []
+        assert len(found.spent) == 1
+        assert "now caught" in found.spent[0]
 
     def test_a_caught_row_with_no_tag_is_simply_not_mentioned(self) -> None:
         """The other half: most rows are caught and have no tag, and a line
         about each would bury the ones that matter."""
         box, results = self.rows("y = 2\n", "y = 2", outcome="caught")
         found = mutate.sort_survivors(results, box)
-        self.assertEqual(([], [], []), (found.fresh, found.accepted, found.spent))
+        assert (found.fresh, found.accepted, found.spent) == ([], [], [])
 
     def test_a_row_with_no_span_cannot_be_excused(self) -> None:
         """A hand-written row has no span, and guessing a line from its prose
@@ -4406,14 +4348,14 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
         direction: it gets reported."""
         box, results = self.rows("y = 2  # survivor: branch -- x\n", "y = 2")
         loose = [mutate.Result(results[0].mutation._replace(span=None), results[0].verdict)]
-        self.assertEqual(loose, mutate.sort_survivors(loose, box).fresh)
+        assert mutate.sort_survivors(loose, box).fresh == loose
 
     def test_a_file_that_cannot_be_read_excuses_nothing(self) -> None:
         """More than it should, never less -- the same direction the old record
         took when its JSON would not parse."""
         box, results = self.rows("y = 2  # survivor: branch -- x\n", "y = 2")
         (box / "tupferl" / "sync.py").unlink()
-        self.assertEqual(results, mutate.sort_survivors(results, box).fresh)
+        assert mutate.sort_survivors(results, box).fresh == results
 
     def test_two_identical_mutations_on_two_lines_need_two_tags(self) -> None:
         """What `Accepted.seen` was for, obtained by construction. The hash was
@@ -4440,8 +4382,8 @@ class TestSurvivorsATagBesideTheCodeExcuses(unittest.TestCase):
                 )
             )
         found = mutate.sort_survivors(rows, box)
-        self.assertEqual(1, len(found.accepted))
-        self.assertEqual(1, len(found.fresh))
+        assert len(found.accepted) == 1
+        assert len(found.fresh) == 1
 
 
 class TestWhatIsTriedAheadOfARow(unittest.TestCase):
@@ -4461,18 +4403,17 @@ class TestWhatIsTriedAheadOfARow(unittest.TestCase):
         """The first row of every run. An empty *sequence* and not `None`:
         `_attempt` unpacks it with `*`, and `*None` is a `TypeError` raised on
         the lane, one row at a time, for every row of the sweep."""
-        self.assertEqual((), mutate.Learned().ahead(self.row()))
+        assert mutate.Learned().ahead(self.row()) == ()
 
     def test_a_remembered_test_the_row_can_reach_is_offered(self) -> None:
-        self.assertEqual(
-            ("tests.test_sync.T.test_it",),
-            self.learned("tests.test_sync.T.test_it").ahead(self.row()),
+        assert self.learned("tests.test_sync.T.test_it").ahead(self.row()) == (
+            "tests.test_sync.T.test_it",
         )
 
     def test_a_test_outside_the_rows_selection_is_not_offered(self) -> None:
         """A test in a module that does not import the mutated file cannot see
         the mutation, so running it first is pure cost -- paid by every row."""
-        self.assertEqual((), self.learned("tests.test_merge.T.test_it").ahead(self.row()))
+        assert self.learned("tests.test_merge.T.test_it").ahead(self.row()) == ()
 
     def test_one_reachable_test_among_several_is_the_one_offered(self) -> None:
         """`any`, not `all`. With a single-module selection the two agree, so
@@ -4481,21 +4422,19 @@ class TestWhatIsTriedAheadOfARow(unittest.TestCase):
         cache silently stops working."""
         head = self.learned("tests.test_merge.T.test_it")
         row = self.row(tests="tests.test_sync tests.test_merge")
-        self.assertEqual(("tests.test_merge.T.test_it",), head.ahead(row))
+        assert head.ahead(row) == ("tests.test_merge.T.test_it",)
 
     def test_a_row_that_already_names_a_test_is_not_given_it_twice(self) -> None:
         """`first` is run in order, and naming a test twice buys nothing and
         costs a run."""
         head = self.learned("tests.test_sync.T.test_it")
-        self.assertEqual((), head.ahead(self.row(first=("tests.test_sync.T.test_it",))))
+        assert head.ahead(self.row(first=("tests.test_sync.T.test_it",))) == ()
 
     def test_a_row_with_no_selection_reaches_everything(self) -> None:
         """`WHOLE_SUITE` is the empty selection, and it means "run the lot" --
         so nothing in the head is out of reach."""
         head = self.learned("tests.test_merge.T.test_it")
-        self.assertEqual(
-            ("tests.test_merge.T.test_it",), head.ahead(self.row(tests=mutate.WHOLE_SUITE))
-        )
+        assert head.ahead(self.row(tests=mutate.WHOLE_SUITE)) == ("tests.test_merge.T.test_it",)
 
 
 class TestTheEdgesOfSizingALane(unittest.TestCase):
@@ -4512,9 +4451,9 @@ class TestTheEdgesOfSizingALane(unittest.TestCase):
         once a factor is infinite, and imposing one quietly would be the flag
         lying. The `max(1, ...)` is what stops `--workers 0` meaning no lanes at
         all, which would hang rather than fail."""
-        self.assertEqual(1, mutate._share(0, 0, pinned=False).lanes)
-        self.assertEqual(1, mutate._share(1, 0, pinned=False).lanes)
-        self.assertEqual(0, mutate._share(4, 0, pinned=False).memory)
+        assert mutate._share(0, 0, pinned=False).lanes == 1
+        assert mutate._share(1, 0, pinned=False).lanes == 1
+        assert mutate._share(4, 0, pinned=False).memory == 0
 
     def test_a_ceiling_never_falls_below_the_floor(self) -> None:
         """`max(floor, budget // lanes)`. Read as `min`, a pinned run that asks
@@ -4524,15 +4463,15 @@ class TestTheEdgesOfSizingALane(unittest.TestCase):
         """
         with mock.patch.object(mutate, "_budget", return_value=mutate._FLOOR):
             share = mutate._share(8, mutate.MEMORY, pinned=True)
-        self.assertEqual(8, share.lanes, "the pin was not honoured")
-        self.assertGreaterEqual(share.memory, mutate._FLOOR)
+        assert share.lanes == 8, "the pin was not honoured"
+        assert share.memory >= mutate._FLOOR
 
     def test_an_explicit_cap_under_the_floor_is_the_callers_call(self) -> None:
         """They may be reproducing a small machine on purpose, so the cap is
         obeyed rather than corrected -- and it still decides how many fit."""
         asked = mutate._FLOOR // 4
         share = mutate._share(8, asked, pinned=False)
-        self.assertEqual(asked, share.memory)
+        assert share.memory == asked
 
 
 class TestTheSmallDecisionsNothingAsked(unittest.TestCase):
@@ -4559,33 +4498,32 @@ class TestTheSmallDecisionsNothingAsked(unittest.TestCase):
         """`all`, never `any`. Every existing test of `clean` used a report
         whose rows agreed, and on those the two are the same function -- so a
         sweep with one survivor in a hundred reported itself complete."""
-        self.assertTrue(self.report("caught", "caught").clean)
-        self.assertFalse(self.report("caught", "survived").clean)
-        self.assertFalse(self.report("survived", "caught").clean)
+        assert self.report("caught", "caught").clean
+        assert not self.report("caught", "survived").clean
+        assert not self.report("survived", "caught").clean
 
     def test_a_key_is_short_enough_to_read_in_a_diff(self) -> None:
         """The record and the killers cache are both keyed by this and both are
         reviewed by a person. A full sha256 is four times the width and makes a
         row wrap, which is the whole reason for the slice."""
         key = mutate._key(Mutation("a", "tupferl/sync.py", "x", "y", "t"))
-        self.assertEqual(16, len(key))
+        assert len(key) == 16
 
     def test_a_key_ignores_where_the_line_is_and_notices_what_it_says(self) -> None:
         """The property the disposition record rests on: a row keeps its key
         when the code above it moves, and gets a new one when the edit itself
         changes."""
         base = Mutation("a", "tupferl/sync.py", "x", "y", "t", operator="branch")
-        self.assertEqual(
-            mutate._key(base),
-            mutate._key(base._replace(label="a different label", tests="other", span=(9, 9))),
-        )
+        assert mutate._key(
+            base._replace(label="a different label", tests="other", span=(9, 9))
+        ) == mutate._key(base)
         for changed in (
             base._replace(path="tupferl/merge.py"),
             base._replace(old="z"),
             base._replace(new="z"),
             base._replace(operator="arith"),
         ):
-            self.assertNotEqual(mutate._key(base), mutate._key(changed), changed)
+            assert mutate._key(changed) != mutate._key(base), changed
 
     def test_a_row_with_a_span_edits_only_there(self) -> None:
         """The two ways a row is applied, and the reason there are two: a
@@ -4600,13 +4538,13 @@ class TestTheSmallDecisionsNothingAsked(unittest.TestCase):
         row = Mutation(
             "second only", "x.py", "if a:", "if True:", "t", span=(second, second + len("if a:"))
         )
-        self.assertEqual("if a:\n    pass\nif True:\n    pass\n", mutate._applied(text, row))
+        assert mutate._applied(text, row) == "if a:\n    pass\nif True:\n    pass\n"
 
     def test_a_row_without_a_span_replaces_its_text(self) -> None:
         """The hand-written shape, whose `old` `check` has already refused
         unless it appears exactly once."""
         row = Mutation("the only one", "x.py", "if a:", "if True:", "t")
-        self.assertEqual("if True:\n    pass\n", mutate._applied("if a:\n    pass\n", row))
+        assert mutate._applied("if a:\n    pass\n", row) == "if True:\n    pass\n"
 
     def test_stale_bytecode_is_swept_out_of_a_sandbox(self) -> None:
         """A `__pycache__` left by a previous mutation's run is read by the next
@@ -4623,8 +4561,8 @@ class TestTheSmallDecisionsNothingAsked(unittest.TestCase):
 
         mutate._clear_bytecode(box)
 
-        self.assertEqual([], list(box.rglob("__pycache__")), "stale bytecode was left behind")
-        self.assertTrue((box / "pkg" / "keep.py").is_file(), "it took the source with it")
+        assert list(box.rglob("__pycache__")) == [], "stale bytecode was left behind"
+        assert (box / "pkg" / "keep.py").is_file(), "it took the source with it"
 
 
 class TestReadingBackAReportToResumeFrom(unittest.TestCase):
@@ -4665,14 +4603,14 @@ class TestReadingBackAReportToResumeFrom(unittest.TestCase):
         rows, and a row rebuilt with the wrong span, the wrong operator or the
         wrong outcome is still one row."""
         (found,) = mutate._recorded(self.saved({"results": [self.ROW]}))
-        self.assertEqual("a branch", found.mutation.label)
-        self.assertEqual("tupferl/sync.py", found.mutation.path)
-        self.assertEqual("if a:", found.mutation.old)
-        self.assertEqual("if True:", found.mutation.new)
-        self.assertEqual("tests.test_sync", found.mutation.tests)
-        self.assertEqual("branch", found.mutation.operator)
-        self.assertEqual("survived", found.verdict.outcome)
-        self.assertEqual("nothing noticed", found.verdict.detail)
+        assert found.mutation.label == "a branch"
+        assert found.mutation.path == "tupferl/sync.py"
+        assert found.mutation.old == "if a:"
+        assert found.mutation.new == "if True:"
+        assert found.mutation.tests == "tests.test_sync"
+        assert found.mutation.operator == "branch"
+        assert found.verdict.outcome == "survived"
+        assert found.verdict.detail == "nothing noticed"
 
     def test_the_span_comes_back_as_the_pair_it_was(self) -> None:
         """Both ends, and in order. `_applied` splices `new` at exactly these
@@ -4680,7 +4618,7 @@ class TestReadingBackAReportToResumeFrom(unittest.TestCase):
         wrong bytes of the file -- and the row still looks like the row it
         claims to be."""
         (found,) = mutate._recorded(self.saved({"results": [self.ROW]}))
-        self.assertEqual((40, 45), found.mutation.span)
+        assert found.mutation.span == (40, 45)
 
     def test_a_row_with_no_span_keeps_none(self) -> None:
         """A hand-written row carries no span and is applied by `replace`
@@ -4688,14 +4626,14 @@ class TestReadingBackAReportToResumeFrom(unittest.TestCase):
         row = {**self.ROW}
         del row["span"]
         (found,) = mutate._recorded(self.saved({"results": [row]}))
-        self.assertIsNone(found.mutation.span)
+        assert found.mutation.span is None
 
     def test_no_file_and_no_path_are_both_nothing_to_resume_from(self) -> None:
         """`None` is "resume was not asked for"; a missing file is "the run that
         would have written one never got there". Both mean the same thing to the
         caller, and neither may raise -- this runs before the sweep starts."""
-        self.assertEqual([], mutate._recorded(None))
-        self.assertEqual([], mutate._recorded(Path("/nonexistent/report.json")))
+        assert mutate._recorded(None) == []
+        assert mutate._recorded(Path("/nonexistent/report.json")) == []
 
     def test_a_half_written_report_resumes_as_nothing(self) -> None:
         """Re-running everything is the safe reading of a crash mid-write. The
@@ -4705,12 +4643,12 @@ class TestReadingBackAReportToResumeFrom(unittest.TestCase):
         self.addCleanup(shutil.rmtree, box, True)
         broken = box / "report.json"
         broken.write_text('{"results": [{"label": "cut off"', encoding="utf-8")
-        self.assertEqual([], mutate._recorded(broken))
+        assert mutate._recorded(broken) == []
 
     def test_a_row_missing_a_field_takes_the_whole_file_with_it(self) -> None:
         """`KeyError` is caught, so a report from an older shape resumes as
         nothing rather than as a partial list nobody can tell is partial."""
-        self.assertEqual([], mutate._recorded(self.saved({"results": [{"label": "only this"}]})))
+        assert mutate._recorded(self.saved({"results": [{"label": "only this"}]})) == []
 
 
 class TestWhatTheKillersCacheWritesDown(unittest.TestCase):
@@ -4739,9 +4677,9 @@ class TestWhatTheKillersCacheWritesDown(unittest.TestCase):
         # first run on a fresh clone is always this case.
         where = box / "sweeps" / "killers.json"
         self.cache(where).save()
-        self.assertTrue(where.is_file(), "nothing was written")
+        assert where.is_file(), "nothing was written"
         written = json.loads(where.read_text(encoding="utf-8"))
-        self.assertEqual(["tests.test_sync.T.test_it"], list(written["killers"].values()))
+        assert list(written["killers"].values()) == ["tests.test_sync.T.test_it"]
 
     def test_saving_a_second_time_over_an_existing_directory_is_fine(self) -> None:
         """`exist_ok=True`. Every run after the first is this case, and without
@@ -4752,7 +4690,7 @@ class TestWhatTheKillersCacheWritesDown(unittest.TestCase):
         where = box / "sweeps" / "killers.json"
         self.cache(where).save()
         self.cache(where).save()
-        self.assertTrue(where.is_file())
+        assert where.is_file()
 
     def test_no_path_writes_nothing_and_does_not_raise(self) -> None:
         """`--no-killers` and every spec-file run. A `save` that tried anyway
@@ -4814,36 +4752,36 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
 
     def test_it_writes_a_tag_above_the_row(self) -> None:
         written = self.accept("x = 1\ny = 2\n", "y = 2")
-        self.assertIn("# survivor: branch --", written)
-        self.assertLess(written.index("# survivor"), written.index("y = 2"))
+        assert "# survivor: branch --" in written
+        assert written.index("# survivor") < written.index("y = 2")
 
     def test_the_tag_says_todo_on_purpose(self) -> None:
         """A reason nobody wrote is not a reason. The row is there to be edited
         and a reviewer seeing `TODO` in the diff is the point rather than an
         oversight -- which is exactly what a file of hashes could not offer,
         because the diff showed a key nobody could read."""
-        self.assertIn("TODO", self.accept("y = 2\n", "y = 2"))
+        assert "TODO" in self.accept("y = 2\n", "y = 2")
 
     def test_the_tag_names_the_operator_it_excuses(self) -> None:
         """Or it would excuse the row's siblings on the same line, and the
         operators `mutants.py` has not learnt yet."""
-        self.assertIn("# survivor: branch --", self.accept("y = 2\n", "y = 2"))
+        assert "# survivor: branch --" in self.accept("y = 2\n", "y = 2")
 
     def test_the_tag_keeps_the_indentation_of_the_line_it_guards(self) -> None:
         """Or the file no longer parses, and the next run's baseline is red for
         a reason that has nothing to do with any mutation."""
         written = self.accept("def f():\n    y = 2\n", "y = 2")
-        self.assertIn("    # survivor: branch --", written)
+        assert "    # survivor: branch --" in written
         compile(written, "sync.py", "exec")
 
     def test_two_rows_in_one_file_both_get_tags(self) -> None:
         """Written bottom upwards, or the first insertion moves the line the
         second was measured against and the tag lands on the wrong statement."""
         written = self.accept("y = 2\nz = 3\n", "y = 2", "z = 3")
-        self.assertEqual(2, written.count("# survivor: branch --"))
+        assert written.count("# survivor: branch --") == 2
         for line, guard in ((1, "y = 2"), (3, "z = 3")):
-            self.assertIn("# survivor", written.split("\n")[line - 1])
-            self.assertEqual(guard, written.split("\n")[line].strip())
+            assert "# survivor" in written.split("\n")[line - 1]
+            assert written.split("\n")[line].strip() == guard
 
     def test_a_tag_goes_above_the_statement_not_inside_it(self) -> None:
         """A mutation inside brackets sits on a *continuation* line, and a
@@ -4874,9 +4812,7 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
             mutate._accept(mutate.Survivors([row], [], []), box)
         after = (box / "tupferl" / "sync.py").read_text(encoding="utf-8")
         compile(after, "sync.py", "exec")
-        self.assertLess(
-            after.index("# survivor"), after.index("return {"), f"the tag went inside\n{after}"
-        )
+        assert after.index("# survivor") < after.index("return {"), f"the tag went inside\n{after}"
 
     def test_a_row_with_no_span_is_left_alone(self) -> None:
         """There is nothing to hang a tag on, and guessing a line from a prose
@@ -4886,7 +4822,7 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
         loose = mutate.Result(loose.mutation._replace(span=None), loose.verdict)
         with support.quiet():
             mutate._accept(mutate.Survivors([loose], [], []), box)
-        self.assertEqual("y = 2\n", (box / "tupferl" / "sync.py").read_text(encoding="utf-8"))
+        assert (box / "tupferl" / "sync.py").read_text(encoding="utf-8") == "y = 2\n"
 
     def test_what_it_wrote_is_then_read_back_as_an_excuse(self) -> None:
         """End to end, and the only assertion that proves the two halves agree:
@@ -4905,8 +4841,8 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
             mutate._accept(mutate.Survivors([self.row(body, "y = 2")], [], []), box)
         after = (box / "tupferl" / "sync.py").read_text(encoding="utf-8")
         found = mutate.sort_survivors([self.row(after, "y = 2")], box)
-        self.assertEqual([], found.fresh, "what --accept wrote did not excuse the row")
-        self.assertIn("TODO", found.accepted[0][1])
+        assert found.fresh == [], "what --accept wrote did not excuse the row"
+        assert "TODO" in found.accepted[0][1]
 
     def test_a_second_operator_on_a_tagged_line_gets_its_own_readable_tag(self) -> None:
         """Two tags in one comment block, both findable.
@@ -4945,20 +4881,20 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
         with support.quiet():
             mutate._accept(mutate.Survivors([boundary(body)], [], []), box)
         after = where.read_text(encoding="utf-8")
-        self.assertEqual(1, after.count("TODO"), f"a tag was stacked rather than added\n{after}")
+        assert after.count("TODO") == 1, f"a tag was stacked rather than added\n{after}"
 
         tags = mutants.Tags(after)
         line = mutants.Offsets(after).line_of(after.index("if a > 0"))
-        self.assertEqual({"branch", "boundary"}, tags.operators(line))
+        assert tags.operators(line) == {"branch", "boundary"}
         both = (tags.excuse(line, "branch"), tags.excuse(line, "boundary"))
-        self.assertTrue(all(both), "a tag in the block became unreadable")
-        self.assertIn("the branch operator only.", both[0][1] if both[0] else "")
-        self.assertIn("TODO", both[1][1] if both[1] else "")
+        assert all(both), "a tag in the block became unreadable"
+        assert "the branch operator only." in (both[0][1] if both[0] else "")
+        assert "TODO" in (both[1][1] if both[1] else "")
 
         # And a second --accept adds nothing, because the row is now excused.
         with support.quiet():
             mutate._accept(mutate.Survivors([boundary(after)], [], []), box)
-        self.assertEqual(1, where.read_text(encoding="utf-8").count("TODO"))
+        assert where.read_text(encoding="utf-8").count("TODO") == 1
 
     def test_the_count_of_excused_rows_is_always_printed(self) -> None:
         """A baseline whose size is invisible is one nobody re-reads: the number
@@ -4967,7 +4903,7 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
         row = self.row("y = 2\n", "y = 2")
         with support.quiet() as said:
             mutate._report_known(mutate.Survivors([], [(row, "read")], []))
-        self.assertIn("1 survivor(s) excused", said.getvalue())
+        assert "1 survivor(s) excused" in said.getvalue()
 
     def test_tags_that_still_say_todo_are_counted_out_loud(self) -> None:
         """A `TODO` tag silences its row exactly as a written reason does -- that
@@ -4983,8 +4919,8 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
             mutate._report_known(
                 mutate.Survivors([], [(row, "TODO: why?"), (row, "a real reason")], [])
             )
-        self.assertIn("2 survivor(s) excused", said.getvalue())
-        self.assertIn("1 of those say TODO", said.getvalue())
+        assert "2 survivor(s) excused" in said.getvalue()
+        assert "1 of those say TODO" in said.getvalue()
 
     def test_unanswerable_rows_are_counted_apart_from_the_rest(self) -> None:
         """The denominator, said by the run rather than by a document.
@@ -5003,36 +4939,36 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
                     [], [(row, "unanswerable: the pool deadlocks"), (row, "equivalent")], []
                 )
             )
-        self.assertIn("2 survivor(s) excused", said.getvalue())
-        self.assertIn("1 of those are unanswerable under a sweep", said.getvalue())
+        assert "2 survivor(s) excused" in said.getvalue()
+        assert "1 of those are unanswerable under a sweep" in said.getvalue()
 
     def test_a_record_with_nothing_unanswerable_says_so_by_silence(self) -> None:
         """The other half, for `TODO`'s reason: a line on every run is noise."""
         row = self.row("y = 2\n", "y = 2")
         with support.quiet() as said:
             mutate._report_known(mutate.Survivors([], [(row, "equivalent")], []))
-        self.assertNotIn("unanswerable", said.getvalue())
+        assert "unanswerable" not in said.getvalue()
 
     def test_a_finished_record_says_nothing_about_todo(self) -> None:
         """The other half: a line on every clean run trains the eye past it."""
         row = self.row("y = 2\n", "y = 2")
         with support.quiet() as said:
             mutate._report_known(mutate.Survivors([], [(row, "a real reason")], []))
-        self.assertNotIn("TODO", said.getvalue())
+        assert "TODO" not in said.getvalue()
 
     def test_a_spent_tag_is_named_rather_than_counted(self) -> None:
         """Few enough to list, and the one way this record becomes a mute list."""
         with support.quiet() as said:
             mutate._report_known(mutate.Survivors([], [], ["sync.py:9 -- now caught"]))
-        self.assertIn("spent tag", said.getvalue())
-        self.assertIn("sync.py:9", said.getvalue())
+        assert "spent tag" in said.getvalue()
+        assert "sync.py:9" in said.getvalue()
 
     def test_a_run_with_nothing_to_say_says_nothing(self) -> None:
         """Every hand-written spec file. A line on every `verify()` run is noise
         that trains the eye past the line that matters."""
         with support.quiet() as said:
             mutate._report_known(mutate.Survivors([], [], []))
-        self.assertEqual("", said.getvalue())
+        assert said.getvalue() == ""
 
 
 class TestWhatBaselineOnlyAnswers(unittest.TestCase):
@@ -5081,8 +5017,8 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
         """`survived` is the untouched suite passing, which is the one place
         the mutation vocabulary reads backwards."""
         green, said, _ = self.asked(mutate.Verdict("survived", ""), mutate.Verdict("survived", ""))
-        self.assertTrue(green)
-        self.assertIn("all green", said)
+        assert green
+        assert "all green" in said
 
     def test_one_red_shard_is_enough(self) -> None:
         """It is an `and` over the shards. A tree where any shard fails is a
@@ -5090,8 +5026,8 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
         green, said, _ = self.asked(
             mutate.Verdict("survived", ""), mutate.Verdict("caught", "boom")
         )
-        self.assertFalse(green)
-        self.assertIn("NOT green", said)
+        assert not green
+        assert "NOT green" in said
 
     def test_a_shard_that_asked_nothing_is_red_too(self) -> None:
         """`broke` and `timeout` are not passes. The old wording asserted a
@@ -5100,7 +5036,7 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
         for outcome in ("broke", "timeout"):
             with self.subTest(outcome=outcome):
                 green, _, _ = self.asked(mutate.Verdict(outcome, "d"))
-                self.assertFalse(green, f"{outcome} was read as a pass")
+                assert not green, f"{outcome} was read as a pass"
 
     def test_it_asks_about_exactly_the_shards_the_sweep_will(self) -> None:
         """`baseline_shards` rather than a second spelling of it -- the flag is
@@ -5110,15 +5046,15 @@ class TestWhatBaselineOnlyAnswers(unittest.TestCase):
             Mutation(f"row {n}", "tupferl/sync.py", "a", "b", f"tests.shard{n}") for n in range(2)
         ]
         _, _, seen = self.asked(mutate.Verdict("survived", ""), mutate.Verdict("survived", ""))
-        self.assertEqual(mutate.baseline_shards(table), seen)
+        assert seen == mutate.baseline_shards(table)
 
     def test_a_red_shard_says_which_and_why(self) -> None:
         """A red baseline is the one verdict that cannot be diagnosed by
         re-running the row: the shard is rarely reproducible by hand, so the
         reason has to come out with it."""
         _, said, _ = self.asked(mutate.Verdict("caught", "tests.shard0.T.test_x failed"))
-        self.assertIn("tests.shard0", said)
-        self.assertIn("test_x failed", said)
+        assert "tests.shard0" in said
+        assert "test_x failed" in said
 
 
 class TestWhatVerifyReturns(unittest.TestCase):
@@ -5147,34 +5083,32 @@ class TestWhatVerifyReturns(unittest.TestCase):
         return mutate.Report(results, red)
 
     def test_a_clean_table_counts_nothing(self) -> None:
-        self.assertEqual(0, self.counted(self.outcomes("caught", "caught")))
+        assert self.counted(self.outcomes("caught", "caught")) == 0
 
     def test_every_survivor_is_counted(self) -> None:
         """Not "was there one". A spec file's author reads this number to know
         how much is wrong, and `1` for three survivors is a wrong answer that
         still exits red -- which is why an exit status alone cannot check it."""
-        self.assertEqual(
-            3, self.counted(self.outcomes("survived", "caught", "survived", "survived"))
-        )
+        assert self.counted(self.outcomes("survived", "caught", "survived", "survived")) == 3
 
     def test_a_row_that_asked_nothing_is_not_a_survivor(self) -> None:
         """`broke` and `timeout` asked nothing. Counting them as survivors
         would send an author to rewrite a test that was never weak; not
         counting them at all is what the whole-table count below is for."""
-        self.assertEqual(0, self.counted(self.outcomes("broke", "timeout", "caught")))
+        assert self.counted(self.outcomes("broke", "timeout", "caught")) == 0
 
     def test_a_red_baseline_condemns_the_whole_table(self) -> None:
         """Every verdict above a red baseline is meaningless, so the count is
         the table's size rather than its survivors -- and a `0` there would let
         a spec file pass on a tree where nothing was proven at all."""
-        self.assertEqual(3, self.counted(self.outcomes("caught", "caught", "caught", red=True)))
+        assert self.counted(self.outcomes("caught", "caught", "caught", red=True)) == 3
 
     def test_a_red_baseline_beats_a_clean_looking_table(self) -> None:
         """The precondition for the test above: with every row caught, the
         survivor count is 0, so only the baseline check can produce a non-zero
         answer. Without this pairing, "returns 3" is satisfied by a function
         that ignores the baseline and counts something else."""
-        self.assertEqual(0, self.counted(self.outcomes("caught", "caught", "caught")))
+        assert self.counted(self.outcomes("caught", "caught", "caught")) == 0
 
 
 class TestWhatMemoryTheMachineWillAdmitTo(unittest.TestCase):
@@ -5223,7 +5157,7 @@ class TestWhatMemoryTheMachineWillAdmitTo(unittest.TestCase):
             mock.patch.object(mutate, "CGROUPS", (str(where),)),
             mock.patch.dict(os.environ, {}, clear=True),
         ):
-            self.assertGreater(mutate._visible_memory(), 0)
+            assert mutate._visible_memory() > 0
 
     def test_the_host_total_is_one_of_the_limits(self) -> None:
         """With no cgroup and no inherited budget, what this machine physically
@@ -5235,20 +5169,20 @@ class TestWhatMemoryTheMachineWillAdmitTo(unittest.TestCase):
         this machine's and the claim is that it reached the answer.
         """
         physical = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        self.assertEqual(physical, self.limits())
+        assert self.limits() == physical
 
     def test_a_budget_named_in_the_environment_binds(self) -> None:
         """`TUPFERL_MUTATE_BUDGET` is what a nested harness inherits, and it is
         the one limit a test can set without a kernel."""
         asked = 3 << 30
-        self.assertLessEqual(self.limits(**{mutate._BUDGET: str(asked)}), asked)
+        assert self.limits(**{mutate._BUDGET: str(asked)}) <= asked
 
     def test_the_smallest_limit_wins(self) -> None:
         """`min`, not the first found. A host with plenty of RAM and a small
         inherited budget must answer the budget -- that is the whole point."""
         small, large = 1 << 30, 900 << 30
-        self.assertLessEqual(self.limits(**{mutate._BUDGET: str(small)}), small)
-        self.assertGreater(self.limits(**{mutate._BUDGET: str(large)}), small)
+        assert self.limits(**{mutate._BUDGET: str(small)}) <= small
+        assert self.limits(**{mutate._BUDGET: str(large)}) > small
 
     def test_nonsense_in_the_variable_is_ignored_rather_than_obeyed(self) -> None:
         """A limit of zero or a word is not a limit. Obeying it would hand every
@@ -5257,23 +5191,23 @@ class TestWhatMemoryTheMachineWillAdmitTo(unittest.TestCase):
         host = self.limits()
         for said in ("", "0", "-1", "lots"):
             with self.subTest(said=said):
-                self.assertEqual(host, self.limits(**{mutate._BUDGET: said}))
+                assert self.limits(**{mutate._BUDGET: said}) == host
 
     def test_a_cgroup_ceiling_binds_below_the_host(self) -> None:
         """The bug the function was written for: "in a 2 GiB container on a 62
         GiB host it answers 62 and the container is OOM-killed with every
         per-lane cap respected." A limit the kernel has carved out has to win."""
-        self.assertEqual(2 << 30, self.limits(2 << 30))
+        assert self.limits(2 << 30) == 2 << 30
 
     def test_a_cgroup_that_says_nothing_is_not_a_limit(self) -> None:
         """A missing file is the ordinary case on a machine with no cgroup, and
         reading it as zero would hand every lane a ceiling of nothing."""
-        self.assertGreater(self.limits(None), 0)
+        assert self.limits(None) > 0
 
     def test_it_never_answers_zero(self) -> None:
         """Zero divides into `_affordable` and `_share`. A machine that will say
         nothing at all still has to run something."""
-        self.assertGreater(self.limits(), 0)
+        assert self.limits() > 0
 
 
 class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
@@ -5306,7 +5240,7 @@ class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
         and not in its group. Miss it and its memory is nobody's problem, which
         is exactly what woswoar#234 was."""
         escaped = self.table((10, 1, 10), (11, 10, 10), (12, 11, 12))
-        self.assertEqual({10, 11, 12}, mutate._lane(10, escaped))
+        assert mutate._lane(10, escaped) == {10, 11, 12}
 
     def test_the_descendants_alone_are_not_enough(self) -> None:
         """The other half, and the fixture that makes the first one mean
@@ -5314,15 +5248,15 @@ class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
         the suite forked and then reparented -- is in the group and not in the
         tree."""
         adopted = self.table((10, 1, 10), (20, 1, 10))
-        self.assertEqual({10, 20}, mutate._lane(10, adopted))
+        assert mutate._lane(10, adopted) == {10, 20}
 
     def test_another_lane_is_not_swept_in(self) -> None:
         """The assertion that stops "return everything" from passing. Two lanes
         run side by side in every real sweep, and a membership rule that claims
         both would have `_end` killing a lane that was working."""
         two = self.table((10, 1, 10), (11, 10, 10), (30, 1, 30), (31, 30, 30))
-        self.assertEqual({10, 11}, mutate._lane(10, two))
-        self.assertEqual({30, 31}, mutate._lane(30, two))
+        assert mutate._lane(10, two) == {10, 11}
+        assert mutate._lane(30, two) == {30, 31}
 
     def test_a_pid_the_table_does_not_hold_is_not_invented(self) -> None:
         """The table is a snapshot and processes exit while it is being read.
@@ -5330,12 +5264,12 @@ class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
         signals a pid the kernel has since handed to something else."""
         gone = self.table((10, 1, 10), (11, 10, 10))
         del gone[11]
-        self.assertEqual({10}, mutate._lane(10, gone))
+        assert mutate._lane(10, gone) == {10}
 
     def test_a_leader_that_is_gone_answers_for_nothing(self) -> None:
         """`release` may run after the lane has exited. An empty answer is
         right; a `KeyError` would take the sampler thread down with it."""
-        self.assertEqual(set(), mutate._lane(99, self.table((10, 1, 10))))
+        assert mutate._lane(99, self.table((10, 1, 10))) == set()
 
     #: A grandchild that leaves the group, printed by the middle process so the
     #: test knows its pid without guessing. Bounded well under the harness's own
@@ -5381,12 +5315,10 @@ class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
         self.addCleanup(self.reap, escapee)
 
         table = mutate._processes()
-        self.assertNotEqual(
-            leader.pid,
-            table[escapee].group,
-            "the fixture's grandchild never left the group, so it proves nothing",
+        assert table[escapee].group != leader.pid, (
+            "the fixture's grandchild never left the group, so it proves nothing"
         )
-        self.assertIn(escapee, mutate._lane(leader.pid, table), "the escapee was not counted")
+        assert escapee in mutate._lane(leader.pid, table), "the escapee was not counted"
 
     def reap(self, escapee: int) -> None:
         """The grandchild is its own session leader, so killing the tree above
@@ -5409,7 +5341,7 @@ class TestWhichProcessesALaneAnswersFor(unittest.TestCase):
         # "does not hang the sampler" that hung, and read as a guard.
         with support.deadline(support.PATIENCE, "_lane never finished walking a cycle"):
             found = mutate._lane(10, looped)
-        self.assertEqual({10, 11, 12}, found)
+        assert found == {10, 11, 12}
 
 
 class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
@@ -5439,7 +5371,7 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
         """Distinct, not one per row: a table of two hundred rows against three
         selections is three suite runs, not two hundred."""
         table = self.rows(("tests.a", ()), ("tests.b", ()), ("tests.a", ()))
-        self.assertEqual([("tests.a",), ("tests.b",)], mutate.baseline_shards(table))
+        assert mutate.baseline_shards(table) == [("tests.a",), ("tests.b",)]
 
     #: Eight killers, and the number is the assertion below working. The shard is
     #: built by `sorted` over a *set*, and CLAUDE.md's rule for that is here in
@@ -5462,8 +5394,8 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
         """
         table = self.rows(*(("tests.a", (killer,)) for killer in self.KILLERS))
         shards = mutate.baseline_shards(table)
-        self.assertEqual(2, len(shards), shards)
-        self.assertIn(tuple(sorted(self.KILLERS)), shards)
+        assert len(shards) == 2, shards
+        assert tuple(sorted(self.KILLERS)) in shards
 
     def test_a_killer_outside_its_row_s_selection_is_still_covered(self) -> None:
         """Why the extra shard exists at all: a cached killer can name a test
@@ -5471,14 +5403,14 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
         false `caught` the baseline exists to prevent."""
         table = self.rows(("tests.a", ("tests.elsewhere.E.test_it",)))
         covered = [name for shard in mutate.baseline_shards(table) for name in shard]
-        self.assertIn("tests.elsewhere.E.test_it", covered)
+        assert "tests.elsewhere.E.test_it" in covered
 
     def test_no_killers_means_no_extra_shard(self) -> None:
         """The precondition. Without it, "the killers get a shard" is equally
         satisfied by a function that always appends one -- and an empty shard
         runs the whole suite, which is the one thing `baseline_shards`'
         docstring says it must not do."""
-        self.assertEqual([("tests.a",)], mutate.baseline_shards(self.rows(("tests.a", ()))))
+        assert mutate.baseline_shards(self.rows(("tests.a", ()))) == [("tests.a",)]
 
     def test_a_parametrized_killer_reaches_its_shard_whole(self) -> None:
         """The worst place in the harness for a space-joined id, and the only one
@@ -5493,10 +5425,10 @@ class TestWhatTheBaselineIsMeasuredAgainst(unittest.TestCase):
         """
         killer = "tests/test_errors.py::test_the_shape[tupferl/manage.py a b]"
         table = self.rows(("tests.a", (killer,)))
-        self.assertIn((killer,), mutate.baseline_shards(table))
+        assert (killer,) in mutate.baseline_shards(table)
 
     def test_an_empty_table_needs_nothing_checked(self) -> None:
-        self.assertEqual([], mutate.baseline_shards([]))
+        assert mutate.baseline_shards([]) == []
 
 
 class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
@@ -5543,11 +5475,9 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
             for wanted in (1, 3, 7, 16):
                 with self.subTest(budget=budget >> 20, wanted=wanted):
                     share = self.sharing(budget, wanted, mutate.MEMORY)
-                    self.assertLessEqual(
-                        share.lanes * share.memory,
-                        int(budget * allowed),
+                    assert share.lanes * share.memory <= int(budget * allowed), (
                         f"{share.lanes} lanes x {share.memory >> 20} MiB exceeds "
-                        f"{int(budget * allowed) >> 20} MiB",
+                        f"{int(budget * allowed) >> 20} MiB"
                     )
 
     def test_the_commitment_is_really_more_than_the_machine_has(self) -> None:
@@ -5559,12 +5489,10 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
         `allowed // floor` there, and each lane still gets the floor.
         """
         share = self.sharing(4 << 30, 16, mutate.MEMORY)
-        self.assertGreater(
-            share.lanes * share.memory,
-            4 << 30,
-            "the ceilings fit inside the budget, so nothing is being committed",
+        assert share.lanes * share.memory > 4 << 30, (
+            "the ceilings fit inside the budget, so nothing is being committed"
         )
-        self.assertLessEqual(share.lanes * share.memory, int((4 << 30) * mutate._COMMIT))
+        assert share.lanes * share.memory <= int((4 << 30) * mutate._COMMIT)
 
     def test_the_commitment_buys_lanes_rather_than_headroom(self) -> None:
         """Where the extra allowance is spent, which is the whole point of
@@ -5582,10 +5510,8 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
         arithmetic, which would be a copy of the code.
         """
         share = self.sharing(4 << 30, 16, mutate.MEMORY)
-        self.assertGreater(
-            share.lanes,
-            (4 << 30) // mutate._FLOOR,
-            "the commitment went into ceilings nobody reaches instead of into lanes",
+        assert share.lanes > (4 << 30) // mutate._FLOOR, (
+            "the commitment went into ceilings nobody reaches instead of into lanes"
         )
 
     def test_more_memory_never_means_fewer_lanes(self) -> None:
@@ -5593,7 +5519,7 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
         the lane arithmetic, because any single budget still yields *a* number
         that looks plausible."""
         seen = [self.sharing(gib << 30, 16, mutate.MEMORY).lanes for gib in (2, 4, 8, 16, 64)]
-        self.assertEqual(sorted(seen), seen, f"lanes fell as the budget grew: {seen}")
+        assert seen == sorted(seen), f"lanes fell as the budget grew: {seen}"
 
     def test_lanes_are_given_up_only_after_the_ceiling_has_been(self) -> None:
         """The order of concessions, which is `_share`'s whole argument: lower
@@ -5601,56 +5527,56 @@ class TestHowManyLanesFitAndHowBigEachMayBe(unittest.TestCase):
         than something an honest one spends, and give up lanes only when that
         share would fall under `_FLOOR`."""
         roomy = self.sharing(64 << 30, 8, mutate.MEMORY)
-        self.assertEqual(8, roomy.lanes, "a big machine gave up lanes it did not need to")
+        assert roomy.lanes == 8, "a big machine gave up lanes it did not need to"
         tight = self.sharing(4 << 30, 8, mutate.MEMORY)
-        self.assertLess(tight.lanes, 8, "a small machine kept lanes it cannot afford")
-        self.assertGreaterEqual(tight.memory, mutate._FLOOR, "the ceiling went under the floor")
+        assert tight.lanes < 8, "a small machine kept lanes it cannot afford"
+        assert tight.memory >= mutate._FLOOR, "the ceiling went under the floor"
 
     def test_a_pinned_worker_count_is_kept(self) -> None:
         """`--workers` is a caller with a reason this cannot see --
         `TestItRunsThemInParallel` pins four to assert that mutations overlap at
         all, and on a machine too small to afford four it would otherwise assert
         the machine rather than the mechanism."""
-        self.assertEqual(9, self.sharing(2 << 30, 9, mutate.MEMORY, pinned=True).lanes)
+        assert self.sharing(2 << 30, 9, mutate.MEMORY, pinned=True).lanes == 9
 
     def test_the_ceiling_still_shrinks_around_a_pin(self) -> None:
         """The half of pinning that is worth having: the *count* is the caller's
         to fix, the ceiling is not."""
         share = self.sharing(4 << 30, 16, mutate.MEMORY, pinned=True)
-        self.assertLess(share.memory, mutate.MEMORY, "a pinned run kept a ceiling it cannot fund")
+        assert share.memory < mutate.MEMORY, "a pinned run kept a ceiling it cannot fund"
 
     def test_no_cap_passes_straight_through(self) -> None:
         """`--memory 0` is "no cap", spelled the way `--limit 0` beside it
         already means. There is no product to bound once one factor is infinite,
         and quietly imposing one would be the flag lying."""
         share = self.sharing(1 << 30, 12, 0)
-        self.assertEqual(12, share.lanes)
-        self.assertEqual(0, share.memory)
+        assert share.lanes == 12
+        assert share.memory == 0
 
     def test_there_is_always_at_least_one_lane(self) -> None:
         """A budget under one lane's floor still has to run. Zero lanes is a
         pool that never starts and a sweep that reports nothing."""
-        self.assertGreaterEqual(self.sharing(1 << 20, 4, mutate.MEMORY).lanes, 1)
-        self.assertGreaterEqual(self.sharing(1 << 20, 0, mutate.MEMORY).lanes, 1)
+        assert self.sharing(1 << 20, 4, mutate.MEMORY).lanes >= 1
+        assert self.sharing(1 << 20, 0, mutate.MEMORY).lanes >= 1
 
     def test_the_ceiling_never_exceeds_what_was_asked_for(self) -> None:
         """`--memory` is an upper bound the caller set. A roomy machine may not
         raise it -- a caller who already sandboxed us meant it."""
         share = self.sharing(64 << 30, 2, 512 << 20)
-        self.assertLessEqual(share.memory, 512 << 20)
+        assert share.memory <= 512 << 20
 
     def test_affordable_divides_the_budget_by_what_a_lane_uses(self) -> None:
         """`_LANE`, not `MEMORY`. Dividing by the *ceiling* assumes every lane is
         simultaneously pathological -- the over-restriction woswoar#227 removed,
         where a 16 GiB laptop dropped to two lanes and a 7 GiB runner to one."""
         with mock.patch.object(mutate, "_budget", lambda: 16 << 30):
-            self.assertEqual((16 << 30) // mutate._LANE, mutate._affordable())
+            assert mutate._affordable() == (16 << 30) // mutate._LANE
 
     def test_affordable_never_answers_zero(self) -> None:
         """A machine too small for one lane still gets one; the ceiling is what
         stops it, within seconds, rather than a pool that never starts."""
         with mock.patch.object(mutate, "_budget", lambda: 1 << 20):
-            self.assertEqual(1, mutate._affordable())
+            assert mutate._affordable() == 1
 
 
 class TestTheRunAccountsForItsLanes(unittest.TestCase):
@@ -5692,13 +5618,13 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
 
     def test_it_says_so_when_the_machine_cut_the_lanes_down(self) -> None:
         said = self.lines(8, mutate.Share(self.WANTED - 1, mutate.MEMORY))
-        self.assertIn("1 lane(s)", said)
-        self.assertIn("see tools.mutate._share", said)
+        assert "1 lane(s)" in said
+        assert "see tools.mutate._share" in said
 
     def test_it_stays_quiet_when_nothing_was_taken_away(self) -> None:
         """The other half. Without it, "always print" passes the test above and
         every run carries a line about a limit that did not bind."""
-        self.assertNotIn("lane(s)", self.lines(8, mutate.Share(self.WANTED, mutate.MEMORY)))
+        assert "lane(s)" not in self.lines(8, mutate.Share(self.WANTED, mutate.MEMORY))
 
     def test_nothing_but_the_cores_and_the_table_caps_what_is_asked_for(self) -> None:
         """A hardcoded `_LANES = 16` used to sit in this expression, with no
@@ -5729,7 +5655,7 @@ class TestTheRunAccountsForItsLanes(unittest.TestCase):
             mutate.run(table, baseline=False, summarise=False)
         # 20 cores x 2 against a 58-row table: the cores are the smaller, so
         # that is what must come through. A constant of 16 would clip it.
-        self.assertEqual([40], asked)
+        assert asked == [40]
 
 
 class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
@@ -5796,7 +5722,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         """The row this exists for. `exact` is what `Killers.ahead_of` sets when
         it found this row's own killer."""
         got = self.first_for(self.row(first=(self.KILLER,), exact=True))
-        self.assertEqual([self.KILLER, self.FRONT], got)
+        assert got == [self.KILLER, self.FRONT]
 
     def test_a_general_prefix_runs_after_it(self) -> None:
         """The other half, and without it "always put `first` in front" passes
@@ -5804,7 +5730,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         tests that catch a lot per second across the table -- so the learned
         front, which is at least about this row's neighbours, precedes it."""
         got = self.first_for(self.row(first=(self.KILLER,), exact=False))
-        self.assertEqual([self.FRONT, self.KILLER], got)
+        assert got == [self.FRONT, self.KILLER]
 
     def test_the_learned_front_still_follows_a_killer_rather_than_being_dropped(
         self,
@@ -5815,7 +5741,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         right, because the killer has already answered by then.
         """
         got = self.first_for(self.row(first=(self.KILLER,), exact=True))
-        self.assertIn(self.FRONT, got, "the learned front was dropped, not demoted")
+        assert self.FRONT in got, "the learned front was dropped, not demoted"
 
     def test_a_parametrized_id_survives_the_composition_from_both_sides(self) -> None:
         """The step this change exists for. `_attempt` used to build its `first`
@@ -5834,7 +5760,7 @@ class TestWhatOrderTheFirstTestsRunIn(unittest.TestCase):
         killer = "tests/test_sync.py::TestTheDecisionTable::test_it[a b]"
         front = "tests/test_sync.py::TestSomethingElse::test_other[c d]"
         got = self.first_for(self.row(first=(killer,), exact=True), front=front)
-        self.assertEqual([killer, front], got)
+        assert got == [killer, front]
 
 
 class TestHandingRowsOutToLanes(unittest.TestCase):
@@ -5872,21 +5798,21 @@ class TestHandingRowsOutToLanes(unittest.TestCase):
             walker.start()
         for walker in walkers:
             walker.join()
-        self.assertEqual(list(range(rows)), sorted(seen), "a row was dropped or run twice")
+        assert sorted(seen) == list(range(rows)), "a row was dropped or run twice"
 
     def test_the_table_is_walked_front_to_back(self) -> None:
         work = mutate.Work(9)
-        self.assertEqual(list(range(9)), [work.take() for _ in range(9)])
+        assert [work.take() for _ in range(9)] == list(range(9))
 
     def test_an_exhausted_table_says_so_rather_than_running_off_the_end(self) -> None:
         work = mutate.Work(2)
-        self.assertEqual([0, 1], [work.take(), work.take()])
-        self.assertIsNone(work.take())
-        self.assertIsNone(work.take(), "a second ask past the end answered differently")
+        assert [work.take(), work.take()] == [0, 1]
+        assert work.take() is None
+        assert work.take() is None, "a second ask past the end answered differently"
 
     def test_more_lanes_than_rows_hands_out_every_row_and_no_more(self) -> None:
         work = mutate.Work(3)
-        self.assertEqual([0, 1, 2, None, None, None, None, None], [work.take() for _ in range(8)])
+        assert [work.take() for _ in range(8)] == [0, 1, 2, None, None, None, None, None]
 
 
 class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
@@ -5924,7 +5850,7 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         """Expected order differs from the input *and* from its reverse, so a
         sort with the sign the wrong way round, or none at all, both fail."""
         table = self.rows(("a.py", "p"), ("a.py", "q"), ("a.py", "r"))
-        self.assertEqual(["q", "r", "p"], self.order(table, self.timed(table, 1.0, 9.0, 5.0)))
+        assert self.order(table, self.timed(table, 1.0, 9.0, 5.0)) == ["q", "r", "p"]
 
     def test_a_dear_row_never_overtakes_a_file(self) -> None:
         """The claim contiguity rests on. Every row of `b.py` costs fifty times
@@ -5933,7 +5859,7 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         out before they had all been answered."""
         table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"), ("b.py", "t"))
         got = self.order(table, self.timed(table, 1.0, 2.0, 100.0, 200.0))
-        self.assertEqual(["q", "p", "t", "s"], got)
+        assert got == ["q", "p", "t", "s"]
 
     def test_a_row_nobody_timed_sits_at_its_file_s_median(self) -> None:
         """Four timed rows at 12, 10, 4 and 2 give a median of 7, so the cold
@@ -5941,7 +5867,7 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         obvious wrong answers and this fixture rejects both."""
         table = self.rows(*[("a.py", tag) for tag in ("p", "q", "cold", "r", "s")])
         seconds = self.timed(table, 12.0, 10.0, None, 4.0, 2.0)
-        self.assertEqual(["p", "q", "cold", "r", "s"], self.order(table, seconds))
+        assert self.order(table, seconds) == ["p", "q", "cold", "r", "s"]
 
     def test_the_median_a_cold_row_takes_is_its_own_file_s(self) -> None:
         """Not the tree's, and the two answers differ by two orders of magnitude
@@ -5957,8 +5883,8 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         table = self.rows(*[("cheap.py", tag) for tag in tags], *[("dear.py", tag) for tag in tags])
         seconds = self.timed(table, 12.0, 10.0, None, 4.0, 2.0, 1200.0, 1000.0, None, 400.0, 200.0)
         got = self.order(table, seconds)
-        self.assertEqual(["p", "q", "cold", "r", "s"], got[:5], "the cheap file")
-        self.assertEqual(["p", "q", "cold", "r", "s"], got[5:], "the dear file")
+        assert got[:5] == ["p", "q", "cold", "r", "s"], "the cheap file"
+        assert got[5:] == ["p", "q", "cold", "r", "s"], "the dear file"
 
     def test_a_file_nothing_has_timed_is_left_exactly_as_it_arrived(self) -> None:
         """What a `--base` diff is almost entirely made of: its rows are new text
@@ -5968,11 +5894,11 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
             ("a.py", "p"), ("a.py", "q"), ("new.py", "s"), ("new.py", "t"), ("new.py", "u")
         )
         got = self.order(table, self.timed(table[:2], 1.0, 9.0))
-        self.assertEqual(["s", "t", "u"], got[2:], "a file nobody has timed was reordered")
+        assert got[2:] == ["s", "t", "u"], "a file nobody has timed was reordered"
 
     def test_nothing_remembered_at_all_leaves_the_table_alone(self) -> None:
         table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"))
-        self.assertEqual(["p", "q", "s"], self.order(table, {}))
+        assert self.order(table, {}) == ["p", "q", "s"]
 
     def test_it_says_how_much_of_the_table_it_could_order(self) -> None:
         """A silent reorder reads the same whether the cache loaded or not --
@@ -5980,8 +5906,8 @@ class TestOrderingTheTableByWhatItCostLastTime(unittest.TestCase):
         table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"))
         with support.quiet() as said:
             mutate.slowest_first(table, self.timed(table[:1], 4.0))
-        self.assertIn("1 of 3", said.getvalue())
-        self.assertIn("2 never timed", said.getvalue())
+        assert "1 of 3" in said.getvalue()
+        assert "2 never timed" in said.getvalue()
 
 
 @functools.cache
@@ -6032,15 +5958,13 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
 
     def test_a_real_run_times_the_row_it_ran(self) -> None:
         (only,) = self.report.results
-        self.assertGreater(only.verdict.spent, 0.0, "the row was not timed")
+        assert only.verdict.spent > 0.0, "the row was not timed"
 
     def test_the_time_reaches_the_cache_under_the_row_s_key(self) -> None:
         cache = mutate.Killers(None)
         cache.learn(self.report)
-        self.assertEqual([mutate._key(UNWATCHED)], list(cache.seconds))
-        self.assertEqual(
-            self.report.results[0].verdict.spent, cache.seconds[mutate._key(UNWATCHED)]
-        )
+        assert list(cache.seconds) == [mutate._key(UNWATCHED)]
+        assert cache.seconds[mutate._key(UNWATCHED)] == self.report.results[0].verdict.spent
 
     def test_a_row_that_was_never_answered_is_timed_too(self) -> None:
         """`broke` and `timeout` rows are the *most* expensive there are -- a
@@ -6051,7 +5975,7 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
         broke = mutate.Verdict("broke", "nothing loaded", spent=41.0)
         cache = mutate.Killers(None)
         cache.learn(mutate.Report([mutate.Result(row, broke)]))
-        self.assertEqual({mutate._key(row): 41.0}, cache.seconds)
+        assert cache.seconds == {mutate._key(row): 41.0}
 
     def test_a_survivor_keeps_its_cost_while_losing_its_killer(self) -> None:
         """The two records answer different questions. Whatever used to catch a
@@ -6061,8 +5985,8 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
         cache = mutate.Killers(None)
         cache.known = {mutate._key(row): "tests.t.T.test_it"}
         cache.learn(mutate.Report([mutate.Result(row, mutate.Verdict("survived", spent=70.0))]))
-        self.assertEqual({}, cache.known)
-        self.assertEqual({mutate._key(row): 70.0}, cache.seconds)
+        assert cache.known == {}
+        assert cache.seconds == {mutate._key(row): 70.0}
 
     def test_it_survives_a_trip_through_the_file(self) -> None:
         row = mutants.Mutation("a.py x", "a.py", "x", "y", "tests.t")
@@ -6075,7 +5999,7 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
                 )
             )
             made.save()
-            self.assertEqual({mutate._key(row): 3.5}, mutate.Killers(where).seconds)
+            assert mutate.Killers(where).seconds == {mutate._key(row): 3.5}
 
     def test_a_cost_survives_the_report_a_resume_reads_back(self) -> None:
         """The gap this closes, and it only exists on the sweeps that matter.
@@ -6094,10 +6018,10 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
                 mutate.Report([mutate.Result(row, caught)], widened=True), report, announce=False
             )
             (back,) = mutate._recorded(report)
-        self.assertEqual(8.25, back.verdict.spent, "the cost did not survive the report")
+        assert back.verdict.spent == 8.25, "the cost did not survive the report"
         cache = mutate.Killers(None)
         cache.learn(mutate.Report([back]))
-        self.assertEqual({mutate._key(row): 8.25}, cache.seconds)
+        assert cache.seconds == {mutate._key(row): 8.25}
 
     def test_a_report_written_before_costs_existed_reads_back_untimed(self) -> None:
         """Cut from a real report rather than built by hand, so it holds exactly
@@ -6113,12 +6037,12 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
                 announce=False,
             )
             written = json.loads(report.read_text(encoding="utf-8"))
-            self.assertIn("seconds", written["results"][0], "nothing was removed")
+            assert "seconds" in written["results"][0], "nothing was removed"
             del written["results"][0]["seconds"]
             report.write_text(json.dumps(written), encoding="utf-8")
             (back,) = mutate._recorded(report)
-        self.assertEqual("survived", back.verdict.outcome, "the whole row was lost")
-        self.assertEqual(0.0, back.verdict.spent)
+        assert back.verdict.outcome == "survived", "the whole row was lost"
+        assert back.verdict.spent == 0.0
 
     def test_a_cache_written_before_costs_existed_still_loads(self) -> None:
         """The shape `killers.json` had until this landed. It must read as "no
@@ -6128,8 +6052,8 @@ class TestRememberingWhatEachRowCost(unittest.TestCase):
             where = Path(box) / "killers.json"
             where.write_text(json.dumps({"killers": {"k": "t.T.m"}, "costs": {"t.T.m": 1.0}}))
             cache = mutate.Killers(where)
-            self.assertEqual({}, cache.seconds)
-            self.assertEqual({"k": "t.T.m"}, cache.known)
+            assert cache.seconds == {}
+            assert cache.known == {"k": "t.T.m"}
 
 
 class TestWhatTheFinalBlockSays(unittest.TestCase):
@@ -6166,27 +6090,27 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         `caught`, so the line it appears to guard is guarded by nothing."""
         said = self.block(["caught", "caught"])
         for headline in ("caught", "SURVIVED", "BROKE", "TIMEOUT"):
-            self.assertIn(headline, said, f"{headline} is missing from the block")
+            assert headline in said, f"{headline} is missing from the block"
 
     def test_the_score_names_what_it_is_a_score_of(self) -> None:
         said = self.block(["caught", "caught", "survived", "broke"])
-        self.assertIn("2 caught of 3 answered", said)
-        self.assertIn("1 row(s) answered nothing", said)
+        assert "2 caught of 3 answered" in said
+        assert "1 row(s) answered nothing" in said
 
     def test_a_red_baseline_gets_no_percentage_at_all(self) -> None:
         """Not a flattering number under a warning. A failing suite notices
         every mutation, and a percentage is far more seductive than a wall of
         rows -- 51 of 51 was read twice here before anyone read the line."""
         said = self.block(["caught", "caught"], red=True)
-        self.assertIn("no score", said)
-        self.assertNotIn("%", said)
+        assert "no score" in said
+        assert "%" not in said
 
     def test_the_rate_is_reported_with_the_lane_count_beside_it(self) -> None:
         """A rate alone is comparable to nothing: this tree measured the same
         table at 1.84/s over 32 lanes and 1.49/s over 16."""
         said = self.block(["caught"] * 20)
-        self.assertIn("over 4 lane(s)", said)
-        self.assertIn("/s/lane", said)
+        assert "over 4 lane(s)" in said
+        assert "/s/lane" in said
 
     def test_a_run_that_took_no_measurable_time_reports_a_rate_of_zero(self) -> None:
         """`pace.seconds > 0`, and the guard is not decoration: a one-row table
@@ -6194,7 +6118,7 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         `ZeroDivisionError` out of the block a reader looks at *after* a
         successful sweep -- so the run's own answer is lost to a crash in the
         summary of it."""
-        self.assertIn("0.00/s", self.block(["caught"], pace=mutate.Pace(0.0, 4, 2 << 30)))
+        assert "0.00/s" in self.block(["caught"], pace=mutate.Pace(0.0, 4, 2 << 30))
 
     def test_a_run_shorter_than_a_second_still_reports_its_rate(self) -> None:
         """The other side of the same guard, and not a hypothetical: a small
@@ -6203,7 +6127,7 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         than `> 0` would report every such run at 0.00/s, which is the number
         the guard exists to avoid, arrived at by the other route.
         """
-        self.assertIn("6.00/s", self.block(["caught"] * 3, pace=mutate.Pace(0.5, 4, 2 << 30)))
+        assert "6.00/s" in self.block(["caught"] * 3, pace=mutate.Pace(0.5, 4, 2 << 30))
 
     def test_rows_that_went_missing_are_named_and_counted(self) -> None:
         """The one failure nothing else here would see. An outcome this build
@@ -6213,30 +6137,30 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         the table and every number in it reads as complete.
         """
         said = self.block(["caught", "caught", typing.cast(mutate.Outcome, "invented")])
-        self.assertIn("2 row(s) accounted for of 3", said)
-        self.assertIn("1 went missing", said)
+        assert "2 row(s) accounted for of 3" in said
+        assert "1 went missing" in said
 
     def test_a_complete_report_says_nothing_about_missing_rows(self) -> None:
         """The other half, and the reason there is no tick beside it: a line that
         always prints is one a reader stops reading, and CLAUDE.md's bar is that
         the sum be *silent when right and loud when wrong*."""
-        self.assertNotIn("went missing", self.block(["caught", "survived"]))
+        assert "went missing" not in self.block(["caught", "survived"])
 
     def test_a_table_that_answered_nothing_gets_no_score(self) -> None:
         """`caught / answered` with no answers is a division by zero, and there
         is nothing to say anyway: a table of nothing but `broke` rows has not
         put a question, so a percentage would be a claim about no evidence."""
         said = self.block(["broke", "timeout"])
-        self.assertNotIn("%", said)
-        self.assertNotIn("caught of", said)
+        assert "%" not in said
+        assert "caught of" not in said
 
     def test_a_table_that_answered_everything_adds_no_caveat(self) -> None:
         """The clause is conditional for the same reason the missing-rows line
         is: "; 0 row(s) answered nothing" on every clean sweep trains a reader
         to skip the sentence that matters on the one sweep it does not."""
         said = self.block(["caught", "survived"])
-        self.assertIn("1 caught of 2 answered", said)
-        self.assertNotIn("answered nothing", said)
+        assert "1 caught of 2 answered" in said
+        assert "answered nothing" not in said
 
     def test_the_headroom_line_can_be_left_to_the_caller(self) -> None:
         """`run` reports it itself when it is not summarising, so `main` asks for
@@ -6250,9 +6174,9 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         asked: list[int] = []
         with mock.patch.object(mutate, "_report_headroom", asked.append):
             self.block(["caught"], headroom=False)
-            self.assertEqual([], asked, "the block reported headroom it was told to skip")
+            assert asked == [], "the block reported headroom it was told to skip"
             self.block(["caught"], headroom=True)
-            self.assertEqual([self.PACE.ceiling], asked)
+            assert asked == [self.PACE.ceiling]
 
     def test_a_report_with_no_pace_says_nothing_rather_than_zero(self) -> None:
         """A resumed run does not re-run anything, so it has no rate to report.
@@ -6267,7 +6191,7 @@ class TestWhatTheFinalBlockSays(unittest.TestCase):
         ]
         with support.quiet() as said:
             mutate._report_stats(results, pace=None, red=False)
-        self.assertEqual("", said.getvalue())
+        assert said.getvalue() == ""
 
 
 class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
@@ -6354,48 +6278,48 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
             self.assertRaises(SystemExit) as bad,
         ):
             mutate.main([*flags, "--no-killers"])
-        self.assertEqual(2, bad.exception.code)
+        assert bad.exception.code == 2
         return said.getvalue()
 
     def test_all_and_base_together_are_refused(self) -> None:
         """They mean different tables. Taking either silently would run the one
         the user did not ask for, over a table size that differs by 20x."""
-        self.assertIn("Not both", self.refused("--all", "--base", "main"))
+        assert "Not both" in self.refused("--all", "--base", "main")
 
     def test_neither_a_script_nor_a_table_is_refused(self) -> None:
-        self.assertIn("give a spec file", self.refused())
+        assert "give a spec file" in self.refused()
 
     def test_a_script_and_a_table_together_are_refused(self) -> None:
         """The same message, and the same `bool(...) == bool(...)` line. Without
         this the mutation that drops one side of the comparison is invisible:
         the empty case above still refuses."""
-        self.assertIn("give a spec file", self.refused("spec.py", "--base", "main"))
+        assert "give a spec file" in self.refused("spec.py", "--base", "main")
 
     def test_all_becomes_a_base_of_its_own(self) -> None:
         """Downstream asks "generated or a spec file?" and nothing else, so
         `--all` has to arrive as a `base`. Left unset it falls through to the
         spec-file arm with no script and raises about a file nobody named."""
         _, _, args = self.drive("--all")
-        self.assertEqual("--all", args.base)
+        assert args.base == "--all"
 
     def test_all_lifts_the_default_cap(self) -> None:
         """The cap is sized for a diff. Left on, the documented `--all` ran 200
         rows of 4451 -- and, because the cap spreads across files, in batches of
         seven, so batching, incremental `--json` and resume all did nothing."""
         _, _, args = self.drive("--all")
-        self.assertEqual(0, args.limit)
+        assert args.limit == 0
 
     def test_an_explicit_cap_survives_all(self) -> None:
         """The other half. A rule that lifted the cap unconditionally passes the
         test above and takes `--limit` away from the one command that most needs
         it -- and says nothing, because the count would look deliberate."""
         _, _, args = self.drive("--all", "--limit", "5")
-        self.assertEqual(5, args.limit)
+        assert args.limit == 5
 
     def test_a_base_of_its_own_leaves_the_cap_alone(self) -> None:
         """`--base` is a diff, which is what the default cap is for."""
         _, _, args = self.drive("--base", "main")
-        self.assertEqual(mutate.LIMIT, args.limit)
+        assert args.limit == mutate.LIMIT
 
     def test_list_prints_the_table_and_runs_nothing(self) -> None:
         """`--list` is about the table, not about running it. A version that
@@ -6405,9 +6329,9 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
         status, said, _ = self.drive(
             "--base", "main", "--list", runner=lambda *a, **k: ran.append(1)
         )
-        self.assertEqual(0, status)
-        self.assertIn("x:1 in f()", said)
-        self.assertEqual([], ran, "--list ran the table")
+        assert status == 0
+        assert "x:1 in f()" in said
+        assert ran == [], "--list ran the table"
 
     def test_baseline_only_answers_with_the_exit_status(self) -> None:
         """Its whole point: ask in one shard's time the question a sweep asks in
@@ -6417,7 +6341,7 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
             with self.subTest(green=green):
                 with mock.patch.object(mutate, "_baseline_is_green", lambda *a, _g=green: _g):
                     status, _, _ = self.drive("--base", "main", "--baseline-only")
-                self.assertEqual(expected, status)
+                assert status == expected
 
     def test_baseline_only_starts_no_sandbox(self) -> None:
         """Before the prefix is announced and before any sandbox is built. A
@@ -6426,7 +6350,7 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
         ran: list[int] = []
         with mock.patch.object(mutate, "_baseline_is_green", lambda *a: True):
             self.drive("--base", "main", "--baseline-only", runner=lambda *a, **k: ran.append(1))
-        self.assertEqual([], ran)
+        assert ran == []
 
     def test_the_json_pidfile_is_written_before_the_first_row(self) -> None:
         """A watcher started alongside this one has to have something to read
@@ -6442,7 +6366,7 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
                 return mutate.Report([])
 
             self.drive("--base", "main", "--json", str(where), runner=note)
-        self.assertEqual([str(os.getpid())], seen, "the pidfile named the wrong process, or none")
+        assert seen == [str(os.getpid())], "the pidfile named the wrong process, or none"
 
     def test_the_done_marker_is_cleared_before_the_run_and_set_after(self) -> None:
         """A resumed sweep points `--json` at a part-written report, and a marker
@@ -6459,8 +6383,8 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
                 return mutate.Report([])
 
             self.drive("--base", "main", "--json", str(where), runner=note)
-            self.assertEqual([False], seen, "a stale done marker survived into the run")
-            self.assertTrue(mutate._marker(where).is_file(), "the finished run left no marker")
+            assert seen == [False], "a stale done marker survived into the run"
+            assert mutate._marker(where).is_file(), "the finished run left no marker"
 
     def test_listing_a_table_does_not_retract_an_earlier_marker(self) -> None:
         """`--list` returns before the `--json` block on purpose: listing is not
@@ -6470,7 +6394,7 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
             where = Path(name) / "r.json"
             mutate._marker(where).touch()
             self.drive("--base", "main", "--json", str(where), "--list")
-            self.assertTrue(mutate._marker(where).is_file())
+            assert mutate._marker(where).is_file()
 
     def test_a_clean_run_exits_zero_and_a_survivor_does_not(self) -> None:
         """Both arms of `_status`. A constant zero is the shape that makes every
@@ -6478,8 +6402,8 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
         impossible."""
         caught = mutate.Report([mutate.Result(self.ROW, mutate.Verdict("caught", "d", "t.A.b"))])
         alive = mutate.Report([mutate.Result(self.ROW, mutate.Verdict("survived"))])
-        self.assertEqual(0, self.drive("--base", "main", report=caught)[0])
-        self.assertNotEqual(0, self.drive("--base", "main", report=alive)[0])
+        assert self.drive("--base", "main", report=caught)[0] == 0
+        assert self.drive("--base", "main", report=alive)[0] != 0
 
     def test_a_red_baseline_remembers_nothing_and_says_so(self) -> None:
         """A killer recorded from a red tree is a test that fails untouched,
@@ -6490,8 +6414,8 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
         learned: list[object] = []
         with mock.patch.object(mutate.Killers, "learn", lambda self, r: learned.append(r)):
             _, said, _ = self.drive("--base", "main", report=red)
-        self.assertEqual([], learned, "a red run's killers were remembered")
-        self.assertIn("nothing was remembered", said)
+        assert learned == [], "a red run's killers were remembered"
+        assert "nothing was remembered" in said
 
     def test_a_green_run_does_remember(self) -> None:
         """The other half, without which "never remember" passes the test above
@@ -6499,7 +6423,7 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
         learned: list[object] = []
         with mock.patch.object(mutate.Killers, "learn", lambda self, r: learned.append(r)):
             self.drive("--base", "main")
-        self.assertEqual(1, len(learned))
+        assert len(learned) == 1
 
     def test_a_narrowed_run_says_nothing_about_the_tags_it_did_not_reach(self) -> None:
         """What `complete` used to arrange, now true by construction.
@@ -6520,10 +6444,10 @@ class TestWhatMainDoesOnTheGeneratedPath(unittest.TestCase):
                     lambda r, *a, _s=seen: _s.append(r) or mutate.Survivors([], [], []),
                 ):
                     self.drive(*flags)
-                self.assertTrue(seen, "sort_survivors was never asked")
+                assert seen, "sort_survivors was never asked"
                 # Only the rows this run produced are ever offered to it, which
                 # is the whole of the guarantee `complete` was reaching for.
-                self.assertTrue(all(rows == seen[0] for rows in seen))
+                assert all(rows == seen[0] for rows in seen)
 
 
 class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
@@ -6620,8 +6544,8 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
         bound into one that never fires, and with no limit that holds a lane for
         the rest of the run."""
         found = self.verdict(self.GREEN, hang=True)
-        self.assertEqual("timeout", found.outcome)
-        self.assertIn("no answer within", found.detail)
+        assert found.outcome == "timeout"
+        assert "no answer within" in found.detail
 
     def test_a_lane_killed_for_memory_broke_rather_than_answered(self) -> None:
         """And it is read *before* the report, which is the whole subtlety. A
@@ -6629,9 +6553,9 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
         process is running -- and reading it would report a verdict about a run
         that was stopped."""
         found = self.verdict(self.GREEN, held=3 << 30)
-        self.assertEqual("broke", found.outcome)
-        self.assertIn("MiB", found.detail)
-        self.assertIn("killed", found.detail)
+        assert found.outcome == "broke"
+        assert "MiB" in found.detail
+        assert "killed" in found.detail
 
     def test_a_lane_killed_for_memory_says_so_even_with_no_report(self) -> None:
         """The ordering, and the only fixture that can see it.
@@ -6645,25 +6569,25 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
         crash instead of at the memory ceiling that caused it.
         """
         found = self.verdict(None, returncode=-9, held=3 << 30)
-        self.assertEqual("broke", found.outcome)
-        self.assertIn("MiB", found.detail)
-        self.assertIn("share it was given", found.detail)
+        assert found.outcome == "broke"
+        assert "MiB" in found.detail
+        assert "share it was given" in found.detail
 
     def test_a_probe_that_wrote_nothing_says_what_reached_stderr(self) -> None:
         """Killed before it could write. A process killed by a signal writes no
         stderr either, so this row used to print with no reason at all -- and it
         is exactly what a host OOM-kill produces."""
         found = self.verdict(None, stderr="Traceback ...\nMemoryError\n")
-        self.assertEqual("broke", found.outcome)
-        self.assertIn("MemoryError", found.detail)
+        assert found.outcome == "broke"
+        assert "MemoryError" in found.detail
 
     def test_a_probe_that_wrote_nothing_and_said_nothing_names_the_signal(self) -> None:
         """The half with no stderr at all, which is the OOM-kill case. Without
         it the row prints an empty reason, and an empty reason reads as the
         harness malfunctioning rather than as the machine running out."""
         found = self.verdict(None, returncode=-9)
-        self.assertEqual("broke", found.outcome)
-        self.assertNotEqual("", found.detail.strip(), "a killed probe explained nothing")
+        assert found.outcome == "broke"
+        assert found.detail.strip() != "", "a killed probe explained nothing"
 
     def test_a_module_that_would_not_load_prefers_the_recorded_reason(self) -> None:
         """`verdict.main` writes `why` deliberately; `_tail` is whatever happened
@@ -6673,9 +6597,9 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
             {**self.GREEN, "loaded": False, "why": "SyntaxError: bad"},
             stderr="DeprecationWarning: unrelated\n",
         )
-        self.assertEqual("broke", found.outcome)
-        self.assertIn("SyntaxError", found.detail)
-        self.assertNotIn("Deprecation", found.detail)
+        assert found.outcome == "broke"
+        assert "SyntaxError" in found.detail
+        assert "Deprecation" not in found.detail
 
     def test_a_module_that_would_not_load_falls_back_to_stderr(self) -> None:
         """The other half: `why` can be absent, and then the tail is all there
@@ -6684,15 +6608,15 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
         found = self.verdict(
             {**self.GREEN, "loaded": False, "why": ""}, stderr="ImportError: no module\n"
         )
-        self.assertIn("ImportError", found.detail)
+        assert "ImportError" in found.detail
 
     def test_a_test_that_errored_outside_an_assertion_broke(self) -> None:
         """`broke` in the report is the probe's own word for "this asked
         nothing", and it outranks everything below -- a run that errored has not
         answered, however many tests it also ran."""
         found = self.verdict({**self.GREEN, "broke": ["it went wrong"], "noticed": ["t.A.b"]})
-        self.assertEqual("broke", found.outcome)
-        self.assertIn("it went wrong", found.detail)
+        assert found.outcome == "broke"
+        assert "it went wrong" in found.detail
 
     def test_a_notice_becomes_caught_and_carries_its_killer(self) -> None:
         """The killer is what `Killers` runs first next time, and it is recorded
@@ -6707,30 +6631,30 @@ class TestHowOneRunsOutcomeIsClassified(unittest.TestCase):
                 "times": {"t.A.test_it": 0.5},
             }
         )
-        self.assertEqual("caught", found.outcome)
-        self.assertEqual("t.A.test_it", found.killer)
-        self.assertIn("AssertionError", found.why)
-        self.assertEqual({"t.A.test_it": 0.5}, found.times)
+        assert found.outcome == "caught"
+        assert found.killer == "t.A.test_it"
+        assert "AssertionError" in found.why
+        assert found.times == {"t.A.test_it": 0.5}
 
     def test_a_notice_with_no_remembered_killer_still_counts(self) -> None:
         """`killers` can be empty where `noticed` is not, and the row is still a
         catch. Raising instead would turn a real answer into a `broke`."""
         found = self.verdict({**self.GREEN, "noticed": ["test_it (t.A.test_it)"]})
-        self.assertEqual("caught", found.outcome)
-        self.assertEqual("", found.killer)
+        assert found.outcome == "caught"
+        assert found.killer == ""
 
     def test_a_selection_that_held_no_tests_broke_rather_than_survived(self) -> None:
         """The flattering failure, and the one CLAUDE.md opens with: a run that
         executed nothing notices nothing, and calling that `survived` credits
         the mutation with beating a suite that never ran."""
         found = self.verdict({**self.GREEN, "ran": 0})
-        self.assertEqual("broke", found.outcome)
-        self.assertIn("no tests", found.detail)
+        assert found.outcome == "broke"
+        assert "no tests" in found.detail
 
     def test_a_green_run_that_noticed_nothing_survived(self) -> None:
         """The ordinary survivor, and the timings come back with it -- a
         survivor ran its whole selection, so its numbers are the complete ones
         `slowest_first` orders the next sweep by."""
         found = self.verdict({**self.GREEN, "times": {"t.A.b": 1.5}})
-        self.assertEqual("survived", found.outcome)
-        self.assertEqual({"t.A.b": 1.5}, found.times)
+        assert found.outcome == "survived"
+        assert found.times == {"t.A.b": 1.5}

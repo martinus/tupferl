@@ -268,9 +268,8 @@ class Probe(unittest.TestCase):
             text=True,
             timeout=BOUND,
         )
-        self.assertTrue(
-            self.report.is_file(),
-            f"no report was written.\nstdout: {done.stdout}\nstderr: {done.stderr}",
+        assert self.report.is_file(), (
+            f"no report was written.\nstdout: {done.stdout}\nstderr: {done.stderr}"
         )
         return dict(json.loads(self.report.read_text(encoding="utf-8")))
 
@@ -289,9 +288,9 @@ class TestATestThatNoticed(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["broke"])
-        self.assertEqual(1, len(found["noticed"]))
-        self.assertEqual(1, found["ran"])
+        assert found["broke"] == []
+        assert len(found["noticed"]) == 1
+        assert found["ran"] == 1
 
     def test_the_killer_is_recorded_as_pytest_takes_it_back(self) -> None:
         """The id `mutate` writes into its cache is fed straight back to pytest
@@ -310,10 +309,10 @@ class TestATestThatNoticed(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
+        assert found["killers"] == ["test_a.py::T::test_it"]
 
         again = self.verdict(*found["killers"])
-        self.assertEqual(1, again["ran"], "the recorded id did not select back")
+        assert again["ran"] == 1, "the recorded id did not select back"
 
     def test_an_unexpected_exception_is_also_an_answer(self) -> None:
         """A mutation that makes the code raise is caught, not broken: the test
@@ -328,8 +327,8 @@ class TestATestThatNoticed(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["broke"])
-        self.assertEqual(1, len(found["noticed"]))
+        assert found["broke"] == []
+        assert len(found["noticed"]) == 1
 
     def test_a_dead_teardown_belongs_to_the_test_it_ran_after(self) -> None:
         """The half of the phase mapping that must *not* read as `broke`.
@@ -354,8 +353,8 @@ class TestATestThatNoticed(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["broke"], "a test's own tearDown was filed as a broken run")
-        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
+        assert found["broke"] == [], "a test's own tearDown was filed as a broken run"
+        assert found["killers"] == ["test_a.py::T::test_it"]
 
 
 class TestAFixtureThatDied(Probe):
@@ -388,10 +387,10 @@ class TestAFixtureThatDied(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["noticed"], "a dead fixture was credited as a test")
-        self.assertEqual([], found["killers"])
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("setup failed", found["broke"][0])
+        assert found["noticed"] == [], "a dead fixture was credited as a test"
+        assert found["killers"] == []
+        assert len(found["broke"]) == 1
+        assert "setup failed" in found["broke"][0]
 
     def test_a_dead_setupmodule_is_not_an_answer(self) -> None:
         self.module(
@@ -406,8 +405,8 @@ class TestAFixtureThatDied(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["noticed"])
-        self.assertEqual(1, len(found["broke"]))
+        assert found["noticed"] == []
+        assert len(found["broke"]) == 1
 
     def test_a_dead_teardownclass_is_not_an_answer_either(self) -> None:
         """The far side of the same line, and the one that has no counterpart in
@@ -429,9 +428,9 @@ class TestAFixtureThatDied(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["noticed"], "a class-scoped teardown was credited as a test")
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("teardown failed", found["broke"][0])
+        assert found["noticed"] == [], "a class-scoped teardown was credited as a test"
+        assert len(found["broke"]) == 1
+        assert "teardown failed" in found["broke"][0]
 
     def test_a_module_that_will_not_import_is_not_an_answer(self) -> None:
         """And the suite must not be *run* at all.
@@ -443,12 +442,12 @@ class TestAFixtureThatDied(Probe):
         """
         self.module("test_a", "import a_module_that_does_not_exist_xyz\n")
         found = self.verdict("test_a")
-        self.assertTrue(found["loaded"])
-        self.assertEqual(0, found["ran"], "the suite ran despite a collection error")
-        self.assertEqual([], found["noticed"])
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("test_a", found["broke"][0])
-        self.assertIn("ModuleNotFoundError", found["broke"][0])
+        assert found["loaded"]
+        assert found["ran"] == 0, "the suite ran despite a collection error"
+        assert found["noticed"] == []
+        assert len(found["broke"]) == 1
+        assert "test_a" in found["broke"][0]
+        assert "ModuleNotFoundError" in found["broke"][0]
 
 
 class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
@@ -479,11 +478,11 @@ class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["broke"], found["broke"])
-        self.assertEqual(1, len(found["noticed"]), found["noticed"])
+        assert found["broke"] == [], found["broke"]
+        assert len(found["noticed"]) == 1, found["noticed"]
         # And the nodeid is one a later run can select, which is what makes it
         # usable as a remembered killer rather than merely a name in a report.
-        self.assertIn("test_a.py::test_it", found["killers"][0])
+        assert "test_a.py::test_it" in found["killers"][0]
 
     def test_the_same_assertion_written_as_setup_answers_the_same_way(self) -> None:
         """The pair, and the reason this class exists rather than a comment.
@@ -505,8 +504,8 @@ class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["broke"], found["broke"])
-        self.assertEqual(1, len(found["noticed"]))
+        assert found["broke"] == [], found["broke"]
+        assert len(found["noticed"]) == 1
 
     def test_a_later_phase_is_not_covered_by_the_setup_that_was_credited(self) -> None:
         """The scope is a fact about one *phase*, and it must not latch.
@@ -537,9 +536,9 @@ class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.py::TestX::test_it"], found["noticed"])
-        self.assertEqual(1, len(found["broke"]), found["broke"])
-        self.assertIn("teardown failed", found["broke"][0])
+        assert found["noticed"] == ["test_a.py::TestX::test_it"]
+        assert len(found["broke"]) == 1, found["broke"]
+        assert "teardown failed" in found["broke"][0]
 
     def test_a_module_scoped_fixture_that_raises_is_still_not_an_answer(self) -> None:
         """The other side, and without it the rule above is just "credit every
@@ -564,9 +563,9 @@ class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["noticed"], "a module-scoped fixture was credited as a test")
-        self.assertEqual(2, len(found["broke"]), found["broke"])
-        self.assertIn("setup failed", found["broke"][0])
+        assert found["noticed"] == [], "a module-scoped fixture was credited as a test"
+        assert len(found["broke"]) == 2, found["broke"]
+        assert "setup failed" in found["broke"][0]
 
 
 class TestABrokenModuleIsClassifiedTheSameWayTwice(Probe):
@@ -594,18 +593,18 @@ class TestABrokenModuleIsClassifiedTheSameWayTwice(Probe):
         self.fresh()
         self.module("test_a", self.BROKEN)
         discovered = self.verdict()
-        self.assertEqual(named["broke"], discovered["broke"])
-        self.assertTrue(named["loaded"] and discovered["loaded"])
-        self.assertIn("SyntaxError", named["broke"][0])
+        assert discovered["broke"] == named["broke"]
+        assert named["loaded"] and discovered["loaded"]
+        assert "SyntaxError" in named["broke"][0]
 
     def test_neither_route_credits_a_test_with_noticing(self) -> None:
         """The claim that survives whatever pytest does with the two routes, and
         the only one that would corrupt a sweep if it stopped holding."""
         self.module("test_a", self.BROKEN)
         for found in (self.verdict("test_a"), self.verdict()):
-            self.assertEqual([], found["noticed"])
-            self.assertEqual([], found["killers"])
-            self.assertEqual(0, found["ran"])
+            assert found["noticed"] == []
+            assert found["killers"] == []
+            assert found["ran"] == 0
 
 
 class TestASubTestIsARealAnswer(Probe):
@@ -631,8 +630,8 @@ class TestASubTestIsARealAnswer(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual([], found["broke"], "a subTest assertion was filed as a broken run")
-        self.assertEqual(1, len(found["noticed"]))
+        assert found["broke"] == [], "a subTest assertion was filed as a broken run"
+        assert len(found["noticed"]) == 1
 
     def test_the_owner_is_recorded_and_not_the_carrier(self) -> None:
         """The parameters must not reach the id: pytest hangs them on the
@@ -649,9 +648,9 @@ class TestASubTestIsARealAnswer(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
-        self.assertNotIn("[", found["killers"][0])
-        self.assertEqual(1, self.verdict(*found["killers"])["ran"])
+        assert found["killers"] == ["test_a.py::T::test_it"]
+        assert "[" not in found["killers"][0]
+        assert self.verdict(*found["killers"])["ran"] == 1
 
     def test_a_subtest_failure_is_the_only_thing_that_says_so(self) -> None:
         """The trap, stated as a fixture rather than as a warning.
@@ -677,9 +676,9 @@ class TestASubTestIsARealAnswer(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(2, found["ran"])
-        self.assertEqual(["test_a.py::T::test_it"], found["killers"])
-        self.assertIn("only the subtest failed", found["reasons"][0])
+        assert found["ran"] == 2
+        assert found["killers"] == ["test_a.py::T::test_it"]
+        assert "only the subtest failed" in found["reasons"][0]
 
 
 class TestACarrierThatDidNotAssert(Probe):
@@ -698,10 +697,10 @@ class TestACarrierThatDidNotAssert(Probe):
             """,
         )
         found = self.verdict("test_a", each=0.5)
-        self.assertEqual([], found["noticed"], "a hung test was credited with an answer")
-        self.assertEqual([], found["killers"])
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("did not finish", found["broke"][0])
+        assert found["noticed"] == [], "a hung test was credited with an answer"
+        assert found["killers"] == []
+        assert len(found["broke"]) == 1
+        assert "did not finish" in found["broke"][0]
 
     def test_the_alarm_cannot_be_swallowed_by_a_test_catching_exception(self) -> None:
         """`Hung` is a `BaseException` for this reason: several tests in this
@@ -720,9 +719,9 @@ class TestACarrierThatDidNotAssert(Probe):
             """,
         )
         found = self.verdict("test_a", each=0.5)
-        self.assertEqual([], found["noticed"])
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("did not finish", found["broke"][0])
+        assert found["noticed"] == []
+        assert len(found["broke"]) == 1
+        assert "did not finish" in found["broke"][0]
 
     def test_a_hung_subtest_is_also_broken_not_caught(self) -> None:
         """`with self.subTest(...)` catches `BaseException`, so the alarm
@@ -740,8 +739,8 @@ class TestACarrierThatDidNotAssert(Probe):
             """,
         )
         found = self.verdict("test_a", each=0.5)
-        self.assertEqual([], found["noticed"], "a hung subTest was credited with an answer")
-        self.assertEqual(1, len(found["broke"]))
+        assert found["noticed"] == [], "a hung subTest was credited with an answer"
+        assert len(found["broke"]) == 1
 
     def test_the_alarm_does_not_end_the_run(self) -> None:
         """A hung test costs its own bound and nothing else. If the alarm
@@ -760,8 +759,8 @@ class TestACarrierThatDidNotAssert(Probe):
             """,
         )
         found = self.verdict("test_a", each=0.5)
-        self.assertEqual(2, found["ran"], "the run stopped at the hung test")
-        self.assertEqual(["test_a.py::T::test_b_notices"], found["killers"])
+        assert found["ran"] == 2, "the run stopped at the hung test"
+        assert found["killers"] == ["test_a.py::T::test_b_notices"]
 
 
 @unittest.skipUnless(CAPS, "RLIMIT_AS is not usable here")
@@ -818,9 +817,9 @@ class TestAnOutOfMemoryTestIsNotAnAnswer(Probe):
             """,
         )
         found = self.verdict("test_a", memory=pytest_needs() + self.HEADROOM)
-        self.assertEqual([], found["noticed"], "an out-of-memory test was credited")
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("out of memory", found["broke"][0])
+        assert found["noticed"] == [], "an out-of-memory test was credited"
+        assert len(found["broke"]) == 1
+        assert "out of memory" in found["broke"][0]
 
 
 class TestWhatTheBaselineNeeds(Probe):
@@ -839,9 +838,9 @@ class TestWhatTheBaselineNeeds(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(1, len(found["reasons"]))
-        self.assertIn("AssertionError", found["reasons"][0])
-        self.assertIn("actual", found["reasons"][0])
+        assert len(found["reasons"]) == 1
+        assert "AssertionError" in found["reasons"][0]
+        assert "actual" in found["reasons"][0]
 
     def test_only_the_first_is_kept(self) -> None:
         """A `failfast` run stops at the first anyway, and a baseline is
@@ -858,9 +857,9 @@ class TestWhatTheBaselineNeeds(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(2, len(found["noticed"]))
-        self.assertEqual(1, len(found["reasons"]))
-        self.assertIn("first", found["reasons"][0])
+        assert len(found["noticed"]) == 2
+        assert len(found["reasons"]) == 1
+        assert "first" in found["reasons"][0]
 
     def test_an_error_carries_its_reason_too(self) -> None:
         """The arm that is not an assertion, which renders through a different
@@ -876,8 +875,8 @@ class TestWhatTheBaselineNeeds(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(1, len(found["reasons"]))
-        self.assertIn("what went wrong", found["reasons"][0])
+        assert len(found["reasons"]) == 1
+        assert "what went wrong" in found["reasons"][0]
 
     def test_each_test_is_timed(self) -> None:
         """`mutate.Killers` orders the cheap high-yield tests first from these,
@@ -892,13 +891,13 @@ class TestWhatTheBaselineNeeds(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.py::T::test_it"], list(found["times"]))
+        assert list(found["times"]) == ["test_a.py::T::test_it"]
         # An interval, not `>= 0`: a duration is never negative, so that
         # assertion holds against a sum becoming a difference. `Killers` orders
         # the cheap prefix from these numbers, so a wrong one silently
         # mis-orders it.
-        self.assertGreater(found["times"]["test_a.py::T::test_it"], SLEPT / 2)
-        self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 20)
+        assert found["times"]["test_a.py::T::test_it"] > SLEPT / 2
+        assert found["times"]["test_a.py::T::test_it"] < SLEPT * 20
 
     def test_a_subtest_leaves_exactly_one_entry_for_its_owner(self) -> None:
         """**This asserted something it could not see, and CI is what found
@@ -936,9 +935,9 @@ class TestWhatTheBaselineNeeds(Probe):
             """,
         )
         found = self.verdict("test_a")
-        self.assertEqual(["test_a.py::T::test_it"], list(found["times"]))
-        self.assertGreater(found["times"]["test_a.py::T::test_it"], SLEPT / 2)
-        self.assertLess(found["times"]["test_a.py::T::test_it"], SLEPT * 20)
+        assert list(found["times"]) == ["test_a.py::T::test_it"]
+        assert found["times"]["test_a.py::T::test_it"] > SLEPT / 2
+        assert found["times"]["test_a.py::T::test_it"] < SLEPT * 20
 
 
 class TestWhichTestsGetRun(Probe):
@@ -949,7 +948,7 @@ class TestWhichTestsGetRun(Probe):
         """Handed to pytest as no path arguments at all, so it collects from the
         host project's `testpaths` or its rootdir -- which is the sandbox."""
         self.passing("test_a", "test_b")
-        self.assertEqual(2, self.verdict()["ran"])
+        assert self.verdict()["ran"] == 2
 
     def test_first_does_not_turn_the_whole_suite_into_a_selection(self) -> None:
         """The one that matters. An empty `names` *means* everything; pushing
@@ -958,7 +957,7 @@ class TestWhichTestsGetRun(Probe):
         """
         self.passing("test_a", "test_b", "test_c")
         found = self.verdict(first=("test_a.T.test_it",))
-        self.assertEqual(4, found["ran"], "the prefix replaced the suite instead of preceding it")
+        assert found["ran"] == 4, "the prefix replaced the suite instead of preceding it"
 
     def test_first_really_runs_before_the_rest(self) -> None:
         """Its whole purpose: a remembered killer is run first so a caught
@@ -986,8 +985,8 @@ class TestWhichTestsGetRun(Probe):
         # would reach *second*, or running it before and after give the same
         # failfast answer and the ordering is unobservable.
         found = self.verdict(failfast=True, first=("test_b.T.test_it",))
-        self.assertEqual(1, found["ran"])
-        self.assertEqual(["test_b.py::T::test_it"], found["killers"])
+        assert found["ran"] == 1
+        assert found["killers"] == ["test_b.py::T::test_it"]
 
     def test_a_dotted_name_reaches_the_test_pytest_calls_by_another(self) -> None:
         """The translation, driven rather than unit-tested: `mutants.targets_for`
@@ -996,9 +995,9 @@ class TestWhichTestsGetRun(Probe):
         it would run zero tests and the row would be filed as holding none.
         """
         self.passing("test_a")
-        self.assertEqual(1, self.verdict("test_a")["ran"])
-        self.assertEqual(1, self.verdict("test_a.T")["ran"])
-        self.assertEqual(1, self.verdict("test_a.T.test_it")["ran"])
+        assert self.verdict("test_a")["ran"] == 1
+        assert self.verdict("test_a.T")["ran"] == 1
+        assert self.verdict("test_a.T.test_it")["ran"] == 1
 
     def test_failfast_stops_at_the_first_test_that_noticed(self) -> None:
         self.module(
@@ -1012,8 +1011,8 @@ class TestWhichTestsGetRun(Probe):
                     self.fail("no")
             """,
         )
-        self.assertEqual(1, self.verdict("test_a", failfast=True)["ran"])
-        self.assertEqual(2, self.verdict("test_a", failfast=False)["ran"])
+        assert self.verdict("test_a", failfast=True)["ran"] == 1
+        assert self.verdict("test_a", failfast=False)["ran"] == 2
 
 
 class TestWhenTheToolItselfCannotRun(Probe):
@@ -1031,9 +1030,9 @@ class TestWhenTheToolItselfCannotRun(Probe):
         """
         self.module("test_a", "raise SystemExit('module scope walked out')\n")
         found = self.verdict("test_a")
-        self.assertEqual([], found["noticed"])
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("INTERNAL_ERROR", found["broke"][0])
+        assert found["noticed"] == []
+        assert len(found["broke"]) == 1
+        assert "INTERNAL_ERROR" in found["broke"][0]
 
     def test_a_selection_naming_nothing_is_reported_rather_than_run(self) -> None:
         """A stale `first` -- a test that has since been renamed -- makes pytest
@@ -1042,9 +1041,9 @@ class TestWhenTheToolItselfCannotRun(Probe):
         when one gets past it."""
         self.passing("test_a")
         found = self.verdict("test_a", first=("test_a.py::T::test_gone",))
-        self.assertEqual(0, found["ran"])
-        self.assertEqual(1, len(found["broke"]))
-        self.assertIn("USAGE_ERROR", found["broke"][0])
+        assert found["ran"] == 0
+        assert len(found["broke"]) == 1
+        assert "USAGE_ERROR" in found["broke"][0]
 
     def test_a_module_holding_no_tests_is_not_an_error(self) -> None:
         """pytest exits 5 for it, and the walk steps over such a module all the
@@ -1053,15 +1052,15 @@ class TestWhenTheToolItselfCannotRun(Probe):
         for."""
         self.module("test_a", '"""No tests here."""\n')
         found = self.verdict("test_a")
-        self.assertTrue(found["loaded"])
-        self.assertEqual([], found["broke"])
-        self.assertEqual(0, found["ran"])
+        assert found["loaded"]
+        assert found["broke"] == []
+        assert found["ran"] == 0
 
     def test_a_loaded_report_says_so(self) -> None:
         """The other value of the same flag, so `loaded` is not trivially true
         of every report the caller ever sees."""
         self.passing("test_a")
-        self.assertTrue(self.verdict("test_a")["loaded"])
+        assert self.verdict("test_a")["loaded"]
 
     def test_a_report_is_always_written(self) -> None:
         """The half of `main`'s outer belt that holds on every platform.
@@ -1079,7 +1078,7 @@ class TestWhenTheToolItselfCannotRun(Probe):
         """
         self.module("test_a", "raise SystemExit('nothing here survives')\n")
         for found in (self.verdict("test_a"), self.verdict()):
-            self.assertIn("loaded", found)
+            assert "loaded" in found
 
 
 class TestTheSandboxIsLeftAsItWasFound(Probe):
@@ -1097,7 +1096,7 @@ class TestTheSandboxIsLeftAsItWasFound(Probe):
         before = {path.name for path in self.sandbox.iterdir()}
         self.verdict("test_a")
         after = {path.name for path in self.sandbox.iterdir()}
-        self.assertEqual(before, after, "the probe left something in the sandbox")
+        assert after == before, "the probe left something in the sandbox"
 
     def test_no_bytecode_survives_assertion_rewriting(self) -> None:
         """Rewriting is left on -- it costs below measurement and Phase B's
@@ -1106,8 +1105,8 @@ class TestTheSandboxIsLeftAsItWasFound(Probe):
         `PYTHONDONTWRITEBYTECODE` for everything the suite forks."""
         self.passing("test_a")
         self.verdict("test_a")
-        self.assertEqual([], list(self.sandbox.rglob("*.pyc")))
-        self.assertEqual([], list(self.sandbox.rglob("__pycache__")))
+        assert list(self.sandbox.rglob("*.pyc")) == []
+        assert list(self.sandbox.rglob("__pycache__")) == []
 
 
 @unittest.skipUnless(CAPS, "RLIMIT_AS is not usable here")
@@ -1203,13 +1202,13 @@ class TestTheMemoryCapsArithmetic(Probe):
         done = subprocess.run(
             [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=BOUND
         )
-        self.assertEqual(0, done.returncode, done.stderr)
+        assert done.returncode == 0, done.stderr
         started, after = (int(word) for word in done.stdout.split())
         self.started = started
         return after
 
     def test_it_lowers_an_unlimited_process_to_what_was_asked(self) -> None:
-        self.assertEqual(self.ASKED, self.limits(self.ASKED))
+        assert self.limits(self.ASKED) == self.ASKED
 
     def test_zero_is_no_cap(self) -> None:
         """`--memory 0` promises it, and `setrlimit(..., 0)` would make the
@@ -1221,13 +1220,13 @@ class TestTheMemoryCapsArithmetic(Probe):
         itself to unlimited first, which is the thing that OOM-killed a machine.
         """
         got = self.limits(0)
-        self.assertEqual(self.started, got)
+        assert got == self.started
 
     def test_it_never_raises_a_ceiling_somebody_else_set(self) -> None:
         """ "A caller who already sandboxed us meant it." The existing soft limit
         is *below* what is asked, so it must survive untouched."""
         already = self.ASKED // 2
-        self.assertEqual(already, self.limits(self.ASKED, soft=already))
+        assert self.limits(self.ASKED, soft=already) == already
 
     def test_a_higher_finite_soft_limit_is_brought_down(self) -> None:
         """The `soft != RLIM_INFINITY and soft <= ceiling` branch. Read with
@@ -1249,7 +1248,7 @@ class TestTheMemoryCapsArithmetic(Probe):
         nothing. Dropping the `min` would make it *attempt* a raise of `hard`
         and swallow the refusal, reaching the identical state by a longer road.
         """
-        self.assertEqual(self.ASKED, self.limits(self.ASKED, soft=self.ASKED * 2))
+        assert self.limits(self.ASKED, soft=self.ASKED * 2) == self.ASKED
 
 
 class TestTheWalkPastTheSelection(Probe):
@@ -1311,10 +1310,8 @@ class TestTheWalkPastTheSelection(Probe):
         exactly the false survivor the confirmation pass existed to correct."""
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        self.assertEqual(
-            ["test_beside.py::Beside::test_it"],
-            found["killers"],
-            "the walk did not reach past the selection",
+        assert found["killers"] == ["test_beside.py::Beside::test_it"], (
+            "the walk did not reach past the selection"
         )
 
     def test_what_it_walks_into_comes_from_the_configuration(self) -> None:
@@ -1336,7 +1333,7 @@ class TestTheWalkPastTheSelection(Probe):
         )
         self.sandboxed(selected_notices=False, beside="check_beside")
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        self.assertEqual(["check_beside.py::Beside::test_it"], found["killers"])
+        assert found["killers"] == ["check_beside.py::Beside::test_it"]
 
     def test_it_stops_once_the_selection_itself_notices(self) -> None:
         """The cost half, and the one that makes the walk affordable: a caught
@@ -1350,8 +1347,8 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=True)
         found = self.verdict("test_chosen", failfast=True, walk=True)
-        self.assertEqual(["test_chosen.py::Chosen::test_it"], found["killers"])
-        self.assertFalse(self.reached(), "a module past the answer was collected anyway")
+        assert found["killers"] == ["test_chosen.py::Chosen::test_it"]
+        assert not self.reached(), "a module past the answer was collected anyway"
 
     def test_it_stops_on_a_notice_even_with_failfast_off(self) -> None:
         """The same claim on the path a hand-written table takes.
@@ -1364,8 +1361,8 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=True)
         found = self.verdict("test_chosen", failfast=False, walk=True)
-        self.assertEqual(["test_chosen.py::Chosen::test_it"], found["killers"])
-        self.assertFalse(self.reached(), "the walk carried on past its own answer")
+        assert found["killers"] == ["test_chosen.py::Chosen::test_it"]
+        assert not self.reached(), "the walk carried on past its own answer"
 
     def test_a_baseline_does_not_walk(self) -> None:
         """`walk` is a separate argv slot precisely so this row exists. A
@@ -1375,9 +1372,9 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_chosen", walk=False)
-        self.assertEqual([], found["noticed"], "a baseline widened past its selection")
-        self.assertFalse(self.reached(), "a baseline collected a module it was not given")
-        self.assertEqual(1, found["ran"])
+        assert found["noticed"] == [], "a baseline widened past its selection"
+        assert not self.reached(), "a baseline collected a module it was not given"
+        assert found["ran"] == 1
 
     def test_a_red_baseline_is_reported_whole(self) -> None:
         """The other half of the condition that bounds the walk, and the half
@@ -1391,8 +1388,8 @@ class TestTheWalkPastTheSelection(Probe):
         """
         self.sandboxed(selected_notices=False)
         found = self.verdict("test_beside", "test_chosen", walk=False)
-        self.assertEqual(["test_beside.py::Beside::test_it"], found["killers"])
-        self.assertEqual(2, found["ran"], "a red baseline stopped at its first red module")
+        assert found["killers"] == ["test_beside.py::Beside::test_it"]
+        assert found["ran"] == 2, "a red baseline stopped at its first red module"
 
 
 class TestWhatThisAssumesOfPytest(Probe):
@@ -1484,8 +1481,8 @@ class TestWhatThisAssumesOfPytest(Probe):
             text=True,
             timeout=BOUND,
         )
-        self.assertTrue(
-            seen.is_file(), f"the spy wrote nothing.\nstdout: {done.stdout}\nstderr: {done.stderr}"
+        assert seen.is_file(), (
+            f"the spy wrote nothing.\nstdout: {done.stdout}\nstderr: {done.stderr}"
         )
         return [dict(event) for event in json.loads(seen.read_text(encoding="utf-8"))]
 
@@ -1522,16 +1519,13 @@ class TestWhatThisAssumesOfPytest(Probe):
                         raise ArithmeticError("the cleanup")
             """
         )
-        self.assertEqual({"LookupError": "call", "ArithmeticError": "call"}, found)
+        assert found == {"LookupError": "call", "ArithmeticError": "call"}
 
     def test_class_and_module_fixtures_are_the_other_two_phases(self) -> None:
         """Nothing in them evaluated an assertion, so neither is `caught`. This
         is the whole of what replaced an `isinstance` against
         `unittest.suite._ErrorHolder`."""
-        self.assertEqual(
-            {"LookupError": "setup"},
-            self.phases(
-                """
+        assert self.phases("""
                 import unittest
                 class T(unittest.TestCase):
                     @classmethod
@@ -1539,14 +1533,9 @@ class TestWhatThisAssumesOfPytest(Probe):
                         raise LookupError("before")
                     def test_it(self):
                         pass
-                """
-            ),
-        )
+                """) == {"LookupError": "setup"}
         self.fresh()
-        self.assertEqual(
-            {"ArithmeticError": "teardown"},
-            self.phases(
-                """
+        assert self.phases("""
                 import unittest
                 class T(unittest.TestCase):
                     @classmethod
@@ -1554,9 +1543,7 @@ class TestWhatThisAssumesOfPytest(Probe):
                         raise ArithmeticError("after")
                     def test_it(self):
                         pass
-                """
-            ),
-        )
+                """) == {"ArithmeticError": "teardown"}
 
     def test_a_failed_subtest_reaches_makereport_but_not_its_owners_report(self) -> None:
         """The trap, asserted against pytest itself.
@@ -1580,19 +1567,17 @@ class TestWhatThisAssumesOfPytest(Probe):
         # Two events, and both name the owner: the subtest's failure, then the
         # owner's own success. Classifying on the failed one is free -- there is
         # no carrier to unwrap and no parametrized id to strip.
-        self.assertEqual(
-            [("test_a.py::T::test_it", "failed"), ("test_a.py::T::test_it", "passed")],
-            [(str(e["nodeid"]), str(e["outcome"])) for e in made],
-            "the subtest failure did not arrive at makereport against its owner",
-        )
+        assert [(str(e["nodeid"]), str(e["outcome"])) for e in made] == [
+            ("test_a.py::T::test_it", "failed"),
+            ("test_a.py::T::test_it", "passed"),
+        ], "the subtest failure did not arrive at makereport against its owner"
         # And the same two *logged*, where the failed one has become a separate
         # object -- so "did this test's report fail" answers no.
         logged = [e for e in events if e.get("logged") and e["when"] == "call"]
-        self.assertEqual(
-            [("failed", True), ("passed", False)],
-            [(str(e["outcome"]), bool(e["subtest"])) for e in logged],
-            "the owner's own logged report is no longer the passing one",
-        )
+        assert [(str(e["outcome"]), bool(e["subtest"])) for e in logged] == [
+            ("failed", True),
+            ("passed", False),
+        ], "the owner's own logged report is no longer the passing one"
 
     def test_a_baseexception_from_a_test_body_is_reported_rather_than_escaping(self) -> None:
         """`Hung` derives from `BaseException` so a test doing `except
@@ -1612,11 +1597,10 @@ class TestWhatThisAssumesOfPytest(Probe):
             """
         )
         made = [e for e in events if not e.get("logged")]
-        self.assertIn(
-            ("test_a.py::T::test_a_stops", "call", "Stop"),
-            [(str(e["nodeid"]), str(e["when"]), str(e["raised"])) for e in made],
-        )
-        self.assertIn("test_a.py::T::test_b_runs", {str(e["nodeid"]) for e in made})
+        assert ("test_a.py::T::test_a_stops", "call", "Stop") in [
+            (str(e["nodeid"]), str(e["when"]), str(e["raised"])) for e in made
+        ]
+        assert "test_a.py::T::test_b_runs" in {str(e["nodeid"]) for e in made}
 
     def test_a_skip_is_neither_an_answer_nor_a_break(self) -> None:
         """A skip is not an answer: nothing was checked. It must not be `failed`
@@ -1631,8 +1615,8 @@ class TestWhatThisAssumesOfPytest(Probe):
                     self.fail("never reached")
             """
         )
-        self.assertEqual(set(), {str(e["outcome"]) for e in events} & {"failed"})
-        self.assertIn("skipped", {str(e["outcome"]) for e in events})
+        assert {str(e["outcome"]) for e in events} & {"failed"} == set()
+        assert "skipped" in {str(e["outcome"]) for e in events}
 
     def test_the_scope_of_a_fixture_that_raises_is_reported(self) -> None:
         """The one fact phase cannot carry.
@@ -1662,7 +1646,7 @@ class TestWhatThisAssumesOfPytest(Probe):
                 pass
             """
         )
-        self.assertEqual({"ValueError": "function", "KeyError": "module"}, found)
+        assert found == {"ValueError": "function", "KeyError": "module"}
 
 
 class TestTellingAnAnswerFromACarrier(unittest.TestCase):
@@ -1697,10 +1681,10 @@ class TestTellingAnAnswerFromACarrier(unittest.TestCase):
         return verdict._carrier("t.py::T::test_it", held, each)  # type: ignore[arg-type]
 
     def test_an_ordinary_failure_is_an_answer(self) -> None:
-        self.assertEqual("", self.carrier(AssertionError))
+        assert self.carrier(AssertionError) == ""
 
     def test_no_error_at_all_is_an_answer(self) -> None:
-        self.assertEqual("", self.carrier(None))
+        assert self.carrier(None) == ""
 
     def test_the_alarm_is_a_carrier_and_quotes_the_bound(self) -> None:
         """The bound is in the message because the number is not a constant:
@@ -1709,11 +1693,11 @@ class TestTellingAnAnswerFromACarrier(unittest.TestCase):
         from tools import verdict
 
         said = self.carrier(verdict.Hung, each=2.5)
-        self.assertIn("did not finish within 2.5s", said)
-        self.assertIn("t.py::T::test_it", said)
+        assert "did not finish within 2.5s" in said
+        assert "t.py::T::test_it" in said
 
     def test_the_cap_is_a_carrier(self) -> None:
-        self.assertIn("ran out of memory", self.carrier(MemoryError))
+        assert "ran out of memory" in self.carrier(MemoryError)
 
     def test_a_subclass_of_the_cap_counts_too(self) -> None:
         """`issubclass` rather than `is`: the cap can surface as a subclass
@@ -1723,7 +1707,7 @@ class TestTellingAnAnswerFromACarrier(unittest.TestCase):
         class Worse(MemoryError):
             pass
 
-        self.assertIn("ran out of memory", self.carrier(Worse))
+        assert "ran out of memory" in self.carrier(Worse)
 
     def test_the_alarm_is_checked_before_the_cap(self) -> None:
         """`Hung` is a `BaseException` and `MemoryError` an `Exception`, so no
@@ -1732,7 +1716,7 @@ class TestTellingAnAnswerFromACarrier(unittest.TestCase):
         would send a reader looking at `--memory`."""
         from tools import verdict
 
-        self.assertIn("did not finish", self.carrier(verdict.Hung))
+        assert "did not finish" in self.carrier(verdict.Hung)
 
 
 class TestWhenTheAlarmIsArmedAtAll(unittest.TestCase):
@@ -1756,8 +1740,8 @@ class TestWhenTheAlarmIsArmedAtAll(unittest.TestCase):
         from tools import verdict
 
         before = self.handler()
-        self.assertEqual(0.0, verdict.each_test(0))
-        self.assertIs(before, self.handler(), "a handler was installed for no alarm")
+        assert verdict.each_test(0) == 0.0
+        assert self.handler() is before, "a handler was installed for no alarm"
 
     def test_a_bound_arms_the_handler_that_raises(self) -> None:
         """PEP 475 retries a syscall interrupted by a signal, so a handler that
@@ -1765,8 +1749,8 @@ class TestWhenTheAlarmIsArmedAtAll(unittest.TestCase):
         blocking read a hung test sits in. Raising propagates instead."""
         from tools import verdict
 
-        self.assertEqual(2.5, verdict.each_test(2.5))
-        self.assertIs(verdict._ring, self.handler())
+        assert verdict.each_test(2.5) == 2.5
+        assert self.handler() is verdict._ring
         with self.assertRaises(verdict.Hung):
             verdict._ring(self.signal.SIGALRM, None)
 
@@ -1780,7 +1764,7 @@ class TestWhenTheAlarmIsArmedAtAll(unittest.TestCase):
 
         with mock.patch.object(verdict, "signal") as absent:
             del absent.SIGALRM
-            self.assertEqual(0.0, verdict.each_test(5))
+            assert verdict.each_test(5) == 0.0
 
 
 class TestWhereTheWalkLooks(unittest.TestCase):
@@ -1804,9 +1788,9 @@ class TestWhereTheWalkLooks(unittest.TestCase):
 
     def test_it_looks_in_the_directory_the_selection_lives_in(self) -> None:
         found = self.watcher(ROOT).beside(["tests.test_sync"])
-        self.assertIn("tests/test_verdict.py", found)
-        self.assertNotIn("test_verdict.py", found, "the directory was dropped")
-        self.assertNotIn("tests/test_sync.py", found, "the selection walked into itself")
+        assert "tests/test_verdict.py" in found
+        assert "test_verdict.py" not in found, "the directory was dropped"
+        assert "tests/test_sync.py" not in found, "the selection walked into itself"
 
     def test_it_takes_the_patterns_it_is_given(self) -> None:
         """The genericity claim at the unit it is decided in. A project spelling
@@ -1817,8 +1801,8 @@ class TestWhereTheWalkLooks(unittest.TestCase):
             for stem in ("test_one", "two_test", "helper"):
                 (box / f"{stem}.py").write_text("", encoding="utf-8")
             made = self.watcher(box, ["*_test.py"])
-            self.assertEqual(["two_test.py"], made.beside(["test_one"]))
-            self.assertEqual(["test_one.py"], self.watcher(box, ["test_*.py"]).beside(["two_test"]))
+            assert made.beside(["test_one"]) == ["two_test.py"]
+            assert self.watcher(box, ["test_*.py"]).beside(["two_test"]) == ["test_one.py"]
 
     def test_a_module_that_is_not_a_test_is_never_walked_into(self) -> None:
         """`helper.py` is the half that can fail quietly: a glob of `*.py`
@@ -1828,7 +1812,7 @@ class TestWhereTheWalkLooks(unittest.TestCase):
             box = Path(name)
             for stem in ("test_one", "test_two", "helper"):
                 (box / f"{stem}.py").write_text("", encoding="utf-8")
-            self.assertEqual(["test_two.py"], self.watcher(box).beside(["test_one"]))
+            assert self.watcher(box).beside(["test_one"]) == ["test_two.py"]
 
     def test_what_it_returns_is_sorted(self) -> None:
         """The order is the walk's order, and it has to be *stable*: a bare set
@@ -1853,8 +1837,8 @@ class TestWhereTheWalkLooks(unittest.TestCase):
             ):
                 (box / f"{stem}.py").write_text("", encoding="utf-8")
             found = self.watcher(box).beside(["test_alpha"])
-        self.assertEqual(sorted(found), found, "the walk order is not stable")
-        self.assertEqual(7, len(found), "the selection was not subtracted, or a file was missed")
+        assert found == sorted(found), "the walk order is not stable"
+        assert len(found) == 7, "the selection was not subtracted, or a file was missed"
 
 
 class TestHowANameBecomesANode(unittest.TestCase):
@@ -1873,16 +1857,16 @@ class TestHowANameBecomesANode(unittest.TestCase):
         return verdict.as_path(name)
 
     def test_a_module_becomes_its_file(self) -> None:
-        self.assertEqual("tests/test_sync.py", self.as_path("tests.test_sync"))
+        assert self.as_path("tests.test_sync") == "tests/test_sync.py"
 
     def test_a_class_and_a_method_become_node_parts(self) -> None:
         """The longest *existing* prefix wins, so the class is a node inside the
         file rather than a directory called `TestX`. Split at the first dot it
         would name `tests/test_sync/TestTheDecisionTable.py`, which does not
         exist -- and pytest would refuse the whole run."""
-        self.assertEqual(
-            "tests/test_sync.py::TestTheDecisionTable",
-            self.as_path("tests.test_sync.TestTheDecisionTable"),
+        assert (
+            self.as_path("tests.test_sync.TestTheDecisionTable")
+            == "tests/test_sync.py::TestTheDecisionTable"
         )
 
     def test_a_nodeid_is_handed_back_untouched(self) -> None:
@@ -1890,16 +1874,14 @@ class TestHowANameBecomesANode(unittest.TestCase):
         by an earlier run, and translating it twice would turn every `::` into
         a directory."""
         for already in ("tests/test_sync.py", "tests/test_sync.py::TestX::test_y"):
-            self.assertEqual(already, self.as_path(already))
+            assert self.as_path(already) == already
 
     def test_a_name_that_resolves_to_nothing_is_still_a_module(self) -> None:
         """Refused by pytest and reported as `broke`, which is what an
         unloadable module always was. Selecting nothing quietly would be filed
         as "the targets held no tests", which is a different sentence about a
         tree that is fine."""
-        self.assertEqual(
-            "tests/test_nothing_of_the_sort.py", self.as_path("tests.test_nothing_of_the_sort")
-        )
+        assert self.as_path("tests.test_nothing_of_the_sort") == "tests/test_nothing_of_the_sort.py"
 
 
 class TestTheSummaryLineOfACollectionFailure(unittest.TestCase):
@@ -1943,8 +1925,8 @@ class TestTheSummaryLineOfACollectionFailure(unittest.TestCase):
 
     def test_the_cause_is_kept_rather_than_the_file_and_line(self) -> None:
         said, twin = self.both(self.RENDERED)
-        self.assertEqual("ModuleNotFoundError: No module named 'nothing_by_this_name'", said)
-        self.assertEqual(said, twin, "the two copies of `_stated` have diverged")
+        assert said == "ModuleNotFoundError: No module named 'nothing_by_this_name'"
+        assert twin == said, "the two copies of `_stated` have diverged"
 
     def test_a_line_that_merely_starts_with_an_e_keeps_it(self) -> None:
         """`removeprefix("E")` turns a line beginning "Errno" into one beginning
@@ -1957,13 +1939,13 @@ class TestTheSummaryLineOfACollectionFailure(unittest.TestCase):
         said, twin = self.both(
             "tests/test_x.py:1: in <module>\n    raise OSError(2)\nErrno 2: no such file"
         )
-        self.assertEqual("Errno 2: no such file", said)
-        self.assertEqual(said, twin, "the two copies of `_stated` have diverged")
+        assert said == "Errno 2: no such file"
+        assert twin == said, "the two copies of `_stated` have diverged"
 
     def test_a_rendering_with_nothing_in_it_still_says_something(self) -> None:
         said, twin = self.both("\n  \n")
-        self.assertEqual("collection failed and said nothing", said)
-        self.assertEqual(said, twin, "the two copies of `_stated` have diverged")
+        assert said == "collection failed and said nothing"
+        assert twin == said, "the two copies of `_stated` have diverged"
 
 
 if __name__ == "__main__":

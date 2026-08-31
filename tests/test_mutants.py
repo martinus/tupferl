@@ -79,15 +79,15 @@ class TestReadingAHunkHeader(unittest.TestCase):
 
     def test_a_single_line_hunk(self) -> None:
         diff = "+++ b/tupferl/x.py\n@@ -13 +13 @@\n"
-        self.assertEqual(mutants.parse_hunks(diff), {"tupferl/x.py": {13}})
+        assert mutants.parse_hunks(diff) == {"tupferl/x.py": {13}}
 
     def test_a_counted_hunk(self) -> None:
         diff = "+++ b/tupferl/x.py\n@@ -15,2 +15,3 @@\n"
-        self.assertEqual(mutants.parse_hunks(diff), {"tupferl/x.py": {15, 16, 17}})
+        assert mutants.parse_hunks(diff) == {"tupferl/x.py": {15, 16, 17}}
 
     def test_an_insertion_names_the_new_lines_only(self) -> None:
         diff = "+++ b/tupferl/x.py\n@@ -58,0 +60,6 @@\n"
-        self.assertEqual(mutants.parse_hunks(diff), {"tupferl/x.py": set(range(60, 66))})
+        assert mutants.parse_hunks(diff) == {"tupferl/x.py": set(range(60, 66))}
 
     def test_a_pure_deletion_contributes_nothing(self) -> None:
         """`+9,0` is a removal: there is no new code at line 9 to mutate.
@@ -97,7 +97,7 @@ class TestReadingAHunkHeader(unittest.TestCase):
         labelled as if the diff had put it there.
         """
         diff = "+++ b/tupferl/x.py\n@@ -10,3 +9,0 @@\n"
-        self.assertEqual(mutants.parse_hunks(diff), {})
+        assert mutants.parse_hunks(diff) == {}
 
     def test_a_deleted_file_contributes_nothing(self) -> None:
         """And it needs no special case: git spells its hunk `+0,0`.
@@ -108,32 +108,32 @@ class TestReadingAHunkHeader(unittest.TestCase):
         `/dev/null` is recognised.
         """
         diff = "+++ b/tupferl/y.py\n@@ -1 +1 @@\n+++ /dev/null\n@@ -1,5 +0,0 @@\n"
-        self.assertEqual(mutants.parse_hunks(diff), {"tupferl/y.py": {1}})
+        assert mutants.parse_hunks(diff) == {"tupferl/y.py": {1}}
 
     def test_several_files_in_one_diff(self) -> None:
         diff = "+++ b/tupferl/x.py\n@@ -1 +1 @@\n+++ b/tools/y.py\n@@ -4,2 +4,2 @@\n"
-        self.assertEqual(mutants.parse_hunks(diff), {"tupferl/x.py": {1}, "tools/y.py": {4, 5}})
+        assert mutants.parse_hunks(diff) == {"tupferl/x.py": {1}, "tools/y.py": {4, 5}}
 
     def test_a_quoted_path(self) -> None:
         """git C-quotes any path with an odd byte in it, `b/` inside the quotes."""
         diff = '+++ "b/tupferl/odd\\tname.py"\n@@ -1 +1 @@\n'
-        self.assertEqual(mutants.parse_hunks(diff), {"tupferl/odd\tname.py": {1}})
+        assert mutants.parse_hunks(diff) == {"tupferl/odd\tname.py": {1}}
 
 
 class TestWhatMayBeMutated(unittest.TestCase):
     def test_the_product_and_the_tools_are_in(self) -> None:
-        self.assertTrue(mutants.mutable("tupferl/sync.py"))
-        self.assertTrue(mutants.mutable("tools/mutate.py"))
+        assert mutants.mutable("tupferl/sync.py")
+        assert mutants.mutable("tools/mutate.py")
 
     def test_the_tests_are_not(self) -> None:
         """Breaking a test proves nothing about the fix, and the run would
         cheerfully report the assertion it had just deleted."""
-        self.assertFalse(mutants.mutable("tests/test_sync.py"))
+        assert not mutants.mutable("tests/test_sync.py")
 
     def test_other_files_are_not(self) -> None:
-        self.assertFalse(mutants.mutable("tupferl/shell/tupferl.bash"))
-        self.assertFalse(mutants.mutable("docs/architecture.md"))
-        self.assertFalse(mutants.mutable("setup.py"))
+        assert not mutants.mutable("tupferl/shell/tupferl.bash")
+        assert not mutants.mutable("docs/architecture.md")
+        assert not mutants.mutable("setup.py")
 
     def test_an_unmutable_prefix_wins_over_a_mutable_one(self) -> None:
         """`UNMUTABLE` is empty today, and `str.startswith(())` is always
@@ -148,11 +148,11 @@ class TestWhatMayBeMutated(unittest.TestCase):
         a value here rather than deleted, which is what makes the clause
         provable without waiting for that day.
         """
-        self.assertTrue(mutants.mutable("tools/mutate.py"))
+        assert mutants.mutable("tools/mutate.py")
         with mock.patch.object(mutants, "UNMUTABLE", ("tools/mutate.py",)):
-            self.assertFalse(mutants.mutable("tools/mutate.py"))
+            assert not mutants.mutable("tools/mutate.py")
             # And nothing else is caught by it.
-            self.assertTrue(mutants.mutable("tools/mutants.py"))
+            assert mutants.mutable("tools/mutants.py")
 
 
 class TestTheOperators(unittest.TestCase):
@@ -193,16 +193,16 @@ class TestTheOperators(unittest.TestCase):
         the generator's own output is the last place a gap is visible.
         """
         named = {operator.name for operator in mutants.OPERATORS}
-        self.assertEqual(set(_FIRES), named)
+        assert named == set(_FIRES)
         # Both tables, not just the first. An operator could otherwise ship with
         # a fires-fixture and no must-not-fire fixture, which is half a test.
-        self.assertEqual(set(_QUIET), named)
+        assert named == set(_QUIET)
 
     def test_each_operator_fires_on_its_own_fixture(self) -> None:
         for name, (body, expected) in _FIRES.items():
             with self.subTest(operator=name):
                 got = self.prose(body, operators=[name])
-                self.assertEqual(got, expected)
+                assert expected == got
 
     def test_every_operator_rewrites_the_code_and_not_only_its_label(self) -> None:
         """The prose and the *edit*, which are two claims and were one test.
@@ -224,16 +224,14 @@ class TestTheOperators(unittest.TestCase):
                 # The count first, or an operator that produced *nothing* would
                 # satisfy every assertion in the loop below by never entering it
                 # -- the precondition that was never established, from §2.
-                self.assertEqual(len(prose), len(rows), f"{name} produced the wrong rows")
+                assert len(rows) == len(prose), f"{name} produced the wrong rows"
                 for row in rows:
                     # Compared through `ast`, not as text. `ast.unparse` adds
                     # parentheses, so a clone nobody modified comes back as
                     # `(a and b)` against `a and b` -- different strings, the
                     # same program. Six survivors hid behind exactly that.
-                    self.assertNotEqual(
-                        ast.unparse(ast.parse(row.old)),
-                        ast.unparse(ast.parse(row.new)),
-                        f"{name} produced an edit that changes nothing: {row.new!r}",
+                    assert ast.unparse(ast.parse(row.new)) != ast.unparse(ast.parse(row.old)), (
+                        f"{name} produced an edit that changes nothing: {row.new!r}"
                     )
 
     def test_the_order_operator_rewrites_both_of_its_shapes(self) -> None:
@@ -253,13 +251,13 @@ class TestTheOperators(unittest.TestCase):
             return {ast.unparse(ast.parse(row.new)) for row in mutate(body, operators=["order"])}
 
         kept = rewrites("x = sorted(days, key=len)\n")
-        self.assertIn("list(days)", kept, f"sorted's keywords survived the swap to list: {kept}")
-        self.assertEqual({"all(items)"}, rewrites("x = any(items)\n"))
+        assert "list(days)" in kept, f"sorted's keywords survived the swap to list: {kept}"
+        assert rewrites("x = any(items)\n") == {"all(items)"}
 
     def test_no_operator_fires_on_a_fixture_it_should_not(self) -> None:
         for name, body in _QUIET.items():
             with self.subTest(operator=name):
-                self.assertEqual(self.prose(body, operators=[name]), [])
+                assert self.prose(body, operators=[name]) == []
 
 
 #: Fixture -> the prose every operator should produce on it, in order.
@@ -381,29 +379,29 @@ class TestStringConcatenationIsNotArithmetic(unittest.TestCase):
         return [row.label for row in mutate(source, operators=["arith"])]
 
     def test_two_string_literals_are_not_mutated(self) -> None:
-        self.assertEqual([], self.additions('x = "a" + "b"\n'))
+        assert self.additions('x = "a" + "b"\n') == []
 
     def test_one_string_literal_is_enough(self) -> None:
         """`str + int` raises whichever way round it is written, so a string on
         either side settles that the `+` is concatenation."""
-        self.assertEqual([], self.additions('x = name + ".done"\n'))
-        self.assertEqual([], self.additions('x = ".done" + name\n'))
+        assert self.additions('x = name + ".done"\n') == []
+        assert self.additions('x = ".done" + name\n') == []
 
     def test_an_f_string_counts_as_one(self) -> None:
-        self.assertEqual([], self.additions('x = f"{a}" + b\n'))
+        assert self.additions('x = f"{a}" + b\n') == []
 
     def test_ordinary_arithmetic_is_still_mutated(self) -> None:
         """The half that matters more. A guard that swallowed real `+` would
         remove coverage silently, which is the failure this whole module is
         against -- so this is the assertion that would catch it."""
-        self.assertEqual(1, len(self.additions("x = a + b\n")))
-        self.assertEqual(1, len(self.additions("x = 1 + 2\n")))
-        self.assertEqual(1, len(self.additions("count += 1\n")))
+        assert len(self.additions("x = a + b\n")) == 1
+        assert len(self.additions("x = 1 + 2\n")) == 1
+        assert len(self.additions("count += 1\n")) == 1
 
     def test_a_number_beside_a_name_is_still_mutated(self) -> None:
         """The shape closest to the one being refused, and the reason the check
         asks about *strings* rather than about literals in general."""
-        self.assertEqual(1, len(self.additions("x = at + 1\n")))
+        assert len(self.additions("x = at + 1\n")) == 1
 
     def test_an_attribute_is_not_something_this_can_judge(self) -> None:
         """**#57's own example, and this does not fix it.** `paint.GOOD +
@@ -416,12 +414,12 @@ class TestStringConcatenationIsNotArithmetic(unittest.TestCase):
         Asserted rather than left implicit, so that reading the issue as done
         does not hide the part that is not.
         """
-        self.assertEqual(1, len(self.additions("x = paint.GOOD + paint.HEAD\n")))
+        assert len(self.additions("x = paint.GOOD + paint.HEAD\n")) == 1
 
 
 class TestWhatIsNeverMutated(unittest.TestCase):
     def test_a_docstring_is_left_alone(self) -> None:
-        self.assertEqual(mutate('def f():\n    """Words."""\n'), [])
+        assert mutate('def f():\n    """Words."""\n') == []
 
     def test_an_f_string_interior_yields_nothing_at_all(self) -> None:
         """Zero, and the assertion is deliberately not "a correct span".
@@ -431,7 +429,7 @@ class TestWhatIsNeverMutated(unittest.TestCase):
         else in the file -- and the result usually still parses. The point is not
         that the span would be wrong; it is that it cannot be trusted at all.
         """
-        self.assertEqual(mutate('x = f"{a < b}"\n'), [])
+        assert mutate('x = f"{a < b}"\n') == []
 
     def test_an_annotation_is_left_alone(self) -> None:
         """Every module here has `from __future__ import annotations`, so these
@@ -440,19 +438,19 @@ class TestWhatIsNeverMutated(unittest.TestCase):
         # the value is not -- a fixture that only had the annotation could not
         # tell "suppressed" from "the operator never fires here".
         rows = mutate("x: Literal[1] = 2\n", operators=["off-by-one"])
-        self.assertEqual([row.old for row in rows], ["2", "2"])
+        assert [row.old for row in rows] == ["2", "2"]
 
     def test_a_type_checking_block_is_left_alone(self) -> None:
-        self.assertEqual(mutate("if TYPE_CHECKING:\n    import x\n"), [])
+        assert mutate("if TYPE_CHECKING:\n    import x\n") == []
 
     def test_the_main_guard_is_left_alone(self) -> None:
-        self.assertEqual(mutate('if __name__ == "__main__":\n    go()\n'), [])
+        assert mutate('if __name__ == "__main__":\n    go()\n') == []
 
     def test_an_assert_is_left_alone(self) -> None:
-        self.assertEqual(mutate("assert a is None\n"), [])
+        assert mutate("assert a is None\n") == []
 
     def test_a_pragma_line_is_left_alone(self) -> None:
-        self.assertEqual(mutate("x = a < b  # pragma: no mutate\n"), [])
+        assert mutate("x = a < b  # pragma: no mutate\n") == []
 
     def test_a_pragma_on_the_very_first_line_still_counts(self) -> None:
         """`range(1, lines + 1)`, and line 1 is the end of it a fixture misses.
@@ -462,7 +460,7 @@ class TestWhatIsNeverMutated(unittest.TestCase):
         all correctly. The `off-by-one` row on that range survived on exactly
         that gap.
         """
-        self.assertEqual(mutate("x = a < b  # pragma: no mutate\n"), [])
+        assert mutate("x = a < b  # pragma: no mutate\n") == []
 
     def test_a_pragma_covers_the_whole_construct_not_just_its_first_line(self) -> None:
         """The pragma reads as covering what it sits in, so it must.
@@ -476,7 +474,7 @@ class TestWhatIsNeverMutated(unittest.TestCase):
             "def g(a, b):\n    if (a\n            and b):  # pragma: no mutate\n        return 1\n"
         )
         rows = mutants.generate(source, "w/t.py", {2, 3}, tests="t")
-        self.assertEqual([row.label for row in rows], [])
+        assert [row.label for row in rows] == []
 
     def test_a_form_feed_above_a_pragma_does_not_move_it(self) -> None:
         """The pragma is numbered the way `ast` numbers, not the way `str` does.
@@ -489,17 +487,17 @@ class TestWhatIsNeverMutated(unittest.TestCase):
         """
         source = "def f(a, b):\n    x = a < b\n\x0c\n    y = a < b  # pragma: no mutate\n"
         rows = mutants.generate(source, "w/t.py", {1, 2, 3, 4}, tests="t")
-        self.assertEqual([row.label for row in rows], ["w/t.py:2 in f() -- `<` becomes `<=`"])
+        assert [row.label for row in rows] == ["w/t.py:2 in f() -- `<` becomes `<=`"]
 
     def test_a_while_is_never_forced_true(self) -> None:
         """A hang is not a caught mutant: it burns a lane and the timeout to
         report `TIMEOUT`, which is not an answer."""
-        self.assertEqual(mutate("while ready:\n    go()\n", operators=["branch"]), [])
+        assert mutate("while ready:\n    go()\n", operators=["branch"]) == []
 
     def test_only_the_changed_lines(self) -> None:
         body = "x = a < b\ny = c < d\n"
-        self.assertEqual([row.label for row in mutate(body, lines={2})].pop().count(":2"), 1)
-        self.assertEqual(len(mutate(body, lines={2})), 1)
+        assert [row.label for row in mutate(body, lines={2})].pop().count(":2") == 1
+        assert len(mutate(body, lines={2})) == 1
 
 
 class TestLineEndingsThatAreNotNewline(unittest.TestCase):
@@ -545,28 +543,28 @@ class TestLineEndingsThatAreNotNewline(unittest.TestCase):
         """
         tree = ast.parse(source)
         for node in tree.body:
-            self.assertIsNotNone(ast.get_source_segment(source, node))
+            assert ast.get_source_segment(source, node) is not None
         return mutants.line_starts(source)
 
     def test_crlf_counts_as_one_line_ending(self) -> None:
         source = "a = 1\r\nb = 2\r\n"
         # 7, not 6: the `\n` after the `\r` starts no line of its own.
-        self.assertEqual(self.starts_agree_with_ast(source), [0, 7, 14])
+        assert self.starts_agree_with_ast(source) == [0, 7, 14]
 
     def test_a_bare_cr_ends_a_line_too(self) -> None:
         """The `else 1` arm. A lone `\r` is a terminator for CPython, not junk."""
         source = "a = 1\rb = 2\r"
-        self.assertEqual(self.starts_agree_with_ast(source), [0, 6, 12])
+        assert self.starts_agree_with_ast(source) == [0, 6, 12]
 
     def test_the_three_endings_mixed(self) -> None:
         """One source reaching every arm, because real files are converted badly."""
         source = "a = 1\r\nb = 2\rc = 3\n"
-        self.assertEqual(self.starts_agree_with_ast(source), [0, 7, 13, 19])
+        assert self.starts_agree_with_ast(source) == [0, 7, 13, 19]
 
     def test_a_leading_newline_is_not_skipped(self) -> None:
         """`at` starts at 0, and index 0 is a line ending on a file that opens blank."""
         source = "\na = 1\n"
-        self.assertEqual(self.starts_agree_with_ast(source), [0, 1, 7])
+        assert self.starts_agree_with_ast(source) == [0, 1, 7]
 
     def test_a_file_that_does_not_end_in_a_newline(self) -> None:
         """The last line has no start after it, so its end is the end of the file.
@@ -578,10 +576,10 @@ class TestLineEndingsThatAreNotNewline(unittest.TestCase):
         happily stores one.
         """
         source = "first = 1\nx = a < b"
-        self.assertEqual(mutants.line_starts(source), [0, 10])
+        assert mutants.line_starts(source) == [0, 10]
         row = mutants.generate(source, "w/t.py", {2}, tests="t").pop()
         start, end = row.span or (0, 0)
-        self.assertEqual(source[start:end], "a < b")
+        assert source[start:end] == "a < b"
 
     def test_a_span_below_a_crlf_lands_on_its_own_text(self) -> None:
         """The end-to-end claim: one character early is a different edit.
@@ -592,8 +590,8 @@ class TestLineEndingsThatAreNotNewline(unittest.TestCase):
         source = "first = 1\r\nx = a < b\n"
         row = mutants.generate(source, "w/t.py", {2}, tests="t").pop()
         start, end = row.span or (0, 0)
-        self.assertEqual(source[start:end], "a < b")
-        self.assertEqual(row.old, "a < b")
+        assert source[start:end] == "a < b"
+        assert row.old == "a < b"
 
 
 class TestDroppingAKeywordArgument(unittest.TestCase):
@@ -619,26 +617,22 @@ class TestDroppingAKeywordArgument(unittest.TestCase):
     def test_a_mode_is_droppable(self) -> None:
         """The case it exists for: the directory is still made, still returns,
         and every test that only asks whether the path exists still passes."""
-        self.assertEqual(
-            self.dropped("path.mkdir(parents=True, mode=0o700)\n"), ["`mode=448` is dropped"]
-        )
+        assert self.dropped("path.mkdir(parents=True, mode=0o700)\n") == ["`mode=448` is dropped"]
 
     def test_check_true_is_droppable(self) -> None:
-        self.assertEqual(
-            self.dropped("subprocess.run(argv, check=True)\n"), ["`check=True` is dropped"]
-        )
+        assert self.dropped("subprocess.run(argv, check=True)\n") == ["`check=True` is dropped"]
 
     def test_check_false_is_not(self) -> None:
         """It is `subprocess.run`'s own default, so removing it changes nothing
         and the row could only ever be an unkillable survivor."""
-        self.assertEqual(self.dropped("subprocess.run(argv, check=False)\n"), [])
+        assert self.dropped("subprocess.run(argv, check=False)\n") == []
 
     def test_a_keyword_nobody_argued_for_is_left_alone(self) -> None:
         """`ok=` is a required `Check` field: dropping it is a `TypeError`."""
-        self.assertEqual(self.dropped('Check(label="x", ok=True)\n'), [])
+        assert self.dropped('Check(label="x", ok=True)\n') == []
 
     def test_a_star_star_spread_is_not_a_keyword_to_drop(self) -> None:
-        self.assertEqual(self.dropped("f(**options)\n"), [])
+        assert self.dropped("f(**options)\n") == []
 
     def test_the_replacement_actually_omits_it(self) -> None:
         """The prose could be right while the edit is not."""
@@ -649,15 +643,15 @@ class TestDroppingAKeywordArgument(unittest.TestCase):
             tests="t",
             operators=["drop-kwarg"],
         )
-        self.assertNotIn("mode", rows[0].new)
-        self.assertIn("parents", rows[0].new, "only the named keyword goes")
+        assert "mode" not in rows[0].new
+        assert "parents" in rows[0].new, "only the named keyword goes"
 
     def test_each_droppable_keyword_is_reachable(self) -> None:
         """Otherwise a name can sit in `_DROPPABLE` spelled wrongly for ever."""
         for name in sorted(mutants._DROPPABLE):
             with self.subTest(keyword=name):
                 value = "True" if name in ("check", "exist_ok", "follow_symlinks") else "0"
-                self.assertEqual(len(self.dropped(f"f(a, {name}={value})\n")), 1)
+                assert len(self.dropped(f"f(a, {name}={value})\n")) == 1
 
     def test_encoding_is_not_droppable(self) -> None:
         """It was, and woswoar's first whole-package sweep with this operator
@@ -676,7 +670,7 @@ class TestDroppingAKeywordArgument(unittest.TestCase):
         answerable. This project has no such suite, so here the operator is off
         for the simpler reason above and nothing is bought by turning it on.
         """
-        self.assertEqual(self.dropped('p.read_text(encoding="utf-8")\n'), [])
+        assert self.dropped('p.read_text(encoding="utf-8")\n') == []
 
 
 class TestAPrefixMustBeASequenceRatherThanAString(unittest.TestCase):
@@ -718,8 +712,8 @@ class TestAPrefixMustBeASequenceRatherThanAString(unittest.TestCase):
         row = Mutation("x", "/nonexistent/mod.py", "a", "b", "t", first="a.py::T::t")
         with self.assertRaises(SystemExit) as refused:
             mutants.check(row)
-        self.assertIn("sequence of test ids", str(refused.exception))
-        self.assertIn('first=("a.py::T::t",)', str(refused.exception))
+        assert "sequence of test ids" in str(refused.exception)
+        assert 'first=("a.py::T::t",)' in str(refused.exception)
 
     def test_a_sequence_is_accepted(self) -> None:
         """The half that keeps the refusal from being unconditional -- without
@@ -751,12 +745,12 @@ class TestARowThatMatchesNothingSaysWhatIsClose(unittest.TestCase):
 
     def test_it_offers_the_closest_line(self) -> None:
         said = self.refusal("def clamp(value: int) -> int :")
-        self.assertIn("closest line", said)
-        self.assertIn("def clamp(value: int) -> int:", said)
+        assert "closest line" in said
+        assert "def clamp(value: int) -> int:" in said
 
     def test_it_offers_nothing_when_nothing_is_close(self) -> None:
         """A suggestion that is not the intended line is worse than none."""
-        self.assertNotIn("closest line", self.refusal("import antigravity"))
+        assert "closest line" not in self.refusal("import antigravity")
 
     def test_a_multi_line_row_gets_no_guess(self) -> None:
         """There is no "nearest line" to a span, and picking one of its lines
@@ -767,8 +761,8 @@ class TestARowThatMatchesNothingSaysWhatIsClose(unittest.TestCase):
         test passes whether or not the span check exists -- which is exactly
         what it did until a mutation said so.
         """
-        self.assertNotIn(
-            "closest line", self.refusal("def clamp(value: int) -> int :\n    return value\n")
+        assert "closest line" not in self.refusal(
+            "def clamp(value: int) -> int :\n    return value\n"
         )
 
 
@@ -782,14 +776,14 @@ class TestSkippingAnOperator(unittest.TestCase):
     def test_it_subtracts_from_the_default_set(self) -> None:
         every = mutants.generate("x = a < b\n", "w/t.py", {1}, tests="t")
         fewer = mutants.generate("x = a < b\n", "w/t.py", {1}, tests="t", skip=["boundary"])
-        self.assertTrue(any(row.operator == "boundary" for row in every))
-        self.assertFalse(any(row.operator == "boundary" for row in fewer))
-        self.assertLess(len(fewer), len(every))
+        assert any(row.operator == "boundary" for row in every)
+        assert not any(row.operator == "boundary" for row in fewer)
+        assert len(fewer) < len(every)
 
     def test_an_unknown_name_is_refused(self) -> None:
         with self.assertRaises(SystemExit) as refused:
             mutants.generate("x = a < b\n", "w/t.py", {1}, skip=["boundry"])
-        self.assertIn("no such operator: boundry", str(refused.exception))
+        assert "no such operator: boundry" in str(refused.exception)
 
     def test_skipping_everything_is_refused_rather_than_silent(self) -> None:
         """An empty selection generates nothing and would exit 0 -- a run that
@@ -798,7 +792,7 @@ class TestSkippingAnOperator(unittest.TestCase):
             mutants.generate(
                 "x = a < b\n", "w/t.py", {1}, operators=["boundary"], skip=["boundary"]
             )
-        self.assertIn("every operator was skipped", str(refused.exception))
+        assert "every operator was skipped" in str(refused.exception)
 
 
 class TestEveryLine(unittest.TestCase):
@@ -806,18 +800,18 @@ class TestEveryLine(unittest.TestCase):
 
     def test_it_finds_the_mutable_files_and_all_their_lines(self) -> None:
         found = mutants.every_line(REPO_ROOT)
-        self.assertIn("tools/mutants.py", found)
-        self.assertIn("tupferl/sync.py", found)
+        assert "tools/mutants.py" in found
+        assert "tupferl/sync.py" in found
         body = (REPO_ROOT / "tupferl/sync.py").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(max(found["tupferl/sync.py"]), len(body))
-        self.assertEqual(min(found["tupferl/sync.py"]), 1)
+        assert len(body) == max(found["tupferl/sync.py"])
+        assert min(found["tupferl/sync.py"]) == 1
 
     def test_it_holds_nothing_that_is_not_mutable(self) -> None:
         for path in mutants.every_line(REPO_ROOT):
-            self.assertTrue(mutants.mutable(path), path)
+            assert mutants.mutable(path), path
 
     def test_tests_are_not_swept(self) -> None:
-        self.assertFalse(any(p.startswith("tests/") for p in mutants.every_line(REPO_ROOT)))
+        assert not any(p.startswith("tests/") for p in mutants.every_line(REPO_ROOT))
 
 
 class TestWhatTheWholeTreeWalkTakesIn(unittest.TestCase):
@@ -837,8 +831,8 @@ class TestWhatTheWholeTreeWalkTakesIn(unittest.TestCase):
         entry with an empty line set reads downstream as a file that was
         covered -- it appears in the count of files and contributes no rows."""
         found = mutants.every_line(self.tree())
-        self.assertEqual({1, 2}, found["tupferl/real.py"])
-        self.assertNotIn("tupferl/__init__.py", found)
+        assert found["tupferl/real.py"] == {1, 2}
+        assert "tupferl/__init__.py" not in found
 
     def test_an_unmutable_path_is_skipped(self) -> None:
         """The guard whose own comment says it was once thought unreachable.
@@ -846,8 +840,8 @@ class TestWhatTheWholeTreeWalkTakesIn(unittest.TestCase):
         to drive the clause rather than the tuple above it."""
         with mock.patch.object(mutants, "UNMUTABLE", ("tupferl/skipped.py",)):
             found = mutants.every_line(self.tree())
-        self.assertIn("tupferl/real.py", found)
-        self.assertNotIn("tupferl/skipped.py", found)
+        assert "tupferl/real.py" in found
+        assert "tupferl/skipped.py" not in found
 
 
 class TestChoosingOperators(unittest.TestCase):
@@ -862,12 +856,12 @@ class TestChoosingOperators(unittest.TestCase):
         """
         with self.assertRaises(SystemExit) as refused:
             mutants.generate("x = a < b\n", "w/t.py", {1}, operators=["boundry"])
-        self.assertIn("no such operator: boundry", str(refused.exception))
-        self.assertIn("boundary", str(refused.exception))
+        assert "no such operator: boundry" in str(refused.exception)
+        assert "boundary" in str(refused.exception)
 
     def test_a_known_operator_still_selects(self) -> None:
         rows = mutants.generate("x = a < b\n", "w/t.py", {1}, operators=["boundary"])
-        self.assertEqual([row.label for row in rows], ["w/t.py:1 -- `<` becomes `<=`"])
+        assert [row.label for row in rows] == ["w/t.py:1 -- `<` becomes `<=`"]
 
 
 #: A floor under the tag count, for `tests/test_errors.py`'s reason: a walk that
@@ -946,20 +940,16 @@ class TestFindingATagNoRowCanReach(unittest.TestCase):
         filesystem happens to disagree.
         """
         with support.tempdir() as box:
-            self.assertEqual(
-                self.dead(box),
-                [
-                    ("tools/y.py", 1, name)
-                    for name in sorted(word.strip() for word in EIGHT_DEAD.split(","))
-                ]
-                + [("tupferl/x.py", 4, "negate")],
-            )
+            assert [
+                ("tools/y.py", 1, name)
+                for name in sorted(word.strip() for word in EIGHT_DEAD.split(","))
+            ] + [("tupferl/x.py", 4, "negate")] == self.dead(box)
 
     def test_a_tag_whose_operator_really_fires_is_left_alone(self) -> None:
         """Said again on its own, because the list above would also be satisfied
         by a `dead_tags` that reported the `boundary` tag and something else."""
         with support.tempdir() as box:
-            self.assertNotIn("boundary", [operator for _, _, operator in self.dead(box)])
+            assert "boundary" not in [operator for _, _, operator in self.dead(box)]
 
 
 class TestEveryTagGuardsARowThatExists(unittest.TestCase):
@@ -985,13 +975,13 @@ class TestEveryTagGuardsARowThatExists(unittest.TestCase):
 
     def test_the_tree_has_tags_to_check(self) -> None:
         """Or a `dead_tags` that resolved nothing would read as a clean tree."""
-        self.assertGreaterEqual(len(_tags()), SOME_TAGS)
+        assert len(_tags()) >= SOME_TAGS
 
     def test_no_tag_names_an_operator_its_statement_cannot_produce(self) -> None:
         dead = [
             f"{path}:{line} {operator}" for path, line, operator in mutants.dead_tags(REPO_ROOT)
         ]
-        self.assertEqual(dead, [])
+        assert dead == []
 
 
 class TestTheLabelNamesAScope(unittest.TestCase):
@@ -999,18 +989,18 @@ class TestTheLabelNamesAScope(unittest.TestCase):
 
     def test_a_class_body_is_not_written_as_a_call(self) -> None:
         rows = mutants.generate("class C:\n    LIMIT = 1\n", "w/t.py", {2}, tests="t")
-        self.assertEqual(rows[0].label, "w/t.py:2 in C -- `1` becomes `2`")
+        assert rows[0].label == "w/t.py:2 in C -- `1` becomes `2`"
 
     def test_a_method_still_is(self) -> None:
         source = "class C:\n    def m(self, a, b):\n        return a < b\n"
         rows = mutants.generate(source, "w/t.py", {3}, tests="t")
-        self.assertEqual(rows[0].label, "w/t.py:3 in C.m() -- `<` becomes `<=`")
+        assert rows[0].label == "w/t.py:3 in C.m() -- `<` becomes `<=`"
 
     def test_a_function_in_a_function_is_not_written_as_two_calls(self) -> None:
         """`outer().inner()` is what baking the parentheses into the name gives."""
         source = "def outer():\n    def inner(a, b):\n        return a < b\n    return inner\n"
         rows = mutants.generate(source, "w/t.py", {3}, tests="t")
-        self.assertEqual(rows[0].label, "w/t.py:3 in outer.inner() -- `<` becomes `<=`")
+        assert rows[0].label == "w/t.py:3 in outer.inner() -- `<` becomes `<=`"
 
 
 class TestTheSpanIsExact(unittest.TestCase):
@@ -1018,8 +1008,8 @@ class TestTheSpanIsExact(unittest.TestCase):
         source = "x = a < b\n"
         row = mutate(source).pop()
         start, end = row.span or (0, 0)
-        self.assertEqual(source[start:end], row.old)
-        self.assertEqual(row.old, "a < b")
+        assert row.old == source[start:end]
+        assert row.old == "a < b"
 
     def test_a_line_with_non_ascii_before_it(self) -> None:
         """`col_offset` is a UTF-8 *byte* offset; `str` slicing is by character.
@@ -1041,8 +1031,8 @@ class TestTheSpanIsExact(unittest.TestCase):
         source = 'x = "✔ ✘ ²" if a < b else "·"\n'
         row = mutate(source, lines={1}).pop()
         start, end = row.span or (0, 0)
-        self.assertEqual(source[start:end], "a < b")
-        self.assertEqual(row.old, "a < b")
+        assert source[start:end] == "a < b"
+        assert row.old == "a < b"
 
     def test_a_span_on_a_later_line(self) -> None:
         """`lineno` indexes a list, and a one-line fixture cannot see it slip.
@@ -1062,8 +1052,8 @@ class TestTheSpanIsExact(unittest.TestCase):
         source = "a = 1\n# ·x\nx = a < b\n"
         row = mutate(source, lines={3}).pop()
         start, end = row.span or (0, 0)
-        self.assertEqual(source[start:end], "a < b")
-        self.assertEqual(source.index("a < b", source.index("x =")), start)
+        assert source[start:end] == "a < b"
+        assert start == source.index("a < b", source.index("x ="))
 
     def test_a_form_feed_does_not_shift_the_lines_below_it(self) -> None:
         """`str.splitlines` and the tokenizer disagree, and only one is right.
@@ -1091,10 +1081,10 @@ class TestTheSpanIsExact(unittest.TestCase):
         # rewrites the line, so the helper would hand the generator a different
         # string from the one asserted against here.
         rows = mutants.generate(source, "tupferl/thing.py", {5}, operators=["return-constant"])
-        self.assertEqual(len(rows), 1)
+        assert len(rows) == 1
         start, end = rows[0].span or (0, 0)
-        self.assertEqual(source[start:end], "True")
-        self.assertEqual(start, source.index("True"))
+        assert source[start:end] == "True"
+        assert source.index("True") == start
 
     def test_a_repeated_line_gets_distinct_spans(self) -> None:
         """The reason spans exist: `str.replace` cannot tell these apart."""
@@ -1103,11 +1093,11 @@ class TestTheSpanIsExact(unittest.TestCase):
             "def g():\n    if not ready:\n        return 2\n"
         )
         rows = mutate(source, operators=["drop-not"])
-        self.assertEqual(len(rows), 2)
-        self.assertNotEqual(rows[0].span, rows[1].span)
+        assert len(rows) == 2
+        assert rows[1].span != rows[0].span
         for row in rows:
             start, end = row.span or (0, 0)
-            self.assertEqual(source[start:end], row.old)
+            assert row.old == source[start:end]
 
 
 class TestTheLabel(unittest.TestCase):
@@ -1117,12 +1107,10 @@ class TestTheLabel(unittest.TestCase):
         row = mutate(
             "class C:\n    def m(self):\n        return a < b\n", operators=["boundary"]
         ).pop()
-        self.assertEqual(row.label, "tupferl/thing.py:3 in C.m() -- `<` becomes `<=`")
+        assert row.label == "tupferl/thing.py:3 in C.m() -- `<` becomes `<=`"
 
     def test_at_module_scope_there_is_no_function(self) -> None:
-        self.assertEqual(
-            mutate("x = a < b\n").pop().label, "tupferl/thing.py:1 -- `<` becomes `<=`"
-        )
+        assert mutate("x = a < b\n").pop().label == "tupferl/thing.py:1 -- `<` becomes `<=`"
 
 
 class TestTheCap(unittest.TestCase):
@@ -1153,18 +1141,18 @@ class TestTheCap(unittest.TestCase):
         at all -- and the printed count would look right either way."""
         table = self.rows("a.py", 10) + self.rows("z.py", 10)
         kept, dropped = mutants.cap(table, 6)
-        self.assertEqual(len(kept), 6)
-        self.assertEqual({row.path for row in kept}, {"a.py", "z.py"})
-        self.assertEqual(len(dropped), 14)
+        assert len(kept) == 6
+        assert {row.path for row in kept} == {"a.py", "z.py"}
+        assert len(dropped) == 14
 
     def test_everything_is_accounted_for(self) -> None:
         table = self.rows("a.py", 5) + self.rows("z.py", 7)
         kept, dropped = mutants.cap(table, 4)
-        self.assertEqual(len(kept) + len(dropped), len(table))
+        assert len(table) == len(kept) + len(dropped)
 
     def test_no_cap_keeps_everything(self) -> None:
         table = self.rows("a.py", 5)
-        self.assertEqual(mutants.cap(table, 0), (table, []))
+        assert mutants.cap(table, 0) == (table, [])
 
 
 class TestThePackageInitIsIndexedAsThePackage(unittest.TestCase):
@@ -1190,7 +1178,7 @@ class TestThePackageInitIsIndexedAsThePackage(unittest.TestCase):
             # package -- `tests` -- that the import index has to be keyed on.
             (root / "tests" / "test_a.py").write_text("from . import helper\n", encoding="utf-8")
             index = mutants.importers(root)
-        self.assertEqual(index.get("tupferl.copies"), {"tests.test_a"})
+        assert index.get("tupferl.copies") == {"tests.test_a"}
 
 
 class TestFollowingAHelperOneLevel(unittest.TestCase):
@@ -1230,8 +1218,8 @@ class TestFollowingAHelperOneLevel(unittest.TestCase):
         `widget` has to run the test that only reaches it through `support`."""
         box = self.tree()
         found = mutants.targets_for("tupferl/widget.py", box, mutants.importers(box)).split()
-        self.assertIn("tests.test_through_helper", found)
-        self.assertIn("tests.test_direct", found)
+        assert "tests.test_through_helper" in found
+        assert "tests.test_direct" in found
 
 
 class TestChoosingTheTests(unittest.TestCase):
@@ -1247,16 +1235,13 @@ class TestChoosingTheTests(unittest.TestCase):
         return set(mutants.targets_for(path, REPO_ROOT, self.index).split())
 
     def test_the_name_match(self) -> None:
-        self.assertIn("tests.test_sync", self.targets("tupferl/sync.py"))
+        assert "tests.test_sync" in self.targets("tupferl/sync.py")
 
     def test_siblings_of_the_name_match(self) -> None:
         """`sync.py` here, where woswoar's copy used `importer.py`: one of the
         five assertions in this file that name real modules, so they had to be
         re-pointed rather than renamed."""
-        self.assertLessEqual(
-            {"tests.test_sync_cli", "tests.test_sync_commits"},
-            self.targets("tupferl/sync.py"),
-        )
+        assert {"tests.test_sync_cli", "tests.test_sync_commits"} <= self.targets("tupferl/sync.py")
 
     def test_a_module_with_no_test_of_its_own_is_found_by_import(self) -> None:
         """`tupferl/copies.py` has no `test_copies.py`; `tests/test_sync.py`
@@ -1269,7 +1254,7 @@ class TestChoosingTheTests(unittest.TestCase):
         module with the shape: no name match at all, resolved only through the
         import index.
         """
-        self.assertIn("tests.test_sync", self.targets("tupferl/copies.py"))
+        assert "tests.test_sync" in self.targets("tupferl/copies.py")
 
     def test_the_name_match_does_not_short_circuit_the_index(self) -> None:
         """Measured on woswoar#216: taking `test_install` alone because the name
@@ -1281,8 +1266,8 @@ class TestChoosingTheTests(unittest.TestCase):
         only through the index.
         """
         found = self.targets("tupferl/config.py")
-        self.assertIn("tests.test_config", found)
-        self.assertIn("tests.test_doctor", found)
+        assert "tests.test_config" in found
+        assert "tests.test_doctor" in found
 
     def test_a_helper_carries_its_imports_to_the_tests_that_use_it(self) -> None:
         """Through `tests/support.py`, which every suite imports relatively.
@@ -1296,7 +1281,7 @@ class TestChoosingTheTests(unittest.TestCase):
         noticing. Checked, not assumed: `test_merge.py` has no `manifest` or
         `paths` import of its own.
         """
-        self.assertIn("tests.test_merge", self.targets("tupferl/manifest.py"))
+        assert "tests.test_merge" in self.targets("tupferl/manifest.py")
 
     def test_every_mutable_file_resolves_or_says_it_cannot(self) -> None:
         """The completeness pass. An empty answer is allowed -- it means "run
@@ -1307,7 +1292,7 @@ class TestChoosingTheTests(unittest.TestCase):
             path = source.relative_to(REPO_ROOT).as_posix()
             if mutants.mutable(path) and not self.targets(path):
                 homeless.add(path)
-        self.assertEqual(homeless, set(), "these no longer resolve to any test module")
+        assert set() == homeless, "these no longer resolve to any test module"
 
 
 @requires_git
@@ -1386,8 +1371,8 @@ class TestReadingARealDiff(unittest.TestCase):
         self.write("tupferl/thing.py", "one = 1\ntwo = 22\nthree = 33\n")
 
         found = mutants.changed_lines("main", self.root)
-        self.assertEqual(found, {"tupferl/thing.py": {2, 3}})
-        self.assertNotIn("tupferl/later.py", found)
+        assert found == {"tupferl/thing.py": {2, 3}}
+        assert "tupferl/later.py" not in found
 
     def test_a_base_that_does_not_exist_is_refused(self) -> None:
         """**A typo'd `--base` must not read as "nothing changed".**
@@ -1403,7 +1388,7 @@ class TestReadingARealDiff(unittest.TestCase):
         """
         with self.assertRaises(SystemExit) as raised:
             mutants.changed_lines("no-such-ref", self.root)
-        self.assertIn("no-such-ref", str(raised.exception))
+        assert "no-such-ref" in str(raised.exception)
 
     def test_it_refuses_to_run_from_below_the_repository_root(self) -> None:
         """Paths in a diff are relative to the top level, so a run from a
@@ -1413,18 +1398,18 @@ class TestReadingARealDiff(unittest.TestCase):
         below = self.root / "tupferl"
         with self.assertRaises(SystemExit) as raised:
             mutants.changed_lines("main", below)
-        self.assertIn("repository root", str(raised.exception))
+        assert "repository root" in str(raised.exception)
 
     def test_an_untracked_file_counts_entirely(self) -> None:
         """`git diff` cannot see it, and "no mutants for the new module" reads
         exactly like "the new module is covered"."""
         self.write("tupferl/fresh.py", "a = 1\nb = 2\n")
-        self.assertEqual(mutants.changed_lines("main", self.root)["tupferl/fresh.py"], {1, 2})
+        assert mutants.changed_lines("main", self.root)["tupferl/fresh.py"] == {1, 2}
 
     def test_a_change_outside_the_mutable_paths_is_ignored(self) -> None:
         self.write("tests/test_thing.py", "x = 1\n")
         self.write("docs/notes.md", "words\n")
-        self.assertEqual(mutants.changed_lines("main", self.root), {})
+        assert mutants.changed_lines("main", self.root) == {}
 
     def test_a_file_that_is_not_python_under_a_mutable_path_is_ignored(self) -> None:
         """The test above cannot reach the `mutable(name)` guard: git's own
@@ -1434,7 +1419,7 @@ class TestReadingARealDiff(unittest.TestCase):
         generates mutants for prose.
         """
         self.write("tupferl/NOTES.md", "words\n")
-        self.assertEqual({}, mutants.changed_lines("main", self.root))
+        assert mutants.changed_lines("main", self.root) == {}
 
     def test_a_path_named_unmutable_is_skipped_even_though_it_qualifies(self) -> None:
         """`UNMUTABLE` is empty today, so nothing in the tree can exercise it --
@@ -1453,8 +1438,8 @@ class TestReadingARealDiff(unittest.TestCase):
         self.write("tupferl/danger.py", "b = 2\n")
         with mock.patch.object(mutants, "UNMUTABLE", ("tupferl/danger.py",)):
             found = mutants.changed_lines("main", self.root)
-        self.assertIn("tupferl/keep.py", found)
-        self.assertNotIn("tupferl/danger.py", found)
+        assert "tupferl/keep.py" in found
+        assert "tupferl/danger.py" not in found
 
 
 class TestABoundedCallStillReturns(unittest.TestCase):
@@ -1543,8 +1528,8 @@ class TestABoundedCallStillReturns(unittest.TestCase):
             text=True,
             timeout=self.BOUND,
         )
-        self.assertEqual(0, done.returncode, done.stderr[-600:])
-        self.assertEqual("done", done.stdout.strip())
+        assert done.returncode == 0, done.stderr[-600:]
+        assert done.stdout.strip() == "done"
 
     def test_line_starts_advances(self) -> None:
         """`at -= ...` never advances: a negative index wraps in Python rather
@@ -1590,7 +1575,7 @@ class TestWhichTestsARowRunsAgainst(unittest.TestCase):
 
     def test_the_module_named_after_the_file_is_found(self) -> None:
         box = self.tree("test_widget.py")
-        self.assertEqual("tests.test_widget", mutants.targets_for("tupferl/widget.py", box, {}))
+        assert mutants.targets_for("tupferl/widget.py", box, {}) == "tests.test_widget"
 
     def test_an_aspect_module_is_found_too(self) -> None:
         """`test_<stem>_<aspect>.py` is the convention CLAUDE.md records, and
@@ -1598,7 +1583,7 @@ class TestWhichTestsARowRunsAgainst(unittest.TestCase):
         sync engine's rows against a fraction of their tests."""
         box = self.tree("test_widget.py", "test_widget_properties.py")
         found = mutants.targets_for("tupferl/widget.py", box, {}).split()
-        self.assertEqual(["tests.test_widget", "tests.test_widget_properties"], found)
+        assert found == ["tests.test_widget", "tests.test_widget_properties"]
 
     def test_a_merely_similar_name_is_not_a_match(self) -> None:
         """The half that stops `startswith` from accepting everything.
@@ -1606,7 +1591,7 @@ class TestWhichTestsARowRunsAgainst(unittest.TestCase):
         selection quietly wrong for every file whose name is a prefix of
         another -- `copies` and `config`, `manage` and `manifest`."""
         box = self.tree("test_widget.py", "test_widgetry.py", "test_widgets.py")
-        self.assertEqual("tests.test_widget", mutants.targets_for("tupferl/widget.py", box, {}))
+        assert mutants.targets_for("tupferl/widget.py", box, {}) == "tests.test_widget"
 
     def test_what_imports_it_is_unioned_in(self) -> None:
         """Both halves. The named module alone misses a test that drives this
@@ -1615,13 +1600,13 @@ class TestWhichTestsARowRunsAgainst(unittest.TestCase):
         box = self.tree("test_widget.py")
         index = {"tupferl.widget": {"tests.test_elsewhere"}}
         found = mutants.targets_for("tupferl/widget.py", box, index).split()
-        self.assertEqual(["tests.test_elsewhere", "tests.test_widget"], found)
+        assert found == ["tests.test_elsewhere", "tests.test_widget"]
 
     def test_nothing_at_all_is_an_empty_answer(self) -> None:
         """Empty is what `mutate.WHOLE_SUITE` reads as "run everything". The
         unsafe answer would be to call it "no tests" and skip the row, which
         reads as coverage nobody has."""
-        self.assertEqual("", mutants.targets_for("tupferl/widget.py", self.tree(), {}))
+        assert mutants.targets_for("tupferl/widget.py", self.tree(), {}) == ""
 
 
 class TestCappingTheTable(unittest.TestCase):
@@ -1657,8 +1642,8 @@ class TestCappingTheTable(unittest.TestCase):
         for limit in (0, -1):
             with self.subTest(limit=limit):
                 kept, dropped = mutants.cap(rows, limit)
-                self.assertEqual(rows, kept)
-                self.assertEqual([], dropped)
+                assert kept == rows
+                assert dropped == []
 
     def test_a_limit_of_one_keeps_one(self) -> None:
         """`limit <= 0` is "no limit", and 1 is the smallest real one. Read as
@@ -1670,8 +1655,8 @@ class TestCappingTheTable(unittest.TestCase):
         two cases and was covered by neither.
         """
         kept, dropped = mutants.cap(self.rows("tupferl/a.py", 5), 1)
-        self.assertEqual(1, len(kept))
-        self.assertEqual(4, len(dropped))
+        assert len(kept) == 1
+        assert len(dropped) == 4
 
     def test_a_table_under_the_limit_is_untouched(self) -> None:
         """`len(mutations) <= limit`, where `<=` becoming `<` sends an
@@ -1686,8 +1671,8 @@ class TestCappingTheTable(unittest.TestCase):
         for limit in (4, 5):
             with self.subTest(limit=limit):
                 kept, dropped = mutants.cap(rows, limit)
-                self.assertEqual(rows, kept, "an under-limit table was reordered")
-                self.assertEqual([], dropped)
+                assert kept == rows, "an under-limit table was reordered"
+                assert dropped == []
 
     def test_it_takes_from_every_file_rather_than_draining_the_first(self) -> None:
         """The whole argument for the function. Three files of ten, capped at
@@ -1698,10 +1683,10 @@ class TestCappingTheTable(unittest.TestCase):
         rows = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 10)]
         kept, dropped = mutants.cap(rows, 6)
 
-        self.assertEqual(6, len(kept))
-        self.assertEqual(24, len(dropped))
+        assert len(kept) == 6
+        assert len(dropped) == 24
         taken = collections.Counter(row.path for row in kept)
-        self.assertEqual({"tupferl/a.py": 2, "tupferl/b.py": 2, "tupferl/c.py": 2}, dict(taken))
+        assert dict(taken) == {"tupferl/a.py": 2, "tupferl/b.py": 2, "tupferl/c.py": 2}
 
     def test_an_uneven_cap_still_spreads_before_it_doubles_up(self) -> None:
         """Five across three files is 2/2/1, never 3/1/1: the round-robin takes
@@ -1710,7 +1695,7 @@ class TestCappingTheTable(unittest.TestCase):
         rows = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 10)]
         kept, _ = mutants.cap(rows, 5)
         taken = sorted(collections.Counter(row.path for row in kept).values())
-        self.assertEqual([1, 2, 2], taken)
+        assert taken == [1, 2, 2]
 
     def test_a_file_running_dry_does_not_end_the_round(self) -> None:
         """`any(queues.values())`, which every other fixture here leaves
@@ -1728,8 +1713,8 @@ class TestCappingTheTable(unittest.TestCase):
         """
         rows = self.rows("tupferl/a.py", 1) + self.rows("tupferl/b.py", 10)
         kept, dropped = mutants.cap(rows, 5)
-        self.assertEqual(5, len(kept), "the round ended when the first file ran dry")
-        self.assertEqual(6, len(dropped))
+        assert len(kept) == 5, "the round ended when the first file ran dry"
+        assert len(dropped) == 6
 
     def test_the_visiting_order_does_not_depend_on_the_input_order(self) -> None:
         """`sorted(queues)`. A dict preserves insertion order, so without the
@@ -1738,7 +1723,7 @@ class TestCappingTheTable(unittest.TestCase):
         differently."""
         forward = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 4)]
         backward = [row for name in "cba" for row in self.rows(f"tupferl/{name}.py", 4)]
-        self.assertEqual(mutants.cap(forward, 4)[0], mutants.cap(backward, 4)[0])
+        assert mutants.cap(backward, 4)[0] == mutants.cap(forward, 4)[0]
 
         # And *which* order, not merely that the two agree. `sorted(queues,
         # reverse=True)` is a mutant the `order` operator really generates, and
@@ -1747,7 +1732,7 @@ class TestCappingTheTable(unittest.TestCase):
         # takes one row each from the first two files it visits, and which two
         # those are is the whole question.
         kept, _ = mutants.cap(forward, 2)
-        self.assertEqual(["tupferl/a.py", "tupferl/b.py"], [row.path for row in kept])
+        assert [row.path for row in kept] == ["tupferl/a.py", "tupferl/b.py"]
 
     def test_what_is_kept_comes_back_in_file_and_span_order(self) -> None:
         """`kept.sort(key=(path, span or (0, 0)))`. The round-robin builds the
@@ -1755,7 +1740,7 @@ class TestCappingTheTable(unittest.TestCase):
         order would jump between files for no reason a reader could see."""
         rows = [row for name in "ba" for row in self.rows(f"tupferl/{name}.py", 3)]
         kept, _ = mutants.cap(rows, 4)
-        self.assertEqual(sorted(kept, key=lambda row: (row.path, row.span)), kept)
+        assert kept == sorted(kept, key=lambda row: (row.path, row.span))
 
     def test_a_row_with_no_span_sorts_first_rather_than_raising(self) -> None:
         """`span or (0, 0)` -- a hand-written row has no span, and `None` is not
@@ -1766,13 +1751,13 @@ class TestCappingTheTable(unittest.TestCase):
             *self.rows("tupferl/a.py", 3),
         ]
         kept, _ = mutants.cap(rows, 2)
-        self.assertEqual("hand-written", kept[0].label)
+        assert kept[0].label == "hand-written"
 
     def test_nothing_is_lost_between_the_two_halves(self) -> None:
         """Every row comes back exactly once, in one list or the other."""
         rows = [row for name in "abc" for row in self.rows(f"tupferl/{name}.py", 7)]
         kept, dropped = mutants.cap(rows, 8)
-        self.assertEqual(sorted(rows), sorted(kept + dropped))
+        assert sorted(kept + dropped) == sorted(rows)
 
 
 if __name__ == "__main__":
