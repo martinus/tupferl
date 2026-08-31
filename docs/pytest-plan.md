@@ -2745,7 +2745,51 @@ environment and names no fixture would otherwise get none.
 `tupferl/` has not moved since 2026-08-29, so B3's, B4a's and B4b's reports are
 exact row-for-row baselines.
 
-GATE_PLACEHOLDER
+**1309 rows in 297s at 36 lanes**, baseline green:
+
+| | B3 | B4a | B4b | B5 |
+|---|---:|---:|---:|---:|
+| caught | 1283 | 1283 | 1283 | **1283** |
+| survived | 26 | 26 | 26 | **26** |
+| `BROKE` | 0 | 0 | 0 | **0** |
+| `TIMEOUT` | 0 | 0 | 0 | **0** |
+
+The survivor *set* is identical to all three, label for label, checked as a set
+difference in each direction rather than by comparing counts.
+
+**And a second gate this cluster needs and the earlier ones did not.** These
+four modules are the killers for `tools/paint.py`, `tools/reached.py` and
+`tools/watch.py`, which the `--only tupferl/` table does not reach. Their source
+is byte-identical to `main`, so the control is a sweep of a `main` worktree,
+same machine, run back to back:
+
+| | `main` | branch |
+|---|---:|---:|
+| rows | 211 | 211 |
+| caught | 197 | **198** |
+| SURVIVED | 10 | **9** |
+| `BROKE` | 4 | 4 |
+| baseline | green | green |
+
+**Zero newly-surviving and zero newly-`BROKE`**, compared on
+`(path, line, operator, label)` -- 209 comparable keys, identical sets. Exactly
+one row moved, and it moved the right way: `tools/watch.py:446`'s
+`drop-call` went `survived` to `caught`, which the sweep reported as a **spent
+tag**.
+
+**The tag stays, and its own text says why.** It reads "Asserting that a process
+*idled* means timing the watcher, which is the flakiest assertion this suite
+could hold" -- and Phase A's evidence records this same row flipping
+`survived -> caught` once before. A tag removed on one run of a row that is
+known to flip would turn the next flip into a survivor with no disposition. That
+is the loud failure, so it is not a disaster; it is also not an improvement
+anybody measured.
+
+**No `tupferl/` or `tools/` source is changed semantically** -- the only diff
+under either is twelve lines of `tools/unassert.py`'s module docstring, which
+generates no mutants -- so `--base main` would report nothing and these two
+whole-file sweeps are the entire acceptance instrument.
+
 
 ### One macOS leg failed, and it was not this cluster
 
