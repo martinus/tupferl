@@ -540,7 +540,7 @@ failure §8 collects, so reach for `pytest -q`.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | **pytest-native, and run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness does not care how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. Phase B converted all 33 modules that had to convert; **two are still taken by the `unittest` loader and neither is arrears**, which [`docs/pytest-plan.md`](docs/pytest-plan.md)'s status line says and nothing here repeats -- `tests/test_pytest_plan.py` recomputes that number from the tree and nothing recomputes a figure typed here. Write a new module pytest-native: a plain `def test_...` is discovered, packed by its module, run and accounted for |
+| `tests/` | **pytest-native, and run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness does not care how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. Phase B converted all 33 modules that had to convert; **a couple are still taken by the `unittest` loader and neither is arrears**, and *which* and *how many* is [`docs/pytest-plan.md`](docs/pytest-plan.md)'s status line rather than anything here — Phase C changes the number, so typing it here is the rot this file opens with, and `tests/test_pytest_plan.py` recomputes it from the tree where nothing recomputes a figure typed here. Write a new module pytest-native: a plain `def test_...` is discovered, packed by its module, run and accounted for |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the pytest classifier; `verdict_unittest.py` + `test_verdict_unittest.py` are the one it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` until Phase C |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on. **Its status line says which cluster is next, and `tests/test_pytest_plan.py` asserts it against the tree** -- so "continue the plan" is a safe instruction and the line cannot go stale. It did, within a day of being written |
@@ -1236,12 +1236,20 @@ has been dropped.
      the cases as `parametrize` and let one case be one test, where the class
      fixture arms the bound per case and no second copy is needed.
 
-  For a whole class, `contextlib.ExitStack` entered in `setUp` (`enterContext`
-  is 3.11 and this project supports 3.10). **A bound around one call covers that
-  call and reads as though it covered the class.**
+  For a whole class, `_bounded = support.bounds(seconds, why)` in the class
+  body — `deadline` as an autouse fixture, entered and left with every test.
+  **A bound around one call covers that call and reads as though it covered the
+  class.**
+
+  It was a `contextlib.ExitStack` entered in `setUp` until B6, because
+  `TestCase.enterContext` is 3.11 and this project supports 3.10; a fixture
+  makes that question moot. `bounds` exists because the rule was written down
+  seven times instead of once — four lines per class, two pairs of them
+  byte-identical including the comment — which is this file's own B5 lesson
+  arriving in the paragraph that states it.
 
   **And check what the bound's exception collides with.** `TimeoutError` *is* an
-  `OSError`, so a `deadline` inside an existing `assertRaises(OSError)` is
+  `OSError`, so a `deadline` inside an existing `pytest.raises(OSError)` is
   swallowed: the hang is accepted as the error under test and the bound turns
   one unguarded line into a test that cannot fail, which is worse than the hang
   it replaced. `tests/test_manage.py`'s fifo test reads the exception type back
@@ -1541,10 +1549,19 @@ has been dropped.
   ```sh
   CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
   ```
-- **A platform skip turns the `macos` leg red.** That job runs `--no-skips`,
-  which is exactly what the flag is for -- a leg with every optional tool
-  installed, where a skip means something is missing rather than absent by
-  design -- so a platform-gated test is a failure there rather than a skip.
+- **A platform skip turns a CI leg red, and it is not only the `macos` one.**
+  Every job that runs tests passes `--no-skips` -- the `test` matrix's three
+  legs and all four `macos` shards -- which is exactly what the flag is for: a
+  leg with every optional tool installed, where a skip means something is
+  missing rather than absent by design, so a platform-gated test is a failure
+  there rather than a skip.
+
+  **This entry said "that job", singular, and was wrong from the day it was
+  written.** The `test` matrix has passed `--no-skips` since the bootstrap
+  commit; the entry arrived in #61 and named `macos` alone, because the instance
+  it was written from happened to fire only there. Same family as the
+  `merge.conflictStyle` entry below: a claim nothing could have contradicted,
+  because the fixture that would have shown it did not exist.
   Measured: one `skipUnless(hasattr(os, "sched_getaffinity"))` added in this
   repository's own review pass took that leg from green to red on the next
   push.

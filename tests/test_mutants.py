@@ -257,11 +257,8 @@ _QUIET: dict[str, str] = {
 
 
 #: `_FIRES` flattened for `parametrize`, so each operator is its own test rather
-#: than a `subTest` case. That is not presentation: a `subTest` *catches* the
-#: `TimeoutError` a bound raises and carries on, so twenty operators cost twenty
-#: times the bound and the class ran past the harness's 30s alarm -- filed
-#: `BROKE`, which is never `caught`. One test per case makes the bound per case
-#: by construction, and `failfast` stops at the first that trips.
+#: than a `subTest` case. `TestTheOperators`' docstring says why that is not
+#: presentation.
 _CASES = [(name, body, prose) for name, (body, prose) in sorted(_FIRES.items())]
 
 
@@ -292,10 +289,7 @@ class TestTheOperators:
     pytest collects in definition order and this class is near the top.
     """
 
-    @pytest.fixture(autouse=True)
-    def _bounded(self) -> Iterator[None]:
-        with support.deadline(support.PATIENCE, "an operator never finished"):
-            yield
+    _bounded = support.bounds(support.PATIENCE, "an operator never finished")
 
     def prose(self, body: str, operators: list[str]) -> list[str]:
         return [row.label.split(" -- ", 1)[1] for row in mutate(body, operators=operators)]
@@ -535,16 +529,14 @@ class TestLineEndingsThatAreNotNewline:
     never `caught`, so the exactness this class exists to pin was pinned by
     nothing.
 
-    Armed in `setUp` rather than around `starts_agree_with_ast`, which was the
-    first attempt: three of the four rows are killed by tests that do not go
-    through that helper, and they stayed `BROKE`. A bound on one helper covers
-    the tests that call it and reads as though it covered the class.
+    Armed by an autouse fixture on the class rather than around
+    `starts_agree_with_ast`, which was the first attempt: three of the four rows
+    are killed by tests that do not go through that helper, and they stayed
+    `BROKE`. A bound on one helper covers the tests that call it and reads as
+    though it covered the class.
     """
 
-    @pytest.fixture(autouse=True)
-    def _bounded(self) -> Iterator[None]:
-        with support.deadline(support.PATIENCE, "line_starts never finished"):
-            yield
+    _bounded = support.bounds(support.PATIENCE, "line_starts never finished")
 
     def starts_agree_with_ast(self, source: str) -> list[int]:
         """`ast` is the authority; this asserts against it rather than a constant.
@@ -1146,10 +1138,7 @@ class TestTheCap:
     bound below they fail in 5.10s.
     """
 
-    @pytest.fixture(autouse=True)
-    def _bounded(self) -> Iterator[None]:
-        with support.deadline(support.PATIENCE, "cap never finished"):
-            yield
+    _bounded = support.bounds(support.PATIENCE, "cap never finished")
 
     def rows(self, path: str, count: int) -> list[Mutation]:
         return [Mutation(f"{path}:{n}", path, "a", "b", "t", span=(n, n + 1)) for n in range(count)]
@@ -1262,20 +1251,22 @@ def import_index() -> dict[str, set[str]]:
     return mutants.importers(REPO_ROOT)
 
 
+def targets(path: str, index: dict[str, set[str]]) -> set[str]:
+    """Which test modules a sweep would run for `path`, against the real tree."""
+    return set(mutants.targets_for(path, REPO_ROOT, index).split())
+
+
 class TestChoosingTheTests:
     """Driven against the real repository, because that is the map it describes."""
 
-    def targets(self, path: str, index: dict[str, set[str]]) -> set[str]:
-        return set(mutants.targets_for(path, REPO_ROOT, index).split())
-
     def test_the_name_match(self, import_index: dict[str, set[str]]) -> None:
-        assert "tests.test_sync" in self.targets("tupferl/sync.py", import_index)
+        assert "tests.test_sync" in targets("tupferl/sync.py", import_index)
 
     def test_siblings_of_the_name_match(self, import_index: dict[str, set[str]]) -> None:
         """`sync.py` here, where woswoar's copy used `importer.py`: one of the
         five assertions in this file that name real modules, so they had to be
         re-pointed rather than renamed."""
-        assert {"tests.test_sync_cli", "tests.test_sync_commits"} <= self.targets(
+        assert {"tests.test_sync_cli", "tests.test_sync_commits"} <= targets(
             "tupferl/sync.py", import_index
         )
 
@@ -1292,7 +1283,7 @@ class TestChoosingTheTests:
         module with the shape: no name match at all, resolved only through the
         import index.
         """
-        assert "tests.test_sync" in self.targets("tupferl/copies.py", import_index)
+        assert "tests.test_sync" in targets("tupferl/copies.py", import_index)
 
     def test_the_name_match_does_not_short_circuit_the_index(
         self, import_index: dict[str, set[str]]
@@ -1305,7 +1296,7 @@ class TestChoosingTheTests:
         `tests.test_config` matches by name, and `tests.test_doctor` reaches it
         only through the index.
         """
-        found = self.targets("tupferl/config.py", import_index)
+        found = targets("tupferl/config.py", import_index)
         assert "tests.test_config" in found
         assert "tests.test_doctor" in found
 
@@ -1323,7 +1314,7 @@ class TestChoosingTheTests:
         noticing. Checked, not assumed: `test_merge.py` has no `manifest` or
         `paths` import of its own.
         """
-        assert "tests.test_merge" in self.targets("tupferl/manifest.py", import_index)
+        assert "tests.test_merge" in targets("tupferl/manifest.py", import_index)
 
     def test_every_mutable_file_resolves_or_says_it_cannot(
         self, import_index: dict[str, set[str]]
@@ -1334,7 +1325,7 @@ class TestChoosingTheTests:
         homeless = set()
         for source in sorted(REPO_ROOT.glob("tupferl/**/*.py")):
             path = source.relative_to(REPO_ROOT).as_posix()
-            if mutants.mutable(path) and not self.targets(path, import_index):
+            if mutants.mutable(path) and not targets(path, import_index):
                 homeless.add(path)
         assert set() == homeless, "these no longer resolve to any test module"
 
@@ -1623,8 +1614,8 @@ def targets_box() -> Iterator[Path]:
         yield box
 
 
-def beside(box: Path, *tests: str) -> Path:
-    """Write `tests` into `box`, and hand the tree back.
+def beside(box: Path, *tests: str) -> None:
+    """Write `tests` into `box`.
 
     A function taking the fixture rather than a fixture of its own, because the
     answer under test depends on *which* files exist beside `widget.py` and each
@@ -1632,7 +1623,6 @@ def beside(box: Path, *tests: str) -> Path:
     """
     for name in tests:
         (box / "tests" / name).write_text("import unittest\n", encoding="utf-8")
-    return box
 
 
 class TestWhichTestsARowRunsAgainst:
@@ -1649,15 +1639,15 @@ class TestWhichTestsARowRunsAgainst:
     """
 
     def test_the_module_named_after_the_file_is_found(self, targets_box: Path) -> None:
-        box = beside(targets_box, "test_widget.py")
-        assert mutants.targets_for("tupferl/widget.py", box, {}) == "tests.test_widget"
+        beside(targets_box, "test_widget.py")
+        assert mutants.targets_for("tupferl/widget.py", targets_box, {}) == "tests.test_widget"
 
     def test_an_aspect_module_is_found_too(self, targets_box: Path) -> None:
         """`test_<stem>_<aspect>.py` is the convention CLAUDE.md records, and
         `sync` has four such modules -- a rule that missed them would run the
         sync engine's rows against a fraction of their tests."""
-        box = beside(targets_box, "test_widget.py", "test_widget_properties.py")
-        found = mutants.targets_for("tupferl/widget.py", box, {}).split()
+        beside(targets_box, "test_widget.py", "test_widget_properties.py")
+        found = mutants.targets_for("tupferl/widget.py", targets_box, {}).split()
         assert found == ["tests.test_widget", "tests.test_widget_properties"]
 
     def test_a_merely_similar_name_is_not_a_match(self, targets_box: Path) -> None:
@@ -1665,16 +1655,16 @@ class TestWhichTestsARowRunsAgainst:
         `test_widgets.py` is a different module, and matching it would make the
         selection quietly wrong for every file whose name is a prefix of
         another -- `copies` and `config`, `manage` and `manifest`."""
-        box = beside(targets_box, "test_widget.py", "test_widgetry.py", "test_widgets.py")
-        assert mutants.targets_for("tupferl/widget.py", box, {}) == "tests.test_widget"
+        beside(targets_box, "test_widget.py", "test_widgetry.py", "test_widgets.py")
+        assert mutants.targets_for("tupferl/widget.py", targets_box, {}) == "tests.test_widget"
 
     def test_what_imports_it_is_unioned_in(self, targets_box: Path) -> None:
         """Both halves. The named module alone misses a test that drives this
         code through something else, and the import closure alone misses the
         module named for it when nothing imports it directly."""
-        box = beside(targets_box, "test_widget.py")
+        beside(targets_box, "test_widget.py")
         index = {"tupferl.widget": {"tests.test_elsewhere"}}
-        found = mutants.targets_for("tupferl/widget.py", box, index).split()
+        found = mutants.targets_for("tupferl/widget.py", targets_box, index).split()
         assert found == ["tests.test_elsewhere", "tests.test_widget"]
 
     def test_nothing_at_all_is_an_empty_answer(self, targets_box: Path) -> None:
@@ -1704,10 +1694,7 @@ class TestCappingTheTable:
     below calls `cap`, and the mutation hangs whichever runs first.
     """
 
-    @pytest.fixture(autouse=True)
-    def _bounded(self) -> Iterator[None]:
-        with support.deadline(support.PATIENCE, "cap never finished"):
-            yield
+    _bounded = support.bounds(support.PATIENCE, "cap never finished")
 
     def rows(self, path: str, many: int) -> list[Mutation]:
         return [Mutation(f"{path}#{i}", path, "a", "b", "t", span=(i, i + 1)) for i in range(many)]

@@ -296,22 +296,6 @@ def copy() -> Iterator[Copies]:
         yield made
 
 
-@pytest.fixture
-def _alarm_put_back() -> Iterator[None]:
-    """Whatever `ITIMER_REAL` and `SIGALRM` were, back afterwards.
-
-    Every test in `TestABoundGivesTheHarnessItsAlarmBack` arms a real timer and
-    installs a real handler, and this process is also the one `tools/mutate.py`
-    arms its per-test alarm in.
-    """
-    handler = signal.getsignal(signal.SIGALRM)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, handler)
-
-
 def raised(box: tempfile.TemporaryDirectory[str]) -> OSError:
     """The `OSError` `discard` raises over `box`, read back for its wording."""
     with pytest.raises(OSError) as caught:
@@ -1024,3 +1008,47 @@ class TestABoundGivesTheHarnessItsAlarmBack:
         with support.deadline(1.0, "inner"):
             pass
         assert signal.getsignal(signal.SIGALRM) is mine
+
+
+@pytest.mark.usefixtures("_alarm_put_back")
+class TestABoundBuiltForAClassIsReallyArmed:
+    """`support.bounds`: `deadline` as the autouse fixture seven classes wanted.
+
+    **A mechanism with no reader is what this file exists to refuse.** Seven
+    classes across `test_mutants` and `test_mutate` held four hand-copied lines
+    each -- two pairs of them byte-identical, comment included -- and `bounds`
+    replaced all seven. A factory that quietly produced a fixture pytest never
+    ran would look exactly like one that worked: every one of those classes
+    passes either way, because the bound only matters under a mutation that
+    hangs, and a hang is filed `BROKE`, which is never `caught`. So it is
+    asserted here, from inside a class that uses it, rather than trusted.
+
+    `_alarm_put_back` because these tests really arm the process timer, and this
+    is the process `tools/mutate.py` arms its own per-test alarm in.
+    """
+
+    #: Far enough from any other bound in this file that the assertion below is
+    #: about *this* number rather than about something being armed at all.
+    ARMED = 12.5
+
+    _bounded = support.bounds(ARMED, "the class bound never fired")
+
+    def test_a_test_naming_no_fixture_still_gets_the_bound(self) -> None:
+        """Autouse is the whole point: the class states the property and no test
+        body mentions it, which is the same argument CLAUDE.md makes for putting
+        a sandbox mark on the class rather than inferring it per method."""
+        assert now_armed() > 0.0, "no alarm was armed for this test"
+
+    def test_it_arms_the_seconds_it_was_given(self) -> None:
+        """Not merely *an* alarm. A `bounds` that ignored its argument and armed
+        `PATIENCE` would satisfy the test above and quietly give every one of
+        the seven classes the same bound, which is the two-symmetric-inputs
+        shape one level up."""
+        assert self.ARMED - 1.0 < now_armed() <= self.ARMED
+
+    def test_it_is_armed_afresh_for_each_test(self) -> None:
+        """Three tests, three arms. A fixture built once at class-definition
+        time and entered once would leave this one running on whatever the
+        previous test had left -- which under `parametrize` is exactly the
+        `subTest` trap B6 converted away from."""
+        assert self.ARMED - 1.0 < now_armed() <= self.ARMED

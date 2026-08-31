@@ -511,8 +511,8 @@ class TestWhatABatchReports:
         batches' progress interleaved into it would bury the four lines a reader
         is looking for. That is what `redirect_stdout` in `run_batch` buys, and
         without this assertion dropping it changes nothing any other test here
-        can see -- the traceback is still *somewhere*, and `assertIn` on the
-        combined output would still hold.
+        can see -- the traceback is still *somewhere*, and a substring test on
+        the combined output would still hold.
         """
         got = worker(tree, self.PASSES, "Red")
         assert got.done.stdout == ""
@@ -992,7 +992,6 @@ class TestTheWaysARunIsRefusedRatherThanRunEmpty:
             assert done.returncode == 0, done.stdout + done.stderr
             found = re.search(r"Ran (\d+) tests", done.stdout)
             assert found is not None, done.stdout
-            assert found is not None
             ran = int(found.group(1))
             assert ran > 0, f"shard {shard}/4 ran nothing:\n{done.stdout}"
             counted += ran
@@ -1022,10 +1021,10 @@ class TestReadingACollectionFailure:
     )
 
     def test_the_cause_is_kept_rather_than_the_file_and_line(self) -> None:
-        """Asserted exactly, not by `assertIn`: this whole string is what the
-        parent prints after "could not import <module>: ", so a cut that left
-        the traceback in would put five lines on one summary line and every
-        `assertIn` elsewhere in this file would still pass."""
+        """Asserted exactly, not by `in`: this whole string is what the parent
+        prints after "could not import <module>: ", so a cut that left the
+        traceback in would put five lines on one summary line and every
+        substring assertion elsewhere in this file would still pass."""
         assert (
             run_tests._stated(self.RENDERED)
             == "ModuleNotFoundError: No module named 'nothing_by_this_name'"

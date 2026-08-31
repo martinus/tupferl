@@ -3008,6 +3008,17 @@ idempotent and should be run twice to prove it.
 1. Delete `tools/verdict_unittest.py`, `tests/test_verdict_unittest.py`, and
    `mutate._probe`'s `TUPFERL_MUTATE_VERDICT` switch (the default becomes the
    only path).
+
+   **And ci.yml's two `tests.test_verdict_unittest` `--exclude` lines with
+   them**, or `run_tests.main` refuses a pattern that matches nothing and the
+   macOS leg goes red for the deletion rather than for a defect. Two tests in
+   `tests/test_run_tests.py` say so first, locally, which is what they are for:
+   `test_every_exclude_names_at_least_one_scope` over the two dead patterns,
+   and `test_there_are_excludes_to_check`, whose count drops **6 → 4**. That
+   module is not one Phase C otherwise touches, so a session that has not read
+   this will diagnose a red test-runner as a regression — which is the whole
+   cost of the item being missing, and why it is written at step 1 rather than
+   in the doc sweep at step 3.
 2. Remove pytest-subtests from deps if Phase B eliminated all subtests uses
    (grep decides; if woswoar will want it, keep it and say why).
 3. CI/doc debt sweep. The `PREFLIGHT` tuples in `tests/test_ci.py` /
@@ -3021,7 +3032,10 @@ idempotent and should be run twice to prove it.
    is 3.11" becomes Historical (fixtures made it moot); the subTest
    bound-arming lesson is rewritten for parametrize; "`skipUnless` turns the
    macos leg red" is respelled for `pytest.mark.skipif`; §7's preflight
-   verified verbatim. Per §0 most of these should already have been fixed by
+   verified verbatim. **B6 did the last four of those already** — the
+   enterContext prescription, the subTest lesson, the skip entry and the
+   `tests/` layout row — so this list is now shorter than it reads; check
+   rather than assume, which is the point of an audit. Per §0 most of these should already have been fixed by
    the PR that staled them — this phase is the audit that catches stragglers,
    and the PR body lists what it found (a straggler is also a process finding
    worth reporting).

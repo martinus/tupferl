@@ -35,11 +35,10 @@ from __future__ import annotations
 import functools
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
-from collections.abc import Iterator
-from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -191,8 +190,8 @@ def pytest_needs() -> int:
 class Probe:
     """A sandbox of throwaway test modules, and one run of the tool over them."""
 
-    def __init__(self, stack: ExitStack) -> None:
-        self._stack = stack
+    def __init__(self, boxes: support.Boxes) -> None:
+        self._boxes = boxes
         self.fresh()
 
     def fresh(self) -> None:
@@ -201,17 +200,16 @@ class Probe:
         Separate from the fixture because a test below runs the same broken
         module twice, once named and once discovered, and the second needs a
         sandbox the first has not written to. Re-entering the fixture would work
-        and would read as a mistake; this says what it is doing. Each call adds
-        its own directories to the stack, which is closed at the end of the test
-        as before -- so the *first* sandbox outlives the call that replaced it,
-        which is what makes "the second has not been written to" true rather
-        than merely likely.
+        and would read as a mistake; this says what it is doing. `Boxes` hands
+        out a directory per call and removes them all at the end of the test --
+        so the *first* sandbox outlives the call that replaced it, which is what
+        makes "the second has not been written to" true rather than merely
+        likely.
         """
-        self.sandbox = self._stack.enter_context(support.tempdir(prefix="tupferl-verdict-test-"))
+        self.sandbox = self._boxes.make("tupferl-verdict-test-")
         # Outside the sandbox, for the reason `mutate._run` gives: a report
         # written inside is one `open()` away from being the suite's to write.
-        out = self._stack.enter_context(support.tempdir(prefix="tupferl-verdict-out-"))
-        self.report = out / "verdict.json"
+        self.report = self._boxes.make("tupferl-verdict-out-") / "verdict.json"
 
     def module(self, name: str, body: str) -> None:
         (self.sandbox / f"{name}.py").write_text(textwrap.dedent(body), encoding="utf-8")
@@ -278,10 +276,9 @@ class Probe:
 
 
 @pytest.fixture
-def probe() -> Iterator[Probe]:
-    """One `Probe` per test, with every sandbox `fresh` made removed at the end."""
-    with ExitStack() as stack:
-        yield Probe(stack)
+def probe(boxes: support.Boxes) -> Probe:
+    """One `Probe` per test; `boxes` removes every sandbox `fresh` made."""
+    return Probe(boxes)
 
 
 class TestATestThatNoticed:
@@ -1084,7 +1081,7 @@ class TestWhenTheToolItselfCannotRun:
         therefore in `TestAnOutOfMemoryTestIsNotAnAnswer`, which the runners
         without one exclude.
 
-        `assertIn` on the key rather than on its value, because the two values
+        The *key* is asserted rather than its value, because the two values
         are the two cases the tests above already separate; what is claimed here
         is that the file exists and answers the question at all.
         """
@@ -1748,53 +1745,41 @@ class TestTellingAnAnswerFromACarrier:
         assert "did not finish" in self.carrier(verdict.Hung)
 
 
+def handler() -> object:
+    """Whichever `SIGALRM` handler is installed right now."""
+    return signal.getsignal(signal.SIGALRM)
+
+
+@pytest.mark.usefixtures("_alarm_put_back")
 class TestWhenTheAlarmIsArmedAtAll:
     """`each_test`: what it arms, and what it says it armed.
 
     The return value is what the `Watcher` is given, so a run with no alarm
     armed must report `0` rather than quoting a bound that was never in force.
+
+    The mark is on the class and no test body names it, which is CLAUDE.md's
+    rule for a fixture taken for its side effect. Every test here installs a
+    real handler into the process `tools/mutate.py` arms its own per-test alarm
+    in, so one that did not put it back would disarm that bound for the rest of
+    the run -- and a hang afterwards is `TIMEOUT` at 300s rather than `BROKE`
+    at 30, which is the outcome that names no test at all.
     """
-
-    @pytest.fixture(autouse=True)
-    def _handler_put_back(self) -> Iterator[None]:
-        """Every test here installs a `SIGALRM` handler; put the old one back.
-
-        Autouse and on the class, not named by any test body -- the same rule
-        CLAUDE.md states for a sandbox mark. A test that left the harness's own
-        alarm handler replaced would disarm the per-test bound for the rest of
-        the run, which is the silent half of the trade `test_mutants`'
-        `TestABoundedCallStillReturns` refuses.
-        """
-        import signal
-
-        before = signal.getsignal(signal.SIGALRM)
-        try:
-            yield
-        finally:
-            signal.signal(signal.SIGALRM, before)
-
-    def handler(self) -> object:
-        import signal
-
-        return signal.getsignal(signal.SIGALRM)
 
     def test_zero_arms_nothing(self) -> None:
         from tools import verdict
 
-        before = self.handler()
+        before = handler()
         assert verdict.each_test(0) == 0.0
-        assert self.handler() is before, "a handler was installed for no alarm"
+        assert handler() is before, "a handler was installed for no alarm"
 
     def test_a_bound_arms_the_handler_that_raises(self) -> None:
         """PEP 475 retries a syscall interrupted by a signal, so a handler that
         recorded the alarm and returned would be swallowed by exactly the
         blocking read a hung test sits in. Raising propagates instead."""
-        import signal
-
         from tools import verdict
 
         assert verdict.each_test(2.5) == 2.5
-        assert self.handler() is verdict._ring
+        assert handler() is verdict._ring
         with pytest.raises(verdict.Hung):
             verdict._ring(signal.SIGALRM, None)
 
