@@ -892,6 +892,76 @@ def _tags() -> set[tuple[str, int, str]]:
     return found
 
 
+#: Eight real operators, none of which `x = 1` can produce -- so all eight are
+#: dead, and the order they come back in is one of 8! arrangements. `sorted` over
+#: a *set* is only probabilistically guarded (a set iterates in hash order, which
+#: Python randomises per run), so the fixture is sized for 1 in 40320 rather than
+#: the coin flip two operators would give. CLAUDE.md records the rule; this is
+#: the spelling it takes here.
+EIGHT_DEAD = "branch, negate, connector, drop-not, affix, sign, divisor, order"
+
+#: One live tag and one dead one over the same statement, so "reported nothing"
+#: and "reported everything" are both failures.
+LIVE_AND_DEAD = """\
+def f(a, b):
+    # survivor: boundary -- live: `<` becomes `<=` is a real row on the line below.
+    # survivor: negate -- dead: there is no `in` or `is` down there to negate.
+    return a < b
+"""
+
+
+class TestFindingATagNoRowCanReach(unittest.TestCase):
+    """`dead_tags` against a tree built to have one of each.
+
+    **Asserting `dead_tags(the real tree) == []` cannot fail**, which is what the
+    first version of this did and what the sweep that follows a change is for: a
+    `dead_tags` that appends nothing, or walks no lines, or inverts its test
+    returns `[]` too, and eleven mutations of it survived on that assertion. The
+    whole-tree check below is the guard for the *tree*; this is the guard for the
+    thing doing the checking.
+
+    One fixture, sized to kill all eleven at once: two files whose walk order
+    differs from their sorted order, a tag on the very first line, eight dead
+    operators over one statement, and a live tag that must not be reported.
+    """
+
+    def dead(self, box: Path) -> list[tuple[str, int, str]]:
+        (box / "tools").mkdir(parents=True)
+        (box / "tupferl").mkdir(parents=True)
+        # A *trailing* tag, so it guards line 1 -- statement 0, which is the line
+        # a walk starting at 1 would silently miss and nothing else would notice.
+        (box / "tools" / "y.py").write_text(
+            f"x = 1  # survivor: {EIGHT_DEAD} -- dead: none of these can fire on an assignment.\n",
+            encoding="utf-8",
+        )
+        (box / "tupferl" / "x.py").write_text(LIVE_AND_DEAD, encoding="utf-8")
+        return mutants.dead_tags(box)
+
+    def test_every_dead_tag_is_found_and_the_live_one_is_not(self) -> None:
+        """The exact list, in order, because four of the eleven are about order.
+
+        `every_line` walks `MUTABLE`'s prefixes in *tuple* order -- `tupferl/`
+        then `tools/` -- so a sorted answer is not the order the rows arrive in,
+        and dropping the sort is visible here rather than only on a machine whose
+        filesystem happens to disagree.
+        """
+        with support.tempdir() as box:
+            self.assertEqual(
+                self.dead(box),
+                [
+                    ("tools/y.py", 1, name)
+                    for name in sorted(word.strip() for word in EIGHT_DEAD.split(","))
+                ]
+                + [("tupferl/x.py", 4, "negate")],
+            )
+
+    def test_a_tag_whose_operator_really_fires_is_left_alone(self) -> None:
+        """Said again on its own, because the list above would also be satisfied
+        by a `dead_tags` that reported the `boundary` tag and something else."""
+        with support.tempdir() as box:
+            self.assertNotIn("boundary", [operator for _, _, operator in self.dead(box)])
+
+
 class TestEveryTagGuardsARowThatExists(unittest.TestCase):
     """A `# survivor:` tag on a statement with no such row excuses nothing.
 
