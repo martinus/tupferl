@@ -273,6 +273,14 @@ class TestPrecedenceAroundEveryOperator:
     def test_a_call_form_needs_none_because_its_own_brackets_delimit(self) -> None:
         assert only("self.assertIsInstance(a or b, int)") == "assert isinstance(a or b, int)"
 
+    def test_an_argument_that_will_not_parse_keeps_its_brackets(self) -> None:
+        """The arm `ast` cannot answer for, driven directly because no whole
+        call reaches it: every argument of a call that parses is an expression
+        that parses. It is here because "cannot tell" and "needs none" are
+        different answers and only one of them is safe."""
+        assert unassert.bracket("a b") == "(a b)"
+        assert unassert.bracket("=") == "(=)"
+
 
 class TestWhereNotBinds:
     """`assertFalse` is the one rewrite that can change meaning by precedence."""

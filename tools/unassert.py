@@ -90,10 +90,24 @@ def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
     and `split_args` ignore it, which is what makes a bracket or a comma inside
     a comment stop counting; `convert` reads it as a reason to refuse, because a
     comment cannot survive being flattened onto one line.
+
+    **Skipped with a flag and `i += 1`, the way a string already is, rather than
+    by `find`ing the newline.** `str.find` answers `-1` for "not there", and a
+    comment on the last line of a file with no trailing newline is exactly that
+    case -- so any mutation mishandling the sentinel assigned `i = -1` and the
+    loop ran backwards for ever. The mutation sweep found it as a `BROKE` row on
+    a fixture whose comment has no newline after it, which is CLAUDE.md's
+    `RLIM_INFINITY` lesson in a second spelling: a sentinel is not a number.
+    Here `i` only ever increases, so a hang is not reachable by any mutation of
+    this arm.
     """
-    depth, quote, i = 0, "", start
+    depth, quote, comment, i = 0, "", False, start
     while i < len(text):
         char = text[i]
+        if comment:
+            comment = char != "\n"
+            i += 1
+            continue
         if quote:
             if char == "\\":
                 i += 2
@@ -110,8 +124,8 @@ def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
             continue
         if char == "#":
             yield i, char, depth
-            newline = text.find("\n", i)
-            i = len(text) if newline < 0 else newline
+            comment = True
+            i += 1
             continue
         if char in "([{":
             depth += 1
@@ -288,11 +302,11 @@ def convert(text: str) -> tuple[str, list[str]]:
                 # A comment cannot be flattened onto one line, and dropping it
                 # would delete something a person wrote. Left for that person.
                 why = "a comment inside the call"
-        if not why:
-            args = [flatten(a) for a in split_args(inside)]
-            assert form is not None
-            if not form[0] <= len(args) <= form[0] + 1:
-                why = f"takes {form[0]}, found {len(args)}"
+            else:
+                args = [flatten(a) for a in split_args(inside)]
+                assert form is not None
+                if not form[0] <= len(args) <= form[0] + 1:
+                    why = f"takes {form[0]}, found {len(args)}"
         if why:
             refused.append(f"{name}: {why}")
             text = text[:at] + text[at:].replace("self.", PARKED, 1)
