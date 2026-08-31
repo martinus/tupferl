@@ -36,7 +36,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -877,66 +876,51 @@ class TestChoosingOperators(unittest.TestCase):
 SOME_TAGS = 200
 
 
-def _reachable(source: str, path: str) -> set[tuple[int, str]]:
-    """`(statement, operator)` for every row `generate` makes of the whole file.
+def _tags() -> set[tuple[str, int, str]]:
+    """Every `(path, statement, operator)` a tag in this tree covers.
 
-    Through `Offsets.line_of` and `Tags.statement`, which is the route
-    `mutate.excused` takes to ask whether a row is excused -- so what this
-    compares against is what a sweep would actually consult, rather than a second
-    opinion about where a tag sits.
+    Counted independently of `mutants.dead_tags`, which reports the subset that
+    reaches no row: the floor below has to be a number this file derived, or it
+    would be satisfied by whatever the thing under test happened to return.
     """
-    index, offsets = mutants.Tags(source), mutants.Offsets(source)
-    whole = set(range(1, len(source.split("\n")) + 1))
-    return {
-        (index.statement(offsets.line_of(row.span[0])), row.operator)
-        for row in mutants.generate(source, path, whole)
-        if row.span is not None
-    }
-
-
-def _tagged() -> Iterator[tuple[str, int, str, bool]]:
-    """Every `# survivor:` tag in the tree, and whether a row can reach it."""
-    for path in sorted(p for p in REPO_ROOT.rglob("*.py") if mutants.mutable(_rel(p))):
-        source = path.read_text(encoding="utf-8")
-        reachable = _reachable(source, _rel(path))
+    found: set[tuple[str, int, str]] = set()
+    for path in sorted(mutants.every_line(REPO_ROOT)):
+        source = (REPO_ROOT / path).read_text(encoding="utf-8")
         index = mutants.Tags(source)
-        # Through `operators`, which is what a writer asks; the index behind it
-        # is keyed on a statement line counting from 0, as `excuse` is.
-        for line in range(len(source.split("\n"))):
-            for operator in sorted(index.operators(line)):
-                yield _rel(path), line + 1, operator, (line, operator) in reachable
-
-
-def _rel(path: Path) -> str:
-    return str(path.relative_to(REPO_ROOT))
+        for statement in range(len(source.split("\n"))):
+            found.update((path, statement, operator) for operator in index.operators(statement))
+    return found
 
 
 class TestEveryTagGuardsARowThatExists(unittest.TestCase):
     """A `# survivor:` tag on a statement with no such row excuses nothing.
 
-    It is not reported either: `Survivors.spent` judges a tag against the rows
-    that *ran*, so a tag no row can reach is neither consulted nor complained
-    about. It just sits there claiming somebody read a survivor -- which is the
-    mute list the whole tag design exists to prevent, arriving by a route the
-    design did not anticipate.
+    It is not reported either: `mutate.Survivors.spent` judges a tag against the
+    rows that *ran*, so a tag no row can reach is neither consulted nor
+    complained about. It just sits there claiming somebody read a survivor --
+    which is the mute list the whole tag design exists to prevent, arriving by a
+    route the design did not anticipate.
 
-    **Two real instances, both found by this check on its first run.** A tag
-    written for `_lane`'s walk was placed above the enclosing `while`, so it
-    covered the loop header and none of the five statements inside it -- seven
-    rows still unexcused and nothing saying so. And `verdict_unittest.main`'s
-    `off-by-one` reason sat above a `return {` four screens from the `argv`
-    indices it describes, where no `off-by-one` row has ever been generated.
+    **Two real instances, both found by `mutants.dead_tags` on its first run.**
+    A tag written for `mutate._lane`'s walk was placed above the enclosing
+    `while`, so it covered the loop header and none of the five statements
+    inside it -- seven rows still unexcused, and nothing saying so. And
+    `verdict_unittest.main`'s `off-by-one` reason sat above a `return {` four
+    screens from the `argv` indices it describes, where no `off-by-one` row has
+    ever been generated.
 
-    Static and pure, which is the point: both of those cost a whole-table sweep
-    to notice otherwise, and one of them had been wrong for as long as it had
-    existed.
+    Static and pure, which is the point: both cost a whole-table sweep to notice
+    otherwise, and one of them had been wrong for as long as it had existed.
     """
 
-    def test_the_walk_finds_the_tags_there_are(self) -> None:
-        self.assertGreaterEqual(len(list(_tagged())), SOME_TAGS)
+    def test_the_tree_has_tags_to_check(self) -> None:
+        """Or a `dead_tags` that resolved nothing would read as a clean tree."""
+        self.assertGreaterEqual(len(_tags()), SOME_TAGS)
 
     def test_no_tag_names_an_operator_its_statement_cannot_produce(self) -> None:
-        dead = [f"{path}:{line} {operator}" for path, line, operator, ok in _tagged() if not ok]
+        dead = [
+            f"{path}:{line} {operator}" for path, line, operator in mutants.dead_tags(REPO_ROOT)
+        ]
         self.assertEqual(dead, [])
 
 

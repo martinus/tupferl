@@ -2889,6 +2889,23 @@ def _report_known(sorted_out: Survivors) -> None:
                 paint.ODD,
             )
         )
+    # **The denominator, said by the run rather than by a document.** A row whose
+    # mutation disables the bound its own probe runs under can only ever be
+    # `BROKE` or `TIMEOUT` -- so it is not a guard this suite failed to provide,
+    # it is a question a sweep cannot ask. Nineteen of `tools/mutate.py`'s 1030
+    # rows are that, and without this line the fact lives only in prose, which
+    # `TODO`'s own count is here because prose does not survive.
+    #
+    # Keyed on the word in the reason, exactly as `TODO` above is: a tag is free
+    # text and the alternative is a second field nobody would fill in.
+    if unanswerable := sum(1 for _, why in sorted_out.accepted if "unanswerable" in why):
+        print(
+            paint.paint(
+                f"{unanswerable} of those are unanswerable: the mutation disables the bound its "
+                f"own probe runs under, so the row can only ever be BROKE or TIMEOUT.",
+                paint.QUIET,
+            )
+        )
     for spent in sorted_out.spent:
         # Loud, and listed rather than counted. A tag that has stopped earning
         # its place is the one way this record can quietly become a mute list,

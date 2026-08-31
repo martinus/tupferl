@@ -4986,6 +4986,33 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
         self.assertIn("2 survivor(s) excused", said.getvalue())
         self.assertIn("1 of those say TODO", said.getvalue())
 
+    def test_unanswerable_rows_are_counted_apart_from_the_rest(self) -> None:
+        """The denominator, said by the run rather than by a document.
+
+        A row whose mutation disables the bound its own probe runs under is not a
+        guard the suite failed to provide -- it is a question a sweep cannot ask,
+        so `caught / answered` is over a smaller table than the row count
+        suggests. Nineteen of `tools/mutate.py`'s 1030 rows on 2026-08-31.
+
+        Keyed on the word in the reason, as `TODO` is, because a tag is free text.
+        """
+        row = self.row("y = 2\n", "y = 2")
+        with support.quiet() as said:
+            mutate._report_known(
+                mutate.Survivors(
+                    [], [(row, "unanswerable: the pool deadlocks"), (row, "equivalent")], []
+                )
+            )
+        self.assertIn("2 survivor(s) excused", said.getvalue())
+        self.assertIn("1 of those are unanswerable", said.getvalue())
+
+    def test_a_record_with_nothing_unanswerable_says_so_by_silence(self) -> None:
+        """The other half, for `TODO`'s reason: a line on every run is noise."""
+        row = self.row("y = 2\n", "y = 2")
+        with support.quiet() as said:
+            mutate._report_known(mutate.Survivors([], [(row, "equivalent")], []))
+        self.assertNotIn("unanswerable", said.getvalue())
+
     def test_a_finished_record_says_nothing_about_todo(self) -> None:
         """The other half: a line on every clean run trains the eye past it."""
         row = self.row("y = 2\n", "y = 2")
