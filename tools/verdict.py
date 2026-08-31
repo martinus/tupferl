@@ -34,13 +34,19 @@ not, and it is the directory pytest then takes as its ``rootdir``.
 | the test body, by assertion or by any exception | ``call`` | `noticed` |
 | a case inside ``self.subTest(...)`` | ``call`` | `noticed`, against the **owner** |
 | the instance's own ``tearDown`` | ``call`` | `noticed` |
-| ``setUpClass`` / ``setUpModule`` | ``setup`` | `broke` |
+| a **function-scoped** fixture | ``setup`` | `noticed` |
+| ``setUpClass`` / ``setUpModule``, or a wider fixture | ``setup`` | `broke` |
 | ``tearDownClass`` / ``tearDownModule`` | ``teardown`` | `broke` |
 | a module that will not import | no phase; `pytest_collectreport` | `broke` |
 
 So the fixture/test line that `verdict_unittest` had to draw with an
 `isinstance` against `unittest.suite._ErrorHolder` is drawn here by the phase
-pytest already reports, and needs no special case at all. That mapping is a
+pytest already reports, plus one fact phase cannot carry: the **scope** of the
+fixture that raised, taken from `pytest_fixture_setup`. Under `unittest` the
+instance `setUp` ran inside ``call`` and a failure in it was a test noticing; a
+function-scoped fixture is where that code goes when a module converts, and it
+has to keep meaning the same thing. Cluster B4a measured the cost of not saying
+so: 104 rows of 1309 moved from `caught` to `BROKE` with no test weakened. That mapping is a
 *measurement*, not a documented guarantee, which is why
 `tests/test_verdict.py`'s `TestWhatThisAssumesOfPytest` asserts each row of it:
 a pytest that moved one would otherwise turn `broke` silently into `caught`.
@@ -359,6 +365,10 @@ class Watcher:
         #: said about one was the failing test's name. See `mutate.run`'s
         #: baseline branch, which is the one reader.
         self.reasons: list[str] = []
+        #: The scope of whichever fixture last raised during a test's setup,
+        #: by nodeid. Filled by `pytest_fixture_setup` and read by `answered`,
+        #: which is the only place the difference matters -- see its comment.
+        self.scopes: dict[str, str] = {}
         #: What each test cost, by nodeid, summed over its three phases.
         #: `mutate.Killers` accumulates these so it can order the cheap
         #: high-yield tests first.
@@ -466,6 +476,35 @@ class Watcher:
         else:
             self.times[report.nodeid] = self.times.get(report.nodeid, 0.0) + report.duration
 
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(
+        self, fixturedef: pytest.FixtureDef[object], request: pytest.FixtureRequest
+    ) -> Generator[None, object, object]:
+        """Record the *scope* of a fixture that raises, for `answered` to read.
+
+        Phase alone cannot tell the two apart. pytest reports every fixture
+        failure -- a per-test one and a session-wide one alike -- as the
+        ``setup`` phase of each affected test, and the two mean opposite things
+        here: a function-scoped fixture is the pytest spelling of `unittest`'s
+        instance ``setUp``, which ran inside ``call`` and was a test *noticing*;
+        a wider one is `setUpClass`, which was not.
+
+        Measured, and it is why this exists: cluster B4a converted four modules
+        whose fixtures assert their own preconditions, and **104 rows of a
+        1309-row sweep moved from `caught` to `BROKE`** with no test weakened --
+        the same assertions, in the same order, reclassified by where the
+        conversion put them. A `BROKE` row is never `caught`, so 104 lines of
+        `tupferl/` read as guarded by nothing.
+
+        Only the *last* raiser is kept, which is the one whose exception
+        propagates: pytest stops setting up an item at the first failure.
+        """
+        try:
+            return (yield)
+        except BaseException:
+            self.scopes[request.node.nodeid] = str(fixturedef.scope)
+            raise
+
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         """A module that will not import, reported before anything of it runs.
 
@@ -486,10 +525,19 @@ class Watcher:
         if reason := _carrier(nodeid, call.excinfo, self.each):
             self.broke.append(reason)
             return
-        if call.when != "call":
-            # `setUpClass`, `setUpModule` and their teardowns. Nothing in them
-            # evaluated an assertion, so crediting the mutation to them would
-            # be crediting a test that never ran.
+        if call.when != "call" and self.scopes.get(nodeid) != "function":
+            # `setUpClass`, `setUpModule`, their teardowns, and any fixture
+            # wider than one test. Nothing in them evaluated an assertion *for
+            # this test*, so crediting the mutation to them would be crediting a
+            # test that never ran -- and the same failure is about to be
+            # reported again for every other test in the class.
+            #
+            # A **function-scoped** fixture is the exception, and it is not a
+            # special case so much as the same rule spelled for pytest: it runs
+            # once for this test, it is where a converted `setUp` went, and its
+            # nodeid is a killer a later run can select. `unittest` counted the
+            # identical assertion as a test noticing because `setUp` happened to
+            # run inside `call`.
             self.broke.append(f"{nodeid}: {call.when} failed -- {_said(call)}")
             return
         self.noticed.append(nodeid)
