@@ -1227,6 +1227,18 @@ has been dropped.
   happens when the alarm moves. It is a floor, never a ceiling: with nothing
   armed, or with `--each-test 0`, the fixture's own number stands unchanged.
 
+  **Writing the rule down did not apply it, and two constants sat outside it for
+  four clusters.** `support.PROMPTED` and `PATIENCE` went through `bounded` when
+  it was written; `tests/test_watch.py`'s `BOUND` and `tests/test_reached.py`'s
+  did not, and both were a bare `20` with a comment saying they beat "the 30s
+  alarm" -- true of the default and false of `--each-test 10`. That is the same
+  hole in the same shape as the one this helper was written for, in the file
+  whose own docstring records the seven `BROKE` rows it cost. B5 routed both.
+  `test_support`'s `test_a_driven_bound_follows_the_alarm_that_was_armed` is the
+  guard, and it asks a *fresh interpreter* what the constant comes out as under
+  a patched `TUPFERL_MUTATE_EACH_TEST` rather than reading the source, because
+  the claim is about the value a sweep's child computes.
+
 - **A soft rlimit is not a cap: any descendant can raise it back.** `RLIMIT_AS`
   has a soft and a hard half, and `setrlimit` lets an unprivileged process raise
   soft up to hard freely. `verdict.cap` used to lower only soft and pass the

@@ -1,10 +1,10 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1, B2, B3, B4a and B4b** with them, which converted the first
-twenty-five modules.
-**Of 36 test modules, 10 still run through pytest's `unittest` adapter** — 8 of
-those convert in B5 and B6. The other two never do, and are **not** arrears:
+and **clusters B1, B2, B3, B4a, B4b and B5** with them, which converted the
+first twenty-nine modules.
+**Of 36 test modules, 6 still run through pytest's `unittest` adapter** — 4 of
+those convert in B6. The other two never do, and are **not** arrears:
 `tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
 its subject, and `tests/test_sync_properties.py` is converted but exposes a
 class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
@@ -33,8 +33,9 @@ differently from what it says below is in
 [B1 as built](#b1-as-built--2026-08-30),
 [B2 as built](#b2-as-built--2026-08-30),
 [B3 as built](#b3-as-built--2026-08-31),
-[B4a as built](#b4a-as-built--2026-08-31) and
-[B4b as built](#b4b-as-built--2026-08-31). **Read every "as built" section before
+[B4a as built](#b4a-as-built--2026-08-31),
+[B4b as built](#b4b-as-built--2026-08-31) and
+[B5 as built](#b5-as-built--2026-08-31). **Read every "as built" section before
 the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
@@ -1361,7 +1362,7 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 | B3 | **Done** — see [B3 as built](#b3-as-built--2026-08-31). `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture). **Not `requires_git`** — its only user is `test_mutants`, so it belongs to B6; `test_doctor`'s `skipIf` *was* converted | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
 | B4a | **Done** — see [B4a as built](#b4a-as-built--2026-08-31). `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture, and `support.Machine` → a `machine` one, which this row did not anticipate: `test_manage` takes it for six classes. The `template()`/`copy_template()` functions are unchanged | the overlay both-copies rule transfers as-is; `TestTheSnapshotIsWrittenLast` is in `test_sync_cli` and so belongs to B4b, which this row had wrong. |
 | B4b | **Done** — see [B4b as built](#b4b-as-built--2026-08-31). `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | all three `unittest` adapters had no user left and were deleted here, which this row anticipated for two of them. |
-| B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
+| B5 | **Done** — see [B5 as built](#b5-as-built--2026-08-31). `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion — and they were wrong, in `test_reached` too. |
 | B6 | **Fix #96 first — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
 
 **Size:** 7 PRs, each roughly 1–4 sessions. **Failure protocol:** FP per
