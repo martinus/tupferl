@@ -34,14 +34,15 @@ import sys
 import tempfile
 import termios
 import time
-import unittest
 from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
+import pytest
 from hypothesis import strategies as st
 
 from tupferl import manifest, paths
@@ -155,6 +156,46 @@ PROMPTED = bounded(20.0)
 PATIENCE = bounded(5.0)
 
 
+def bounds(seconds: float, why: str) -> Any:
+    """`deadline` as an autouse fixture, for a class whose subject can hang.
+
+    **Written because the rule below was written seven times instead.**
+    `deadline`'s docstring says to arm it on the class rather than around the one
+    call a sweep named, and every class obeying it held the same four lines with
+    a different message -- two pairs of them byte-identical, comment included.
+    That is exactly what CLAUDE.md records from B5: *when a lesson is written
+    down as a per-call-site habit, check whether it can be set once instead. The
+    habit is what rots.*
+
+    Used as a class attribute, where pytest finds it like any other fixture::
+
+        class TestCapping:
+            _bounded = support.bounds(support.PATIENCE, "cap never finished")
+
+    The message stays per class because it is what a reader sees when the bound
+    fires, and "something hung" would send them to the wrong file.
+
+    **It takes `self` and so is a class attribute only.** Assigned in a class
+    body it is bound as a method, and pytest reads the bound signature: without
+    the parameter, collection fails with `Could not determine arguments of
+    <bound method ...>: invalid method signature` -- loudly, at collection, for
+    every class using it. At module level it would ask for a fixture called
+    `self` and not find one, which is equally loud. There is no quiet
+    misuse.
+
+    The return type is `Any` rather than the fixture's own: pytest's decorator
+    hands back a `FixtureFunctionDefinition`, which is not a public name, and
+    annotating the callable it wraps would be a lie about what is assigned.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bounded(self: object) -> Iterator[None]:
+        with deadline(seconds, why):
+            yield
+
+    return _bounded
+
+
 @contextmanager
 def deadline(seconds: float, why: str) -> Iterator[None]:
     """Fail the body if it has not finished in `seconds`.
@@ -178,9 +219,11 @@ def deadline(seconds: float, why: str) -> Iterator[None]:
     sweep named.** Measured twice: bounding the call left the *sibling* tests
     hanging on the same mutation, because they reach the line by another route --
     three of four `line_starts` rows and two of six `verdict` walk rows stayed
-    `BROKE`. The spelling is a `contextlib.ExitStack` entered in `setUp` and
-    closed by `addCleanup`; `TestCase.enterContext` would say it in one line and
-    is 3.11, which this project does not require.
+    `BROKE`. The spelling is an autouse `@pytest.fixture` on the class that
+    enters this as a `with` and yields -- one per test, entered and left with
+    it. It used to be a `contextlib.ExitStack` opened in `setUp` and closed by
+    `addCleanup`, because `TestCase.enterContext` is 3.11 and this project
+    supports 3.10; a fixture makes that question moot.
     """
 
     def ring(signum: int, frame: object) -> None:
@@ -315,6 +358,30 @@ def tempdir(prefix: str = "tupferl-test-") -> Iterator[Path]:
         # `discard`, not the `with` form: these trees hold git repositories, and
         # a cleanup that fails should name what survived rather than an errno.
         discard(box)
+
+
+class Boxes:
+    """Several `tempdir`s bound to one test, handed out on demand.
+
+    A factory rather than one directory, because a helper that builds a tree per
+    call is called more than once in a test -- and because a fixture cannot be
+    asked for twice. `tests/conftest.py`'s `boxes` is the pytest adapter over
+    this; `Probe.fresh` in `tests/test_verdict.py` is the other caller, where the
+    *second* box existing while the first still does is the point.
+
+    **It is `tempdir` underneath and that is the whole reason it is here.** The
+    shape it replaced was `Path(tempfile.mkdtemp(prefix=...))` with an
+    `addCleanup(shutil.rmtree, box, True)` beside it -- 15 copies in
+    `tests/test_mutate.py` alone -- whose `True` is `ignore_errors`, so a delete
+    that failed left the tree behind and said nothing. `discard`, which `tempdir`
+    goes through, names what survived instead (#17).
+    """
+
+    def __init__(self, stack: ExitStack) -> None:
+        self._stack = stack
+
+    def make(self, prefix: str = "tupferl-test-") -> Path:
+        return self._stack.enter_context(tempdir(prefix=prefix))
 
 
 def sandbox_env(home: Path, host: str = HOST) -> dict[str, str]:
@@ -510,7 +577,13 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
 #: issue #3 will want -- must not be updatable in one file and forgotten in
 #: another. Only `tests/test_mutants.py` uses it today; the rest of the suite
 #: treats git as the hard requirement plan §5 makes it.
-requires_git = unittest.skipUnless(shutil.which("git"), "git required")
+#:
+#: A `pytest.mark.skipif` since B6, where its one user converted. It reads as
+#: `unittest.skipUnless`'s inverse -- `skipif(which(...) is None)` -- because
+#: pytest has no `skipunless`, and getting the polarity wrong here would skip
+#: the class on every machine that *has* git, which is every machine this runs
+#: on: green, silent, and testing nothing. `--no-skips` is what would say so.
+requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git required")
 
 #: What the refusing hook writes. Two lines: the first is the reason, the second
 #: is the trailer `gitrepo.reason` must drop -- which is the shape git's own

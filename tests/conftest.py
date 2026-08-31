@@ -25,7 +25,9 @@ with `MachineCase` and `TwoMachinesCase` -- from B3 until B4b converted the last
 from __future__ import annotations
 
 import os
+import signal
 from collections.abc import Iterator
+from contextlib import ExitStack
 
 import pytest
 
@@ -111,3 +113,41 @@ def two_machines() -> Iterator[support.TwoMachines]:
     """
     with support.two_machines() as made:
         yield made
+
+
+@pytest.fixture
+def boxes() -> Iterator[support.Boxes]:
+    """Throwaway directories that live until the end of the test.
+
+    Here rather than in one module because a second wants it: `test_mutate`
+    hands them to fifteen tree-building helpers, and `test_verdict`'s `Probe`
+    needs a *second* box while the first is still there. What one **is** is
+    `support.Boxes`, per this file's rule -- this is the adapter.
+    """
+    with ExitStack() as stack:
+        yield support.Boxes(stack)
+
+
+@pytest.fixture
+def _alarm_put_back() -> Iterator[None]:
+    """Whatever `ITIMER_REAL` and `SIGALRM` were, back afterwards.
+
+    Two modules arm a real timer and install a real handler --
+    `test_support`'s `TestABoundGivesTheHarnessItsAlarmBack` and
+    `TestABoundBuiltForAClassIsReallyArmed`, and `test_verdict`'s
+    `TestWhenTheAlarmIsArmedAtAll` -- and this process is also the one
+    `tools/mutate.py` arms its per-test alarm in.
+
+    **The timer as well as the handler, and that is the half a second copy
+    got wrong.** B6 wrote a handler-only version in `test_verdict` before this
+    was shared. Restoring the handler and leaving a timer armed hands the next
+    test an alarm nobody asked for, into whichever handler is then installed --
+    and leaving the timer *cleared* is the fault `support.deadline` has its own
+    four tests about, one level down.
+    """
+    handler = signal.getsignal(signal.SIGALRM)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, handler)
