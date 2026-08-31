@@ -53,11 +53,18 @@ from tools.mutants import Mutation, check
 #: and the same two bounds it has to sit between.
 #:
 #: Left at 20 when `ALARM` dropped from 2 to 0.5. The number that matters is the
-#: gap to 30, not the gap to the honest wait: this bound exists to fail a
+#: gap to the alarm, not the gap to the honest wait: this bound exists to fail a
 #: *hung* probe before the harness's own alarm does, and shrinking it in step
 #: would buy nothing and narrow the margin that stops a slow runner reading as
 #: a hang.
-BOUND = 20
+#:
+#: **The gap was to 30 and 30 is only the default.** `--each-test` is a flag, so
+#: at `--each-test 10` this sat back above the alarm -- the fourth instance of
+#: the mistake `collect`'s docstring below counts to three, in the file that
+#: counts it. Through `support.bounded` since B5, along with every other wait in
+#: `tests/`; `test_support.TestEveryWaitOnAChildIsBounded` is what found it and
+#: what keeps it.
+BOUND = support.bounded(20.0)
 
 #: Seconds of per-test alarm the hung-test class arms.
 #:
@@ -863,6 +870,11 @@ class TestAHungTestIsBoundedAndNotCredited(unittest.TestCase):
         `subprocess.run` calls (60). Each was written deliberately to bound a
         hang, and each picked a number without checking it against the
         harness's.
+
+        **And `BOUND` above was the fourth**, three screens from this sentence:
+        20 beats the alarm's *default* and loses to `--each-test 10`. Counting
+        the instances in prose is what a person does instead of a check, so B5
+        wrote the check -- `test_support.TestEveryWaitOnAChildIsBounded`.
         """
         with support.tempdir() as box:
             (box / "tests").mkdir()

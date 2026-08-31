@@ -119,7 +119,10 @@ def address_space_caps() -> bool:
     )
     try:
         done = subprocess.run(
-            [sys.executable, "-B", "-c", probe], capture_output=True, text=True, timeout=30
+            [sys.executable, "-B", "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=support.bounded(30.0),
         )
     except subprocess.SubprocessError:  # pragma: no cover - a machine in trouble
         return False
@@ -176,7 +179,7 @@ def pytest_needs() -> int:
                 capture_output=True,
                 text=True,
                 env={**os.environ, **PROBE_ENV},
-                timeout=60,
+                timeout=support.bounded(60.0),
             )
             return int(done.stdout.strip().splitlines()[-1])
         except (OSError, ValueError, IndexError, subprocess.SubprocessError):

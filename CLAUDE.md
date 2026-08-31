@@ -1227,6 +1227,36 @@ has been dropped.
   happens when the alarm moves. It is a floor, never a ceiling: with nothing
   armed, or with `--each-test 0`, the fixture's own number stands unchanged.
 
+  **Writing the rule down did not apply it, and counting the instances in prose
+  is what a person does instead of a check.** `support.PROMPTED` and `PATIENCE`
+  went through `bounded` when it was written and nothing else did. B5 set out to
+  route the two `tests/test_watch.py` and `tests/test_reached.py` carried -- both
+  a bare `20`, with a comment saying they beat "the 30s alarm", true of the
+  default and false of `--each-test 10` -- and named the pair in a tuple. The
+  review found **four more**, including `tests/test_mutate.py`'s `BOUND = 20`,
+  three screens above a docstring reading *"that is the third instance of one
+  mistake here"*. A hand-written list is a record of what somebody remembered.
+
+  **`test_support.TestEveryWaitOnAChildIsBounded` is the guard, and it walks.**
+  Every `timeout=` handed to `run`, `Popen`, `communicate` or `wait` anywhere
+  under `tests/`, following a name to what it was assigned -- including a
+  parameter default, which is how `test_mutate.py` hid its one -- and insisting
+  it reaches `support.bounded`. 21 sites on 2026-08-31, with a `FLOOR` under the
+  count for the reason `tests/test_errors.py` has one: a resolver that matched
+  nothing would report no unrouted waits and read as a clean bill of health.
+
+  Two things about its shape are load-bearing. Asking *what is being called*
+  keeps `argparse.Namespace(timeout=60.0)` out with no exception list -- that
+  `timeout` is the harness's own setting in a fake `args`, not a wait. And the
+  one shape it must let through is recognised structurally rather than listed: a
+  `timeout=` inside a `with pytest.raises(...)` is the *assertion*, as
+  `running.wait(timeout=0.5)` is, and bounding it would bound the subject.
+
+  Beside it, `test_a_driven_bound_follows_the_alarm_that_was_armed` asks a
+  *fresh interpreter* what a routed constant comes out as under a patched
+  `TUPFERL_MUTATE_EACH_TEST`. The walk checks the spelling; this checks that the
+  spelling has the effect, which a source check never could.
+
 - **A soft rlimit is not a cap: any descendant can raise it back.** `RLIMIT_AS`
   has a soft and a hard half, and `setrlimit` lets an unprivileged process raise
   soft up to hard freely. `verdict.cap` used to lower only soft and pass the

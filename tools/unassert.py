@@ -31,6 +31,18 @@ and the order pytest's own assertion rewriting reads best in. `assertEqual` and
 `assertGreater` and `assertLess` are **not**, and their operands keep their
 positions.
 
+**That is an assumption about the file, not a fact, and B5 is the cluster where
+it was false.** The flip reads `assertEqual(expected, actual)` -- the repository's
+own convention -- and emits `actual == expected`. `tests/test_reached.py` and
+`tests/test_watch.py` were ported from `martinus/woswoar`, which writes
+`assertEqual(actual, expected)`, so the output was yoda: `assert 1 == split.total`.
+Nothing is *wrong* -- `==` is symmetric and no assertion changed meaning -- and
+`ruff --fix` (SIM300) put 27 of them back in `test_reached.py` alone. But it
+does not put all of them back: a dict, set or list literal on the left is not a
+SIM300 constant, so four survived and had to be flipped by hand. **Check which
+convention the file uses before reading the diff**, and expect a ruff pass and a
+hand pass rather than one.
+
 `assertRaises` is deliberately absent from `FORMS`. It is a context manager
 rather than a call, its replacement takes a different shape
 (`pytest.raises(...) as caught`, then `caught.value`), and a wrong guess there

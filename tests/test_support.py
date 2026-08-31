@@ -14,20 +14,180 @@ the code: a variable added there is poisoned by this fixture the same day.
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import os
 import signal
 import subprocess
 import sys
 import tempfile
 import time
-import unittest
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from tests import support
 from tools import mutate
 from tupferl import conflicts, paths
+
+#: The two modules B5 routed, and what `bound_of` demonstrates on.
+#:
+#: A hand-written pair, and that is now honest because it carries no
+#: guarantee: `TestEveryWaitOnAChildIsBounded` is the guard, and it discovers
+#: what to check. These two are the demonstration that the *spelling* the walk
+#: insists on has the effect it claims -- a constant written
+#: `support.bounded(...)` really does come out smaller in a child whose alarm
+#: is tighter. Every other routed constant is spelled identically, so a third
+#: entry here would buy two more interpreter spawns and no new fact.
+DRIVEN = ("tests.test_watch", "tests.test_reached")
+
+#: What a `timeout=` on one of these is: a fixture waiting on a child process.
+#:
+#: `argparse.Namespace(timeout=60.0)` in `test_mutate.py` is *not* one -- that
+#: is the harness's own `--timeout` setting in a fake `args` -- and asking what
+#: is being called keeps it out with no exception list to maintain.
+WAITS_ON_A_CHILD = ("run", "Popen", "communicate", "wait")
+
+#: The fewest waits the walk may find before it is believed.
+#:
+#: `tests/test_errors.py`'s `FLOOR` is the precedent and the reason: a walk that
+#: matched nothing would pass every assertion below, and "this suite waits on no
+#: child process" is the one answer that cannot be true. Set well under the 21
+#: found on 2026-08-31 so that deleting a test is not a failure here.
+FLOOR = 12
+
+
+def _called(node: ast.Call) -> str:
+    """The attribute or name being called, for `x.run(...)` and `run(...)`."""
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return node.func.id if isinstance(node.func, ast.Name) else ""
+
+
+def _under_raises(tree: ast.Module) -> set[int]:
+    """The lines inside a `with pytest.raises(...)`, where a timeout is the point.
+
+    `running.wait(timeout=0.5)` in `test_watch.py` is not a guard against a
+    hang -- the `TimeoutExpired` it raises *is* the assertion, and bounding it
+    against the harness's alarm would be bounding the subject. That is the one
+    shape the rule below has to let through, and it is recognised structurally
+    rather than listed.
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With) and any(
+            isinstance(item.context_expr, ast.Call) and _called(item.context_expr) == "raises"
+            for item in node.items
+        ):
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return lines
+
+
+def waits_on_a_child(tree: ast.Module) -> Iterator[ast.expr]:
+    """Every `timeout=` this module hands to something that waits on a child."""
+    skip = _under_raises(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _called(node) not in WAITS_ON_A_CHILD:
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "timeout" and keyword.value.lineno not in skip:
+                yield keyword.value
+
+
+def _bound_to(name: str, tree: ast.Module) -> ast.expr | None:
+    """What `name` is assigned at module level, or defaulted to as a parameter.
+
+    The parameter arm is not hypothetical: `test_mutate.py` spells its bound
+    `def collect(self, each, wait=BOUND)` and then `timeout=wait`, so a reader
+    that stopped at the call site would see a bare name and conclude nothing.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return node.value
+        if isinstance(node, ast.FunctionDef):
+            taking = node.args.args + node.args.kwonlyargs
+            given = [*node.args.defaults, *(d for d in node.args.kw_defaults if d)]
+            for argument, default in zip(taking[len(taking) - len(given) :], given, strict=True):
+                if argument.arg == name:
+                    return default
+    return None
+
+
+def routed(value: ast.expr, tree: ast.Module) -> bool:
+    """Whether `value` reaches `support.bounded`, following one name at a time.
+
+    `support.PROMPTED` and `support.PATIENCE` count without being followed:
+    they are `bounded` calls in `support.py`, and `TestBoundingAFixture...`
+    above is what holds them there.
+    """
+    if isinstance(value, ast.Call):
+        return ast.unparse(value.func) in ("bounded", "support.bounded")
+    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+        if value.value.id == "support":
+            return True
+        if value.value.id == "self":
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    for statement in node.body:
+                        if isinstance(statement, ast.Assign) and any(
+                            isinstance(t, ast.Name) and t.id == value.attr
+                            for t in statement.targets
+                        ):
+                            return routed(statement.value, tree)
+        return False
+    if isinstance(value, ast.Name):
+        found = _bound_to(value.id, tree)
+        return found is not None and routed(found, tree)
+    return False
+
+
+def every_wait() -> Iterator[tuple[str, int, str, bool]]:
+    """`(module, line, source, routed)` for every wait in `tests/`."""
+    for found in sorted(Path(support.ROOT, "tests").glob("*.py")):
+        tree = ast.parse(found.read_text(encoding="utf-8"))
+        for value in waits_on_a_child(tree):
+            yield found.name, value.lineno, ast.unparse(value), routed(value, tree)
+
+
+def bounds_when_armed(armed: str | None) -> dict[str, float]:
+    """Every `DRIVEN` module's `BOUND`, as a fresh interpreter computes it.
+
+    A subprocess rather than `importlib.reload`, which would rebind the globals
+    of a module this same run is about to execute tests from.
+
+    **One child for all of `DRIVEN`, not one per module**, which is the whole
+    difference between this and the first version: a spawn is 0.16s, all of it
+    importing pytest and `tests.support`, and four of them were 0.65s -- 86% of
+    everything B5 added to the serial suite, for two facts. Two children is one
+    per environment, which is the floor, since the environment is what is being
+    varied.
+    """
+    environ = dict(os.environ)
+    environ.pop(support.ALARM, None)
+    if armed is not None:
+        environ[support.ALARM] = armed
+    asking = "\n".join(f"import {m}; print('{m}', {m}.BOUND)" for m in DRIVEN)
+    done = subprocess.run(
+        [sys.executable, "-c", asking],
+        cwd=support.ROOT,
+        env=environ,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=support.PROMPTED,
+    )
+    said = (line.split() for line in done.stdout.splitlines())
+    return {name: float(value) for name, value in said}
+
+
+#: A factory handing back one fresh copy of the two-machine template per call.
+Copies = Callable[[], tuple["support.Computer", "support.Computer", Path]]
 
 #: A directory that does not exist and never will. Absolute, because
 #: `TUPFERL_DIR` rejects a relative value -- the poison has to survive that check
@@ -35,37 +195,193 @@ from tupferl import conflicts, paths
 POISON = "/poison"
 
 
-class Boxed(unittest.TestCase):
+#: The failure as CI printed it, down to the errno. A module constant rather
+#: than a class attribute because the fixture below is a function now, and a
+#: function cannot see one.
+REFUSED = OSError(39, "Directory not empty", "objects")
+
+
+@dataclass(frozen=True)
+class Boxed:
     """A throwaway directory and a seeded home, without the environment patch.
 
     `support.sandbox` patches `os.environ`, which is exactly what these tests
-    are trying to observe. So this stops one step short.
+    are trying to observe. So this stops one step short -- and that is why this
+    is a dataclass of its own rather than `conftest.py`'s `sandbox` fixture,
+    which is the same construction with the patch left in.
     """
 
-    def setUp(self) -> None:
-        box = tempfile.TemporaryDirectory(prefix="tupferl-support-")
-        self.addCleanup(box.cleanup)
-        self.box = Path(box.name)
-        self.home = self.box / "home"
-        self.home.mkdir()
-        support.seed_home(self.home)
-        self.env = support.sandbox_env(self.home)
+    box: Path
+    home: Path
+    env: dict[str, str]
 
 
-class TestTheSandboxReplacesTheEnvironment(Boxed):
-    def setUp(self) -> None:
-        super().setUp()
-        poisoned = {name: f"{POISON}/{name}" for name in paths.ENV_KEYS}
-        patched = mock.patch.dict(os.environ, poisoned)
-        patched.start()
-        self.addCleanup(patched.stop)
+@dataclass(frozen=True)
+class Repo(Boxed):
+    """`Boxed` with a real git repository in it, for the housekeeping settings."""
 
-    def test_no_poisoned_value_survives(self) -> None:
-        with support.sandboxed(self.home):
+    repo: Path
+
+
+@pytest.fixture
+def boxed() -> Iterator[Boxed]:
+    """`support.tempdir` rather than a bare `TemporaryDirectory`, which is what
+    this fixture's `unittest` ancestor used: the rule CLAUDE.md states for a
+    throwaway directory, and it upgrades the cleanup to `discard`, so a tree
+    that will not go names what survived instead of raising an errno."""
+    with support.tempdir(prefix="tupferl-support-") as box:
+        home = box / "home"
+        home.mkdir()
+        support.seed_home(home)
+        yield Boxed(box, home, support.sandbox_env(home))
+
+
+@pytest.fixture
+def poisoned(boxed: Boxed) -> Iterator[Boxed]:
+    """`boxed`, with every name in `ENV_KEYS` pointed at `/poison` first."""
+    with mock.patch.dict(os.environ, {name: f"{POISON}/{name}" for name in paths.ENV_KEYS}):
+        yield boxed
+
+
+@pytest.fixture
+def git_box(boxed: Boxed) -> Repo:
+    repo = boxed.box / "repo"
+    support.git(["init", "--quiet", str(repo)], cwd=boxed.box, env=boxed.env)
+    return Repo(**vars(boxed), repo=repo)
+
+
+@pytest.fixture
+def stuck() -> Iterator[tempfile.TemporaryDirectory[str]]:
+    """A real tree holding a real pack temporary, whose cleanup refuses.
+
+    The original `cleanup` is kept and called in a `finally`, so the tree still
+    goes away when the test ends: a test about a leaked tree that leaked one
+    would be its own bug.
+
+    A raw `TemporaryDirectory` rather than `support.tempdir`, which is the one
+    place in this file that wants one: what is under test is `discard` reacting
+    to a `cleanup` that raises, and `tempdir` calls `discard` itself.
+    """
+    box = tempfile.TemporaryDirectory(prefix="tupferl-stuck-")
+    root = Path(box.name)
+    (root / "repo" / ".git" / "objects").mkdir(parents=True)
+    (root / "repo" / ".git" / "objects" / "tmp_pack_abcdef").write_text("x")
+    really = box.cleanup
+
+    def refuse() -> None:
+        raise REFUSED
+
+    box.cleanup = refuse  # type: ignore[method-assign]
+    try:
+        yield box
+    finally:
+        really()
+
+
+@pytest.fixture
+def copy() -> Iterator[Copies]:
+    """A fresh copy of the two-machine template, as often as a test asks for one.
+
+    A factory rather than a fixture holding one copy, because
+    `test_two_copies_do_not_share_a_remote` needs two and their not seeing each
+    other is the whole claim.
+    """
+    with contextlib.ExitStack() as stack:
+
+        def made() -> tuple[support.Computer, support.Computer, Path]:
+            return support.copy_template(
+                stack.enter_context(support.tempdir(prefix="tupferl-copies-"))
+            )
+
+        yield made
+
+
+@pytest.fixture
+def _alarm_put_back() -> Iterator[None]:
+    """Whatever `ITIMER_REAL` and `SIGALRM` were, back afterwards.
+
+    Every test in `TestABoundGivesTheHarnessItsAlarmBack` arms a real timer and
+    installs a real handler, and this process is also the one `tools/mutate.py`
+    arms its per-test alarm in.
+    """
+    handler = signal.getsignal(signal.SIGALRM)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, handler)
+
+
+def raised(box: tempfile.TemporaryDirectory[str]) -> OSError:
+    """The `OSError` `discard` raises over `box`, read back for its wording."""
+    with pytest.raises(OSError) as caught:
+        support.discard(box)
+    return caught.value
+
+
+def asked(box: Repo, key: str) -> subprocess.CompletedProcess[str]:
+    """What git answers for `key` inside the sandbox repository."""
+    return subprocess.run(
+        ["git", "config", "--get", key],
+        cwd=box.repo,
+        env=box.env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def popen_kwargs(env: dict[str, str]) -> dict[str, object]:
+    """The keyword arguments `run_cli` hands `subprocess.Popen` for a keyed run.
+
+    Driven rather than read out of `run_cli`: what is under test is which
+    objects reach Popen, and the only way to know is to watch the call.
+    """
+    seen: dict[str, object] = {}
+    real = subprocess.Popen
+
+    def watch(*args: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    with mock.patch.object(subprocess, "Popen", watch):
+        support.run_cli(["--version"], env, keys="s")
+    return seen
+
+
+def bounded(value: float, armed: str | None) -> float:
+    """`support.bounded(value)` with the harness's alarm set to `armed`."""
+    environ = {} if armed is None else {support.ALARM: armed}
+    with mock.patch.dict(os.environ, environ, clear=(armed is None)):
+        return support.bounded(value)
+
+
+def now_armed() -> float:
+    """Seconds left on this process's interval timer, or 0."""
+    return signal.getitimer(signal.ITIMER_REAL)[0]
+
+
+@pytest.mark.usefixtures("poisoned")
+class TestTheSandboxReplacesTheEnvironment:
+    """Every test here runs with `ENV_KEYS` pointed at `/poison`.
+
+    On the class, which is CLAUDE.md's rule and not a style: the mark states
+    *this class runs poisoned*, and `test_the_poison_really_would_be_visible`
+    never names the fixture -- it reads the environment the fixture patched.
+    Converted by giving each test the fixtures its body mentions, that test
+    would get none and would silently assert against the developer's own.
+
+    The tests that need the *paths* take `boxed`, which is the same object:
+    `poisoned` is `boxed` with the patch around it, so pytest hands back one
+    instance for both names.
+    """
+
+    def test_no_poisoned_value_survives(self, boxed: Boxed) -> None:
+        with support.sandboxed(boxed.home):
             leaked = [name for name, value in os.environ.items() if value.startswith(POISON)]
-        self.assertEqual([], leaked)
+        assert leaked == []
 
-    def test_every_path_resolves_inside_the_sandbox(self) -> None:
+    def test_every_path_resolves_inside_the_sandbox(self, boxed: Boxed) -> None:
         """The property that matters, stated as paths rather than as variables.
 
         `ENV_KEYS` is the list of what gets cleared, but clearing is only the
@@ -73,10 +389,10 @@ class TestTheSandboxReplacesTheEnvironment(Boxed):
         answer inside the box -- so this asks them, rather than asking about the
         environment a second time.
         """
-        with support.sandboxed(self.home):
+        with support.sandboxed(boxed.home):
             answers = [paths.home(), paths.repo_dir(), paths.state_dir(), paths.backup_dir()]
         for answer in answers:
-            self.assertTrue(answer.is_relative_to(self.home), f"{answer} is outside {self.home}")
+            assert answer.is_relative_to(boxed.home), f"{answer} is outside {boxed.home}"
 
     def test_the_poison_really_would_be_visible(self) -> None:
         """The precondition, asserted rather than assumed.
@@ -86,15 +402,15 @@ class TestTheSandboxReplacesTheEnvironment(Boxed):
         trivially true when there was no poison. CLAUDE.md §2 calls that a
         negative assertion whose precondition was never established.
         """
-        self.assertTrue(paths.repo_dir().is_relative_to(POISON))
+        assert paths.repo_dir().is_relative_to(POISON)
 
-    def test_the_hostname_is_the_sandbox_one(self) -> None:
+    def test_the_hostname_is_the_sandbox_one(self, boxed: Boxed) -> None:
         """Not the real machine's, which differs per developer and per CI leg."""
-        with support.sandboxed(self.home, host="other-host"):
-            self.assertEqual("other-host", paths.hostname())
+        with support.sandboxed(boxed.home, host="other-host"):
+            assert paths.hostname() == "other-host"
 
 
-class TestTheSandboxKeepsTheGuardsOn(Boxed):
+class TestTheSandboxKeepsTheGuardsOn:
     """What a sandbox must *carry*, which is the opposite failure to leaking.
 
     Building the environment from nothing is right, and it has one cost: a
@@ -104,9 +420,9 @@ class TestTheSandboxKeepsTheGuardsOn(Boxed):
     test that drives the CLI as a subprocess silently stops enforcing it.
     """
 
-    def test_a_deprecation_warning_still_fails_a_sandboxed_child(self) -> None:
+    def test_a_deprecation_warning_still_fails_a_sandboxed_child(self, boxed: Boxed) -> None:
         with mock.patch.dict(os.environ, {"PYTHONWARNINGS": "error::DeprecationWarning"}):
-            env = support.sandbox_env(self.home)
+            env = support.sandbox_env(boxed.home)
         done = subprocess.run(
             [
                 sys.executable,
@@ -118,14 +434,14 @@ class TestTheSandboxKeepsTheGuardsOn(Boxed):
             text=True,
             check=False,
         )
-        self.assertNotEqual(0, done.returncode, "the sandbox dropped PYTHONWARNINGS")
-        self.assertIn("DeprecationWarning", done.stderr)
+        assert done.returncode != 0, "the sandbox dropped PYTHONWARNINGS"
+        assert "DeprecationWarning" in done.stderr
 
-    def test_without_it_set_the_child_is_unaffected(self) -> None:
+    def test_without_it_set_the_child_is_unaffected(self, boxed: Boxed) -> None:
         """The precondition: the test above must be observing the variable
         rather than a python that errors on every warning regardless."""
         with mock.patch.dict(os.environ, {}, clear=True):
-            env = support.sandbox_env(self.home)
+            env = support.sandbox_env(boxed.home)
         done = subprocess.run(
             [
                 sys.executable,
@@ -137,33 +453,33 @@ class TestTheSandboxKeepsTheGuardsOn(Boxed):
             text=True,
             check=False,
         )
-        self.assertEqual(0, done.returncode)
+        assert done.returncode == 0
 
 
-class TestTheFixturesAreReal(Boxed):
+class TestTheFixturesAreReal:
     """The helpers build git repositories, not directories that look like them."""
 
-    def test_make_repo_is_a_repository_with_a_commit(self) -> None:
-        repo = support.make_repo(self.box / "repo", self.env)
-        self.assertEqual("main", support.git(["branch", "--show-current"], repo, self.env))
-        self.assertEqual("initial", support.git(["log", "-1", "--format=%s"], repo, self.env))
+    def test_make_repo_is_a_repository_with_a_commit(self, boxed: Boxed) -> None:
+        repo = support.make_repo(boxed.box / "repo", boxed.env)
+        assert support.git(["branch", "--show-current"], repo, boxed.env) == "main"
+        assert support.git(["log", "-1", "--format=%s"], repo, boxed.env) == "initial"
 
-    def test_a_pushed_repo_and_its_remote_agree(self) -> None:
+    def test_a_pushed_repo_and_its_remote_agree(self, boxed: Boxed) -> None:
         """A remote is only a remote if something can be read back out of it."""
-        remote = support.make_remote(self.box / "remote.git", self.env)
-        repo = support.make_repo(self.box / "repo", self.env, remote=remote)
-        here = support.git(["rev-parse", "HEAD"], repo, self.env)
-        there = support.git(["ls-remote", str(remote), "refs/heads/main"], repo, self.env)
-        self.assertTrue(there.startswith(here), f"{there} does not start with {here}")
+        remote = support.make_remote(boxed.box / "remote.git", boxed.env)
+        repo = support.make_repo(boxed.box / "repo", boxed.env, remote=remote)
+        here = support.git(["rev-parse", "HEAD"], repo, boxed.env)
+        there = support.git(["ls-remote", str(remote), "refs/heads/main"], repo, boxed.env)
+        assert there.startswith(here), f"{there} does not start with {here}"
 
-    def test_git_raises_rather_than_returning_a_failure(self) -> None:
+    def test_git_raises_rather_than_returning_a_failure(self, boxed: Boxed) -> None:
         """The fixture helper must be loud: a half-built repository is the weak
         fixture every other test would then be written against."""
-        with self.assertRaises(AssertionError):
-            support.git(["rev-parse", "HEAD"], self.box, self.env)
+        with pytest.raises(AssertionError):
+            support.git(["rev-parse", "HEAD"], boxed.box, boxed.env)
 
 
-class TestADrivenChildIsNotCollectedThroughAPipe(Boxed):
+class TestADrivenChildIsNotCollectedThroughAPipe:
     """`run_cli` hands the child real files, never `subprocess.PIPE`.
 
     A pipe makes *this* process hold everything the child writes -- measured at
@@ -183,42 +499,21 @@ class TestADrivenChildIsNotCollectedThroughAPipe(Boxed):
     `tests/test_sync_conflicts.py` asserts the consequence a file buys.
     """
 
-    def test_popen_is_given_files_for_both_streams(self) -> None:
-        seen: dict[str, object] = {}
-        real = subprocess.Popen
+    @pytest.mark.parametrize("stream", ("stdout", "stderr"))
+    def test_popen_is_given_files_for_both_streams(self, stream: str, boxed: Boxed) -> None:
+        seen = popen_kwargs(boxed.env)
+        assert subprocess.PIPE is not seen[stream], "collected through a pipe"
+        assert hasattr(seen[stream], "fileno"), f"{stream} is not a file: {seen[stream]!r}"
 
-        def watch(*args: Any, **kwargs: Any) -> Any:
-            seen.update(kwargs)
-            return real(*args, **kwargs)
-
-        with mock.patch.object(subprocess, "Popen", watch):
-            support.run_cli(["--version"], self.env, keys="s")
-
-        for stream in ("stdout", "stderr"):
-            with self.subTest(stream=stream):
-                self.assertIsNot(seen[stream], subprocess.PIPE, "collected through a pipe")
-                self.assertTrue(
-                    hasattr(seen[stream], "fileno"), f"{stream} is not a file: {seen[stream]!r}"
-                )
-
-    def test_the_precondition_that_the_pty_path_was_taken(self) -> None:
+    def test_the_precondition_that_the_pty_path_was_taken(self, boxed: Boxed) -> None:
         """Both assertions above are vacuous if `keys` was ignored and the
         pipe-free `subprocess.run` branch ran instead -- that branch uses
         `capture_output`, which never reaches Popen's kwargs as this test reads
         them."""
-        seen: dict[str, object] = {}
-        real = subprocess.Popen
-
-        def watch(*args: Any, **kwargs: Any) -> Any:
-            seen.update(kwargs)
-            return real(*args, **kwargs)
-
-        with mock.patch.object(subprocess, "Popen", watch):
-            support.run_cli(["--version"], self.env, keys="s")
-        self.assertTrue(hasattr(seen.get("stdin"), "__index__"), "no pty was attached")
+        assert hasattr(popen_kwargs(boxed.env).get("stdin"), "__index__"), "no pty was attached"
 
 
-class TestBackgroundGitIsOff(Boxed):
+class TestBackgroundGitIsOff:
     """#17: no detached git process may outlive the command that started it.
 
     **Asked of git, not read out of the file.** `seed_home` writes
@@ -235,52 +530,36 @@ class TestBackgroundGitIsOff(Boxed):
     the sync property, which had passed.
     """
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.repo = self.box / "repo"
-        support.git(["init", "--quiet", str(self.repo)], cwd=self.box, env=self.env)
+    @pytest.mark.parametrize(
+        ("key", "want"),
+        (("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false")),
+    )
+    def test_git_reads_back_every_setting_that_stops_housekeeping(
+        self, key: str, want: str, git_box: Repo
+    ) -> None:
+        got = asked(git_box, key)
+        assert got.returncode == 0, got.stderr
+        assert got.stdout.strip() == want
 
-    def asked(self, key: str) -> subprocess.CompletedProcess[str]:
-        """What git answers for `key` inside the sandbox repository."""
-        return subprocess.run(
-            ["git", "config", "--get", key],
-            cwd=self.repo,
-            env=self.env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    def test_git_reads_back_every_setting_that_stops_housekeeping(self) -> None:
-        for key, want in (
-            ("gc.auto", "0"),
-            ("gc.autoDetach", "false"),
-            ("maintenance.auto", "false"),
-        ):
-            with self.subTest(key=key):
-                got = self.asked(key)
-                self.assertEqual(0, got.returncode, got.stderr)
-                self.assertEqual(want, got.stdout.strip())
-
-    def test_the_probe_can_come_back_empty(self) -> None:
-        """The precondition. Three `assertEqual`s against a `git config` that
-        answered *anything* would pass if `--get` always printed the value asked
-        for; this shows it does not, so the three above are reading real
+    def test_the_probe_can_come_back_empty(self, git_box: Repo) -> None:
+        """The precondition. The three cases above, against a `git config` that
+        answered *anything*, would pass if `--get` always printed the value
+        asked for; this shows it does not, so the three are reading real
         settings rather than an echo."""
-        got = self.asked("gc.nosuchsetting")
-        self.assertEqual(1, got.returncode)
-        self.assertEqual("", got.stdout.strip())
+        got = asked(git_box, "gc.nosuchsetting")
+        assert got.returncode == 1
+        assert got.stdout.strip() == ""
 
-    def test_the_identity_still_works_beside_them(self) -> None:
+    def test_the_identity_still_works_beside_them(self, git_box: Repo) -> None:
         """`seed_home` writes one file, and #17 appended to it. A malformed
         section would take git's identity down with it, and every commit in the
         suite with it -- so this asserts the half that was already there."""
-        got = self.asked("user.email")
-        self.assertEqual(0, got.returncode, got.stderr)
-        self.assertEqual(f"{support.HOST}@example.invalid", got.stdout.strip())
+        got = asked(git_box, "user.email")
+        assert got.returncode == 0, got.stderr
+        assert got.stdout.strip() == f"{support.HOST}@example.invalid"
 
 
-class TestATreeThatWillNotGo(unittest.TestCase):
+class TestATreeThatWillNotGo:
     """#17's other half: when cleanup fails, say what survived.
 
     The failure this exists for is a race nobody has reproduced on demand -- see
@@ -301,55 +580,34 @@ class TestATreeThatWillNotGo(unittest.TestCase):
     and making *that* raise is the precondition stated exactly.
     """
 
-    #: The failure as CI printed it, down to the errno.
-    REFUSED = OSError(39, "Directory not empty", "objects")
-
-    def stuck(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        """A real tree holding a real pack temporary, whose cleanup refuses.
-
-        The original `cleanup` is kept and registered, so the tree still goes
-        away when the test ends: a test about a leaked tree that leaked one
-        would be its own bug.
-        """
-        box = tempfile.TemporaryDirectory(prefix="tupferl-stuck-")
-        root = Path(box.name)
-        (root / "repo" / ".git" / "objects").mkdir(parents=True)
-        (root / "repo" / ".git" / "objects" / "tmp_pack_abcdef").write_text("x")
-        really = box.cleanup
-        self.addCleanup(really)
-
-        def refuse() -> None:
-            raise self.REFUSED
-
-        box.cleanup = refuse  # type: ignore[method-assign]
-        return box, root
-
-    def raised(self, box: tempfile.TemporaryDirectory[str]) -> OSError:
-        with self.assertRaises(OSError) as caught:
-            support.discard(box)
-        return caught.exception
-
-    def test_the_message_names_the_file_that_survived(self) -> None:
+    def test_the_message_names_the_file_that_survived(
+        self, stuck: tempfile.TemporaryDirectory[str]
+    ) -> None:
         """`tmp_pack_abcdef` is a writer's signature: git wrote it, and no test
         did. That name in the error is the whole point of #17's second half."""
-        box, _ = self.stuck()
-        self.assertIn("tmp_pack_abcdef", str(self.raised(box)))
+        assert "tmp_pack_abcdef" in str(raised(stuck))
 
-    def test_it_keeps_the_original_error_rather_than_replacing_it(self) -> None:
+    def test_it_keeps_the_original_error_rather_than_replacing_it(
+        self, stuck: tempfile.TemporaryDirectory[str]
+    ) -> None:
         """The errno and the wording git's own failure produced are what a
         reader searches for. A wrapper that dropped them would send them looking
         for a different bug."""
-        boom = self.raised(self.stuck()[0])
-        self.assertIn("Directory not empty", str(boom))
-        self.assertIs(self.REFUSED, boom.__cause__)
+        boom = raised(stuck)
+        assert "Directory not empty" in str(boom)
+        assert boom.__cause__ is REFUSED
 
-    def test_it_says_the_writer_outlived_its_command(self) -> None:
+    def test_it_says_the_writer_outlived_its_command(
+        self, stuck: tempfile.TemporaryDirectory[str]
+    ) -> None:
         """The sentence that stops the next reader diagnosing the sync engine,
         which is what #17 says cost the most both times it happened."""
-        boom = self.raised(self.stuck()[0])
-        self.assertIn("outliving the command that started it", str(boom))
+        boom = raised(stuck)
+        assert "outliving the command that started it" in str(boom)
 
-    def test_a_long_listing_is_cut_and_says_how_much_it_cut(self) -> None:
+    def test_a_long_listing_is_cut_and_says_how_much_it_cut(
+        self, stuck: tempfile.TemporaryDirectory[str]
+    ) -> None:
         """A whole surviving tree is hundreds of paths, and a message nobody
         reads to the end names nothing.
 
@@ -359,14 +617,14 @@ class TestATreeThatWillNotGo(unittest.TestCase):
         `repo`, `.git`, `objects` and the pack temporary -- so 13 files make 17,
         of which `NAMED_WHEN_STUCK` are named and 5 are not.
         """
-        box, root = self.stuck()
+        root = Path(stuck.name)
         for number in range(13):
             (root / f"file{number:03d}").write_text("x")
-        boom = str(self.raised(box))
-        self.assertIn("and 5 more", boom)
+        boom = str(raised(stuck))
+        assert "and 5 more" in boom
         # The cut is real: `file012` sorts last and must not have been named.
-        self.assertNotIn("file012", boom)
-        self.assertIn("file000", boom)
+        assert "file012" not in boom
+        assert "file000" in boom
 
     def test_a_tree_that_goes_quietly_raises_nothing(self) -> None:
         """The ordinary path, which is every other call in the suite. Without
@@ -377,10 +635,10 @@ class TestATreeThatWillNotGo(unittest.TestCase):
         (root / "a").mkdir()
         (root / "a" / "b").write_text("x")
         support.discard(box)
-        self.assertFalse(root.exists())
+        assert not root.exists()
 
 
-class TestTheTwoMachineTemplate(unittest.TestCase):
+class TestTheTwoMachineTemplate:
     """#19's fixture: copies of one tree that must not be able to see each other.
 
     The saving is real -- 4.3 ms against 120.4 ms per test, and a measured
@@ -391,52 +649,47 @@ class TestTheTwoMachineTemplate(unittest.TestCase):
     That is what this class is for.
     """
 
-    def copy(self) -> tuple[support.Computer, support.Computer, Path]:
-        box = tempfile.TemporaryDirectory(prefix="tupferl-copies-")
-        self.addCleanup(support.discard, box)
-        return support.copy_template(Path(box.name))
-
-    def test_two_copies_do_not_share_a_remote(self) -> None:
+    def test_two_copies_do_not_share_a_remote(self, copy: Copies) -> None:
         """The contamination test, and it is driven rather than asserted from
         the config: one copy syncs a change, and the other must not see it.
 
         A URL comparison alone would pass against two paths that differ in text
         and resolve to the same directory.
         """
-        first, _, here = self.copy()
-        other_first, other_second, there = self.copy()
-        self.assertNotEqual(here, there)
+        first, _, here = copy()
+        other_first, other_second, there = copy()
+        assert there != here
 
         first.write(".bashrc", "CHANGED ON THE FIRST COPY\n")
-        self.assertEqual(0, first.call("sync"))
+        assert first.call("sync") == 0
 
-        self.assertEqual(0, other_second.call("init", str(there)))
-        self.assertNotIn("CHANGED ON THE FIRST COPY", other_second.read(".bashrc"))
-        self.assertEqual(support.STARTS_AS, other_first.read(".bashrc"))
+        assert other_second.call("init", str(there)) == 0
+        assert "CHANGED ON THE FIRST COPY" not in other_second.read(".bashrc")
+        assert other_first.read(".bashrc") == support.STARTS_AS
 
-    def test_the_copy_points_at_its_own_remote(self) -> None:
+    def test_the_copy_points_at_its_own_remote(self, copy: Copies) -> None:
         """The mechanism behind the test above. Left unrewritten, every copy's
         `origin` is the template's remote."""
-        first, _, remote = self.copy()
+        first, _, remote = copy()
         url = support.git(["remote", "get-url", "origin"], cwd=first.repo, env=first.env)
-        self.assertEqual(str(remote), url)
-        self.assertFalse(Path(url).is_relative_to(support.template()))
+        assert url == str(remote)
+        assert not Path(url).is_relative_to(support.template())
 
-    def test_no_stale_fetch_head_survives_the_copy(self) -> None:
+    def test_no_stale_fetch_head_survives_the_copy(self, copy: Copies) -> None:
         """It records the URL of the last fetch, which in a copy is the
         template's. Nothing reads it -- `sync` merges `<remote>/<branch>` -- so
         this is a lie removed rather than a bug fixed, and the test says which."""
-        first, _, _ = self.copy()
-        self.assertFalse((first.repo / ".git" / "FETCH_HEAD").exists())
+        first, _, _ = copy()
+        assert not (first.repo / ".git" / "FETCH_HEAD").exists()
 
-    def test_nothing_in_a_copy_still_names_the_template(self) -> None:
+    def test_nothing_in_a_copy_still_names_the_template(self, copy: Copies) -> None:
         """The general form of the two tests above, so a *third* file that
         learns to hold an absolute path is caught rather than waited for.
 
         This is how the two were found in the first place: grep the built tree
         for its own root.
         """
-        _, _, remote = self.copy()
+        _, _, remote = copy()
         root = str(support.template())
         named = []
         for path in remote.parent.rglob("*"):
@@ -448,43 +701,45 @@ class TestTheTwoMachineTemplate(unittest.TestCase):
                 continue
             if root in text:
                 named.append(str(path.relative_to(remote.parent)))
-        self.assertEqual([], named)
+        assert named == []
 
     def test_the_template_is_built_once(self) -> None:
-        """Per *process*, not per class -- 40 classes inherit the fixture, so
-        per class would be 40 builds. Asked of the cache rather than timed,
-        because a timing assertion here would be a flake."""
+        """Per *process*, not per class -- 45 classes take the fixture, so per
+        class would be 45 builds. Asked of the cache rather than timed, because
+        a timing assertion here would be a flake.
+
+        The count said 40 and was inherited from a tree where `TwoMachinesCase`
+        was the thing being counted; B4b deleted that class and re-measured the
+        *tests* at 190 without reaching this sentence. 45 classes, 2026-08-31,
+        by mapping `--fixtures-per-test`'s `file:line` back through `ast`.
+        """
         support.template()
         before = support.template.cache_info()
         support.template()
         support.template()
         after = support.template.cache_info()
-        self.assertEqual(before.misses, after.misses)
-        self.assertEqual(before.hits + 2, after.hits)
+        assert after.misses == before.misses
+        assert after.hits == before.hits + 2
 
-    def test_a_copy_starts_where_a_built_one_did(self) -> None:
-        """The equivalence the whole change rests on: what `setUp` used to build
-        by running `init`, `add` and `sync` is what a copy now holds.
+    def test_a_copy_starts_where_a_built_one_did(self, copy: Copies) -> None:
+        """The equivalence the whole change rests on: what the fixture used to
+        build by running `init`, `add` and `sync` is what a copy now holds.
 
         Asserted through the tool rather than by comparing trees -- commit
         hashes and timestamps differ between a build and a copy and always will,
         and none of that is what a test using this fixture depends on.
         """
-        first, second, remote = self.copy()
-        self.assertEqual(support.STARTS_AS, first.read(".bashrc"))
+        first, second, remote = copy()
+        assert first.read(".bashrc") == support.STARTS_AS
         status, said = first.say("status")
-        self.assertEqual(0, status, said)
-        self.assertIn("1 file managed, 0 to change, 0 in conflict", said)
+        assert status == 0, said
+        assert "1 file managed, 0 to change, 0 in conflict" in said
         # And the remote really holds it: the second machine can be brought up.
-        self.assertEqual(0, second.call("init", str(remote)))
-        self.assertEqual(support.STARTS_AS, second.read(".bashrc"))
+        assert second.call("init", str(remote)) == 0
+        assert second.read(".bashrc") == support.STARTS_AS
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
+class TestAPromptIsBoundedRatherThanBlocking:
     """`typing` fails a prompt that asks more often than its keys answer.
 
     **`FALLBACK` is not a bound.** `conflicts.one_key` sets `VMIN` to 1, so a
@@ -507,7 +762,7 @@ class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
     def test_a_prompt_that_never_settles_fails_instead_of_hanging(self) -> None:
         with (
             mock.patch.object(support, "PROMPTED", 0.5),
-            self.assertRaises(TimeoutError),
+            pytest.raises(TimeoutError),
             support.typing("l"),
         ):
             while True:
@@ -534,8 +789,8 @@ class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
         `EACH_TEST` still reads 30 while the alarm in force is 10.
         `TestBoundingAFixtureAgainstTheAlarmActuallyArmed` is that half.
         """
-        self.assertLess(support.PROMPTED, mutate.EACH_TEST, "a whole keyed run")
-        self.assertLess(support.PATIENCE, mutate.EACH_TEST, "a single read")
+        assert support.PROMPTED < mutate.EACH_TEST, "a whole keyed run"
+        assert support.PATIENCE < mutate.EACH_TEST, "a single read"
 
     def test_a_prompt_that_settles_is_left_alone(self) -> None:
         """The other half, and without it "always raise" passes the test above.
@@ -546,10 +801,10 @@ class TestAPromptIsBoundedRatherThanBlocking(unittest.TestCase):
         sweep.
         """
         with mock.patch.object(support, "PROMPTED", 0.5), support.typing("l"):
-            self.assertEqual("l", conflicts.one_key(sys.stdin))
+            assert conflicts.one_key(sys.stdin) == "l"
 
 
-class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
+class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
     """`bounded`: the fixture's deadline beats whatever `--each-test` armed.
 
     The class above pins `PROMPTED` and `PATIENCE` below `mutate.EACH_TEST`, and
@@ -564,22 +819,19 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
     needs is already there; the only question is whether it reads it.
     """
 
-    def bounded(self, value: float, armed: str | None) -> float:
-        environ = {} if armed is None else {support.ALARM: armed}
-        with mock.patch.dict(os.environ, environ, clear=(armed is None)):
-            return support.bounded(value)
-
     def test_an_ordinary_run_is_left_exactly_as_it_was(self) -> None:
         """No harness, no alarm, no change -- and this is most runs of the suite.
         A rule that moved the bounds when nothing was armed would be paying for
         the rare case in every developer's preflight."""
-        self.assertEqual(20.0, self.bounded(20.0, None))
-        self.assertEqual(5.0, self.bounded(5.0, None))
+        assert bounded(20.0, None) == 20.0
+        assert bounded(5.0, None) == 5.0
 
     def test_a_tighter_alarm_brings_the_bound_under_it(self) -> None:
-        self.assertLess(self.bounded(20.0, "10"), 10.0)
+        assert bounded(20.0, "10") < 10.0
 
-    def test_every_alarm_a_sweep_can_arm_is_beaten(self) -> None:
+    @pytest.mark.parametrize("name", ("PROMPTED", "PATIENCE"))
+    @pytest.mark.parametrize("armed", (0.5, 1.0, 3.0, 7.5, 10.0, 30.0, 300.0))
+    def test_every_alarm_a_sweep_can_arm_is_beaten(self, armed: float, name: str) -> None:
         """The property, rather than one worked example. `--each-test` takes a
         float and the useful range spans three orders of magnitude, so a single
         pair proves the arithmetic and not the guarantee.
@@ -589,11 +841,7 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
         that checked `PROMPTED` alone would pass against a `bounded` that
         returned its argument for anything under 7.5.
         """
-        for armed in (0.5, 1.0, 3.0, 7.5, 10.0, 30.0, 300.0):
-            with self.subTest(armed=armed):
-                for name in ("PROMPTED", "PATIENCE"):
-                    got = self.bounded(getattr(support, name), str(armed))
-                    self.assertLess(got, armed, name)
+        assert bounded(getattr(support, name), str(armed)) < armed, name
 
     def test_a_disabled_alarm_leaves_the_bound_alone(self) -> None:
         """`--each-test 0` asks for no alarm, and `verdict.each_test` also
@@ -601,26 +849,47 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
         then, and scaling by zero would make every bound fire immediately --
         which turns a run with the alarm *off* into a suite that fails
         everywhere."""
-        self.assertEqual(20.0, self.bounded(20.0, "0"))
+        assert bounded(20.0, "0") == 20.0
 
     def test_a_value_that_is_not_a_number_leaves_the_bound_alone(self) -> None:
         """Nothing writes this but the harness, so a bad value means something
         else set the name. Erring towards the fixture's own number keeps a
         strange environment from failing every keyed test at once."""
-        self.assertEqual(20.0, self.bounded(20.0, "soon"))
-        self.assertEqual(20.0, self.bounded(20.0, ""))
+        assert bounded(20.0, "soon") == 20.0
+        assert bounded(20.0, "") == 20.0
 
     def test_the_harness_and_the_fixture_spell_the_name_the_same(self) -> None:
         """Two spellings of one variable, and a typo in either is invisible: the
         harness would set a name nothing reads, `bounded` would find nothing and
         return its argument, and every assertion above would still pass."""
-        self.assertEqual(mutate._ALARM, support.ALARM)
+        assert support.ALARM == mutate._ALARM
+
+    def test_a_driven_bound_follows_the_alarm_that_was_armed(self) -> None:
+        """A routed constant really is smaller in a child whose alarm is tighter.
+
+        `bounded` being right is the class above, and that every wait is
+        *spelled* through it is `TestEveryWaitOnAChildIsBounded` below. This is
+        the third thing neither covers: that a module-level constant, evaluated
+        at import in a real child, reads the environment `_run` set.
+
+        Asked of a real import rather than of the source, because what has to be
+        true is the value a sweep's child computes. A source check would pass
+        against `support.bounded(20.0) if False else 20`.
+
+        Both halves, because "always small" would satisfy the first alone: with
+        nothing armed the file's own number has to stand, which is every
+        ordinary run of the suite.
+        """
+        tight, loose = bounds_when_armed("10"), bounds_when_armed(None)
+        assert set(tight) == set(DRIVEN), tight
+        assert all(seconds < 10.0 for seconds in tight.values()), tight
+        assert all(seconds == 20.0 for seconds in loose.values()), loose
 
     def test_the_sandbox_carries_the_name_through(self) -> None:
         """`support.environment` builds from nothing, so a name not in `CARRIES`
         is absent in every subprocess a test spawns -- which is where the keyed
         fixtures with the longest waits actually run."""
-        self.assertIn(support.ALARM, support.CARRIES)
+        assert support.ALARM in support.CARRIES
 
     def test_the_harness_tells_the_child_what_it_armed(self) -> None:
         """The plumbing half, asserted where it happens rather than inferred
@@ -641,13 +910,72 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as box,
             mock.patch.object(subprocess, "Popen", spawn),
-            self.assertRaises(RuntimeError),
+            pytest.raises(RuntimeError),
         ):
             mutate._run(["tests.test_paths"], Path(box), each=7.5)
-        self.assertEqual("7.5", seen.get(support.ALARM))
+        assert seen.get(support.ALARM) == "7.5"
 
 
-class TestABoundGivesTheHarnessItsAlarmBack(unittest.TestCase):
+@pytest.mark.usefixtures("_alarm_put_back")
+class TestEveryWaitOnAChildIsBounded:
+    """No fixture in `tests/` waits on a child process against a bare number.
+
+    **The list this replaced could not see the bugs it was written for.** B5
+    routed `test_watch.py`'s and `test_reached.py`'s `BOUND` through `bounded`
+    and named the two in a tuple; the same defect was live in four more places,
+    including `tests/test_mutate.py`, whose own docstring narrates the mistake
+    three times ("that is the third instance of one mistake here") and then
+    spells its bound `BOUND = 20`. A hand-written list is a record of what
+    somebody remembered.
+
+    So this walks instead, the way `tests/test_errors.py` walks every
+    `raise TupferlError`: find every `timeout=` handed to something that waits
+    on a child, follow the name to what it was assigned, and insist it reaches
+    `support.bounded`. What that buys is not tidiness -- a bound at or above
+    the alarm loses the race, the row is filed `BROKE`, and `BROKE` is never
+    `caught`, so the line the bound was written to guard is guarded by nothing
+    while the summary counts it in neither of the two numbers a reader looks at.
+    """
+
+    def test_the_walk_finds_the_waits_there_are(self) -> None:
+        """The precondition, and it is the whole reason the test below can fail.
+
+        A resolver that matched nothing -- a renamed helper, a `subprocess`
+        alias this does not know -- would report zero unrouted waits and read as
+        a clean bill of health. That is CLAUDE.md's zero-iteration trap with the
+        loop moved into a walk.
+        """
+        assert len(list(every_wait())) >= FLOOR
+
+    def test_no_wait_is_left_against_a_bare_number(self) -> None:
+        unrouted = [
+            f"{name}:{line} timeout={said}" for name, line, said, ok in every_wait() if not ok
+        ]
+        assert unrouted == []
+
+    def test_the_walk_can_tell_a_bare_number_from_a_routed_one(self) -> None:
+        """`routed` against both answers, since the test above is a negative one
+        and would hold just as well against a resolver that says yes to
+        everything. Written as source rather than driven, because what is under
+        test is the reader."""
+        tree = ast.parse("import subprocess\nBARE = 20\nsubprocess.run([], timeout=BARE)\n")
+        assert [routed(v, tree) for v in waits_on_a_child(tree)] == [False]
+        tree = ast.parse(
+            "import subprocess\nOK = support.bounded(20.0)\nsubprocess.run([], timeout=OK)\n"
+        )
+        assert [routed(v, tree) for v in waits_on_a_child(tree)] == [True]
+
+    def test_a_timeout_that_is_the_assertion_is_left_alone(self) -> None:
+        """The one shape the rule lets through, pinned so it stays that shape."""
+        tree = ast.parse(
+            "import pytest, subprocess\n"
+            "with pytest.raises(subprocess.TimeoutExpired):\n"
+            "    child.wait(timeout=0.5)\n"
+        )
+        assert list(waits_on_a_child(tree)) == []
+
+
+class TestABoundGivesTheHarnessItsAlarmBack:
     """`deadline` restores the `ITIMER_REAL` it found, rather than clearing it.
 
     There is one interval timer per process and `tools/mutate.py` arms it around
@@ -661,19 +989,12 @@ class TestABoundGivesTheHarnessItsAlarmBack(unittest.TestCase):
     A bound inside a *helper* that returns mid-test does, and this PR added two.
     """
 
-    def armed(self) -> float:
-        return signal.getitimer(signal.ITIMER_REAL)[0]
-
-    def setUp(self) -> None:
-        self.addCleanup(signal.setitimer, signal.ITIMER_REAL, 0)
-        self.addCleanup(signal.signal, signal.SIGALRM, signal.getsignal(signal.SIGALRM))
-
     def test_an_alarm_that_was_armed_is_still_armed_afterwards(self) -> None:
         signal.signal(signal.SIGALRM, lambda *a: None)
         signal.setitimer(signal.ITIMER_REAL, 30.0)
         with support.deadline(1.0, "inner"):
             pass
-        self.assertGreater(self.armed(), 25.0, "the harness's alarm was cancelled")
+        assert now_armed() > 25.0, "the harness's alarm was cancelled"
 
     def test_the_time_spent_inside_is_taken_off(self) -> None:
         """Restoring the *original* 30s rather than what is left would give a
@@ -683,7 +1004,7 @@ class TestABoundGivesTheHarnessItsAlarmBack(unittest.TestCase):
         signal.setitimer(signal.ITIMER_REAL, 30.0)
         with support.deadline(1.0, "inner"):
             time.sleep(0.2)
-        self.assertLess(self.armed(), 29.95, "the spent time was not deducted")
+        assert now_armed() < 29.95, "the spent time was not deducted"
 
     def test_nothing_armed_stays_nothing_armed(self) -> None:
         """Every ordinary run of the suite. Arming a timer that nobody asked for
@@ -691,16 +1012,15 @@ class TestABoundGivesTheHarnessItsAlarmBack(unittest.TestCase):
         signal.setitimer(signal.ITIMER_REAL, 0)
         with support.deadline(1.0, "inner"):
             pass
-        self.assertEqual(0.0, self.armed())
+        assert now_armed() == 0.0
 
     def test_the_previous_handler_is_back_before_the_alarm_can_fire(self) -> None:
         """Restored in the other order, a re-armed outer alarm could land in
         `ring` and be reported as *this* bound -- a timeout blamed on the
         fixture that had already finished."""
-        outer = signal.signal(signal.SIGALRM, lambda *a: None)
-        self.addCleanup(signal.signal, signal.SIGALRM, outer)
+        signal.signal(signal.SIGALRM, lambda *a: None)
         mine = signal.getsignal(signal.SIGALRM)
         signal.setitimer(signal.ITIMER_REAL, 30.0)
         with support.deadline(1.0, "inner"):
             pass
-        self.assertIs(mine, signal.getsignal(signal.SIGALRM))
+        assert signal.getsignal(signal.SIGALRM) is mine

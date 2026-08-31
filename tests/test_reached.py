@@ -17,7 +17,8 @@ one's. A bare number here would read as a tupferl issue and eventually point at
 an unrelated one, which is the stale-claim hazard CLAUDE.md opens with.
 
 Pure -- JSON in, buckets out -- so this runs in milliseconds with no sandbox
-and no suite, the same line `tools/mutants.py` is split along.
+and no suite, the same line `tools/mutants.py` is split along. It does import
+`tests.support`, for `bounded` alone and not for a sandbox: see `BOUND`.
 
 The case worth reading is `TestCaughtMutantsRepairTheMap`. Coverage measured
 in-process cannot see a line executed by a subprocess, and *this* project runs
@@ -35,23 +36,25 @@ import re
 import subprocess
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 from typing import Any
 
+from tests import support
 from tools import reached
 
 #: Seconds one driven `tools/reached.py` run may take before a test calls it
-#: hung. Below `tools/mutate.py`'s 30s per-test alarm, for the reason
+#: hung. Below `tools/mutate.py`'s per-test alarm, for the reason
 #: `tests/test_watch.py`'s constant of the same name gives: a bound at or above
 #: the harness's loses the race and the row is filed `BROKE`, which is never
 #: `caught`. These were 60 -- the same mistake this branch fixed three times
 #: elsewhere, left standing in the one new file that had no constant for it.
 #: The practical risk here is low (`reached.py` has no loops at all), which is
 #: exactly why it was missed.
-BOUND = 20
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
+#:
+#: **Through `support.bounded`**, with `test_watch.py`'s `BOUND`: a bare 20
+#: beats the 30s *default* and is back above the alarm at `--each-test 10`,
+#: which is the hole the helper exists to close rather than a second one.
+BOUND = support.bounded(20.0)
 
 
 def results(*rows: tuple[str, int, str]) -> dict[str, Any]:
@@ -76,6 +79,40 @@ def results(*rows: tuple[str, int, str]) -> dict[str, Any]:
     }
 
 
+def run_it(
+    report: dict[str, Any], cov: dict[str, Any], *extra: str
+) -> subprocess.CompletedProcess[str]:
+    """One driven `tools/reached.py` run over two throwaway JSON files."""
+    with support.tempdir(prefix="tupferl-reached-") as box:
+        r, c = box / "r.json", box / "c.json"
+        r.write_text(json.dumps(report), encoding="utf-8")
+        c.write_text(json.dumps(cov), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-m", "tools.reached", str(r), str(c), *extra],
+            cwd=support.ROOT,
+            capture_output=True,
+            text=True,
+            timeout=BOUND,
+        )
+
+
+def counts(out: str) -> dict[str, int]:
+    """The numbers, not the labels.
+
+    Asserting that the words "missing test" appear is what the first version
+    of this test did, and every count mutation survived it -- the partition
+    could report 0 and 0 and still pass. The numbers are the output.
+    """
+    found = {}
+    for line in out.splitlines():
+        hit = re.match(
+            r"(ALL|caught|broke.*?|timeout.*?|SURVIVED|on a line.*?)\s{2,}(\d+)$", line.strip()
+        )
+        if hit:
+            found[hit.group(1).strip()] = int(hit.group(2))
+    return found
+
+
 def coverage(**files: list[int]) -> dict[str, Any]:
     """A `coverage json` report. `a__b=[3]` means `a/b.py` ran line 3.
 
@@ -92,45 +129,45 @@ def coverage(**files: list[int]) -> dict[str, Any]:
     }
 
 
-class TestPartition(unittest.TestCase):
+class TestPartition:
     def test_a_survivor_on_an_executed_line_is_a_weak_fixture(self) -> None:
         rows = reached.rows_from(results(("a/b.py", 10, "survived")))
         split = reached.partition(rows, {"a/b.py": {10}})
-        self.assertEqual((len(split.unreached), len(split.weak)), (0, 1))
+        assert (len(split.unreached), len(split.weak)) == (0, 1)
 
     def test_a_survivor_on_an_unexecuted_line_is_a_missing_test(self) -> None:
         rows = reached.rows_from(results(("a/b.py", 10, "survived")))
         split = reached.partition(rows, {"a/b.py": {99}})
-        self.assertEqual((len(split.unreached), len(split.weak)), (1, 0))
+        assert (len(split.unreached), len(split.weak)) == (1, 0)
 
     def test_caught_rows_are_not_survivors(self) -> None:
         """The partition is of survivors only; a caught row is already an answer."""
         rows = reached.rows_from(results(("a/b.py", 10, "caught"), ("a/b.py", 11, "survived")))
         split = reached.partition(rows, {})
-        self.assertEqual(split.total, 1)
+        assert split.total == 1
 
     def test_a_file_absent_from_the_map_is_not_executed(self) -> None:
         rows = reached.rows_from(results(("never/seen.py", 3, "survived")))
-        self.assertEqual(len(reached.partition(rows, {"other.py": {3}}).unreached), 1)
+        assert len(reached.partition(rows, {"other.py": {3}}).unreached) == 1
 
 
-class TestCaughtMutantsRepairTheMap(unittest.TestCase):
+class TestCaughtMutantsRepairTheMap:
     """A caught mutation is proof its line ran, whatever coverage says."""
 
     def test_a_caught_row_adds_its_line(self) -> None:
         rows = reached.rows_from(results(("a/b.py", 10, "caught")))
-        self.assertEqual(reached.repair({}, rows), {"a/b.py": {10}})
+        assert reached.repair({}, rows) == {"a/b.py": {10}}
 
     def test_a_survivor_does_not_add_its_line(self) -> None:
         """The whole question. A survivor on an unexecuted line is the finding;
         letting it mark its own line executed would erase every one of them."""
         rows = reached.rows_from(results(("a/b.py", 10, "survived")))
-        self.assertEqual(reached.repair({}, rows), {})
+        assert reached.repair({}, rows) == {}
 
     def test_broke_and_timeout_prove_nothing(self) -> None:
         """They never got to ask, so they are not evidence the line ran."""
         rows = reached.rows_from(results(("a/b.py", 10, "broke"), ("a/b.py", 11, "timeout")))
-        self.assertEqual(reached.repair({}, rows), {})
+        assert reached.repair({}, rows) == {}
 
     def test_repair_changes_the_answer(self) -> None:
         """End to end: the same survivor lands in a different bucket once a
@@ -138,15 +175,15 @@ class TestCaughtMutantsRepairTheMap(unittest.TestCase):
         rows = reached.rows_from(results(("a/b.py", 10, "survived"), ("a/b.py", 10, "caught")))
         naive = reached.partition(rows, {})
         fixed = reached.partition(rows, reached.repair({}, rows))
-        self.assertEqual(len(naive.unreached), 1, "without the repair it reads as unreached")
-        self.assertEqual(len(fixed.weak), 1, "with it, the line is known to run")
+        assert len(naive.unreached) == 1, "without the repair it reads as unreached"
+        assert len(fixed.weak) == 1, "with it, the line is known to run"
 
     def test_it_does_not_discard_what_coverage_already_knew(self) -> None:
         rows = reached.rows_from(results(("a/b.py", 10, "caught")))
-        self.assertEqual(reached.repair({"a/b.py": {7}}, rows), {"a/b.py": {7, 10}})
+        assert reached.repair({"a/b.py": {7}}, rows) == {"a/b.py": {7, 10}}
 
 
-class TestReadingTheInputs(unittest.TestCase):
+class TestReadingTheInputs:
     def test_a_row_without_a_position_is_skipped(self) -> None:
         """A hand-written spec row has no line, and cannot be classified."""
         report = results(("a/b.py", 10, "survived"))
@@ -160,17 +197,17 @@ class TestReadingTheInputs(unittest.TestCase):
                 "outcome": "survived",
             }
         )
-        self.assertEqual(len(reached.rows_from(report)), 1)
+        assert len(reached.rows_from(report)) == 1
 
     def test_coverage_paths_are_normalised(self) -> None:
         got = reached.executed_lines({"files": {"a\\b.py": {"executed_lines": [1, 2]}}})
-        self.assertEqual(got, {"a/b.py": {1, 2}})
+        assert got == {"a/b.py": {1, 2}}
 
     def test_a_file_with_no_executed_lines_is_empty_not_missing(self) -> None:
-        self.assertEqual(reached.executed_lines({"files": {"a.py": {}}}), {"a.py": set()})
+        assert reached.executed_lines({"files": {"a.py": {}}}) == {"a.py": set()}
 
 
-class TestAReportThatCannotBeBelieved(unittest.TestCase):
+class TestAReportThatCannotBeBelieved:
     """woswoar#270: this module explains survivors, and some reports have none to explain.
 
     Both fields are about attribution, and they fail differently: a red baseline
@@ -180,78 +217,47 @@ class TestAReportThatCannotBeBelieved(unittest.TestCase):
     """
 
     def test_a_red_baseline_is_void(self) -> None:
-        self.assertTrue(reached.voided({"baseline_red": True}))
+        assert reached.voided({"baseline_red": True})
 
     def test_a_green_one_is_not(self) -> None:
-        self.assertFalse(reached.voided({"baseline_red": False}))
+        assert not reached.voided({"baseline_red": False})
 
     def test_a_report_that_says_nothing_about_its_baseline_is_read_as_green(self) -> None:
         """The opposite default from `confirmed`, and for the opposite reason:
         every report since the flag existed writes it, so absence here means a
         hand-built or ancient file rather than a claim being withheld -- and
         refusing to read those would be a regression for no gain."""
-        self.assertFalse(reached.voided({}))
+        assert not reached.voided({})
 
     def test_a_report_that_says_nothing_about_widening_is_read_as_unwidened(self) -> None:
         """A file written before `Report.widened` existed knows nothing either
         way, which is precisely what the caveat says -- so the caveat is true of
         it. Defaulting the other way would make old silence read as a claim."""
-        self.assertFalse(reached.confirmed({}))
+        assert not reached.confirmed({})
 
     def test_an_explicit_claim_is_believed(self) -> None:
-        self.assertTrue(reached.confirmed({"widened": True}))
-        self.assertFalse(reached.confirmed({"widened": False}))
+        assert reached.confirmed({"widened": True})
+        assert not reached.confirmed({"widened": False})
 
 
-class TestTheCommandLine(unittest.TestCase):
+class TestTheCommandLine:
     """Driven as a subprocess, because the exit status and the printed
     partition are what a person actually uses."""
 
-    def run_it(
-        self, report: dict[str, Any], cov: dict[str, Any], *extra: str
-    ) -> subprocess.CompletedProcess[str]:
-        with tempfile.TemporaryDirectory() as box:
-            r, c = Path(box) / "r.json", Path(box) / "c.json"
-            r.write_text(json.dumps(report), encoding="utf-8")
-            c.write_text(json.dumps(cov), encoding="utf-8")
-            return subprocess.run(
-                [sys.executable, "-m", "tools.reached", str(r), str(c), *extra],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=BOUND,
-            )
-
-    def counts(self, out: str) -> dict[str, int]:
-        """The numbers, not the labels.
-
-        Asserting that the words "missing test" appear is what the first version
-        of this test did, and every count mutation survived it -- the partition
-        could report 0 and 0 and still pass. The numbers are the output.
-        """
-        found = {}
-        for line in out.splitlines():
-            hit = re.match(
-                r"(ALL|caught|broke.*?|timeout.*?|SURVIVED|on a line.*?)\s{2,}(\d+)$", line.strip()
-            )
-            if hit:
-                found[hit.group(1).strip()] = int(hit.group(2))
-        return found
-
     def test_it_counts_both_buckets(self) -> None:
-        done = self.run_it(
+        done = run_it(
             results(
                 ("a/b.py", 10, "survived"), ("a/b.py", 20, "survived"), ("a/b.py", 30, "caught")
             ),
             coverage(a__b=[10]),
         )
-        self.assertEqual(done.returncode, 0, done.stderr)
-        got = self.counts(done.stdout)
-        self.assertEqual(got["ALL"], 3, done.stdout)
-        self.assertEqual(got["caught"], 1, done.stdout)
-        self.assertEqual(got["SURVIVED"], 2, done.stdout)
-        self.assertEqual(got["on a line NO test executes  (missing test)"], 1, done.stdout)
-        self.assertEqual(got["on a line tests DO execute  (weak/equiv)"], 1, done.stdout)
+        assert done.returncode == 0, done.stderr
+        got = counts(done.stdout)
+        assert got["ALL"] == 3, done.stdout
+        assert got["caught"] == 1, done.stdout
+        assert got["SURVIVED"] == 2, done.stdout
+        assert got["on a line NO test executes  (missing test)"] == 1, done.stdout
+        assert got["on a line tests DO execute  (weak/equiv)"] == 1, done.stdout
 
     def test_a_void_report_is_refused_rather_than_partitioned(self) -> None:
         """Non-zero and nothing printed to stdout: a caller reading only the
@@ -259,10 +265,10 @@ class TestTheCommandLine(unittest.TestCase):
         not find a partition drawn from rows that mean nothing."""
         report = results(("a/b.py", 10, "survived"))
         report["baseline_red"] = True
-        done = self.run_it(report, coverage(a__b=[]))
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("not green", done.stderr)
-        self.assertNotIn("missing test", done.stdout)
+        done = run_it(report, coverage(a__b=[]))
+        assert done.returncode == 1
+        assert "not green" in done.stderr
+        assert "missing test" not in done.stdout
 
     def test_an_unwidened_report_is_explained_with_a_caveat(self) -> None:
         """Still partitioned -- `--no-confirm` exists so a long sweep can skip
@@ -270,40 +276,40 @@ class TestTheCommandLine(unittest.TestCase):
         together -- but the reader is told before they act on it."""
         report = results(("a/b.py", 10, "survived"))
         report["widened"] = False
-        done = self.run_it(report, coverage(a__b=[]))
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("not re-run against the whole suite", done.stdout)
-        self.assertEqual(self.counts(done.stdout)["SURVIVED"], 1, done.stdout)
+        done = run_it(report, coverage(a__b=[]))
+        assert done.returncode == 0, done.stderr
+        assert "not re-run against the whole suite" in done.stdout
+        assert counts(done.stdout)["SURVIVED"] == 1, done.stdout
 
     def test_a_widened_report_gets_no_caveat(self) -> None:
         """Without this the note could be printed unconditionally and every test
         above would still pass."""
-        done = self.run_it(results(("a/b.py", 10, "survived")), coverage(a__b=[]))
-        self.assertNotIn("not re-run against the whole suite", done.stdout)
+        done = run_it(results(("a/b.py", 10, "survived")), coverage(a__b=[]))
+        assert "not re-run against the whole suite" not in done.stdout
 
     def test_rows_that_asked_nothing_are_counted_apart(self) -> None:
         """`broke` and `timeout` are neither caught nor survived, and folding
         them into either would misstate the partition they sit outside."""
-        done = self.run_it(
+        done = run_it(
             results(("a/b.py", 10, "broke"), ("a/b.py", 11, "timeout"), ("a/b.py", 12, "survived")),
             coverage(a__b=[]),
         )
-        got = self.counts(done.stdout)
-        self.assertEqual(got["ALL"], 3, done.stdout)
-        self.assertEqual(got["SURVIVED"], 1, done.stdout)
-        self.assertEqual(got.get("broke (asked nothing)"), 1, done.stdout)
-        self.assertEqual(got.get("timeout (asked nothing)"), 1, done.stdout)
+        got = counts(done.stdout)
+        assert got["ALL"] == 3, done.stdout
+        assert got["SURVIVED"] == 1, done.stdout
+        assert got.get("broke (asked nothing)") == 1, done.stdout
+        assert got.get("timeout (asked nothing)") == 1, done.stdout
 
     def test_the_repair_is_reported_when_it_changes_something(self) -> None:
         """Silent repair would make the partition unauditable: a reader could
         not tell a clean map from one this had to correct 111 times."""
-        loud = self.run_it(results(("a/b.py", 10, "caught")), coverage(a__b=[]))
-        self.assertIn("1 line(s) had a caught mutation", loud.stdout)
-        quiet = self.run_it(results(("a/b.py", 10, "caught")), coverage(a__b=[10]))
-        self.assertNotIn("had a caught mutation", quiet.stdout)
+        loud = run_it(results(("a/b.py", 10, "caught")), coverage(a__b=[]))
+        assert "1 line(s) had a caught mutation" in loud.stdout
+        quiet = run_it(results(("a/b.py", 10, "caught")), coverage(a__b=[10]))
+        assert "had a caught mutation" not in quiet.stdout
 
     def test_the_unreached_tally_names_each_file(self) -> None:
-        done = self.run_it(
+        done = run_it(
             results(
                 ("a/one.py", 1, "survived"),
                 ("a/one.py", 2, "survived"),
@@ -311,8 +317,8 @@ class TestTheCommandLine(unittest.TestCase):
             ),
             coverage(),
         )
-        self.assertRegex(done.stdout, r"2\s+a/one\.py")
-        self.assertRegex(done.stdout, r"1\s+b/two\.py")
+        assert re.search(r"2\s+a/one\.py", done.stdout), done.stdout
+        assert re.search(r"1\s+b/two\.py", done.stdout), done.stdout
 
     def test_the_unreached_tally_is_ordered_by_count_then_path(self) -> None:
         """The tally above asserts each line independently, so *any* order
@@ -329,7 +335,7 @@ class TestTheCommandLine(unittest.TestCase):
 
         The right answer is m, a, z, and none of those four produces it.
         """
-        done = self.run_it(
+        done = run_it(
             results(
                 ("z/late.py", 1, "survived"),
                 ("a/early.py", 1, "survived"),
@@ -339,31 +345,31 @@ class TestTheCommandLine(unittest.TestCase):
             ),
             coverage(),
         )
-        self.assertEqual(done.returncode, 0, done.stderr)
+        assert done.returncode == 0, done.stderr
         tally = [
             line.split()[1]
             for line in done.stdout.splitlines()
             if line.startswith("  ") and line.strip().split()[0].isdigit()
         ]
-        self.assertEqual(["m/most.py", "a/early.py", "z/late.py"], tally, done.stdout)
+        assert tally == ["m/most.py", "a/early.py", "z/late.py"], done.stdout
 
     def test_a_run_where_something_was_answered_does_not_say_otherwise(self) -> None:
         """The other half of "nothing was answered". With `any` read as `all`,
         the message appears for every run that has a single unanswered row in
         it -- which is most of them -- and a real partition is printed under a
         line saying no partition is possible."""
-        done = self.run_it(
+        done = run_it(
             results(("a/b.py", 10, "broke"), ("a/b.py", 11, "survived")),
             coverage(a__b=[]),
         )
-        self.assertNotIn("nothing was answered", done.stdout)
-        self.assertEqual(self.counts(done.stdout)["SURVIVED"], 1, done.stdout)
+        assert "nothing was answered" not in done.stdout
+        assert counts(done.stdout)["SURVIVED"] == 1, done.stdout
 
     def test_a_run_where_nothing_was_answered_says_so(self) -> None:
         """All broke: there is no partition, and printing 0 and 0 would read as
         a clean bill of health."""
-        done = self.run_it(results(("a/b.py", 10, "broke")), coverage(a__b=[]))
-        self.assertIn("nothing was answered", done.stdout)
+        done = run_it(results(("a/b.py", 10, "broke")), coverage(a__b=[]))
+        assert "nothing was answered" in done.stdout
 
     def test_the_unreached_list_is_optional_and_ordered(self) -> None:
         """Ordered by file then line, so two runs of the same state produce the
@@ -372,25 +378,25 @@ class TestTheCommandLine(unittest.TestCase):
         report = results(
             ("b/z.py", 9, "survived"), ("a/b.py", 20, "survived"), ("a/b.py", 3, "survived")
         )
-        quiet = self.run_it(report, coverage())
-        loud = self.run_it(report, coverage(), "--list")
-        self.assertNotIn("a/b.py:20", quiet.stdout)
-        self.assertIn("unreached survivors by file:", quiet.stdout)
+        quiet = run_it(report, coverage())
+        loud = run_it(report, coverage(), "--list")
+        assert "a/b.py:20" not in quiet.stdout
+        assert "unreached survivors by file:" in quiet.stdout
 
         listed = [
             line.strip().split(" ")[0]
             for line in loud.stdout.splitlines()
             if line.strip().startswith(("a/", "b/")) and ":" in line
         ]
-        self.assertEqual(listed, ["a/b.py:3", "a/b.py:20", "b/z.py:9"], loud.stdout)
-        self.assertIn("unreached survivors:", loud.stdout)
+        assert listed == ["a/b.py:3", "a/b.py:20", "b/z.py:9"], loud.stdout
+        assert "unreached survivors:" in loud.stdout
 
     def test_a_report_with_nothing_to_classify_is_refused(self) -> None:
         """Silence would read as "no gaps" -- the failure mode this whole
         module exists to prevent one level up."""
-        done = self.run_it({"results": []}, coverage(a__b=[1]))
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIn("no positioned rows", done.stderr + done.stdout)
+        done = run_it({"results": []}, coverage(a__b=[1]))
+        assert done.returncode != 0
+        assert "no positioned rows" in done.stderr + done.stdout
 
     def test_unreadable_inputs_say_so(self) -> None:
         with tempfile.TemporaryDirectory() as box:
@@ -402,14 +408,10 @@ class TestTheCommandLine(unittest.TestCase):
                     str(Path(box) / "absent.json"),
                     str(Path(box) / "gone.json"),
                 ],
-                cwd=REPO_ROOT,
+                cwd=support.ROOT,
                 capture_output=True,
                 text=True,
                 timeout=BOUND,
             )
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIn("cannot read the inputs", done.stderr + done.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert done.returncode != 0
+        assert "cannot read the inputs" in done.stderr + done.stdout

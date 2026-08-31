@@ -123,7 +123,10 @@ def address_space_caps() -> bool:
     )
     try:
         done = subprocess.run(
-            [sys.executable, "-B", "-c", probe], capture_output=True, text=True, timeout=30
+            [sys.executable, "-B", "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=support.bounded(30.0),
         )
     except subprocess.SubprocessError:  # pragma: no cover - a machine in trouble
         return False
