@@ -122,10 +122,6 @@ class Mutation(NamedTuple):
 #: expressions do -- and every span in this module comes from one of these.
 Positioned = ast.expr | ast.stmt
 
-#: Nodes that open a qualname. `_walk` yields one of these with `where` already
-#: equal to its own dotted name, which is what `unbounded` matches against.
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-
 
 class Edit(NamedTuple):
     """One operator's answer about one node."""
@@ -166,81 +162,6 @@ def mutable(path: str) -> bool:
     # nobody can trust, and the test named for that clause was passing off the
     # tuple above rather than off the clause it appeared to be testing.
     return path.endswith(".py") and path.startswith(MUTABLE) and not path.startswith(UNMUTABLE)
-
-
-#: Scopes a probe depends on to bound *itself*, by the file they live in.
-#: `UNMUTABLE` above is the same refusal at file granularity, and the reason it
-#: is not the tool reached for here is that these lines sit in the file most
-#: worth mutating in the tree.
-#:
-#: A sweep copies the tree, mutates it, and runs this suite inside the copy --
-#: and this suite drives *nested* harnesses. So a probe carrying a mutated
-#: `_Lanes` hosts a nested sweep with no memory guard, and one carrying a
-#: mutated sandbox pool hosts one that deadlocks on an empty queue. Either way
-#: the row comes back `BROKE`, which is never `caught`: the line reads as
-#: guarded and is guarded by nothing, and the summary counts it in neither of
-#: the two numbers a reader looks at. Measured across two 1030-row sweeps of
-#: `tools/mutate.py` differing only in ceiling, 8 of 9 unanswered rows recurred,
-#: and every one of them was here (#96).
-#:
-#: **Tuning cannot fix it, and #94 is the A/B that establishes that**: a 50%
-#: larger ceiling made it *worse*, 3 unanswered rows to 8, and the runaway
-#: pinned at 100% of whichever ceiling it was given. A process with no bound of
-#: its own fills any bound you give it, so no ceiling is the answer.
-#:
-#: **And this is not free -- that is the price, stated rather than assumed.**
-#: `_Lanes` is the fork-storm guard, the code CLAUDE.md records a machine going
-#: down for the want of, and from here it is covered by its unit tests and by
-#: nothing else. What is actually lost is smaller than it looks: a `BROKE` row
-#: proved nothing about these lines before either, so what goes is the
-#: *appearance* of coverage and what arrives is a count that means something.
-#: #91 bought the same thing for the half that decides what to kill, with a
-#: second independent fact (`_permitted`); no equivalent is available here,
-#: because a probe cannot hold a bound its own mutated code is responsible for
-#: applying.
-#:
-#: Keep this list as small as the evidence makes it. It is a hole in the tree's
-#: coverage that no verdict will ever mention again, so a name added on
-#: suspicion is worse than a `BROKE` row, which at least shows up as not-caught.
-UNBOUNDED: dict[str, tuple[str, ...]] = {
-    # Derived from a sweep, not from a reading of the code, and re-derivable the
-    # same way: `python -m tools.mutate --all --only tools/mutate.py`, then every
-    # scope holding a row whose outcome is neither `caught` nor `survived`.
-    # Measured on 2026-08-31 over 1030 rows with a green baseline -- 795 caught,
-    # 216 survived, **19 answered nothing** -- and these nine names hold all 19.
-    "tools/mutate.py": (
-        # Who a lane *is*, which the kill path reads. 12 of the 19, and the
-        # largest group by some way: `_lane` 7, `_born` 4, `_born_from_proc` 1.
-        # #91 is the mechanism -- get membership or process age wrong and the
-        # nested harness `SIGKILL`s the wrong set, taking its own probes with it.
-        "_lane",
-        "_born",
-        "_born_from_proc",
-        # The `/proc` twin above is what this machine runs, so it is the one a
-        # sweep here can reach; this is the same function on macOS, where no
-        # sweep runs at all. Included on that symmetry and not on evidence,
-        # which is the one place this list departs from its own rule -- stated
-        # because the alternative is an exclusion that silently means something
-        # different on the platform nobody sweeps.
-        "_born_from_ps",
-        # The memory guard, proven by `release` dropping `self._stop.set()`.
-        # The whole class, because every method of it is machinery the probe
-        # below depends on and a list of lines would rot on every edit.
-        "_Lanes",
-        # The sandbox pool: 4 of the 19, all of them a borrow that never comes
-        # back or a pool with nothing in it. Every later borrower then waits for
-        # ever -- a hang, so `TIMEOUT` rather than `BROKE`, and unanswerable for
-        # the same reason. `_lent` and `_on_a_spare` exist so that this can be
-        # said without naming `_borrow`'s and `_attempt`'s callers whole:
-        # `_attempt` decides the measured `first`/`Learned` row ordering, which
-        # is exactly what wants mutating.
-        "_sandboxes",
-        "_lent",
-        "_on_a_spare",
-        # The work queue a lane takes its next row from.
-        "Work.take",
-    ),
-}
 
 
 #: A disposition written beside the code it excuses:
@@ -1134,7 +1055,7 @@ def _walk(
             if not isinstance(child, ast.AST):
                 continue
             deeper, callable_now = where, inside_callable
-            if isinstance(child, _SCOPES):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 deeper = f"{where}.{child.name}" if where else child.name
                 # Carried separately rather than baked into the name, because a
                 # function nested in a function would otherwise read
@@ -1190,38 +1111,6 @@ def _pragma_lines(source: str, offsets: Offsets) -> set[int]:
     return {
         number for number in range(1, offsets.lines() + 1) if NO_MUTATE.search(offsets.line(number))
     }
-
-
-def unbounded(source: str, path: str) -> set[int]:
-    """Every line `UNBOUNDED` names for `path`, refusing a name that has gone.
-
-    `SystemExit` rather than a quiet miss, which is `_chosen`'s argument one
-    layer up: an exclusion keyed on a name rots the moment somebody renames the
-    thing, and it rots *towards* generating the rows again with nobody watching
-    -- the flattering direction, since the table simply grows back and every new
-    row is `BROKE`. `tests/test_mutants.py` asks this of the real tree, so a
-    rename is red in the preflight rather than an hour into a sweep.
-
-    A whole scope, never a line: `_Lanes` is excluded as a class because every
-    method of it is machinery the probe below depends on, and naming lines would
-    need re-checking on every edit to the file.
-    """
-    wanted = UNBOUNDED.get(path)
-    if not wanted:
-        return set()
-    lines: set[int] = set()
-    found: set[str] = set()
-    for node, where, _ in _walk(ast.parse(source)):
-        if isinstance(node, _SCOPES) and where in wanted:
-            found.add(where)
-            lines.update(_spanned(node))
-    if missing := sorted(set(wanted) - found):
-        raise SystemExit(
-            f"{path}: mutants.UNBOUNDED names {', '.join(missing)}, which the file does not "
-            "define. Point it at the new name or drop it: an exclusion that resolves to "
-            "nothing refuses nothing, and says so nowhere."
-        )
-    return lines
 
 
 def label(path: str, line: int, where: str, prose: str, inside_callable: bool = True) -> str:
@@ -1286,67 +1175,10 @@ def generate(
     skip: Sequence[str] | None = None,
 ) -> list[Mutation]:
     """Every mutant the operators can make on the changed lines of one file."""
-    offsets = Offsets(source)
-    return _rows(
-        source,
-        path,
-        lines,
-        tests,
-        _chosen(operators, skip),
-        _pragma_lines(source, offsets) | unbounded(source, path),
-        offsets,
-    )
-
-
-def refused(
-    source: str,
-    path: str,
-    lines: set[int],
-    tests: str = "",
-    operators: Sequence[str] | None = None,
-    skip: Sequence[str] | None = None,
-) -> list[Mutation]:
-    """The rows `generate` would have produced but for `UNBOUNDED`.
-
-    Separate from `generate` so that a run can say out loud what it refused. A
-    table that quietly shrinks is the flattering direction and its count looks
-    right either way -- the argument `--limit` makes when it names what it
-    dropped, and the one the `# survivor:` tags make by being counted rather
-    than hidden.
-
-    A difference of two generations rather than a second derivation of which
-    rows the exclusion reached, because "would have produced but for" is exactly
-    that difference and there is nothing in it to keep in step with `generate`.
-    It costs one extra walk of one file, and only for a file `UNBOUNDED` names.
-    """
-    guarded = unbounded(source, path)
-    if not guarded:
-        return []
-    offsets = Offsets(source)
-    chosen = _chosen(operators, skip)
-    pragma = _pragma_lines(source, offsets)
-    kept = {
-        (row.span, row.new)
-        for row in _rows(source, path, lines, tests, chosen, pragma | guarded, offsets)
-    }
-    return [
-        row
-        for row in _rows(source, path, lines, tests, chosen, pragma, offsets)
-        if (row.span, row.new) not in kept
-    ]
-
-
-def _rows(
-    source: str,
-    path: str,
-    lines: set[int],
-    tests: str,
-    chosen: Sequence[Operator],
-    blocked: set[int],
-    offsets: Offsets,
-) -> list[Mutation]:
-    """One body for `generate` and `refused`, which differ only in `blocked`."""
     tree = ast.parse(source)
+    offsets = Offsets(source)
+    blocked = _pragma_lines(source, offsets)
+    chosen = _chosen(operators, skip)
 
     seen: set[tuple[tuple[int, int], str]] = set()
     out: list[Mutation] = []

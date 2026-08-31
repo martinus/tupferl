@@ -699,17 +699,16 @@ Five things are not where a newcomer would guess, all on purpose:
   - **The unfinished ones are counted out loud, every run.** A `TODO` tag
     silences its row exactly as a written reason does — that is what makes
     `--accept` usable — so without the count a green sweep is a claim nobody
-    made. As of 2026-08-31 there are **99** of them, all in `tools/mutate.py`,
+    made. As of 2026-08-31 there are **109** of them, all in `tools/mutate.py`,
     where the pool orchestration and `_Lanes` signal handling resist testing for
     the reasons four dead ends below already record. That number is debt, not
     progress; a sweep exits 0 over all of it.
 
-    It read 115 until this line was re-counted, and the tree said 114 on the day
-    before it moved — so the figure had been wrong by one since it was written,
-    which is what a hand-maintained count does. The 15 that went with #96 are
-    the two shapes that entry describes: 13 sat inside a scope `UNBOUNDED` now
-    refuses, where they could excuse nothing and could not be reported spent
-    either, and 2 went with the `get`/`put` pair `_lent` replaced.
+    It read 115 until this line was re-counted and the tree said 114, so the
+    figure had been wrong by one since it was written — which is what a
+    hand-maintained count does. The five that went with #96 are the shape this
+    number exists to make visible: four `TODO`s replaced by written reasons, and
+    two collapsed into one when `_borrow` and `_attempt` came to share `_lent`.
 
   **Historical — this replaced a file of sha256 keys
   (`known-survivors.json`), and none of the names below still exists.** The
@@ -1315,54 +1314,61 @@ has been dropped.
   independent fact is that vetoes it.
 
 - **The other half of that: a probe cannot answer a row that disables the bound
-  it runs under, and `mutants.UNBOUNDED` refuses to generate one.** #91 fixed
-  what a mutated harness *kills*; this is what it *counts*. A probe runs this
-  suite, this suite drives nested harnesses, so a probe carrying a mutated
-  `_Lanes` hosts a sweep with no memory guard and one carrying a mutated
-  sandbox pool hosts one that deadlocks on an empty queue. Either way the row
-  is `BROKE`, which is never `caught` — the line reads as guarded and is
-  guarded by nothing, and the summary counts it in neither of the two numbers a
-  reader looks at.
+  it runs under — and the answer is a written disposition, not an exclusion.**
+  #91 fixed what a mutated harness *kills*; this is what it *counts*. A probe
+  runs this suite, this suite drives nested harnesses, so a probe carrying a
+  mutated `_lane` or `_born` hosts a sweep whose `_end_lane` takes the probe
+  with it, and one carrying a mutated sandbox pool hosts one that waits on an
+  empty queue for ever. `_permitted`'s trick does not transfer: a veto works
+  because *some* unmutated code is left to veto with, and here the code that
+  would have to hold the bound is the code being mutated.
 
-  **`_permitted`'s trick does not transfer**, which is why this is an exclusion
-  rather than a second fact: a veto works because *some* unmutated code is left
-  to veto with, and here the thing that would have to hold the bound is the
-  thing being mutated.
+  **Measured, whole table, 2026-08-31** — `--all --only tools/mutate.py`, 1030
+  rows, green baseline: 795 caught, 216 survived, 13 `BROKE`, 6 `TIMEOUT`. The
+  19 unanswered rows sit in seven scopes, and 12 of them had no disposition, so
+  the sweep's own section read *"12 asked nothing, so the table is that much
+  smaller than it looks"*.
 
-  Four things about the shape, each a way it could quietly become a mute list:
+  | scope | rows | how it dies |
+  |---|---:|---|
+  | `_lane` | 7 | SIGKILL, 5–6s |
+  | `_born` | 4 | SIGKILL, 4–5s |
+  | `Work.take` | 2 | 300s, the per-row bound |
+  | `_sandboxes`, `_borrow`, `_attempt`, `run` | 1 each | 300s |
+  | `_Lanes.release` | 1 | `MemoryError`, 29s |
+  | `_born_from_proc` | 1 | 0.3s |
 
-  - **A name, not a line.** `UNBOUNDED` maps a path to qualnames and
-    `mutants.unbounded` resolves them against the file. A list of line numbers
-    would need re-checking on every edit and would rot without saying so.
-  - **A name that stops resolving is a `SystemExit`**, because the direction it
-    rots in is the flattering one: the exclusion silently stops matching, the
-    rows come back, and every one of them is `BROKE` with nothing objecting.
-    `tests/test_mutants.py` asks it of the real tree one name at a time, so a
-    rename is red in the preflight rather than an hour into a sweep.
-  - **Every run says how many rows it refused**, for the reason `--limit` says
-    what it dropped. A table that quietly shrinks looks exactly like one that
-    was always that size.
-  - **No `# survivor:` tag may sit inside an excluded scope.** Such a tag
-    excuses nothing and cannot even be reported spent — `Survivors` judges a
-    tag against the rows that ran, and here none is generated — so it would
-    claim for ever that somebody had read a survivor. Fourteen were deleted
-    with the exclusion and a test refuses the fifteenth.
+  **#96 proposed refusing to *generate* these, and the measurement refutes it.**
+  Built and measured before being taken back out: an exclusion naming
+  `_Lanes`, `_lane`, `_born*`, the pool and `Work.take` as *scopes* removes 99
+  rows to repair 19 — and **57 of the 99 are rows the suite catches today**,
+  24 more are read survivors. That is 3 caught rows destroyed per unanswered
+  row repaired, and it is this file's own recorded mistake at a coarser
+  granularity: *"the operator is required, and that is the whole design … a
+  bare tag would excuse a live guard about half the time it was used"*, 53%
+  measured there against **58% here**.
 
-  **The price is stated rather than assumed.** `_Lanes` is the fork-storm guard,
-  the code a machine went down for the want of, and from here it is covered by
-  its unit tests and nothing else — 70 rows of `tools/mutate.py`'s 1034, so
-  964 still run. What is actually lost is smaller than it reads: a `BROKE` row
-  proved nothing about those lines before either. What is bought is a count
-  that means something.
+  Nor is there a cost argument for it. The 19 rows are **1890 lane-seconds of
+  92401, 2.0%** — and the SIGKILL ones die in five seconds, not in a runaway.
 
-  **And the issue's suggested set was wider than its own evidence.** #96 named
-  `_lane`, `_from_proc` and `_parse_ps` alongside, "for #91's reason" — but
-  none of them appears among the unanswered rows it measured, and three of
-  their rows carry a *written* equivalence, so somebody has read them and they
-  are answerable. Excluding those would have thrown real verdicts away for a
-  hazard that is not there. Keep the list as small as the evidence makes it: it
-  is a hole no verdict will ever mention again, so a name added on suspicion is
-  worse than a `BROKE` row, which at least shows up as not-caught.
+  **So the fix is 19 `# survivor:` tags with reasons written in them**, which is
+  the mechanism this file already documents for exactly this (`BROKE` and
+  `TIMEOUT` are excused on the same terms, #57). It costs no coverage, it is per
+  `(line, operator)` rather than per scope, and the sweep already counts it —
+  7 of the 19 were excused that way before this and only the other 12 were
+  loud. Two further reasons it beats refusing to generate:
+
+  - **a future unanswerable row in those scopes still shows up.** An exclusion
+    is permanent and silent, so a later change could make a *new* row in
+    `_Lanes` unanswerable and nothing would ever say. That matters most for
+    exactly the cluster the exclusion was wanted for.
+  - **the reason lives beside the line**, so the next reader of `_lane` learns
+    why a sweep cannot speak for it, which a constant in another module does
+    not tell them.
+
+  What an exclusion would still be right for is a row that is *dangerous* rather
+  than merely unanswerable — `mutants.UNMUTABLE` exists for that and is empty.
+  These are not: `_permitted` keeps a mutated `_lane` inside its own lane.
 
 - **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
   and a process started that way passes the *ignored* disposition to every

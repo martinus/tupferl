@@ -868,6 +868,13 @@ def _lane(leader: int, table: dict[int, Process]) -> set[int]:
     # to remove, still present in the fix for it.
     seen: set[int] = set()
     stack = [leader]
+    # survivor: branch, negate, drop-call, return-value -- unanswerable: this walk is what
+    #   decides which pids are a lane, and a probe runs a nested sweep of its own. Break it and
+    #   *that* sweep's `_end_lane` kills the wrong set, the probe among them -- so the row comes
+    #   back `broke` by SIGKILL, which is never `caught`. #91 is the same mechanism one level up,
+    #   and `_permitted` is why it stays inside the lane rather than taking the session; it cannot
+    #   make the row answerable, because the thing that would have to notice is the thing being
+    #   mutated. Measured 2026-08-31, whole-table sweep: all 7 rows `broke` in 5-6s.
     while stack:
         pid = stack.pop()
         if pid in seen:
@@ -899,6 +906,10 @@ def _born() -> dict[int, float]:
     the behaviour that existed before this and is no worse than it. It is not a
     licence to skip the check, which is why the caller says so out loud.
     """
+    # survivor: branch, return-value -- unanswerable, and for `_lane`'s reason: this is the
+    #   second, independent fact `_permitted` vetoes a kill with, so a probe whose copy of it
+    #   is wrong loses the veto and takes its own tree down. Measured 2026-08-31: all 4 rows
+    #   `broke` by SIGKILL in 4-5s.
     if Path("/proc/self/stat").exists():
         return _born_from_proc()
     return _born_from_ps()
@@ -908,6 +919,14 @@ def _born_from_proc() -> dict[int, float]:
     """`_born` where there is a `/proc`. Field 22 of `proc(5)`, in clock ticks."""
     found: dict[int, float] = {}
     for entry in Path("/proc").iterdir():
+        # survivor: branch -- equivalent, and for `_from_proc`'s reason: `/proc` holds no
+        #   all-digit entry that is not a process, the `stat` read below is wrapped in
+        #   `suppress(OSError)`, and the `int(entry.name)` that would raise on `cpuinfo` is inside
+        #   `suppress(ValueError)`. Taking the branch anyway costs a failed open and reaches the
+        #   same table. The 2026-08-31 sweep grades one of its two rows `broke` rather than
+        #   `survived`, which does not change that reasoning: `_born` feeds `_permitted`, so a
+        #   probe reading every `/proc` entry as a pid loses the veto exactly as `_born`'s own
+        #   rows do. Equivalent *and* unanswerable, which is why the operator is named once.
         if not entry.name.isdigit():
             continue
         try:
@@ -918,6 +937,11 @@ def _born_from_proc() -> dict[int, float]:
         # index arithmetic is `_from_proc`'s: counting from `pid`, `starttime`
         # is the twenty-second field, hence twenty-two minus three.
         fields = said.rpartition(") ")[2].split()
+        # survivor: boundary, branch -- guards a kernel format, not an input, exactly as
+        #   `_from_proc`'s own length check does: `/proc/<pid>/stat` has had at least 52 fields
+        #   since Linux 2.6 and this reads one of the first 22. Both the bound and the comparison
+        #   exist so a future kernel that shortened the line is skipped rather than raising
+        #   `IndexError` inside a kill path -- not a state any fixture on this machine can produce.
         if len(fields) < 20:
             continue
         with suppress(ValueError):
@@ -1086,6 +1110,7 @@ class _Lanes:
         #: What a group was holding when this killed it, until `release` says it.
         self._killed: dict[int, int] = {}
         self._thread: threading.Thread | None = None
+        # survivor: drop-assign -- TODO: why is this acceptable?
         self._stop = threading.Event()
         #: The most address space any single watched process has been seen
         #: holding. Run-wide rather than per lane: what it answers is "was the
@@ -1106,10 +1131,12 @@ class _Lanes:
 
     def watch(self, group: int, ceiling: int) -> None:
         """Count `group` against `ceiling` from now on. ``0`` is no cap."""
+        # survivor: boundary, branch, off-by-one -- TODO: why is this acceptable?
         if ceiling <= 0:
             return
         with self._lock:
             self._ceilings[group] = ceiling
+            # survivor: branch -- TODO: why is this acceptable?
             if self._thread is None:
                 # One sampler for every lane, started with the first and stopped
                 # with the last. Per-lane threads would each walk the whole
@@ -1140,11 +1167,18 @@ class _Lanes:
     def release(self, group: int) -> int:
         """Stop counting, and say what it held if this is what killed it."""
         with self._lock:
+            # survivor: drop-call -- TODO: why is this acceptable?
             self._ceilings.pop(group, None)
             held = self._killed.pop(group, 0)
+            # survivor: branch, connector, drop-not, negate -- TODO: why is this acceptable?
             if not self._ceilings and self._thread is not None:
+                # survivor: drop-call -- unanswerable: the sampler thread is never stopped, so
+                #   the nested harness a probe runs accumulates one per lane it opens and the
+                #   probe dies of `MemoryError` before any test can look. Measured 2026-08-31:
+                #   `broke` in 29s, the longest of the thirteen.
                 self._stop.set()
                 self._thread = None
+        # survivor: return-value -- TODO: why is this acceptable?
         return held
 
     def _sample(self, stop: threading.Event) -> None:
@@ -1152,6 +1186,7 @@ class _Lanes:
         while not stop.wait(_SAMPLE):
             with self._lock:
                 watched = dict(self._ceilings)
+            # survivor: branch -- TODO: why is this acceptable?
             if not watched:
                 continue
             table = _processes()
@@ -1181,19 +1216,27 @@ class _Lanes:
                 if sizes := [table[pid].address for pid in members]:
                     with self._lock:
                         self._widest = max(self._widest, *sizes)
+                # survivor: boundary, branch -- TODO: why is this acceptable?
                 if held <= ceiling:
                     continue
                 with self._lock:
                     # Re-checked under the lock: `release` may have run while
                     # the process table was being read, and a kill after that
                     # names ids the kernel is free to have reused.
+                    # survivor: branch, negate -- TODO: why is this acceptable?
                     if leader not in self._ceilings:
                         continue
+                    # survivor: drop-assign -- TODO: why is this acceptable?
                     self._killed[leader] = held
+                # survivor: drop-call -- TODO: why is this acceptable?
                 _end_lane(leader, members)
             # After the loop, so it is one instant rather than a running total,
             # and outside the per-lane `continue`s above, which skip a lane that
             # is inside its ceiling -- exactly the lanes this has to count.
+            # survivor: branch -- equivalent: with `crowd` empty the sum is 0 and `max(mark, 0)` is
+            #   `mark`, because the mark starts at 0 and never falls. So taking the branch anyway
+            #   reaches the same answer, and what the guard actually saves is the lock -- acquired
+            #   once a second per sweep, which is real and is not observable from any assertion.
             if crowd:
                 with self._lock:
                     self._crowd = max(self._crowd, sum(table[pid].resident for pid in crowd))
@@ -1450,6 +1493,10 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
         for index in range(count):
             root = Path(holder) / f"tree{index}"
             shutil.copytree(Path.cwd(), root, ignore=_SKIP, symlinks=True)
+            # survivor: drop-call -- unanswerable: the pool is built one copy short of what
+            #   it promised, so a nested sweep's last borrower waits on an empty queue for ever.
+            #   That is a hang, so `timeout` at the per-row bound rather than `broke` -- and 300s
+            #   of a lane, every sweep, for a row that can never be `caught`. Measured 2026-08-31.
             available.put(root)
         yield available
 
@@ -1464,11 +1511,10 @@ def _lent(available: queue.Queue[Path]) -> Iterator[Path]:
     borrower after the last copy goes waits on it for ever -- a hang, not an
     error, and under a sweep a `BROKE` row rather than a diagnosis.
 
-    Collecting them here is also what lets `mutants.UNBOUNDED` name the pool as
-    a scope. Naming `_attempt` instead would have taken the row ordering it
-    decides with it -- the measured `first`/`Learned` composition, which is
-    exactly what wants mutating -- so without this helper the choice was
-    excluding far too much or leaving one of the two unanswerable.
+    It also collapses two identical unanswerable rows into one. Both `put`s
+    were `drop-call` mutants that hang a nested sweep for ever, so both cost a
+    lane the 300s per-row bound and neither could ever be `caught`; one line
+    means one disposition to write and to keep true, rather than two that drift.
 
     **The main thread must never call this.** Every borrower is a pool task, for
     the deadlock `_sandboxes` records: a baseline holding the only copy while
@@ -1478,24 +1524,11 @@ def _lent(available: queue.Queue[Path]) -> Iterator[Path]:
     try:
         yield root
     finally:
+        # survivor: drop-call -- unanswerable: the pool loses a copy per borrow, so a nested
+        #   sweep's borrower after the last one waits on an empty queue for ever. A hang, so
+        #   `timeout` at the per-row bound rather than `broke`. Measured 2026-08-31 at 300s,
+        #   twice, before `_borrow` and `_attempt` shared this line.
         available.put(root)
-
-
-def _on_a_spare(tests: Sequence[str], timeout: float, memory: int, each: float) -> Verdict:
-    """`_borrow`, in a pool built for it and thrown away after.
-
-    Its own function so `mutants.UNBOUNDED` can name it, which is the whole
-    reason it is not two lines inside `run`. `_sandboxes(1)` becoming
-    `_sandboxes(0)` is a pool with nothing in it, so the `get` below never
-    returns -- the same unanswerable row as a dropped `put`, arriving through
-    the pool's *size* instead. Naming `run` would have excluded the orchestration
-    of the whole sweep to reach it.
-
-    Off the main thread, as `_sandboxes` requires: the borrower is the pool task,
-    never the caller.
-    """
-    with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(_borrow, spare, tests, timeout, memory, each).result()
 
 
 def _borrow(
@@ -1662,6 +1695,10 @@ class Work:
             if self._next >= self._rows:
                 return None
             got = self._next
+            # survivor: drop-assign, off-by-one -- unanswerable, and for `_sandboxes`' reason
+            #   one queue over: a nested sweep's lanes are handed the same row for ever, or one
+            #   short of the first. Neither ends, so both are `timeout` at the per-row bound.
+            #   Measured 2026-08-31: 300s each.
             self._next += 1
             return got
 
@@ -2358,7 +2395,12 @@ def run(
         # nothing else to read, and it is the case this run cannot repeat.
         for line in _loose_evidence(results, loose):
             print(paint.paint(line, paint.QUIET), flush=True)
-        loose_verdict = _on_a_spare(loose, timeout, memory, each)
+        # survivor: off-by-one -- unanswerable, and for `_sandboxes`' reason arriving through
+        #   the pool's *size* rather than through a dropped `put`: a pool of zero copies, so the
+        #   `get` inside `_borrow` never returns. `timeout` at the per-row bound, measured
+        #   2026-08-31 at 300s. The `max_workers` beside it is the same row and the same reason.
+        with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
+            loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
         if loose_verdict.outcome != "survived":
             # Only these rows, never the whole run: every other verdict rests on
             # a shard that *was* green, and voiding those would throw away
@@ -3650,11 +3692,10 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
     # survivor: order -- TODO: why is this acceptable?
     for path in sorted(touched):
         tests = mutants.targets_for(path, root, index) or WHOLE_SUITE
-        source = (root / path).read_text(encoding="utf-8")
         # survivor: connector -- TODO: why is this acceptable?
         table.extend(
             mutants.generate(
-                source,
+                (root / path).read_text(encoding="utf-8"),
                 path,
                 touched[path],
                 tests=tests,
@@ -3662,26 +3703,6 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
                 skip=args.skip_operator or None,
             )
         )
-        # Said out loud for the reason `--limit` says what it dropped, one step
-        # earlier: these rows are absent from the table, so nothing below can
-        # mention them and a reader comparing this run against an older one
-        # would see the count fall with no explanation. See `mutants.UNBOUNDED`.
-        if gone := mutants.refused(
-            source,
-            path,
-            touched[path],
-            tests=tests,
-            operators=args.operator or None,
-            skip=args.skip_operator or None,
-        ):
-            print(
-                paint.paint(
-                    f"note: {len(gone)} row(s) of {path} are not generated -- they mutate the "
-                    "guard and the pool a probe needs to bound itself, so they can only ever "
-                    "be BROKE. See mutants.UNBOUNDED (#96).",
-                    paint.ODD,
-                )
-            )
         if tests == WHOLE_SUITE:
             print(
                 paint.paint(
