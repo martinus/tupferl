@@ -363,6 +363,12 @@ class TestAFixtureThatDied(Probe):
     would report that the tests noticed a mutation they never reached. pytest
     says which by the phase: ``setup`` and ``teardown`` are the fixture's,
     ``call`` is the test's.
+
+    **Phase is not the whole of it, and the last class below is the correction.**
+    A function-scoped fixture also reports in ``setup``, and it is where a
+    converted `setUp` goes -- so the same assertion means "a test noticed" on one
+    side of a conversion and "the run fell over" on the other, which is not a
+    difference anything in the code under test can produce.
     """
 
     def test_a_dead_setupclass_is_not_an_answer(self) -> None:
@@ -440,6 +446,124 @@ class TestAFixtureThatDied(Probe):
         self.assertEqual(1, len(found["broke"]))
         self.assertIn("test_a", found["broke"][0])
         self.assertIn("ModuleNotFoundError", found["broke"][0])
+
+
+class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
+    """The correction to the class above, measured rather than reasoned into.
+
+    Cluster B4a converted four modules whose fixtures assert their own
+    preconditions -- "the template's `init` failed" and so on. Those assertions
+    had been in `unittest`'s instance `setUp`, which pytest runs inside
+    ``call``; as fixtures they report in ``setup``. **104 rows of a 1309-row
+    sweep moved from `caught` to `BROKE`**, with no test weakened and the
+    survivor set identical. A `BROKE` row is never `caught`, so 104 lines of
+    `tupferl/` read as guarded by nothing.
+
+    So the line is drawn by *scope*, which `pytest_fixture_setup` carries: one
+    test's own setup is that test noticing, and anything wider is not.
+    """
+
+    def test_a_function_scoped_fixture_that_raises_is_a_test_noticing(self) -> None:
+        self.module(
+            "test_a",
+            """
+            import pytest
+            @pytest.fixture
+            def box():
+                raise AssertionError("the mutation broke the fixture's own check")
+            def test_it(box):
+                pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual([], found["broke"], found["broke"])
+        self.assertEqual(1, len(found["noticed"]), found["noticed"])
+        # And the nodeid is one a later run can select, which is what makes it
+        # usable as a remembered killer rather than merely a name in a report.
+        self.assertIn("test_a.py::test_it", found["killers"][0])
+
+    def test_the_same_assertion_written_as_setup_answers_the_same_way(self) -> None:
+        """The pair, and the reason this class exists rather than a comment.
+
+        One assertion, two spellings of where it lives, and the conversion is
+        supposed to be behaviour-neutral. Asserted side by side so that a
+        classifier which drifts on one of them fails here rather than in a sweep
+        six modules later.
+        """
+        self.module(
+            "test_a",
+            """
+            import unittest
+            class T(unittest.TestCase):
+                def setUp(self):
+                    raise AssertionError("the mutation broke the fixture's own check")
+                def test_it(self):
+                    pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual([], found["broke"], found["broke"])
+        self.assertEqual(1, len(found["noticed"]))
+
+    def test_a_later_phase_is_not_covered_by_the_setup_that_was_credited(self) -> None:
+        """The scope is a fact about one *phase*, and it must not latch.
+
+        Found by review, measured before the fix: keyed by nodeid alone and read
+        at every phase, one test's own fixture failing in ``setup`` credited
+        *any* later failure of that test as well -- here a class-scoped fixture
+        blowing up after ``yield``, reported as the same nodeid noticing twice.
+
+        The pair in one run is what makes this checkable: the same test has to
+        appear in both buckets, once for each phase, which no single rule that
+        looks at the nodeid alone can produce.
+        """
+        self.module(
+            "test_a",
+            """
+            import pytest
+            @pytest.fixture
+            def narrow():
+                raise AssertionError("mine alone")
+            @pytest.fixture(scope="class")
+            def wide():
+                yield
+                raise RuntimeError("class teardown fell over")
+            class TestX:
+                def test_it(self, narrow, wide):
+                    pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual(["test_a.py::TestX::test_it"], found["noticed"])
+        self.assertEqual(1, len(found["broke"]), found["broke"])
+        self.assertIn("teardown failed", found["broke"][0])
+
+    def test_a_module_scoped_fixture_that_raises_is_still_not_an_answer(self) -> None:
+        """The other side, and without it the rule above is just "credit every
+        setup failure" -- which would credit one broken session fixture as a kill
+        for every test in the run.
+
+        Two tests, so the count is what tells the two rules apart: crediting a
+        wider fixture would report *both* of them as having noticed something
+        neither of them reached.
+        """
+        self.module(
+            "test_a",
+            """
+            import pytest
+            @pytest.fixture(scope="module")
+            def shared():
+                raise RuntimeError("died before any test")
+            def test_one(shared):
+                pass
+            def test_two(shared):
+                pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual([], found["noticed"], "a module-scoped fixture was credited as a test")
+        self.assertEqual(2, len(found["broke"]), found["broke"])
+        self.assertIn("setup failed", found["broke"][0])
 
 
 class TestABrokenModuleIsClassifiedTheSameWayTwice(Probe):
@@ -1323,6 +1447,23 @@ class TestWhatThisAssumesOfPytest(Probe):
                 }
             )
 
+        @pytest.hookimpl(wrapper=True)
+        def pytest_fixture_setup(self, fixturedef, request):
+            try:
+                return (yield)
+            except BaseException as raised:
+                seen.append(
+                    {
+                        "nodeid": request.node.nodeid,
+                        "when": "fixture",
+                        "raised": type(raised).__name__,
+                        "outcome": "failed",
+                        "subtest": False,
+                        "scope": str(fixturedef.scope),
+                    }
+                )
+                raise
+
     pytest.main(["-q", "-p", "no:cacheprovider", *sys.argv[2:]], plugins=[Spy()])
     with open(sys.argv[1], "w", encoding="utf-8") as out:
         json.dump(seen, out)
@@ -1344,6 +1485,14 @@ class TestWhatThisAssumesOfPytest(Probe):
             seen.is_file(), f"the spy wrote nothing.\nstdout: {done.stdout}\nstderr: {done.stderr}"
         )
         return [dict(event) for event in json.loads(seen.read_text(encoding="utf-8"))]
+
+    def scopes(self, body: str) -> dict[str, str]:
+        """The scope of each fixture that raised, by what it raised."""
+        return {
+            str(event["raised"]): str(event["scope"])
+            for event in self.watched(body)
+            if event["when"] == "fixture"
+        }
 
     def phases(self, body: str) -> dict[str, str]:
         """Which phase each failure was reported in, by what it raised."""
@@ -1481,6 +1630,36 @@ class TestWhatThisAssumesOfPytest(Probe):
         )
         self.assertEqual(set(), {str(e["outcome"]) for e in events} & {"failed"})
         self.assertIn("skipped", {str(e["outcome"]) for e in events})
+
+    def test_the_scope_of_a_fixture_that_raises_is_reported(self) -> None:
+        """The one fact phase cannot carry.
+
+        `verdict.Watcher.pytest_fixture_setup` rests on two things: that pytest
+        calls the hook for every fixture and lets a wrapper see the exception,
+        and that `FixtureDef.scope` is the string it reads. Neither is a
+        documented guarantee, and a release that moved either would send every
+        function-scoped fixture failure back to `broke` -- a silent 104-row
+        regression rather than a red run.
+
+        Both widths in one run, so a pytest that always answered "function"
+        fails here too.
+        """
+        found = self.scopes(
+            """
+            import pytest
+            @pytest.fixture
+            def narrow():
+                raise ValueError("mine alone")
+            @pytest.fixture(scope="module")
+            def wide():
+                raise KeyError("everyone's")
+            def test_one(narrow):
+                pass
+            def test_two(wide):
+                pass
+            """
+        )
+        self.assertEqual({"ValueError": "function", "KeyError": "module"}, found)
 
 
 class TestTellingAnAnswerFromACarrier(unittest.TestCase):

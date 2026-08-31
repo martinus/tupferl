@@ -26,8 +26,8 @@ from tupferl import copies, gitrepo, paths, sync
 NAME = PurePosixPath(".bashrc")
 
 
-class OneMachine(support.Machine):
-    """`support.Machine`, with one file already managed and a `sync` shorthand."""
+class OneMachine(support.MachineCase):
+    """`support.MachineCase`, with one file already managed and a `sync` shorthand."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -254,7 +254,7 @@ class TestWhatStopsASync(OneMachine):
         self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
 
 
-class TestTwoMachines(support.TwoMachines):
+class TestTwoMachines(support.TwoMachinesCase):
     def test_init_on_the_second_machine_brings_everything_down(self) -> None:
         """The README's promise: `tupferl init <url>` alone sets up a second
         computer, because plan §4 says init "then runs a first sync"."""
@@ -406,7 +406,7 @@ class TestTwoMachines(support.TwoMachines):
         self.assertIn("could not fetch", done.stderr)
 
 
-class TestAGitLevelConflict(support.TwoMachines):
+class TestAGitLevelConflict(support.TwoMachinesCase):
     """Two machines that have each *committed* a change to the same lines.
 
     The path the mutation sweep found untested, and six of its survivors lived
@@ -487,7 +487,7 @@ class TestAGitLevelConflict(support.TwoMachines):
         self.assertIsNone(gitrepo.unfinished(self.second.repo))
 
 
-class TestTheSnapshotIsWrittenLast(support.TwoMachines):
+class TestTheSnapshotIsWrittenLast(support.TwoMachinesCase):
     """Plan §7.4 item 4: a sync killed part-way must leave the state consistent.
 
     The ordering in `apply` is the whole of that guarantee, and it is invisible
@@ -517,7 +517,7 @@ class TestTheSnapshotIsWrittenLast(support.TwoMachines):
         self.assertEqual(was, self.second.snapshot(".config/nvim/init.lua").read_text())
 
 
-class TestWhatSyncSaysAboutTheRemote(support.TwoMachines):
+class TestWhatSyncSaysAboutTheRemote(support.TwoMachinesCase):
     """#26: the command that reaches the remote has to say that it did.
 
     `sync` used to report only what it wrote in `$HOME`. The asymmetry is what

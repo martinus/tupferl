@@ -16,9 +16,36 @@ this tool cannot see.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
+from tests import support
 from tools import unassert
+
+#: What one conversion may take. The whole module runs in 0.04s, so this is
+#: three orders of magnitude above the longest honest wait -- and `bounded`
+#: brings it under whatever per-test alarm the sweep actually armed, rather than
+#: under the 30s default, which is the distinction `bounded` exists for.
+BOUND = 5.0
+
+
+@pytest.fixture(autouse=True)
+def _no_test_here_may_hang() -> Iterator[None]:
+    """Bound every test in this module, because `_scan` is a `while` loop.
+
+    Every mutation of an `i += 1` in a scanner is an infinite loop by
+    construction -- `i -= 1` and `i += 0` alike -- and a hang is filed `BROKE`,
+    which is never `caught`. Measured: 3 rows of a 96-row diff sweep, on top of
+    9 the file already carried from cluster B3.
+
+    On the *module* rather than on a class or a call, which is CLAUDE.md's five
+    "where to arm it" lessons taken together: every test here reaches `_scan`,
+    most of them through two or three different callers, and a bound placed
+    where a sweep pointed has been wrong five times for exactly that reason.
+    """
+    with support.deadline(support.bounded(BOUND), "unassert did not finish"):
+        yield
 
 
 def only(text: str) -> str:
@@ -49,6 +76,24 @@ class TestWhatItRefuses:
         assert refused == ["assertRaises: takes 2, found 1"] or refused == [
             "assertRaises: no rule for it"
         ]
+
+    def test_a_form_that_is_known_but_given_too_few_arguments_is_refused(self) -> None:
+        """The arity check itself, which nothing reached: the fixture above uses
+        `assertRaises`, and `assertRaises` is not in `FORMS` at all -- so it
+        stops at "no rule for it" one branch earlier. Both mutations of the
+        bound survived until this was written."""
+        done, refused = unassert.convert("self.assertEqual(a)")
+        assert done == "self.assertEqual(a)"
+        assert refused == ["assertEqual: takes 2, found 1"]
+
+    def test_a_form_given_too_many_is_refused_too(self) -> None:
+        """The other side of the window. Two arguments is the form, three is the
+        form plus `unittest`'s message, and four is a call this tool has no
+        reading of -- so `<= form[0] + 1` is a boundary with a case either
+        side."""
+        done, refused = unassert.convert('self.assertEqual(a, b, "why", extra)')
+        assert refused == ["assertEqual: takes 2, found 4"]
+        assert "self.assert" in done
 
     def test_what_is_refused_still_reads_self_assert(self) -> None:
         """Which is the whole point: in a converted class that is an
@@ -102,6 +147,43 @@ class TestItFindsTheWholeCall:
         assert refused == ["assertEqual: unbalanced parentheses"]
 
 
+class TestWhitespaceInsideAStringSurvives:
+    """The one defect this tool has actually shipped, and the shape of it.
+
+    Joining a multi-line call onto one line was `" ".join(arg.split())`, which
+    does not know a string literal from an expression. `assertIn("host  .gitconfig",
+    out)` came back asserting one space against output that has two -- a
+    *different claim*, spelled correctly, passing `ruff` and `mypy`, and failing
+    later as though the code under test were wrong. It survived the whole
+    refusal machinery because the call was recognised: nothing was refused, the
+    rewrite was simply not equivalent.
+
+    Found three files into cluster B4a by a test going red. One literal in nine
+    converted modules had two spaces in it.
+    """
+
+    def test_two_spaces_in_a_literal_are_not_collapsed(self) -> None:
+        was = 'self.assertIn("host  .gitconfig", out)'
+        assert only(was) == 'assert "host  .gitconfig" in out'
+
+    def test_a_newline_inside_a_triple_quoted_literal_survives(self) -> None:
+        """The same hazard at its largest: a literal that *is* several lines."""
+        was = 'self.assertEqual("""a\n  b""", x)'
+        assert only(was) == 'assert x == """a\n  b"""'
+
+    def test_the_expression_around_it_is_still_flattened(self) -> None:
+        """The other half. A rewrite that stopped collapsing anything would pass
+        the two tests above and leave the call's own indentation inside the
+        `assert`, which is what the flattening is for."""
+        was = 'self.assertEqual(\n    "a  b",\n    f(\n        x,\n    ),\n)'
+        assert only(was) == 'assert f( x, ) == "a  b"'
+
+    def test_a_literal_at_the_very_end_of_an_argument_is_kept(self) -> None:
+        """The tail after the last character `_scan` yields, which is the branch
+        an off-by-one in `flatten` would drop silently."""
+        assert only('self.assertTrue(x == "a  b")') == 'assert x == "a  b"'
+
+
 #: One case per entry in `unassert.FORMS`. Module-level so that
 #: `test_every_form_has_a_case` reads the same table the parametrize runs over
 #: rather than a second copy of it.
@@ -147,6 +229,117 @@ class TestTheSpellings:
 
     def test_a_message_on_a_one_argument_form_is_carried_too(self) -> None:
         assert only('self.assertTrue(x, "why")') == 'assert x, "why"'
+
+
+class TestItLooksOnlyAtCode:
+    """The finder was the one reader that did not know a literal from code.
+
+    The module docstring claims "it finds a call by scanning balanced
+    parentheses, not by matching a regex". That was true of `close`,
+    `split_args` and `flatten`, and never of `CALL.search`. Found by review,
+    after the same class of bug had already shipped once in `flatten`.
+    """
+
+    def test_a_call_written_inside_a_string_is_left_alone(self) -> None:
+        """The measured case: `tests/` holds five modules whose *probe sources*
+        are triple-quoted `unittest` test modules, and they are what cluster B6
+        converts. Rewriting one changes what the harness is being driven with.
+        """
+        quotes = chr(34) * 3
+        was = (
+            f"PROBE = {quotes}\nclass T(unittest.TestCase):\n    self.assertEqual(1, 2)\n{quotes}\n"
+        )
+        assert unassert.convert(was) == (was, [])
+
+    def test_an_apostrophe_in_a_comment_does_not_open_a_string(self) -> None:
+        """The root of it, and the reason the fix is in `_scan` rather than in
+        the finder: a comment holding an odd number of quotes opened a string
+        that never closed, and every judgement after it was inverted.
+
+        Measured on `tests/test_verdict_unittest.py`: 12,379 characters of real
+        string content read as code. Written here as the smallest fixture that
+        reproduces it -- a comment, then a literal holding a call.
+        """
+        quotes = chr(39) * 3
+        held = f"{quotes}self.assertEqual(1, 2){quotes}"
+        was = f"# the suite's own\nP = {held}\nself.assertTrue(x)\n"
+        done, refused = unassert.convert(was)
+        assert refused == []
+        assert held in done, done
+        assert done.endswith("assert x\n"), done
+
+    def test_a_comment_inside_the_call_is_refused_rather_than_flattened(self) -> None:
+        """A comment cannot survive being joined onto one line, and dropping it
+        would delete something a person wrote. So it is reported and left --
+        which is the tool's whole safety property, reached by a new route."""
+        was = "self.assertEqual(\n    expected,  # why\n    actual,\n)"
+        done, refused = unassert.convert(was)
+        assert done == was
+        assert refused == ["assertEqual: a comment inside the call"]
+
+    @pytest.mark.parametrize("comment", ("#", "#a", "#ab", "#abc"))
+    def test_a_comment_of_any_length_ends_at_its_newline(self, comment: str) -> None:
+        """Both parities, in both places the scan advances through a comment.
+
+        A comment is skipped one character at a time, so a mutation that steps
+        *two* lands on the newline or steps over it depending on how long the
+        comment is -- and a single fixture answers for exactly one of those.
+        Measured: with one 17-character comment here, both `i += 2` mutations
+        survived; with these four, neither does. The consequence when it steps
+        over is that the comment swallows the line below, which is where the
+        code is.
+        """
+        done = only(f"{comment}\nself.assertTrue(x)\n")
+        assert done == f"{comment}\nassert x\n", done
+
+    def test_a_comma_in_a_comment_does_not_split_the_arguments(self) -> None:
+        """The same fix, seen through `split_args`. Before it, the comment's
+        comma made this a three-argument call and the arity check refused it --
+        for the wrong reason, which is a refusal that would have gone away the
+        moment somebody deleted a comma from a comment."""
+        was = "self.assertEqual(a, b)  # one, two, three"
+        done, refused = unassert.convert(was)
+        assert refused == []
+        assert done == "assert b == a  # one, two, three"
+
+
+class TestPrecedenceAroundEveryOperator:
+    """`bracket` encoded the right rule and was wired to one of fifteen forms.
+
+    `assertFalse` had it; the other fourteen spliced raw argument text around
+    `==`, `in`, `<` and friends with nothing checking what it bound like. The
+    rule is `ast`'s now, so it answers for all of them at once.
+    """
+
+    def test_a_comparison_argument_does_not_become_a_chained_comparison(self) -> None:
+        """The worst of them, because the result is valid Python that means
+        something else: `assertEqual(a == b, c)` spliced bare reads
+        `c == a == b`, which is `c == a and a == b`."""
+        assert only("self.assertEqual(a == b, c)") == "assert c == (a == b)"
+
+    def test_an_or_argument_keeps_its_brackets(self) -> None:
+        """`x == a or b` parses as `(x == a) or b`, which is true whenever `b`
+        is -- an assertion that has stopped being able to fail."""
+        assert only("self.assertEqual(a or b, x)") == "assert x == (a or b)"
+
+    def test_a_conditional_argument_keeps_them_too(self) -> None:
+        assert only("self.assertIn(a if c else d, b)") == "assert (a if c else d) in b"
+
+    def test_an_ordinary_argument_gains_nothing(self) -> None:
+        """The other half: brackets everywhere would be noise, and noise is what
+        makes a reader stop seeing the ones that matter."""
+        assert only("self.assertEqual(f(a, b), c.d)") == "assert c.d == f(a, b)"
+
+    def test_a_call_form_needs_none_because_its_own_brackets_delimit(self) -> None:
+        assert only("self.assertIsInstance(a or b, int)") == "assert isinstance(a or b, int)"
+
+    def test_an_argument_that_will_not_parse_keeps_its_brackets(self) -> None:
+        """The arm `ast` cannot answer for, driven directly because no whole
+        call reaches it: every argument of a call that parses is an expression
+        that parses. It is here because "cannot tell" and "needs none" are
+        different answers and only one of them is safe."""
+        assert unassert.bracket("a b") == "(a b)"
+        assert unassert.bracket("=") == "(=)"
 
 
 class TestWhereNotBinds:

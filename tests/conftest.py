@@ -82,3 +82,32 @@ def sandbox() -> Iterator[support.Sandbox]:
     """
     with support.sandbox() as made:
         yield made
+
+
+@pytest.fixture
+def machine() -> Iterator[support.Machine]:
+    """A sandboxed `$HOME` with a bare remote beside it, and the CLI pointed there.
+
+    Function-scoped for `sandbox`'s reason, which it inherits by composition,
+    plus one of its own: `init` and every command after it write into a real git
+    repository, so a shared one would carry a test's commits into the next.
+    """
+    with support.machine() as made:
+        yield made
+
+
+@pytest.fixture
+def two_machines() -> Iterator[support.TwoMachines]:
+    """Two `$HOME`s and the bare remote they share, `.bashrc` already synced.
+
+    A `copytree` of a template built once per process -- 4.3 ms against the
+    120.4 ms a real `init`/`add`/`sync` costs (#19), which is what makes this
+    affordable per test for the 146 tests that take it.
+
+    It does **not** patch `os.environ`: each machine carries its own environment
+    and applies it per command, which is how two hostnames coexist in one
+    process. So a test that takes this and then reads `os.environ` is reading the
+    developer's, and wants `sandbox` as well or instead.
+    """
+    with support.two_machines() as made:
+        yield made

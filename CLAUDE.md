@@ -615,10 +615,18 @@ Five things are not where a newcomer would guess, all on purpose:
 
   So the decorator goes on the class and is the load-bearing statement -- *this
   class runs in a sandbox* -- rather than an inference from whether some method
-  still happens to use the value. **13 classes still name `support.SandboxCase`
-  directly and 36 more reach it through `support.Machine`**, across B4a and
-  B4b; count them with `grep -rn "class .*(support\.SandboxCase)" tests/`
-  rather than trusting this sentence, which is the kind that rots.
+  still happens to use the value. B4a converted 21 such classes; **20 name one
+  of the three `unittest` adapters directly (1 `SandboxCase`, 1 `MachineCase`,
+  18 `TwoMachinesCase`) and 38 reach one counting the module-local bases in
+  between**, all of them in B4b, B5 and B6. Both numbers are worth having: the
+  first is what a grep finds, the second is how many classes actually run in a
+  sandbox they never mention.
+
+  All three names gained their `Case` suffix in B4a, when the fixture
+  *definitions* took the unsuffixed ones -- so the sentence this replaced would
+  now count **nothing at all**, which is the failure mode §0 is about wearing
+  its most flattering face: a grep that comes back empty reads as work
+  finished.
 
   **The leak half is guarded rather than trusted.** `tests/conftest.py`'s
   `_every_test_puts_the_environment_back` is autouse and fails the test that
@@ -1470,8 +1478,9 @@ read this file:
 
 - **Copy the two-machine fixture rather than building it — 120.4ms to 4.3ms,
   24% off the serial suite** (#19). `support.template()`
-  builds the tree once per *process* and `two_machines` copies it; 146 of the
-  suite's tests across 40 classes inherit it.
+  builds the tree once per *process* and `copy_template` copies it; 146 of the
+  suite's tests take it, as a `two_machines` fixture where they are converted
+  and through `support.TwoMachinesCase` where they are not.
 
   | | median |
   |---|---|

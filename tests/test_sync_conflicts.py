@@ -43,7 +43,7 @@ BOTH_KEPT = "FROM-B\nFROM-A\ntwo\nthree\nfour\nfive\n"
 BY_HAND = "SETTLED-BY-HAND\n"
 
 
-class Conflicted(support.TwoMachines):
+class Conflicted(support.TwoMachinesCase):
     """Both computers change the first line of `.bashrc`; `machine-a` pushes.
 
     So `machine-b`'s next sync has three versions that disagree: its own `$HOME`,
@@ -128,7 +128,7 @@ class TestTheFlags(Conflicted):
         self.assertIn("not allowed with", done.stderr)
 
 
-class TestTwoConflictsAtOnce(support.TwoMachines):
+class TestTwoConflictsAtOnce(support.TwoMachinesCase):
     """Two files that both conflict in the same run.
 
     One file cannot show that the answer is given *per file*: a settler called
@@ -260,7 +260,7 @@ class TestWhatSettlingLeavesBehind(Conflicted):
         )
 
 
-class TestABinaryConflict(support.TwoMachines):
+class TestABinaryConflict(support.TwoMachinesCase):
     """A file with a NUL in it that both computers changed. There are no lines
     to take from each side, so `[b]`, `[e]` and `[d]` have nothing to offer --
     but `[l]` and `[r]` still do, and that is the whole of what is on offer."""

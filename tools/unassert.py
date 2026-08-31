@@ -47,6 +47,7 @@ the same four mistakes.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -71,13 +72,42 @@ def _ends(text: str, start: int) -> tuple[str, int]:
 def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
     """Walk `text` from `start`, yielding (index, char, depth) outside strings.
 
-    One scanner for all three readers below, because "where does a string end"
+    One scanner for all five readers below -- `called`, `close`, `split_args`,
+    `flatten` and `convert`'s comment check -- because "where does a string end"
     is the part that is easy to get subtly wrong and there should be exactly one
     answer to it in this file.
+
+    **Comments are skipped, and leaving them in was this scanner's own version
+    of the bug `flatten` was fixed for.** A `#` comment holding an odd number of
+    quote characters -- "the suite's", which is how English is written -- opened
+    a string that never closed, and from there every judgement about inside and
+    outside was inverted. Measured on `tests/test_verdict_unittest.py`:
+    **12,379 characters of real string content** were reported as code, which is
+    how the finder came to match a `self.assertEqual(1, 2)` written inside a
+    triple-quoted probe module.
+
+    The `#` itself *is* yielded, then the rest of its line is skipped. `close`
+    and `split_args` ignore it, which is what makes a bracket or a comma inside
+    a comment stop counting; `convert` reads it as a reason to refuse, because a
+    comment cannot survive being flattened onto one line.
+
+    **Skipped with a flag and `i += 1`, the way a string already is, rather than
+    by `find`ing the newline.** `str.find` answers `-1` for "not there", and a
+    comment on the last line of a file with no trailing newline is exactly that
+    case -- so any mutation mishandling the sentinel assigned `i = -1` and the
+    loop ran backwards for ever. The mutation sweep found it as a `BROKE` row on
+    a fixture whose comment has no newline after it, which is CLAUDE.md's
+    `RLIM_INFINITY` lesson in a second spelling: a sentinel is not a number.
+    Here `i` only ever increases, so a hang is not reachable by any mutation of
+    this arm.
     """
-    depth, quote, i = 0, "", start
+    depth, quote, comment, i = 0, "", False, start
     while i < len(text):
         char = text[i]
+        if comment:
+            comment = char != "\n"
+            i += 1
+            continue
         if quote:
             if char == "\\":
                 i += 2
@@ -91,6 +121,16 @@ def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
         opened, after = _ends(text, i)
         if opened:
             quote, i = opened, after
+            continue
+        if char == "#":
+            yield i, char, depth
+            comment = True
+            # survivor: off-by-one -- equivalent: with `comment` already set, not
+            #   advancing means the next iteration re-reads this same `#` in the
+            #   arm above, which sets `comment` to the same value and advances by
+            #   one. One wasted iteration, identical output. The other five
+            #   mutations of these two lines are caught.
+            i += 1
             continue
         if char in "([{":
             depth += 1
@@ -126,37 +166,113 @@ def split_args(text: str) -> list[str]:
     return out
 
 
+def flatten(expr: str) -> str:
+    """`expr` on one line, collapsing runs of whitespace **outside strings only**.
+
+    A multi-line argument has to become one line, or the rewritten `assert`
+    carries the old call's indentation into the middle of an expression. The
+    obvious spelling -- `" ".join(expr.split())` -- was what this did, and it
+    reached inside string literals: `assertIn("host  .gitconfig", out)` came back
+    asserting `"host .gitconfig"`, one space, against output that has two.
+
+    That is the silent kind. The rewritten line reads correctly, `ruff` and
+    `mypy` are happy, and the test fails later for a reason that looks like a
+    bug in the code under test -- which is how it was found, three files into
+    cluster B4a. Nothing about the tool's refusal machinery could have caught
+    it: the call *was* recognised, and it was rewritten into a different claim.
+    """
+    out: list[str] = []
+    seen = 0
+    space = False
+    for i, char, _ in _scan(expr):
+        if i > seen:
+            # `_scan` skips over a string literal without yielding, so the gap
+            # in the indices *is* the literal. Kept exactly as it was written.
+            out.append(expr[seen:i])
+            space = False
+        seen = i + 1
+        if char.isspace():
+            if not space:
+                out.append(" ")
+                space = True
+            continue
+        out.append(char)
+        space = False
+    out.append(expr[seen:])
+    return "".join(out).strip()
+
+
+def called(text: str) -> re.Match[str] | None:
+    """The first `self.assertX(` in `text` that is **not inside a string**.
+
+    `CALL.search` alone was the fourth reader of this file that did not know a
+    literal from code, and the one the module docstring above claims does:
+    "it finds a call by scanning balanced parentheses, not by matching a regex"
+    was true of `close`, `split_args` and `flatten`, and never of the finder.
+
+    Measured across `tests/`, converting each module in memory and comparing its
+    string constants before and against after: it would have rewritten **48
+    literals in five modules** -- 3 in `test_mutate.py`, 6 in `test_run_tests.py`,
+    4 each in `test_verdict.py` and `test_verdict_unittest.py`, 31 in this
+    tool's own tests. Every one is the source of a *probe module*, written as a
+    literal precisely so that the harness can drive a `unittest`-style test; the
+    modules holding them are what cluster B6 converts.
+    """
+    for i, char, _ in _scan(text):
+        if char == "s" and (found := CALL.match(text, i)):
+            return found
+    return None
+
+
+#: Node kinds that bind looser than the operators `FORMS` splices, so an
+#: argument whose own top level is one of them has to keep its brackets.
+#: `Compare` is the one that matters most and is easiest to miss:
+#: `assertEqual(a == b, c)` spliced bare is `c == a == b`, a *chained*
+#: comparison and a different assertion.
+LOOSE = (ast.BoolOp, ast.IfExp, ast.Lambda, ast.NamedExpr, ast.Compare, ast.Starred)
+
+
 def bracket(expr: str) -> str:
-    """`expr`, parenthesised only if `not` would otherwise bind too tightly.
+    """`expr`, parenthesised only where an operator spliced around it would win.
 
     `not a.b(c)` is the same as `not (a.b(c))` and reads better; `not a == b` is
-    *not* the same as `not (a == b)`, so anything with a top-level space keeps
-    its brackets. Conservative in the safe direction: an unnecessary pair of
-    parentheses is noise, a missing pair is a changed assertion.
+    *not* the same as `not (a == b)`. The rule used to be "anything with a
+    top-level space", which is right for `not` and was wired to `assertFalse`
+    alone -- so the other fourteen forms spliced raw text around `==`, `in`,
+    `<` and friends with nothing checking what it bound like.
+
+    Asking `ast` what the argument's own top-level node is answers both, and
+    answers `not found['x']` correctly where the space heuristic did so by
+    accident. An expression that will not parse keeps its brackets:
+    conservative in the safe direction, because an unnecessary pair is noise
+    and a missing pair is a changed assertion.
     """
-    for i, char, depth in _scan(expr):
-        if char == " " and depth == 0 and i:
-            return f"({expr})"
-    return expr
+    try:
+        top = ast.parse(expr, mode="eval").body
+    except SyntaxError:
+        return f"({expr})"
+    return f"({expr})" if isinstance(top, LOOSE) else expr
 
 
 #: name -> (how many arguments it takes, how to spell the assertion).
 #: A trailing extra argument is `unittest`'s message and becomes `assert x, msg`.
 FORMS: dict[str, tuple[int, Callable[[list[str]], str]]] = {
-    "assertEqual": (2, lambda a: f"{a[1]} == {a[0]}"),
-    "assertNotEqual": (2, lambda a: f"{a[1]} != {a[0]}"),
-    "assertIs": (2, lambda a: f"{a[1]} is {a[0]}"),
-    "assertIsNot": (2, lambda a: f"{a[1]} is not {a[0]}"),
-    "assertIn": (2, lambda a: f"{a[0]} in {a[1]}"),
-    "assertNotIn": (2, lambda a: f"{a[0]} not in {a[1]}"),
+    "assertEqual": (2, lambda a: f"{bracket(a[1])} == {bracket(a[0])}"),
+    "assertNotEqual": (2, lambda a: f"{bracket(a[1])} != {bracket(a[0])}"),
+    "assertIs": (2, lambda a: f"{bracket(a[1])} is {bracket(a[0])}"),
+    "assertIsNot": (2, lambda a: f"{bracket(a[1])} is not {bracket(a[0])}"),
+    "assertIn": (2, lambda a: f"{bracket(a[0])} in {bracket(a[1])}"),
+    "assertNotIn": (2, lambda a: f"{bracket(a[0])} not in {bracket(a[1])}"),
+    # `assertTrue` splices nothing around its argument, so anything binds.
     "assertTrue": (1, lambda a: a[0]),
     "assertFalse": (1, lambda a: f"not {bracket(a[0])}"),
-    "assertIsNone": (1, lambda a: f"{a[0]} is None"),
-    "assertIsNotNone": (1, lambda a: f"{a[0]} is not None"),
-    "assertLess": (2, lambda a: f"{a[0]} < {a[1]}"),
-    "assertGreater": (2, lambda a: f"{a[0]} > {a[1]}"),
-    "assertLessEqual": (2, lambda a: f"{a[0]} <= {a[1]}"),
-    "assertGreaterEqual": (2, lambda a: f"{a[0]} >= {a[1]}"),
+    "assertIsNone": (1, lambda a: f"{bracket(a[0])} is None"),
+    "assertIsNotNone": (1, lambda a: f"{bracket(a[0])} is not None"),
+    "assertLess": (2, lambda a: f"{bracket(a[0])} < {bracket(a[1])}"),
+    "assertGreater": (2, lambda a: f"{bracket(a[0])} > {bracket(a[1])}"),
+    "assertLessEqual": (2, lambda a: f"{bracket(a[0])} <= {bracket(a[1])}"),
+    "assertGreaterEqual": (2, lambda a: f"{bracket(a[0])} >= {bracket(a[1])}"),
+    # A call's arguments are already delimited by its own brackets.
     "assertIsInstance": (2, lambda a: f"isinstance({a[0]}, {a[1]})"),
 }
 
@@ -170,7 +286,7 @@ def convert(text: str) -> tuple[str, list[str]]:
     """
     refused: list[str] = []
     while True:
-        found = CALL.search(text)
+        found = called(text)
         if not found:
             return text.replace(PARKED, "self."), refused
 
@@ -186,10 +302,16 @@ def convert(text: str) -> tuple[str, list[str]]:
             why = "no rule for it"
         args: list[str] = []
         if not why:
-            args = [" ".join(a.split()) for a in split_args(text[open_at + 1 : end])]
-            assert form is not None
-            if not form[0] <= len(args) <= form[0] + 1:
-                why = f"takes {form[0]}, found {len(args)}"
+            inside = text[open_at + 1 : end]
+            if any(char == "#" for _, char, _ in _scan(inside)):
+                # A comment cannot be flattened onto one line, and dropping it
+                # would delete something a person wrote. Left for that person.
+                why = "a comment inside the call"
+            else:
+                args = [flatten(a) for a in split_args(inside)]
+                assert form is not None
+                if not form[0] <= len(args) <= form[0] + 1:
+                    why = f"takes {form[0]}, found {len(args)}"
         if why:
             refused.append(f"{name}: {why}")
             text = text[:at] + text[at:].replace("self.", PARKED, 1)

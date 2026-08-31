@@ -20,18 +20,23 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import unittest
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 from unittest import mock
+
+import pytest
 
 from tests import support
 from tupferl import inspection, merge, sync
 from tupferl.copies import Blob
 
-#: The base both machines start from. Distinct lines, so a one-line edit is one
-#: unambiguous hunk.
-START = "one\ntwo\nthree\nfour\nfive\n"
+#: What `.bashrc` holds on both machines when a fixture here starts, which is
+#: `support.STARTS_AS` because that is what `template()` synced. Aliased rather
+#: than written out again: a second copy is free to drift from the tree these
+#: tests are handed, and the drift would show up as a diff nobody asked for
+#: rather than as a failure naming the constant.
+START = support.STARTS_AS
 
 #: What `$HOME` gets, and what the repository gets. Different lengths as well as
 #: different text: a diff that swapped the two sides would still show one `-`
@@ -44,17 +49,8 @@ THEIRS = "one\nfrom the repo\nthree\nfour\nfive\n"
 CONTROL = "set number\nset expandtab\n"
 
 
-class Machine(support.TwoMachines):
+class Synced(support.TwoMachines):
     """`machine-b`, synced, with `.bashrc` and `.vimrc` both managed."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.first.write(".bashrc", START)
-        self.first.write(".vimrc", CONTROL)
-        self.assertEqual(0, self.first.call("add", str(self.first.home / ".vimrc")))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
-        self.assertEqual(0, self.second.call("sync"))
 
     def diff(self, *args: str) -> str:
         """`tupferl diff`, insisting it exited 0 -- including when files differ.
@@ -64,7 +60,7 @@ class Machine(support.TwoMachines):
         is to show something should say whether it could, not what it found.
         """
         status, said = self.second.say("status", "--diff", *args)
-        self.assertEqual(0, status, said)
+        assert status == 0, said
         return said
 
     def apart(self) -> None:
@@ -73,91 +69,133 @@ class Machine(support.TwoMachines):
         (self.second.repo / ".bashrc").write_text(THEIRS)
 
 
-class TestWhatDiffShows(Machine):
-    def test_a_synced_machine_shows_one_sentence(self) -> None:
-        said = self.diff()
-        self.assertEqual("nothing differs between $HOME and the repository.", said.strip())
+@pytest.fixture
+def synced(two_machines: support.TwoMachines) -> Synced:
+    box = Synced(**vars(two_machines))
+    box.first.write(".bashrc", START)
+    box.first.write(".vimrc", CONTROL)
+    assert box.first.call("add", str(box.first.home / ".vimrc")) == 0
+    assert box.first.call("sync") == 0
+    assert box.second.call("init", str(box.remote)) == 0
+    assert box.second.call("sync") == 0
+    return box
 
-    def test_a_text_difference_is_a_unified_diff(self) -> None:
-        self.apart()
-        said = self.diff()
-        self.assertIn("-edited on this computer", said)
-        self.assertIn("+from the repo", said)
-        self.assertIn("@@", said)
+
+@pytest.mark.usefixtures("synced")
+class TestWhatDiffShows:
+    def test_a_synced_machine_shows_one_sentence(self, synced: Synced) -> None:
+        said = synced.diff()
+        assert said.strip() == "nothing differs between $HOME and the repository."
+
+    def test_a_text_difference_is_a_unified_diff(self, synced: Synced) -> None:
+        synced.apart()
+        said = synced.diff()
+        assert "-edited on this computer" in said
+        assert "+from the repo" in said
+        assert "@@" in said
         # Both bits are the same, so nothing about the executable bit belongs
         # here. Without this, `rendered`'s equality test can be false always and
         # every other assertion in this class still holds.
-        self.assertNotIn("executable", said)
+        assert "executable" not in said
         # And the whole-repository fallback sentence is for when nothing was
         # shown -- printing it beside a diff is the same branch inverted.
-        self.assertNotIn("nothing differs", said)
+        assert "nothing differs" not in said
 
-    def test_an_identical_file_is_not_mentioned_at_all(self) -> None:
+    def test_an_identical_file_is_not_mentioned_at_all(self, synced: Synced) -> None:
         """`.vimrc` is managed and unchanged, so it must be silent -- otherwise
         `diff` on a machine with forty dotfiles is forty headings and one
         difference buried in them."""
-        self.apart()
-        said = self.diff()
-        self.assertIn(".bashrc", said)
-        self.assertNotIn(".vimrc", said)
+        synced.apart()
+        said = synced.diff()
+        assert ".bashrc" in said
+        assert ".vimrc" not in said
 
-    def test_a_file_only_the_repository_has_says_so(self) -> None:
+    def test_a_file_only_the_repository_has_says_so(self, synced: Synced) -> None:
         """Not an empty diff. `$HOME` holding nothing is the state a fresh
         machine is in, and "no lines differ" would be the wrong report."""
-        (self.second.home / ".bashrc").unlink()
-        said = self.diff()
-        self.assertIn("only in the repository", said)
-        self.assertIn(".bashrc", said)
+        (synced.second.home / ".bashrc").unlink()
+        said = synced.diff()
+        assert "only in the repository" in said
+        assert ".bashrc" in said
 
-    def test_a_binary_difference_names_both_sizes_rather_than_showing_bytes(self) -> None:
+    def test_a_binary_difference_names_both_sizes_rather_than_showing_bytes(
+        self, synced: Synced
+    ) -> None:
         """git's own rule for "there are no lines here" -- a NUL in the first
         8000 bytes, asked through `merge.is_text`. Printing nothing would read
         as "these are the same", which is the one wrong answer."""
-        (self.second.home / ".bashrc").write_bytes(b"bin\x00ary here\n")
-        (self.second.repo / ".bashrc").write_bytes(b"bin\x00ary there, longer\n")
-        said = self.diff()
-        self.assertIn("are not text", said)
+        (synced.second.home / ".bashrc").write_bytes(b"bin\x00ary here\n")
+        (synced.second.repo / ".bashrc").write_bytes(b"bin\x00ary there, longer\n")
+        said = synced.diff()
+        assert "are not text" in said
         # Two different numbers, so a report that printed one side's length
         # twice -- or the same length for both -- fails here.
-        self.assertIn("13 bytes here", said)
-        self.assertIn("22 in the repository", said)
-        self.assertNotIn("\x00", said)
+        assert "13 bytes here" in said
+        assert "22 in the repository" in said
+        assert "\x00" not in said
 
-    def test_a_path_that_is_not_a_regular_file_is_skipped_with_its_reason(self) -> None:
+    def test_a_path_that_is_not_a_regular_file_is_skipped_with_its_reason(
+        self, synced: Synced
+    ) -> None:
         """A fifo rather than a socket -- `sun_path` is 104 bytes on macOS and
         a sandbox path plus the repository layout exceeds it."""
-        (self.second.home / ".bashrc").unlink()
-        os.mkfifo(self.second.home / ".bashrc")
-        self.addCleanup((self.second.home / ".bashrc").unlink)
-        said = self.diff()
-        self.assertIn("skipped", said)
-        self.assertIn("is not a regular file", said)
+        (synced.second.home / ".bashrc").unlink()
+        os.mkfifo(synced.second.home / ".bashrc")
+        said = synced.diff()
+        assert "skipped" in said
+        assert "is not a regular file" in said
 
-    def test_only_the_executable_bit_differing_is_still_a_difference(self) -> None:
+    def test_only_the_executable_bit_differing_is_still_a_difference(self, synced: Synced) -> None:
         """`chmod +x` with no edit is a real change that travels (plan §5), and
         a diff of the *lines* renders it as nothing at all -- an empty answer to
         "why does status say this changed?"."""
-        (self.second.home / ".bashrc").chmod(0o755)
-        said = self.diff()
-        self.assertIn("executable here, not in the repository", said)
-        self.assertNotIn("@@", said)
+        (synced.second.home / ".bashrc").chmod(0o755)
+        said = synced.diff()
+        assert "executable here, not in the repository" in said
+        assert "@@" not in said
 
-    def test_the_bit_is_reported_the_other_way_round_too(self) -> None:
+    def test_the_bit_is_reported_the_other_way_round_too(self, synced: Synced) -> None:
         """The mirror, because one direction alone passes against a sentence
         that names the same side whichever way the bit went."""
-        (self.second.repo / ".bashrc").chmod(0o755)
-        self.assertIn("executable in the repository, not here", self.diff())
+        (synced.second.repo / ".bashrc").chmod(0o755)
+        assert "executable in the repository, not here" in synced.diff()
 
-    def test_a_bit_and_a_text_change_are_both_shown(self) -> None:
+    def test_a_bit_and_a_text_change_are_both_shown(self, synced: Synced) -> None:
         """One or the other would be a report that hid half of what changed."""
-        self.apart()
-        (self.second.home / ".bashrc").chmod(0o755)
-        said = self.diff()
-        self.assertIn("executable here, not in the repository", said)
-        self.assertIn("-edited on this computer", said)
+        synced.apart()
+        (synced.second.home / ".bashrc").chmod(0o755)
+        said = synced.diff()
+        assert "executable here, not in the repository" in said
+        assert "-edited on this computer" in said
 
 
-class TestOneFileWithNoRepository(unittest.TestCase):
+def reading(
+    found: Blob | None,
+    stored: Blob | None,
+    action: str = sync.TO_REPO,
+    why: str = "",
+) -> sync.Reading:
+    """A `Reading` for `.bashrc`, with paths that are never touched.
+
+    `shows` reads only the name, the outcome and the two blobs -- it opens
+    nothing -- so the three paths can be anything. `/nowhere` rather than a
+    temporary directory says that out loud: if a future `shows` starts reading
+    from disk, this fixture fails rather than quietly working.
+    """
+    where = PurePosixPath(".bashrc")
+    nowhere = Path("/nowhere")
+    return sync.Reading(
+        name=where,
+        where=nowhere / ".bashrc",
+        target=nowhere / ".bashrc",
+        snapshot=nowhere / ".bashrc",
+        found=found,
+        stored=stored,
+        outcome=sync.Outcome(where, action, None, why=why),
+    )
+
+
+class TestOneFileWithNoRepository:
     """`inspection.shows` on a `Reading` built by hand.
 
     Everything else in this file drives two real machines, which is right for a
@@ -171,69 +209,43 @@ class TestOneFileWithNoRepository(unittest.TestCase):
     terminal; this is what makes each branch cheap enough to have its own case.
     """
 
-    def reading(
-        self,
-        found: Blob | None,
-        stored: Blob | None,
-        action: str = sync.TO_REPO,
-        why: str = "",
-    ) -> sync.Reading:
-        """A `Reading` for `.bashrc`, with paths that are never touched.
-
-        `shows` reads only the name, the outcome and the two blobs -- it opens
-        nothing -- so the three paths can be anything. `/nowhere` rather than a
-        temporary directory says that out loud: if a future `shows` starts
-        reading from disk, this fixture fails rather than quietly working.
-        """
-        where = PurePosixPath(".bashrc")
-        nowhere = Path("/nowhere")
-        return sync.Reading(
-            name=where,
-            where=nowhere / ".bashrc",
-            target=nowhere / ".bashrc",
-            snapshot=nowhere / ".bashrc",
-            found=found,
-            stored=stored,
-            outcome=sync.Outcome(where, action, None, why=why),
-        )
-
     def test_identical_copies_produce_nothing(self) -> None:
         """`None`, not an empty string: `difference` counts what it printed, and
         an empty heading would still be a heading."""
         same = Blob(b"one\n", False)
-        self.assertIsNone(inspection.shows(self.reading(same, same)))
+        assert inspection.shows(reading(same, same)) is None
 
     def test_a_refused_reading_reports_its_reason(self) -> None:
-        said = inspection.shows(self.reading(None, None, action=sync.REFUSED, why="it is a fifo"))
-        self.assertIsNotNone(said)
+        said = inspection.shows(reading(None, None, action=sync.REFUSED, why="it is a fifo"))
         assert said is not None
-        self.assertIn("it is a fifo", said)
+        assert "it is a fifo" in said
 
     def test_a_file_missing_from_home_is_not_an_empty_diff(self) -> None:
-        said = inspection.shows(self.reading(None, Blob(b"one\n", False)))
+        said = inspection.shows(reading(None, Blob(b"one\n", False)))
         assert said is not None
-        self.assertIn("only in the repository", said)
+        assert "only in the repository" in said
 
-    def test_a_binary_side_stops_the_lines_being_shown(self) -> None:
+    @pytest.mark.parametrize("side", ("home", "repository"))
+    def test_a_binary_side_stops_the_lines_being_shown(self, side: str) -> None:
         """Either side is enough. Both-binary is the obvious fixture and would
         pass against a check that only looked at one of them."""
         text = Blob(b"one\n", False)
         binary = Blob(b"one\x00\n", False)
-        for found, stored in ((binary, text), (text, binary)):
-            with self.subTest(binary="home" if found is binary else "repository"):
-                said = inspection.shows(self.reading(found, stored))
-                assert said is not None
-                self.assertIn("are not text", said)
+        found, stored = (binary, text) if side == "home" else (text, binary)
+        said = inspection.shows(reading(found, stored))
+        assert said is not None
+        assert "are not text" in said
 
     def test_the_executable_bit_alone_still_says_something(self) -> None:
         """Same bytes, different bit. A diff of the lines is empty here, so a
         report built from the diff alone would say nothing at all."""
-        said = inspection.shows(self.reading(Blob(b"x\n", True), Blob(b"x\n", False)))
+        said = inspection.shows(reading(Blob(b"x\n", True), Blob(b"x\n", False)))
         assert said is not None
-        self.assertEqual(".bashrc: executable here, not in the repository.", said)
+        assert said == ".bashrc: executable here, not in the repository."
 
 
-class TestWhichSideIsWhich(Machine):
+@pytest.mark.usefixtures("synced")
+class TestWhichSideIsWhich:
     """The direction, pinned -- because it is a judgement rather than a given.
 
     `git diff` shows the working tree as `+`; this shows `$HOME` as `-`, because
@@ -246,24 +258,24 @@ class TestWhichSideIsWhich(Machine):
     one, and so that a reader who thinks it is backwards has one place to argue.
     """
 
-    def test_home_is_the_minus_side_and_says_so(self) -> None:
-        self.apart()
-        said = self.diff()
-        self.assertIn("--- .bashrc (this computer)", said)
-        self.assertIn("+++ .bashrc (the repository)", said)
+    def test_home_is_the_minus_side_and_says_so(self, synced: Synced) -> None:
+        synced.apart()
+        said = synced.diff()
+        assert "--- .bashrc (this computer)" in said
+        assert "+++ .bashrc (the repository)" in said
 
-    def test_the_labels_and_the_signs_agree(self) -> None:
+    def test_the_labels_and_the_signs_agree(self, synced: Synced) -> None:
         """The assertion the one above cannot make: that the bytes on the `-`
         lines really are `$HOME`'s. Labels that were right while the sides were
         swapped would pass that test and fail this one."""
-        self.apart()
-        rows = self.diff().splitlines()
+        synced.apart()
+        rows = synced.diff().splitlines()
         minus = [row[1:] for row in rows if row.startswith("-") and not row.startswith("---")]
         plus = [row[1:] for row in rows if row.startswith("+") and not row.startswith("+++")]
-        self.assertEqual(["edited on this computer"], minus)
-        self.assertEqual(["from the repo"], plus)
+        assert minus == ["edited on this computer"]
+        assert plus == ["from the repo"]
 
-    def test_the_prompt_shows_the_same_file_the_same_way(self) -> None:
+    def test_the_prompt_shows_the_same_file_the_same_way(self, synced: Synced) -> None:
         """`conflicts.unified` and this command are one function now. Asserted
         rather than assumed: they were two renderers until milestone 6, and the
         argument for merging them is exactly that a user reads both."""
@@ -277,14 +289,29 @@ class TestWhichSideIsWhich(Machine):
             marked=None,
             conflicts=1,
         )
-        self.apart()
+        synced.apart()
         prompt = conflicts.unified(sides)
-        self.assertIn(prompt, self.diff())
-        self.assertIn("--- .bashrc (this computer)", prompt)
-        self.assertEqual(prompt, merge.unified(".bashrc", MINE.encode(), THEIRS.encode()))
+        assert prompt in synced.diff()
+        assert "--- .bashrc (this computer)" in prompt
+        assert merge.unified(".bashrc", MINE.encode(), THEIRS.encode()) == prompt
 
 
-class TestWhichSideTheDiffPutsOnTheMinus(unittest.TestCase):
+HERE = Blob(b"mine\n", executable=False)
+THERE = Blob(b"theirs\n", executable=False)
+
+
+def shown(action: str) -> str:
+    return inspection.rendered(PurePosixPath(".bashrc"), HERE, THERE, action)
+
+
+def sides(action: str) -> tuple[str, str]:
+    """The two header lines of `shown(action)`, as `(minus, plus)`."""
+    lines = [row for row in shown(action).split("\n") if row[:3] in ("---", "+++")]
+    assert len(lines) == 2, f"no diff header for {action}:\n{shown(action)}"
+    return lines[0], lines[1]
+
+
+class TestWhichSideTheDiffPutsOnTheMinus:
     """`status --diff` answers "what will the next sync do", and a unified diff
     answers it with `-` for what goes and `+` for what arrives.
 
@@ -300,43 +327,31 @@ class TestWhichSideTheDiffPutsOnTheMinus(unittest.TestCase):
     bug written into them.
     """
 
-    HERE = Blob(b"mine\n", executable=False)
-    THERE = Blob(b"theirs\n", executable=False)
-
-    def shown(self, action: str) -> str:
-        return inspection.rendered(PurePosixPath(".bashrc"), self.HERE, self.THERE, action)
-
-    def sides(self, action: str) -> tuple[str, str]:
-        """The two header lines, as `(minus, plus)`."""
-        lines = [row for row in self.shown(action).split("\n") if row[:3] in ("---", "+++")]
-        self.assertEqual(2, len(lines), f"no diff header for {action}:\n{self.shown(action)}")
-        return lines[0], lines[1]
-
     def test_a_push_puts_the_repository_on_the_minus_side(self) -> None:
         """The bug. Only `$HOME` changed, so sync writes `$HOME`'s bytes into
         the repository: the repository's copy is what disappears."""
-        minus, plus = self.sides(sync.TO_REPO)
-        self.assertIn("the repository", minus)
-        self.assertIn("this computer", plus)
-        self.assertIn("-theirs", self.shown(sync.TO_REPO))
-        self.assertIn("+mine", self.shown(sync.TO_REPO))
+        minus, plus = sides(sync.TO_REPO)
+        assert "the repository" in minus
+        assert "this computer" in plus
+        assert "-theirs" in shown(sync.TO_REPO)
+        assert "+mine" in shown(sync.TO_REPO)
 
     def test_a_pull_puts_this_computer_on_the_minus_side(self) -> None:
         """The half that was already right, and the reason the fix could not be
         "swap the arguments": that would correct the case above and break this
         one."""
-        minus, plus = self.sides(sync.TO_HOME)
-        self.assertIn("this computer", minus)
-        self.assertIn("the repository", plus)
-        self.assertIn("-mine", self.shown(sync.TO_HOME))
-        self.assertIn("+theirs", self.shown(sync.TO_HOME))
+        minus, plus = sides(sync.TO_HOME)
+        assert "this computer" in minus
+        assert "the repository" in plus
+        assert "-mine" in shown(sync.TO_HOME)
+        assert "+theirs" in shown(sync.TO_HOME)
 
     def test_a_restore_reads_as_a_pull(self) -> None:
         """`RESTORED` writes `$HOME` and not the repository, so it is a pull by
         the only definition that matters here. Asserted rather than assumed,
         because it is the action a reader is least likely to think about."""
-        minus, _ = self.sides(sync.RESTORED)
-        self.assertIn("this computer", minus)
+        minus, _ = sides(sync.RESTORED)
+        assert "this computer" in minus
 
     def test_a_two_sided_change_says_so_instead_of_implying_a_direction(self) -> None:
         """A conflict writes neither side and a clean merge writes both, so
@@ -344,70 +359,52 @@ class TestWhichSideTheDiffPutsOnTheMinus(unittest.TestCase):
         arrow that would be a guess -- the diff is still the difference, and a
         reader told that will not read the `-` lines as doomed."""
         for action in (sync.CONFLICT, sync.MERGED):
-            with self.subTest(action=action):
-                self.assertIn("both sides changed", self.shown(action))
+            assert "both sides changed" in shown(action)
         # **And they agree with each other.** A clean merge writes both sides,
         # so `to_repo` is true for it: orienting on that alone reversed a merge
         # and not a conflict, giving the one case with no direction two
         # displays depending on which two-sided outcome it happened to be. The
         # note above is printed either way, so only this sees it.
-        self.assertEqual(self.sides(sync.CONFLICT), self.sides(sync.MERGED))
-        self.assertIn("this computer", self.sides(sync.MERGED)[0])
+        assert sides(sync.MERGED) == sides(sync.CONFLICT)
+        assert "this computer" in sides(sync.MERGED)[0]
 
     def test_a_one_sided_change_does_not_say_it(self) -> None:
         """The precondition. Without it the assertion above is satisfied by a
         note printed on every diff, which would make it noise rather than the
         thing that distinguishes the two-sided case."""
         for action in (sync.TO_REPO, sync.TO_HOME):
-            with self.subTest(action=action):
-                self.assertNotIn("both sides changed", self.shown(action))
+            assert "both sides changed" not in shown(action)
 
-    def test_every_action_sync_knows_about_is_oriented(self) -> None:
+    def test_the_table_this_class_reads_has_not_shrunk(self) -> None:
+        """The precondition for the parametrized test below, which a shrunken
+        `RULES` would silently collect *no* cases for -- CLAUDE.md §2's
+        zero-iteration trap, at collection time."""
+        assert len(sync.RULES) >= 8, "the table shrank; this test reads it"
+
+    @pytest.mark.parametrize("action", sorted(sync.RULES))
+    def test_every_action_sync_knows_about_is_oriented(self, action: str) -> None:
         """Read out of `sync.RULES` rather than listed again here, so an action
         added there cannot be missed. It is the same table `rendered` derives
         the orientation from, which is the point: a sixth action gets an
         orientation by existing, and this asserts the orientation it gets is
         the one its own row implies."""
-        self.assertGreaterEqual(len(sync.RULES), 8, "the table shrank; this test reads it")
-        for action, rule in sync.RULES.items():
-            with self.subTest(action=action):
-                minus, plus = self.sides(action)
-                if rule.to_repo and not rule.to_home:
-                    self.assertIn("the repository", minus, f"{action} is a push")
-                elif rule.to_home and not rule.to_repo:
-                    self.assertIn("this computer", minus, f"{action} is a pull")
-                else:
-                    self.assertIn("both sides changed", self.shown(action))
-                self.assertNotEqual(minus[4:], plus[4:], "both headers name the same side")
+        rule = sync.RULES[action]
+        minus, plus = sides(action)
+        if rule.to_repo and not rule.to_home:
+            assert "the repository" in minus, f"{action} is a push"
+        elif rule.to_home and not rule.to_repo:
+            assert "this computer" in minus, f"{action} is a pull"
+        else:
+            assert "both sides changed" in shown(action)
+        assert plus[4:] != minus[4:], "both headers name the same side"
 
 
-class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
-    """`core.pager`, honoured so that a machine already set up for `delta` needs
-    nothing here.
+@dataclass(frozen=True)
+class Paged(support.TwoMachines):
+    """`machine-a` with an edited `.bashrc` and a stand-in pager to page it."""
 
-    A user who wrote `core.pager = delta` configured how they read a diff, not
-    how they read a *git* diff -- and asking git for it rather than parsing
-    `~/.gitconfig` gets the include directives, the system file and the
-    per-repository override for free.
-
-    Every test uses a stand-in pager that is a Python script writing a marker,
-    so what is asserted is that the diff reached it: `delta` itself is not
-    installed on every machine that runs this suite, and a test that skipped
-    where it was missing would turn the `macos` leg red under `--no-skips`.
-    """
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.first.write(".bashrc", "one\ntwo\n")
-        self.assertEqual(0, self.first.call("add", str(self.first.home / ".bashrc")))
-        self.first.write(".bashrc", "ONE\ntwo\n")
-        self.seen = self.tmp / "seen.txt"
-        self.fake = self.tmp / "pager.py"
-        self.fake.write_text(
-            "import sys, pathlib\n"
-            f"pathlib.Path({str(self.seen)!r}).write_text('PAGED\\n' + sys.stdin.read())\n",
-            encoding="utf-8",
-        )
+    seen: Path
+    fake: Path
 
     def configure(self, command: str, key: str = "core.pager") -> None:
         support.git(["config", key, command], self.first.repo, self.first.env)
@@ -423,51 +420,84 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         os.chdir(self.first.home)
         try:
             with mock.patch.dict(os.environ, self.first.env, clear=True):
-                self.assertEqual(0, inspection.difference(None, out))
+                assert inspection.difference(None, out) == 0
         finally:
             os.chdir(here)
         return out.getvalue()
 
-    def paged(self) -> str:
-        self.assertTrue(self.seen.is_file(), "the pager never ran")
+    def pager_saw(self) -> str:
+        assert self.seen.is_file(), "the pager never ran"
         return self.seen.read_text(encoding="utf-8")
 
-    def test_the_diff_goes_to_the_pager_git_is_configured_with(self) -> None:
-        self.configure(f"{sys.executable} {self.fake}")
-        printed = self.diff()
-        self.assertIn("--- .bashrc", self.paged())
+
+@pytest.fixture
+def paged(two_machines: support.TwoMachines) -> Paged:
+    seen = two_machines.tmp / "seen.txt"
+    fake = two_machines.tmp / "pager.py"
+    box = Paged(**vars(two_machines), seen=seen, fake=fake)
+    box.first.write(".bashrc", "one\ntwo\n")
+    assert box.first.call("add", str(box.first.home / ".bashrc")) == 0
+    box.first.write(".bashrc", "ONE\ntwo\n")
+    fake.write_text(
+        "import sys, pathlib\n"
+        f"pathlib.Path({str(seen)!r}).write_text('PAGED\\n' + sys.stdin.read())\n",
+        encoding="utf-8",
+    )
+    return box
+
+
+@pytest.mark.usefixtures("paged")
+class TestShowingTheDiffThroughTheUsersPager:
+    """`core.pager`, honoured so that a machine already set up for `delta` needs
+    nothing here.
+
+    A user who wrote `core.pager = delta` configured how they read a diff, not
+    how they read a *git* diff -- and asking git for it rather than parsing
+    `~/.gitconfig` gets the include directives, the system file and the
+    per-repository override for free.
+
+    Every test uses a stand-in pager that is a Python script writing a marker,
+    so what is asserted is that the diff reached it: `delta` itself is not
+    installed on every machine that runs this suite, and a test that skipped
+    where it was missing would turn the `macos` leg red under `--no-skips`.
+    """
+
+    def test_the_diff_goes_to_the_pager_git_is_configured_with(self, paged: Paged) -> None:
+        paged.configure(f"{sys.executable} {paged.fake}")
+        printed = paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
         # `+ONE`: only `$HOME` changed, so the repository is the side replaced.
         # This test is about the *pager*; the orientation itself is asserted by
         # `TestWhichSideTheDiffPutsOnTheMinus`.
-        self.assertIn("+ONE", self.paged())
-        self.assertNotIn("--- .bashrc", printed, "it was printed as well as paged")
+        assert "+ONE" in paged.pager_saw()
+        assert "--- .bashrc" not in printed, "it was printed as well as paged"
 
-    def test_with_no_pager_configured_it_prints(self) -> None:
+    def test_with_no_pager_configured_it_prints(self, paged: Paged) -> None:
         """The other half, and the one every machine without a `core.pager`
         gets. Without it, a `show` that never printed at all would pass the test
         above."""
-        self.assertIn("--- .bashrc", self.diff())
-        self.assertFalse(self.seen.exists())
+        assert "--- .bashrc" in paged.diff()
+        assert not paged.seen.exists()
 
-    def test_a_redirected_diff_is_never_paged(self) -> None:
+    def test_a_redirected_diff_is_never_paged(self, paged: Paged) -> None:
         """What keeps `tupferl status --diff | delta` working, and every test in
         this file: a redirected diff is something a program is about to read,
         and handing it to a pager would be the tool deciding it knew better."""
-        self.configure(f"{sys.executable} {self.fake}")
-        self.assertIn("--- .bashrc", self.diff(terminal=False))
-        self.assertFalse(self.seen.exists(), "a redirected diff was paged")
+        paged.configure(f"{sys.executable} {paged.fake}")
+        assert "--- .bashrc" in paged.diff(terminal=False)
+        assert not paged.seen.exists(), "a redirected diff was paged"
 
-    def test_a_pager_that_is_not_installed_costs_the_user_nothing(self) -> None:
+    def test_a_pager_that_is_not_installed_costs_the_user_nothing(self, paged: Paged) -> None:
         """The diff is the point and the pager is only how. A machine that lost
         its pager -- a shared `.gitconfig` naming one this host has not
         installed, which is exactly what tupferl makes easy -- must still show
         the diff."""
-        self.configure("no-such-pager-anywhere")
-        printed = self.diff()
-        self.assertIn("--- .bashrc", printed)
-        self.assertIn("could not show the diff", printed)
+        paged.configure("no-such-pager-anywhere")
+        printed = paged.diff()
+        assert "--- .bashrc" in printed
+        assert "could not show the diff" in printed
 
-    def test_a_spawn_that_raises_still_shows_the_diff(self) -> None:
+    def test_a_spawn_that_raises_still_shows_the_diff(self, paged: Paged) -> None:
         """The `except (OSError, BrokenPipeError, ValueError)` arm, which the
         test above does *not* reach: a pager that is not installed comes back as
         a shell **return code** of 127, not as an exception, which is the whole
@@ -480,7 +510,7 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         -- the user is told, and **the diff is printed anyway**, which is the one
         thing this function promises never to skip.
         """
-        self.configure(f"{sys.executable} {self.fake}")
+        paged.configure(f"{sys.executable} {paged.fake}")
         real = subprocess.run
 
         def refuse(*args: Any, **kwargs: Any) -> Any:
@@ -493,37 +523,37 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
             return real(*args, **kwargs)
 
         with mock.patch.object(subprocess, "run", refuse):
-            printed = self.diff()
-        self.assertIn("could not show the diff", printed)
-        self.assertIn("no fork for you", printed, "the reason was swallowed")
-        self.assertIn("--- .bashrc", printed, "the diff itself was lost with the pager")
-        self.assertFalse(self.seen.exists(), "the pager somehow ran")
+            printed = paged.diff()
+        assert "could not show the diff" in printed
+        assert "no fork for you" in printed, "the reason was swallowed"
+        assert "--- .bashrc" in printed, "the diff itself was lost with the pager"
+        assert not paged.seen.exists(), "the pager somehow ran"
 
-    def test_git_pager_wins_over_the_configured_one(self) -> None:
+    def test_git_pager_wins_over_the_configured_one(self, paged: Paged) -> None:
         """git's own order is `GIT_PAGER`, then `core.pager`, then `PAGER`, and
         the point of reading git's config is that its answer matches git's. A
         variable set for one command has to beat a file set for all of them, or
         the escape hatch every git user reaches for does not work here."""
-        self.configure(f"{sys.executable} {self.tmp / 'never.py'}")
-        elsewhere = self.tmp / "chosen.txt"
-        picked = self.tmp / "picked.py"
+        paged.configure(f"{sys.executable} {paged.tmp / 'never.py'}")
+        elsewhere = paged.tmp / "chosen.txt"
+        picked = paged.tmp / "picked.py"
         picked.write_text(
             f"import sys, pathlib\npathlib.Path({str(elsewhere)!r}).write_text(sys.stdin.read())\n",
             encoding="utf-8",
         )
-        self.first.env["GIT_PAGER"] = f"{sys.executable} {picked}"
-        self.diff()
-        self.assertIn("--- .bashrc", elsewhere.read_text(encoding="utf-8"))
-        self.assertFalse(self.seen.exists(), "core.pager ran despite GIT_PAGER")
+        paged.first.env["GIT_PAGER"] = f"{sys.executable} {picked}"
+        paged.diff()
+        assert "--- .bashrc" in elsewhere.read_text(encoding="utf-8")
+        assert not paged.seen.exists(), "core.pager ran despite GIT_PAGER"
 
-    def test_pager_is_the_last_resort(self) -> None:
+    def test_pager_is_the_last_resort(self, paged: Paged) -> None:
         """The other end of the same order: `$PAGER` is honoured, but only when
         git has been told nothing more specific."""
-        self.first.env["PAGER"] = f"{sys.executable} {self.fake}"
-        self.diff()
-        self.assertIn("--- .bashrc", self.paged())
+        paged.first.env["PAGER"] = f"{sys.executable} {paged.fake}"
+        paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
 
-    def test_an_empty_git_pager_means_no_pager_rather_than_unset(self) -> None:
+    def test_an_empty_git_pager_means_no_pager_rather_than_unset(self, paged: Paged) -> None:
         """`GIT_PAGER=` is how a git user turns paging off for one command, and
         it has to beat `core.pager` the same way a non-empty one does.
 
@@ -531,12 +561,12 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         `or`: an `or` reads the empty string as "not set" and falls through to
         the file, which is the opposite of what was asked.
         """
-        self.configure(f"{sys.executable} {self.fake}")
-        self.first.env["GIT_PAGER"] = ""
-        self.assertIn("--- .bashrc", self.diff())
-        self.assertFalse(self.seen.exists(), "core.pager ran despite an empty GIT_PAGER")
+        paged.configure(f"{sys.executable} {paged.fake}")
+        paged.first.env["GIT_PAGER"] = ""
+        assert "--- .bashrc" in paged.diff()
+        assert not paged.seen.exists(), "core.pager ran despite an empty GIT_PAGER"
 
-    def test_pager_diff_is_read_and_beats_core_pager(self) -> None:
+    def test_pager_diff_is_read_and_beats_core_pager(self, paged: Paged) -> None:
         """**The bug.** `configured_pager` read only `core.pager`, so a machine
         configured the per-command way -- which is the common shape -- got a
         plain diff and read that as tupferl ignoring its config.
@@ -550,34 +580,34 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         `core.pager` rather than before it, and the test below would then be
         the only thing left holding the old key up.
         """
-        self.configure(f"{sys.executable} {self.tmp / 'never.py'}")
-        self.configure(f"{sys.executable} {self.fake}", key="pager.diff")
-        self.diff()
-        self.assertIn("--- .bashrc", self.paged())
+        paged.configure(f"{sys.executable} {paged.tmp / 'never.py'}")
+        paged.configure(f"{sys.executable} {paged.fake}", key="pager.diff")
+        paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
 
-    def test_core_pager_still_works_when_pager_diff_is_unset(self) -> None:
+    def test_core_pager_still_works_when_pager_diff_is_unset(self, paged: Paged) -> None:
         """The other half. Reading the new key must not cost the old one, and a
         test of `pager.diff` alone cannot show that."""
-        self.configure(f"{sys.executable} {self.fake}")
-        self.diff()
-        self.assertIn("--- .bashrc", self.paged())
+        paged.configure(f"{sys.executable} {paged.fake}")
+        paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
 
-    def test_git_pager_still_beats_pager_diff(self) -> None:
+    def test_git_pager_still_beats_pager_diff(self, paged: Paged) -> None:
         """The new rung goes *below* the environment variable, not above it.
         Reading `pager.diff` first in the function is not the same as reading it
         first in the order, and this is the assertion that tells them apart."""
-        self.configure(f"{sys.executable} {self.tmp / 'never.py'}", key="pager.diff")
-        chosen = self.tmp / "chosen.txt"
-        picked = self.tmp / "picked.py"
+        paged.configure(f"{sys.executable} {paged.tmp / 'never.py'}", key="pager.diff")
+        chosen = paged.tmp / "chosen.txt"
+        picked = paged.tmp / "picked.py"
         picked.write_text(
             f"import sys, pathlib\npathlib.Path({str(chosen)!r}).write_text(sys.stdin.read())\n",
             encoding="utf-8",
         )
-        self.first.env["GIT_PAGER"] = f"{sys.executable} {picked}"
-        self.diff()
-        self.assertIn("--- .bashrc", chosen.read_text(encoding="utf-8"))
+        paged.first.env["GIT_PAGER"] = f"{sys.executable} {picked}"
+        paged.diff()
+        assert "--- .bashrc" in chosen.read_text(encoding="utf-8")
 
-    def test_a_pager_that_is_a_shell_command_line_works(self) -> None:
+    def test_a_pager_that_is_a_shell_command_line_works(self, paged: Paged) -> None:
         """**The second half of the bug**, and the one that would have kept the
         diff plain even after the key was fixed.
 
@@ -594,14 +624,14 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         rather than with a bare name, because a bare name works either way and
         is what made the original spelling look right.
         """
-        self.configure(
-            f'if [ -n "$HOME" ]; then {sys.executable} {self.fake}; else cat; fi',
+        paged.configure(
+            f'if [ -n "$HOME" ]; then {sys.executable} {paged.fake}; else cat; fi',
             key="pager.diff",
         )
-        self.diff()
-        self.assertIn("--- .bashrc", self.paged())
+        paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
 
-    def test_a_shell_pager_that_is_not_installed_still_shows_the_diff(self) -> None:
+    def test_a_shell_pager_that_is_not_installed_still_shows_the_diff(self, paged: Paged) -> None:
         """The guarantee had to move with the mechanism. Run directly, a missing
         pager raised `OSError`; through a shell it is exit 127 and
         `check=False` reads that as a run that happened -- so the user would
@@ -609,24 +639,24 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         do. The `if` wrapper is what makes this a *shell* 127 rather than the
         bare-name case the test above it covers.
         """
-        self.configure("if true; then no-such-pager-anywhere; fi", key="pager.diff")
-        printed = self.diff()
-        self.assertIn("--- .bashrc", printed)
-        self.assertIn("could not show the diff", printed)
+        paged.configure("if true; then no-such-pager-anywhere; fi", key="pager.diff")
+        printed = paged.diff()
+        assert "--- .bashrc" in printed
+        assert "could not show the diff" in printed
 
-    def test_a_pager_that_stops_early_does_not_print_the_diff_twice(self) -> None:
+    def test_a_pager_that_stops_early_does_not_print_the_diff_twice(self, paged: Paged) -> None:
         """The line the 126/127 test is drawn at. `q` in `less`, or a `head`
         that has seen enough, exits non-zero having *shown* the diff -- so
         falling back on any non-zero status would print it again underneath.
         Only the two codes the shell reserves for "could not run it" count.
         """
-        self.configure(f"{sys.executable} {self.fake} && exit 3", key="pager.diff")
-        printed = self.diff()
-        self.assertIn("--- .bashrc", self.paged())
-        self.assertNotIn("--- .bashrc", printed, "the diff was printed as well as paged")
-        self.assertNotIn("could not show the diff", printed)
+        paged.configure(f"{sys.executable} {paged.fake} && exit 3", key="pager.diff")
+        printed = paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
+        assert "--- .bashrc" not in printed, "the diff was printed as well as paged"
+        assert "could not show the diff" not in printed
 
-    def test_a_false_pager_diff_pages_with_nothing_at_all(self) -> None:
+    def test_a_false_pager_diff_pages_with_nothing_at_all(self, paged: Paged) -> None:
         """`pager.<cmd>` may be a boolean, and then it is not a command.
 
         Measured against git 2.43: a false one means *do not page*, and neither
@@ -637,62 +667,63 @@ class TestShowingTheDiffThroughTheUsersPager(support.TwoMachines):
         page". Both other sources are set here, because the claim is that they
         are skipped and not merely that this one is.
         """
-        self.configure(f"{sys.executable} {self.fake}")
-        self.first.env["PAGER"] = f"{sys.executable} {self.fake}"
-        self.configure("false", key="pager.diff")
-        self.assertIn("--- .bashrc", self.diff())
-        self.assertFalse(self.seen.exists(), "something was paged despite pager.diff = false")
+        paged.configure(f"{sys.executable} {paged.fake}")
+        paged.first.env["PAGER"] = f"{sys.executable} {paged.fake}"
+        paged.configure("false", key="pager.diff")
+        assert "--- .bashrc" in paged.diff()
+        assert not paged.seen.exists(), "something was paged despite pager.diff = false"
 
-    def test_off_is_false_too_and_git_is_asked_which(self) -> None:
+    def test_off_is_false_too_and_git_is_asked_which(self, paged: Paged) -> None:
         """Six spellings are false and six are true; git is asked rather than
         the list being copied here, where it would go stale in silence. `off` is
         the one a hand-rolled `== "false"` would miss."""
-        self.configure(f"{sys.executable} {self.fake}")
-        self.configure("off", key="pager.diff")
-        self.assertIn("--- .bashrc", self.diff())
-        self.assertFalse(self.seen.exists(), "something was paged despite pager.diff = off")
+        paged.configure(f"{sys.executable} {paged.fake}")
+        paged.configure("off", key="pager.diff")
+        assert "--- .bashrc" in paged.diff()
+        assert not paged.seen.exists(), "something was paged despite pager.diff = off"
 
-    def test_a_true_pager_diff_says_page_but_not_how(self) -> None:
+    def test_a_true_pager_diff_says_page_but_not_how(self, paged: Paged) -> None:
         """The other half of the boolean rule, and a different answer from
         `false`: it falls through to `core.pager`. Without this, returning "do
         not page" for *any* boolean passes the two tests above."""
-        self.configure(f"{sys.executable} {self.fake}")
-        self.configure("true", key="pager.diff")
-        self.diff()
-        self.assertIn("--- .bashrc", self.paged())
+        paged.configure(f"{sys.executable} {paged.fake}")
+        paged.configure("true", key="pager.diff")
+        paged.diff()
+        assert "--- .bashrc" in paged.pager_saw()
 
-    def test_cat_is_gits_spelling_of_no_pager(self) -> None:
+    def test_cat_is_gits_spelling_of_no_pager(self, paged: Paged) -> None:
         """git treats it as "do not page", and forking a process to do what a
         print already does is worth avoiding."""
-        self.configure("cat")
-        self.assertIn("--- .bashrc", self.diff())
-        self.assertFalse(self.seen.exists())
+        paged.configure("cat")
+        assert "--- .bashrc" in paged.diff()
+        assert not paged.seen.exists()
 
 
-class TestNamingOneFile(Machine):
-    def test_a_path_limits_the_output_to_that_file(self) -> None:
+@pytest.mark.usefixtures("synced")
+class TestNamingOneFile:
+    def test_a_path_limits_the_output_to_that_file(self, synced: Synced) -> None:
         """Both files differ, so "it showed only the one asked for" is
         observable. With one differing file this test could not fail."""
-        self.apart()
-        self.second.write(".vimrc", CONTROL + "set ruler\n")
-        whole = self.diff()
-        self.assertIn(".bashrc", whole)
-        self.assertIn(".vimrc", whole)
+        synced.apart()
+        synced.second.write(".vimrc", CONTROL + "set ruler\n")
+        whole = synced.diff()
+        assert ".bashrc" in whole
+        assert ".vimrc" in whole
 
-        one = self.diff(str(self.second.home / ".bashrc"))
-        self.assertIn(".bashrc", one)
-        self.assertNotIn(".vimrc", one)
+        one = synced.diff(str(synced.second.home / ".bashrc"))
+        assert ".bashrc" in one
+        assert ".vimrc" not in one
 
-    def test_a_named_file_that_matches_says_it_is_the_same(self) -> None:
+    def test_a_named_file_that_matches_says_it_is_the_same(self, synced: Synced) -> None:
         """Not "nothing differs", which is the whole-repository sentence, and
         not the name plus "differs" -- which says the opposite of what it means.
         """
-        self.apart()
-        said = self.diff(str(self.second.home / ".vimrc"))
-        self.assertIn(".vimrc is the same in $HOME as in the repository.", said)
-        self.assertNotIn("nothing differs", said)
+        synced.apart()
+        said = synced.diff(str(synced.second.home / ".vimrc"))
+        assert ".vimrc is the same in $HOME as in the repository." in said
+        assert "nothing differs" not in said
 
-    def test_a_tilde_path_is_expanded(self) -> None:
+    def test_a_tilde_path_is_expanded(self, synced: Synced) -> None:
         """`manifest.relative` expands and makes absolute, so a user need not
         type `$HOME` out.
 
@@ -702,12 +733,10 @@ class TestNamingOneFile(Machine):
         not, which is how it read as covering #27 while covering the one case
         that already worked. The real one is below.
         """
-        self.apart()
-        status, said = self.second.say("status", "--diff", "~/.bashrc")
-        self.assertEqual(0, status, said)
-        self.assertIn("-edited on this computer", said)
+        synced.apart()
+        assert "-edited on this computer" in synced.diff("~/.bashrc")
 
-    def test_the_name_that_list_prints_is_accepted(self) -> None:
+    def test_the_name_that_list_prints_is_accepted(self, synced: Synced) -> None:
         """#27: `tupferl list` prints `.bashrc`, and `diff` has to take it back.
 
         The working directory is the point, so it is set to somewhere that is
@@ -715,37 +744,37 @@ class TestNamingOneFile(Machine):
         cwd-relative reading gave the right answer by accident, which is why the
         bug survived a suite that drives everything from a sandbox.
         """
-        self.apart()
+        synced.apart()
         # The *name* column, which is no longer the last one: a row under
         # `--all` is `[host]  name  state`, and the state is several words for
         # anything that is changing. Taking the first field that is not the
         # overlay marker is what "the name this listing prints" means now.
         listed = [
             next(field for field in row.split() if field != "host")
-            for row in self.second.say("status", "--all")[1].splitlines()
+            for row in synced.second.say("status", "--all")[1].splitlines()
             if ".bashrc" in row
         ]
-        self.assertEqual([".bashrc"], listed, "the fixture no longer prints the name under test")
+        assert listed == [".bashrc"], "the fixture no longer prints the name under test"
 
-        with mock.patch.object(Path, "cwd", return_value=self.tmp):
-            status, said = self.second.say("status", "--diff", ".bashrc")
-        self.assertEqual(0, status, said)
-        self.assertIn("-edited on this computer", said)
+        with mock.patch.object(Path, "cwd", return_value=synced.tmp):
+            said = synced.diff(".bashrc")
+        assert "-edited on this computer" in said
 
-    def test_an_unmanaged_file_is_an_error_that_names_the_way_out(self) -> None:
-        self.second.write(".zshrc", "setopt nomatch\n")
-        status, said = self.second.say("status", "--diff", str(self.second.home / ".zshrc"))
-        self.assertEqual(2, status, said)
-        self.assertIn("is not managed", said)
-        self.assertIn("tupferl status --all", said)
+    def test_an_unmanaged_file_is_an_error_that_names_the_way_out(self, synced: Synced) -> None:
+        synced.second.write(".zshrc", "setopt nomatch\n")
+        status, said = synced.second.say("status", "--diff", str(synced.second.home / ".zshrc"))
+        assert status == 2, said
+        assert "is not managed" in said
+        assert "tupferl status --all" in said
 
-    def test_a_path_outside_home_is_refused_before_anything_is_read(self) -> None:
-        status, said = self.second.say("status", "--diff", "/etc/hostname")
-        self.assertEqual(2, status, said)
-        self.assertIn("is outside", said)
+    def test_a_path_outside_home_is_refused_before_anything_is_read(self, synced: Synced) -> None:
+        status, said = synced.second.say("status", "--diff", "/etc/hostname")
+        assert status == 2, said
+        assert "is outside" in said
 
 
-class TestDiffWritesNothing(Machine):
+@pytest.mark.usefixtures("synced")
+class TestDiffWritesNothing:
     """The same claim `status` makes, and for the same reason.
 
     `diff` runs `sync.examine`, and `resolve` inside it merges any file both
@@ -754,37 +783,25 @@ class TestDiffWritesNothing(Machine):
     `apart()` is what makes one run.
     """
 
-    def contents(self) -> dict[str, bytes]:
-        """Every file under `$HOME` outside `.git`, by name and by bytes.
-
-        Bytes rather than size and mode: the edits here are one line to another
-        of a similar length, and `tests/test_status.py`'s first fingerprint could
-        not tell two 24-byte files apart. Same trap, same answer.
-        """
-        return {
-            str(path.relative_to(self.second.home)): path.read_bytes()
-            for path in self.second.home.rglob("*")
-            if path.is_file() and ".git" not in path.parts
-        }
-
-    def test_the_merge_it_runs_reaches_no_file(self) -> None:
-        self.apart()
-        before = self.contents()
-        self.diff()
-        self.assertEqual(before, self.contents())
+    def test_the_merge_it_runs_reaches_no_file(self, synced: Synced) -> None:
+        synced.apart()
+        before = support.fingerprint(synced.second.home)
+        synced.diff()
+        assert support.fingerprint(synced.second.home) == before
         # The precondition, without which "nothing moved" is equally true of a
         # machine with nothing to move -- CLAUDE.md §2.
-        self.assertEqual(0, self.second.call("sync", "--ours"))
-        self.assertNotEqual(before, self.contents())
+        assert synced.second.call("sync", "--ours") == 0
+        assert support.fingerprint(synced.second.home) != before
 
 
-class TestAMachineWithNothingManaged(support.SandboxCase):
-    def test_diff_says_how_to_start(self) -> None:
+@pytest.mark.usefixtures("sandbox")
+class TestAMachineWithNothingManaged:
+    def test_diff_says_how_to_start(self, sandbox: support.Sandbox) -> None:
         from tupferl.__main__ import main
 
-        remote = support.make_remote(self.tmp / "remote.git", self.env)
+        remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
         with support.quiet():
-            self.assertEqual(0, main(["init", str(remote)]))
+            assert main(["init", str(remote)]) == 0
         with support.quiet() as said:
-            self.assertEqual(0, main(["status", "--diff"]))
-        self.assertIn("nothing is managed yet", said.getvalue())
+            assert main(["status", "--diff"]) == 0
+        assert "nothing is managed yet" in said.getvalue()

@@ -42,7 +42,7 @@ BOTH_KEPT = "FROM-B\nFROM-A\ntwo\nthree\n"
 MANAGED = ".vimrc"
 
 
-class TwoCommits(support.TwoMachines):
+class TwoCommits(support.TwoMachinesCase):
     """`machine-b` holds a commit the remote has never seen, and they disagree.
 
     The order matters and is the issue's: `machine-b` commits *first* (through
@@ -200,7 +200,7 @@ class TestTheExecutableBit(TwoCommits):
     marked-up merge, whose bits say nothing about what either side recorded."""
 
     def setUp(self) -> None:
-        support.TwoMachines.setUp(self)
+        support.TwoMachinesCase.setUp(self)
         self.assertEqual(0, self.second.call("init", str(self.remote)))
         self.diverge_by_committing(FROM_B, FROM_A, executable=True)
 
@@ -224,7 +224,7 @@ class TestAFileOnlyOneSideStillHas(TwoCommits):
     """
 
     def setUp(self) -> None:
-        support.TwoMachines.setUp(self)
+        support.TwoMachinesCase.setUp(self)
         # **Both machines agree about the file first.** Diverging by content and
         # by existence at once is two conflicts, and the first one settles before
         # this one is ever reached -- which is what the first attempt at this
@@ -256,7 +256,7 @@ class TestAFileOnlyOneSideStillHas(TwoCommits):
         self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
 
 
-class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachines):
+class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachinesCase):
     """A conflict with a **stage 1**, which every fixture above lacks.
 
     `TwoCommits` has both machines `add` the file independently, so the two
@@ -325,7 +325,7 @@ class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachines):
         self.assertIn("B-FIRST", settled)
 
 
-class TestTheExecutableBitComesFromTheIndex(support.TwoMachines):
+class TestTheExecutableBitComesFromTheIndex(support.TwoMachinesCase):
     """Asymmetric modes, because equal ones cannot tell the index from disk.
 
     `held`'s docstring claims the mode is read from the index rather than from
@@ -367,7 +367,7 @@ class TestTheExecutableBitComesFromTheIndex(support.TwoMachines):
         self.assertTrue((self.second.home / MANAGED).stat().st_mode & 0o111)
 
 
-class TestWhatIsNotAFileOnBothSides(support.TwoMachines):
+class TestWhatIsNotAFileOnBothSides(support.TwoMachinesCase):
     """A committed symlink, which `copies.write` would write **through**.
 
     `manifest` refuses a symlink at `add` time, so one only reaches the
@@ -510,7 +510,7 @@ class TestWhenTheSettledFilesCannotBeStaged(TwoCommits):
         self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
 
 
-class TestWhatThisMachineWillNotMerge(support.TwoMachines):
+class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
     """#15: `reconcile` walks git's index, not `manifest.managed`.
 
     So a path tupferl keeps for *itself* reaches the dotfile prompt. The one
@@ -696,7 +696,7 @@ class TestUndoneUndoesTheMergeItself(support.SandboxCase):
         self.assertIsNone(gitrepo.unfinished(self.repo))
 
 
-class TestWhenSeveralFilesCannotBeSettled(support.TwoMachines):
+class TestWhenSeveralFilesCannotBeSettled(support.TwoMachinesCase):
     """The names are listed in a stable order.
 
     `sorted` on the walk, so two machines and two runs produce the same sentence.
@@ -725,7 +725,7 @@ class TestWhenSeveralFilesCannotBeSettled(support.TwoMachines):
         self.assertIn(".inputrc, .zshrc", done.stderr)
 
 
-class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachines):
+class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachinesCase):
     """A type change, which git does not record the way I expected.
 
     I wrote this to give `reconcile` a path with *mixed* stage kinds -- a regular
@@ -784,7 +784,7 @@ class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachines):
         self.assertEqual("SECRET-ORIGINAL\n", self.victim.read_text(encoding="utf-8"))
 
 
-class TestAConflictAboutNothingButTheMode(support.TwoMachines):
+class TestAConflictAboutNothingButTheMode(support.TwoMachinesCase):
     """Same bytes, different modes: git conflicts and `merge-file` does not.
 
     The one case where the tree-level merge fails and the file-level one
