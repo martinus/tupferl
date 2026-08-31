@@ -993,14 +993,8 @@ class TestEveryTagGuardsARowThatExists:
     otherwise, and one of them had been wrong for as long as it had existed.
     """
 
-    #: `dead_tags` walks every mutable file and generates for each, so it goes
-    #: through `mutants.line_starts` -- a `while` in which every arm advances its
-    #: counter, so a mutation dropping one spins for ever. This class is one of
-    #: the routes to that line and had no bound of its own, which is CLAUDE.md's
-    #: recorded mistake for the sixth time: the bound went where the sweep
-    #: pointed and the hang was somewhere else. Measured -- four `line_starts`
-    #: rows the gate's control arm reported `caught` came back `BROKE` here,
-    #: with these two classes named as the killer.
+    #: The same route and the same bound as `TestFindingATagNoRowCanReach`
+    #: above, which carries the argument.
     _bounded = support.bounds(support.PATIENCE, "walking every tag hung")
 
     def test_the_tree_has_tags_to_check(self) -> None:
