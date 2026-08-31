@@ -616,10 +616,6 @@ def collect(
         #   hook, equally empty. Both are called because the protocol says to, not because either
         #   does anything here.
         result.stopTestRun()
-    # survivor: off-by-one -- `argv` indices into `_probe`'s own command line, which `_run` builds
-    #   three frames away in the same repository -- so the two are always the same revision and a
-    #   shifted index is a protocol break rather than an input. It shows up as every row coming back
-    #   `BROKE` at once, which no single fixture would diagnose better than the first sweep does.
     return {
         "loaded": True,
         "ran": result.testsRun,
@@ -653,6 +649,17 @@ def _unloadable(loader: unittest.TestLoader) -> dict[str, Any]:
 
 
 def main(argv: list[str]) -> None:
+    # survivor: off-by-one -- unanswerable: `argv` indices into `_probe`'s own command line,
+    #   which `_run` builds three frames away in the same repository -- so the two are always
+    #   the same revision and a shifted index is a protocol break rather than an input. It shows
+    #   up as every row coming back `BROKE` at once, which no single fixture would diagnose
+    #   better than the first sweep does.
+    #
+    #   `cap(int(argv[2]))` below repeats the operator with a pointer back here, because a tag
+    #   guards one statement. Only those two of the four `argv` reads carry an `off-by-one` row
+    #   at all -- the others index inside a nested call or a slice -- and a tag on a statement
+    #   with no such row excuses nothing, which is what
+    #   `test_mutants.TestEveryTagGuardsARowThatExists` refuses.
     report, failfast = argv[0], argv[1] == "1"
     # `walk` in its own slot rather than inferred from the selection: a baseline
     # and a mutation can carry the *same* selection and must be run differently
@@ -672,6 +679,7 @@ def main(argv: list[str]) -> None:
     first, walk, names = list(json.loads(argv[4])), argv[5] == "1", argv[6:]
     # Before the suite loads, not after: `discover` imports every test module,
     # and a mutation to something imported at module scope can run away there.
+    # survivor: off-by-one -- unanswerable, for the reason on the first `argv` line above.
     cap(int(argv[2]))
     try:
         written = collect(names, failfast, float(argv[3]), first, walk)

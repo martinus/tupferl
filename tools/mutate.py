@@ -866,22 +866,30 @@ def _lane(leader: int, table: dict[int, Process]) -> set[int]:
     # grandchild (`setsid`, out of it): the grandchild was in neither the count
     # nor the kill. That is the eleven-minutes-alive symptom the union was added
     # to remove, still present in the fix for it.
+    #
+    # **No mutation of this walk can be answered, and the seven tags below say so
+    # one statement at a time.** A probe runs a nested sweep of its own, so a
+    # probe carrying a broken `_lane` hosts a sweep whose `_end_lane` kills the
+    # wrong set -- the probe among them. The row comes back `broke` by SIGKILL,
+    # which is never `caught`. #91 is the same mechanism one level up, and
+    # `_permitted` is why it stays inside the lane rather than taking the
+    # session; it cannot make the row answerable, because the code that would
+    # have to notice is the code being mutated. Measured 2026-08-31 on the whole
+    # table: all seven `broke` in 5-6s.
     seen: set[int] = set()
     stack = [leader]
-    # survivor: branch, negate, drop-call, return-value -- unanswerable: this walk is what
-    #   decides which pids are a lane, and a probe runs a nested sweep of its own. Break it and
-    #   *that* sweep's `_end_lane` kills the wrong set, the probe among them -- so the row comes
-    #   back `broke` by SIGKILL, which is never `caught`. #91 is the same mechanism one level up,
-    #   and `_permitted` is why it stays inside the lane rather than taking the session; it cannot
-    #   make the row answerable, because the thing that would have to notice is the thing being
-    #   mutated. Measured 2026-08-31, whole-table sweep: all 7 rows `broke` in 5-6s.
     while stack:
         pid = stack.pop()
+        # survivor: branch, negate -- unanswerable, for the reason above the walk.
         if pid in seen:
             continue
+        # survivor: drop-call -- unanswerable, for the reason above the walk.
         seen.add(pid)
+        # survivor: drop-call -- unanswerable, for the reason above the walk.
         found.add(pid)
+        # survivor: drop-call -- unanswerable, for the reason above the walk.
         stack.extend(kids.get(pid, ()))
+    # survivor: return-value -- unanswerable, for the reason above the walk.
     return found & set(table)
 
 
@@ -906,12 +914,14 @@ def _born() -> dict[int, float]:
     the behaviour that existed before this and is no worse than it. It is not a
     licence to skip the check, which is why the caller says so out loud.
     """
-    # survivor: branch, return-value -- unanswerable, and for `_lane`'s reason: this is the
-    #   second, independent fact `_permitted` vetoes a kill with, so a probe whose copy of it
-    #   is wrong loses the veto and takes its own tree down. Measured 2026-08-31: all 4 rows
-    #   `broke` by SIGKILL in 4-5s.
+    # survivor: branch -- unanswerable, and for `_lane`'s reason: this is the second,
+    #   independent fact `_permitted` vetoes a kill with, so a probe whose copy of it is wrong
+    #   loses the veto and takes its own tree down. Measured 2026-08-31: all four rows of this
+    #   function `broke` by SIGKILL in 4-5s.
     if Path("/proc/self/stat").exists():
+        # survivor: return-value -- unanswerable, as the branch above.
         return _born_from_proc()
+    # survivor: return-value -- unanswerable, as the branch above.
     return _born_from_ps()
 
 
