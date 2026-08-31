@@ -1114,6 +1114,30 @@ EXCLUDES = [
 ]
 
 
+@pytest.fixture(scope="module")
+def scope_names() -> set[str]:
+    """Every scope this tree really has, dotted, collected once for the module.
+
+    **Module-scoped because the `parametrize` below would otherwise pay for it
+    six times.** `discover()` runs a nested `pytest --collect-only` over the
+    whole repository -- 0.21s on a quiet machine, 0.46s on a loaded one -- and
+    the `subTest` loop this replaced called it once for all six patterns.
+    Measured after the conversion and before this fixture: 6 calls where `main`
+    made 1, and the class went from 1.10s to 2.96s, an interleaved median paired
+    difference of +1.86s over three pairs.
+
+    That is not the class's own cost alone. `tools/mutants.py` generates 211
+    rows for `tools/run_tests.py` and their selection names this module, so
+    every survivor among them -- which runs its whole selection by construction
+    -- paid it too.
+
+    Safe to share because the answer is read-only and derived: a set of strings,
+    which no test here mutates. `test_mutate`'s `swept_once` makes the same
+    argument for the same reason one file over.
+    """
+    return {run_tests.dotted(scope) for scope in run_tests.discover().scopes}
+
+
 class TestTheWorkflowsExcludesStillNameSomething:
     """Every `--exclude` in ci.yml, against the scopes this tree really has.
 
@@ -1135,9 +1159,10 @@ class TestTheWorkflowsExcludesStillNameSomething:
         assert len(EXCLUDES) == 6, EXCLUDES
 
     @pytest.mark.parametrize("pattern", EXCLUDES)
-    def test_every_exclude_names_at_least_one_scope(self, pattern: str) -> None:
-        named = {run_tests.dotted(scope) for scope in run_tests.discover().scopes}
-        matched = [name for name in named if run_tests.selects(name, pattern)]
+    def test_every_exclude_names_at_least_one_scope(
+        self, pattern: str, scope_names: set[str]
+    ) -> None:
+        matched = [name for name in scope_names if run_tests.selects(name, pattern)]
         assert len(matched) == 1, f"{pattern} matches {matched}"
 
 
