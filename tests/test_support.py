@@ -38,8 +38,8 @@ POISON = "/poison"
 class Boxed(unittest.TestCase):
     """A throwaway directory and a seeded home, without the environment patch.
 
-    `support.SandboxCase` would patch `os.environ` in `setUp`, which is exactly
-    what these tests are trying to observe. So this stops one step short.
+    `support.sandbox` patches `os.environ`, which is exactly what these tests
+    are trying to observe. So this stops one step short.
     """
 
     def setUp(self) -> None:

@@ -1,10 +1,10 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1, B2, B3 and B4a** with them, which converted the first
-twenty-one modules.
-**Of 36 test modules, 14 still run through pytest's `unittest` adapter** — 12 of
-those convert in B4b–B6. The other two never do, and are **not** arrears:
+and **clusters B1, B2, B3, B4a and B4b** with them, which converted the first
+twenty-five modules.
+**Of 36 test modules, 10 still run through pytest's `unittest` adapter** — 8 of
+those convert in B5 and B6. The other two never do, and are **not** arrears:
 `tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
 its subject, and `tests/test_sync_properties.py` is converted but exposes a
 class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
@@ -32,8 +32,9 @@ differently from what it says below is in
 [Phase A2 as built](#phase-a2-as-built--2026-08-30),
 [B1 as built](#b1-as-built--2026-08-30),
 [B2 as built](#b2-as-built--2026-08-30),
-[B3 as built](#b3-as-built--2026-08-31) and
-[B4a as built](#b4a-as-built--2026-08-31). **Read every "as built" section before
+[B3 as built](#b3-as-built--2026-08-31),
+[B4a as built](#b4a-as-built--2026-08-31) and
+[B4b as built](#b4b-as-built--2026-08-31). **Read every "as built" section before
 the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
@@ -1359,7 +1360,7 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 | B2 | **Done** — see [B2 as built](#b2-as-built--2026-08-30). `test_config_properties`, `test_merge_properties`, `test_sync_properties`, `test_profiles` | none new | Hypothesis-native. Delete the `__module__`/`__name__`/`__qualname__` dunder hack in `test_sync_properties.py` (it existed for unittest id round-trip in sharding; pytest nodeids come from collection) — keep the `X = Machine.TestCase` assignments, which are the pytest-idiomatic spelling. `profiles.py` untouched. The pyproject mypy-override list stays valid (module names unchanged). |
 | B3 | **Done** — see [B3 as built](#b3-as-built--2026-08-31). `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture). **Not `requires_git`** — its only user is `test_mutants`, so it belongs to B6; `test_doctor`'s `skipIf` *was* converted | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
 | B4a | **Done** — see [B4a as built](#b4a-as-built--2026-08-31). `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture, and `support.Machine` → a `machine` one, which this row did not anticipate: `test_manage` takes it for six classes. The `template()`/`copy_template()` functions are unchanged | the overlay both-copies rule transfers as-is; `TestTheSnapshotIsWrittenLast` is in `test_sync_cli` and so belongs to B4b, which this row had wrong. |
-| B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
+| B4b | **Done** — see [B4b as built](#b4b-as-built--2026-08-31). `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | all three `unittest` adapters had no user left and were deleted here, which this row anticipated for two of them. |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
 | B6 | **Fix #96 first — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
 
@@ -2427,6 +2428,209 @@ Final gate: the `tupferl/` package unchanged at **1283 caught / 26 survived / 0
 changed source line **95 of 96 caught, 1 excused by a tag, 0 `BROKE`**.
 
 Preflight after: **1915 tests, 0 failures, 0 skipped.**
+
+## B4b as built — 2026-08-31
+
+Four modules, 2228 lines in and 2507 out, 37 classes, **408 assertions** --
+comparable to B3's 506 and the last cluster of end-to-end sync tests. 127
+collected items before, 132 after; **every one of the 127 distinct test names
+survives**, and the growth is two `subTest` loops becoming `parametrize`.
+
+| module | before | after |
+|---|---:|---:|
+| `test_sync_cli` | 42 | 47 |
+| `test_sync_commits` | 40 | 40 |
+| `test_sync_conflicts` | 26 | 26 |
+| `test_overlays` | 19 | 19 |
+
+**This is the cluster that deletes machinery rather than adding it.**
+`SandboxCase`, `MachineCase` and `TwoMachinesCase` each carried a sentence
+saying they die when their last user converts; that user was here, and all
+three are gone -- 117 lines, in their own commit, with a grep across `tests/`,
+`tools/` and the docs behind it rather than an assumption. What is left is the
+extraction B3 and B4a did *for* them: `Sandbox`, `Machine` and `TwoMachines`
+are the definitions and `tests/conftest.py` is the one remaining adapter.
+
+Their docstrings are not deleted with them. B4a's rename argument -- "B4b
+deletes both classes, so the rename is 24 lines that die in the next PR" --
+is now a claim about the past, and each of the three places that made it says
+what happened rather than being quietly cut, which is §0's rule applied to a
+paragraph that has come true.
+
+### 20 fixtures, and the one shape that repeats
+
+Twenty module-local fixtures where there were twenty `setUp`s, plus four frozen
+dataclasses over a `support` base where the `setUp` had methods beside it:
+`OneMachine` (`test_sync_cli`), `Conflicted` (`test_sync_conflicts`),
+`TwoCommits` and `Victimised` (`test_sync_commits`), and `Merging`, which
+subclasses `Sandbox` rather than `TwoMachines`.
+
+`Victimised` is the one worth naming: two fixtures in `test_sync_commits` set
+`self.victim` -- a file **outside** the repository that a settled symlink could
+have been written through -- and a frozen dataclass has nowhere to put it. One
+field on one shared subclass, rather than a second dataclass per fixture.
+
+Three method-to-function conversions, all in `test_sync_commits`, and all of the
+same kind: a helper that read `self` only to reach the box.
+
+- `raising(kind)` and `breaking(box)` are `@contextlib.contextmanager`s where
+  they were `addCleanup` pairs. That is not cosmetic:
+  `test_the_next_sync_still_works_afterwards` used to call `self.stack.close()`
+  half way through to say "and now the settler works again", which is a `with`
+  block ending exactly there.
+- `collide(box, name)` takes what it acts on.
+
+Four class attributes became module constants (`LINK`, `SWAPPED`, `TWIN`,
+`SHARED`), because neither a `parametrize` decorator nor a fixture can see a
+class attribute, and `test_sync_cli`'s `THERE` had to move for exactly that
+reason when `test_every_line_names_the_ref` was parametrized.
+
+### `assertContains` is gone, and it was `SandboxCase`'s only real method
+
+Eleven call sites, all in `test_sync_cli.py`, and all now
+`assert needle in haystack`. The helper's docstring argued that `assertIn`
+"prints both sides, which for a multi-line report is a wall of text with the
+interesting part in the middle" -- true of `unittest`, and pytest's assertion
+rewriting prints the same two sides with the needle in the failure line. The
+helper was work pytest already does.
+
+`tools/unassert.py` refused all eleven by name (`assertContains: no rule for
+it`), which is the property B3 committed it for, and the two `assertRaises`
+with them. **13 of 408 left for a person** -- and, as in B4a, every defect this
+cluster found came from a step the tool cannot check.
+
+### Two dead entry points, and the second one was hiding between two classes
+
+`test_sync_conflicts.py` and `test_sync_commits.py` each carried a mid-file
+`if __name__ == "__main__": unittest.main()`, dead since Phase A2 -- the same
+note B4a wrote for `test_sync.py` and `test_manage.py`, and B6 still has for
+`test_mutate.py`. Both are deleted.
+
+`test_sync_cli.py` also carried `NAME = PurePosixPath(".bashrc")` and its
+import, read by nothing before this change either. Fixed here because the diff
+already rewrote the block it was in (CLAUDE.md §4), and said out loud because a
+silent deletion of an unused constant is indistinguishable from one that had a
+user the grep missed.
+
+### One thing ruff caught that the suite could not
+
+`said(machine, *args)` was a method on `TestWhatSyncSaysAboutTheRemote` and is a
+module-level function now -- and five of its callers assign to a local called
+`said`. In a method that shadowed nothing; at module level it makes the *name*
+local to the function, so `said = said(...)` reads an unbound local and raises.
+
+ruff's F823 named all five before anything ran. Worth recording because the
+class of mistake -- a method becoming a function, and its callers' locals
+colliding with the new global -- is one every remaining cluster can make, and
+the failure would have been an `UnboundLocalError` in a test whose text gives no
+hint why.
+
+### Gate
+
+Preflight: **1920 tests, 0 failures, 0 skipped**, from 1915.
+
+**No file under `tupferl/` or `tools/` is touched by this PR**, so `--base main`
+generates no rows at all and the whole-package sweep is the entire acceptance
+instrument -- which is the right shape for a pure test conversion, and worth
+saying because a `--base` run reporting "0 rows, 0 survivors" would otherwise
+read as evidence.
+
+`tupferl/` has not moved since 2026-08-29, so B3's and B4a's reports are exact
+row-for-row baselines. **1309 rows in 279s at 37 lanes**, baseline green:
+
+| | B3 | B4a | B4b |
+|---|---:|---:|---:|
+| caught | 1283 | 1283 | **1283** |
+| survived | 26 | 26 | **26** |
+| `BROKE` | 0 | 0 | **0** |
+| `TIMEOUT` | 0 | 0 | **0** |
+
+The survivor *set* is identical to **both** earlier runs, label for label, not
+merely the same size -- checked as a set difference in each direction rather
+than by comparing the counts, which is the check that would have missed a
+survivor swapping for another.
+
+Two numbers worth keeping beside it: the heaviest lane held **556 MiB of its
+2064 MiB ceiling (27%)**, against the 92% B4a's whole-tree figure records, and
+the verdict-layer fix B4a landed is what keeps the 104 rows it recovered in the
+`caught` column here -- this is the first cluster to convert fixtures *with*
+that fix already in place, and it is the run that shows it holds for a second
+cluster's worth of them.
+
+### What `/simplify` found, after the PR was open and CI was green
+
+Four reviewers over the diff. **The most useful finding was a number, not
+code**, which is the second cluster running to say so.
+
+**Two counts in `CLAUDE.md` were wrong, and this PR wrote one of them.** The
+`usefixtures` entry said B4b converted "36 classes, which carry 35 marks"; the
+tree has **37 and 36**. The arithmetic was right and the base was wrong -- and
+the paragraph's own last sentence had already said the plan's status line is the
+number to read "rather than a count kept here", two lines below a count kept
+there. Both the count and the hand-written list of what B5 and B6 still convert
+are gone; `tests/test_pytest_plan.py` recomputes the status line from the tree
+and nothing recomputes a figure typed into `CLAUDE.md`.
+
+The second was older. #19's entry says "146 of the suite's tests take"
+the two-machine fixture -- true when it was measured and **190 of 1920** now,
+across 45 classes rather than 40. This PR *edited that sentence* to drop its
+`TwoMachinesCase` half without re-checking the figure beside it, which is §0's
+rule missed inside the edit that §0 required. Re-measured with
+`pytest --collect-only --fixtures-per-test`, dated, and corrected in all four
+places that hand-copy it (`CLAUDE.md`, `tests/conftest.py`, and twice in
+`tests/support.py`).
+
+**A sixth `said` local.** The F823 section above records five call sites where a
+method becoming a module function collided with a caller's local. There was a
+sixth, in `TestTheRemoteLine`, which ruff does not flag because that method never
+calls the global -- so the collision is inert until somebody adds a call. Renamed.
+The lesson is narrower than the original one and worth having: **ruff finds the
+collisions that already break, not the ones that are merely armed.**
+
+**`subject()` was a fourth spelling of `Machine.log()`.** The helper was carried
+faithfully from a method, and one of its three call sites still inlined the
+`git log -1` *and* bound the result to a local called `subject`. It reads
+`box.log()[0]` now, keeping the name because `log()[0]` asks the reader to know
+which end is newest.
+
+Two smaller ones: `test_sync_cli` retyped the template's own bytes where
+`support.STARTS_AS` exists -- the call B4a made for the identical literal in
+`test_diff` and `test_status`, so `test_overlays`' `SHARED` is aliased too -- and
+two comments in `test_overlays` still said `setUp` in a file that has none.
+
+### Declined, and why
+
+- **Reverting `test_the_resolution_flags_are_accepted_when_there_is_no_conflict`
+  to a loop.** Measured at 0.51s against ~0.29s: three fixtures rather than one,
+  paid again for every mutant. Declined because the parametrized version is
+  *stronger*, which the measurement does not show. `one_machine` leaves an
+  `add`'s commit unpushed, so in a loop only the first flag met a sync with
+  anything to do -- and `test_a_second_sync_writes_no_commit`, beside it, is the
+  proof that a second run reports "0 changed". Three fixtures is three first
+  syncs, one per flag. Written into the test.
+- **Building `crlf` on `two_machines` instead of on `conflicted`**, saving one
+  `diverge` (~60ms x 2 tests). The stacking is what `main` did and the end state
+  is what the tests assert about; re-deriving the fixture is a redesign, and this
+  cluster's rule is convert rather than redesign.
+- **Folding `two_commits` and `executable` into one helper with a flag.** They
+  are three lines each and the flag is the whole difference; a helper serving
+  exactly two callers is not fewer lines and puts the `executable=True` a level
+  away from the fixture that means it. The duplication is also deliberate --
+  `main` spelled it as `support.TwoMachinesCase.setUp(self)`, skipping the base
+  on purpose.
+- **Hoisting `assert box.second.call("init", str(box.remote)) == 0` onto
+  `TwoMachines`.** 29 occurrences across `tests/`, and `diverge`'s docstring
+  already records the hazard of forgetting it. Real, and not this PR's: the count
+  per file is identical to `main`, and it binds `test_diff`, `test_status` and
+  `test_sync_properties` as well. A separate change.
+
+### The gate, re-run after the review
+
+The review edited tests, so every verdict above it was computed against a tree
+that no longer exists -- CLAUDE.md §1's reason for putting a generated analysis
+last. Re-run whole: **1309 rows in 278s, 1283 caught / 26 survived / 0 `BROKE` /
+0 `TIMEOUT`**, baseline green, and the survivor set identical to B3's, B4a's and
+this cluster's own pre-review run, label for label.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
