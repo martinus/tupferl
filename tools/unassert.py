@@ -125,6 +125,11 @@ def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
         if char == "#":
             yield i, char, depth
             comment = True
+            # survivor: off-by-one -- equivalent: with `comment` already set, not
+            #   advancing means the next iteration re-reads this same `#` in the
+            #   arm above, which sets `comment` to the same value and advances by
+            #   one. One wasted iteration, identical output. The other five
+            #   mutations of these two lines are caught.
             i += 1
             continue
         if char in "([{":

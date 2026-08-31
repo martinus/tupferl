@@ -277,6 +277,21 @@ class TestItLooksOnlyAtCode:
         assert done == was
         assert refused == ["assertEqual: a comment inside the call"]
 
+    @pytest.mark.parametrize("comment", ("#", "#a", "#ab", "#abc"))
+    def test_a_comment_of_any_length_ends_at_its_newline(self, comment: str) -> None:
+        """Both parities, in both places the scan advances through a comment.
+
+        A comment is skipped one character at a time, so a mutation that steps
+        *two* lands on the newline or steps over it depending on how long the
+        comment is -- and a single fixture answers for exactly one of those.
+        Measured: with one 17-character comment here, both `i += 2` mutations
+        survived; with these four, neither does. The consequence when it steps
+        over is that the comment swallows the line below, which is where the
+        code is.
+        """
+        done = only(f"{comment}\nself.assertTrue(x)\n")
+        assert done == f"{comment}\nassert x\n", done
+
     def test_a_comma_in_a_comment_does_not_split_the_arguments(self) -> None:
         """The same fix, seen through `split_args`. Before it, the comment's
         comma made this a three-argument call and the arity check refused it --
