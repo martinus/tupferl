@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -952,6 +953,41 @@ class TestTheWaysARunIsRefusedRatherThanRunEmpty(Tree):
         done = self.run_it("--shard", "1/2")
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertIn("Ran 2 tests", done.stdout)
+
+    def test_the_shards_together_run_every_test(self) -> None:
+        """The property the `macos` matrix rests on, and the one no single
+        shard can show.
+
+        `--shard 1/4` is green whatever the other three did, so a split that
+        dropped a scope -- or handed one to two shards and another to none --
+        would be four green legs over three quarters of the suite. That is
+        exactly the run that is green because nothing happened, arriving
+        through the flag added to spread the work out.
+
+        `pack` already has `test_every_scope_is_placed_exactly_once`, and this
+        is not that test again: that one asks the function, this one asks four
+        real `main` invocations, which is what CI runs. The counts are summed
+        rather than the ids unioned because "Ran N tests" is what a shard
+        prints; a duplicated scope would have to be paid for by a dropped one
+        to keep the sum, and `pack`'s own test is what rules that out.
+        """
+        for number in range(2, 5):
+            self.add(f"test_{number}.py", HEALTHY.replace("TestHealthy", f"Test{number}"))
+        whole = self.run_it()
+        self.assertEqual(0, whole.returncode, whole.stdout + whole.stderr)
+        self.assertIn("Ran 8 tests", whole.stdout)
+
+        counted = 0
+        for shard in range(1, 5):
+            done = self.run_it("--shard", f"{shard}/4")
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            found = re.search(r"Ran (\d+) tests", done.stdout)
+            self.assertIsNotNone(found, done.stdout)
+            assert found is not None
+            ran = int(found.group(1))
+            self.assertGreater(ran, 0, f"shard {shard}/4 ran nothing:\n{done.stdout}")
+            counted += ran
+        self.assertEqual(8, counted)
 
 
 class TestReadingACollectionFailure(unittest.TestCase):
