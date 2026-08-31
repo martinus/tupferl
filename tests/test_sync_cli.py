@@ -33,7 +33,7 @@ class OneMachine(support.MachineCase):
         super().setUp()
         self.write(self.home / ".bashrc", "one\ntwo\nthree\n")
         self.init()
-        self.assertEqual(0, self.run_cli("add", str(self.home / ".bashrc")).returncode)
+        assert self.run_cli("add", str(self.home / ".bashrc")).returncode == 0
 
     def sync(self, *flags: str) -> tuple[int, str, str]:
         done = self.run_cli("sync", *flags)
@@ -43,11 +43,11 @@ class OneMachine(support.MachineCase):
 class TestSyncOneMachine(OneMachine):
     def test_it_commits_and_pushes_what_add_stored(self) -> None:
         status, _, _ = self.sync()
-        self.assertEqual(0, status)
+        assert status == 0
         on_remote = support.git(
             ["ls-tree", "-r", "--name-only", support.BRANCH], self.remote, self.env
         )
-        self.assertIn(".bashrc", on_remote.splitlines())
+        assert ".bashrc" in on_remote.splitlines()
 
     def test_the_snapshot_is_committed_so_a_restore_keeps_the_merge_base(self) -> None:
         """Plan §5: snapshots are per-host and committed, "so every host knows
@@ -57,15 +57,15 @@ class TestSyncOneMachine(OneMachine):
             ["ls-tree", "-r", "--name-only", support.BRANCH], self.remote, self.env
         )
         want = self.snapshot(".bashrc").relative_to(self.repo)
-        self.assertIn(str(want), on_remote.splitlines())
+        assert str(want) in on_remote.splitlines()
 
     def test_a_home_edit_reaches_the_repository(self) -> None:
         self.sync()
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
         status, out, _ = self.sync()
-        self.assertEqual(0, status)
+        assert status == 0
         self.assertContains(out, "stored .bashrc")
-        self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+        assert (self.repo / ".bashrc").read_text() == "ONE\ntwo\nthree\n"
 
     def test_the_commit_message_is_the_shape_the_plan_asks_for(self) -> None:
         """Plan §3.5: `sync from <hostname>: update .bashrc, .gitconfig`."""
@@ -73,14 +73,14 @@ class TestSyncOneMachine(OneMachine):
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
         self.sync()
         subject = support.git(["log", "-1", "--format=%s"], self.repo, self.env)
-        self.assertEqual(f"sync from {self.host}: .bashrc", subject)
+        assert subject == f"sync from {self.host}: .bashrc"
 
     def test_a_second_sync_writes_no_commit(self) -> None:
         self.sync()
         before = support.git(["rev-parse", "HEAD"], self.repo, self.env)
         status, out, _ = self.sync()
-        self.assertEqual(0, status)
-        self.assertEqual(before, support.git(["rev-parse", "HEAD"], self.repo, self.env))
+        assert status == 0
+        assert support.git(["rev-parse", "HEAD"], self.repo, self.env) == before
         self.assertContains(out, "0 changed")
 
     def test_a_sync_with_nothing_to_push_does_not_reach_the_remote(self) -> None:
@@ -106,11 +106,11 @@ class TestSyncOneMachine(OneMachine):
         nowhere = self.tmp / "nowhere.git"
         support.git(["remote", "set-url", "--push", "origin", str(nowhere)], self.repo, self.env)
 
-        self.assertEqual(0, self.sync()[0], "a sync with nothing to push tried to push")
+        assert self.sync()[0] == 0, "a sync with nothing to push tried to push"
 
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
         status, _, err = self.sync()
-        self.assertEqual(2, status, "a sync with a change did not try to push")
+        assert status == 2, "a sync with a change did not try to push"
         self.assertContains(err, "could not push")
 
     def test_a_file_a_user_dropped_into_the_repository_is_committed(self) -> None:
@@ -119,16 +119,16 @@ class TestSyncOneMachine(OneMachine):
         self.sync()
         self.write(self.repo / ".vimrc", "set nocompatible\n")
         status, _, _ = self.sync()
-        self.assertEqual(0, status)
-        self.assertEqual("", support.git(["status", "--porcelain"], self.repo, self.env))
+        assert status == 0
+        assert support.git(["status", "--porcelain"], self.repo, self.env) == ""
 
     def test_without_a_remote_it_still_syncs_and_says_so(self) -> None:
         support.git(["remote", "remove", "origin"], self.repo, self.env)
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
         status, out, _ = self.sync()
-        self.assertEqual(0, status)
+        assert status == 0
         self.assertContains(out, "no remote configured")
-        self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+        assert (self.repo / ".bashrc").read_text() == "ONE\ntwo\nthree\n"
 
 
 class TestWhatSyncWillNotTouch(OneMachine):
@@ -146,10 +146,10 @@ class TestWhatSyncWillNotTouch(OneMachine):
         support.git(["commit", "-m", "a link crept in"], self.repo, self.env)
 
         status, out, _ = self.sync()
-        self.assertEqual(1, status)
+        assert status == 1
         self.assertContains(out, "skipped .vimrc")
         self.assertContains(out, "not a regular file")
-        self.assertFalse((self.home / ".vimrc").exists(), "the link was followed into $HOME")
+        assert not (self.home / ".vimrc").exists(), "the link was followed into $HOME"
 
     def test_something_that_is_not_a_file_in_home_is_left_alone(self) -> None:
         """A fifo where a managed file should be. `os.mkfifo` rather than a unix
@@ -160,9 +160,9 @@ class TestWhatSyncWillNotTouch(OneMachine):
         os.mkfifo(self.home / ".bashrc")
 
         status, out, _ = self.sync()
-        self.assertEqual(1, status)
+        assert status == 1
         self.assertContains(out, "skipped .bashrc")
-        self.assertTrue(stat.S_ISFIFO(os.lstat(self.home / ".bashrc").st_mode))
+        assert stat.S_ISFIFO(os.lstat(self.home / ".bashrc").st_mode)
 
     def test_a_detached_head_is_named_as_the_problem(self) -> None:
         """A real state -- someone checked out a commit in the repository to look
@@ -170,7 +170,7 @@ class TestWhatSyncWillNotTouch(OneMachine):
         git complaining about a ref called "None"."""
         support.git(["checkout", "--detach", "HEAD"], self.repo, self.env)
         status, _, err = self.sync()
-        self.assertEqual(2, status)
+        assert status == 2
         self.assertContains(err, "no branch checked out")
 
 
@@ -194,7 +194,7 @@ class TestWhatTheCommitNames(OneMachine):
     def test_only_the_file_that_changed_is_named(self) -> None:
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
         self.sync()
-        self.assertEqual(f"sync from {self.host}: .bashrc", self.subject())
+        assert self.subject() == f"sync from {self.host}: .bashrc"
 
     def test_a_conflicted_file_is_not_named_as_something_that_changed(self) -> None:
         """A conflict writes nothing, so naming it in the commit would describe a
@@ -209,9 +209,9 @@ class TestWhatTheCommitNames(OneMachine):
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
 
         status, out, _ = self.sync()
-        self.assertEqual(1, status)
+        assert status == 1
         self.assertContains(out, "conflict in .vimrc")
-        self.assertEqual(f"sync from {self.host}: .bashrc", self.subject())
+        assert self.subject() == f"sync from {self.host}: .bashrc"
 
 
 class TestWhatStopsASync(OneMachine):
@@ -225,14 +225,14 @@ class TestWhatStopsASync(OneMachine):
         `tests/test_sync_conflicts.py`, which has one."""
         for flag in ("--ours", "--theirs", "--no-input"):
             with self.subTest(flag=flag):
-                self.assertEqual(0, self.sync(flag)[0])
+                assert self.sync(flag)[0] == 0
 
     def test_an_unfinished_merge_stops_it(self) -> None:
         """A killed sync leaves this behind, and committing on top of it would
         conclude a merge nobody resolved."""
         (self.repo / ".git" / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
         status, _, err = self.sync()
-        self.assertEqual(2, status)
+        assert status == 2
         self.assertContains(err, "MERGE_HEAD")
 
     def test_a_path_that_cannot_be_written_is_reported_and_the_rest_go_on(self) -> None:
@@ -247,11 +247,11 @@ class TestWhatStopsASync(OneMachine):
         self.write(self.home / ".bashrc", "ONE\ntwo\nthree\n")
 
         status, out, err = self.sync()
-        self.assertEqual(1, status)
+        assert status == 1
         self.assertContains(out, "skipped .config/nvim/init.lua")
-        self.assertNotIn("Traceback", err)
+        assert "Traceback" not in err
         # The other file still synced.
-        self.assertEqual("ONE\ntwo\nthree\n", (self.repo / ".bashrc").read_text())
+        assert (self.repo / ".bashrc").read_text() == "ONE\ntwo\nthree\n"
 
 
 class TestTwoMachines(support.TwoMachinesCase):
@@ -259,21 +259,21 @@ class TestTwoMachines(support.TwoMachinesCase):
         """The README's promise: `tupferl init <url>` alone sets up a second
         computer, because plan §4 says init "then runs a first sync"."""
         done = self.second.run("init", str(self.remote))
-        self.assertEqual(0, done.returncode)
-        self.assertEqual("one\ntwo\nthree\nfour\nfive\n", self.second.read(".bashrc"))
-        self.assertIn("restored .bashrc", done.stdout)
+        assert done.returncode == 0
+        assert self.second.read(".bashrc") == "one\ntwo\nthree\nfour\nfive\n"
+        assert "restored .bashrc" in done.stdout
 
     def test_edits_that_do_not_overlap_merge_without_asking(self) -> None:
         self.second.run("init", str(self.remote))
         self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         self.second.write(".bashrc", "one\ntwo\nthree\nfour\nFIVE\n")
-        self.assertEqual(0, self.first.run("sync").returncode)
+        assert self.first.run("sync").returncode == 0
         done = self.second.run("sync")
-        self.assertEqual(0, done.returncode)
-        self.assertIn("merged .bashrc", done.stdout)
-        self.assertEqual("ONE\ntwo\nthree\nfour\nFIVE\n", self.second.read(".bashrc"))
-        self.assertEqual(0, self.first.run("sync").returncode)
-        self.assertEqual("ONE\ntwo\nthree\nfour\nFIVE\n", self.first.read(".bashrc"))
+        assert done.returncode == 0
+        assert "merged .bashrc" in done.stdout
+        assert self.second.read(".bashrc") == "ONE\ntwo\nthree\nfour\nFIVE\n"
+        assert self.first.run("sync").returncode == 0
+        assert self.first.read(".bashrc") == "ONE\ntwo\nthree\nfour\nFIVE\n"
 
     def test_a_real_conflict_is_reported_and_nothing_is_written(self) -> None:
         """Milestone 3's whole answer to a conflict, and the thing milestone 4
@@ -285,16 +285,14 @@ class TestTwoMachines(support.TwoMachinesCase):
         self.first.run("sync")
 
         done = self.second.run("sync")
-        self.assertEqual(1, done.returncode)
-        self.assertIn("conflict in .bashrc", done.stdout)
+        assert done.returncode == 1
+        assert "conflict in .bashrc" in done.stdout
         # Nothing written means nothing left uncommitted either: a conflict must
         # not leave the repository dirty for the next run to commit blindly.
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual("THEIRS\ntwo\nthree\nfour\nfive\n", self.second.read(".bashrc"))
-        self.assertEqual(
-            "MINE\ntwo\nthree\nfour\nfive\n", self.second.stored(".bashrc").read_text()
-        )
-        self.assertNotIn("<<<<<<<", self.second.read(".bashrc"))
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.read(".bashrc") == "THEIRS\ntwo\nthree\nfour\nfive\n"
+        assert self.second.stored(".bashrc").read_text() == "MINE\ntwo\nthree\nfour\nfive\n"
+        assert "<<<<<<<" not in self.second.read(".bashrc")
 
     def test_a_conflict_leaves_the_snapshot_where_it_was(self) -> None:
         """Otherwise the next run would merge against a state neither side ever
@@ -306,7 +304,7 @@ class TestTwoMachines(support.TwoMachinesCase):
         self.second.write(".bashrc", "THEIRS\ntwo\nthree\nfour\nfive\n")
         self.first.run("sync")
         self.second.run("sync")
-        self.assertEqual(was, self.second.snapshot(".bashrc").read_text())
+        assert self.second.snapshot(".bashrc").read_text() == was
 
     def test_a_backup_is_taken_before_home_is_overwritten(self) -> None:
         """Plan §5. The file being replaced is the user's, and this is the only
@@ -318,15 +316,15 @@ class TestTwoMachines(support.TwoMachinesCase):
         self.second.run("sync")
 
         saved = sorted(self.second.backups.rglob(".bashrc"))
-        self.assertEqual(1, len(saved), f"expected one backup, found {saved}")
-        self.assertEqual("local edit\ntwo\nthree\nfour\nfive\n", saved[0].read_text())
+        assert len(saved) == 1, f"expected one backup, found {saved}"
+        assert saved[0].read_text() == "local edit\ntwo\nthree\nfour\nfive\n"
 
     def test_the_executable_bit_reaches_the_other_machine(self) -> None:
         self.second.run("init", str(self.remote))
         (self.first.home / ".bashrc").chmod(copies.EXECUTABLE)
         self.first.run("sync")
         self.second.run("sync")
-        self.assertEqual(copies.EXECUTABLE, (self.second.home / ".bashrc").stat().st_mode & 0o777)
+        assert (self.second.home / ".bashrc").stat().st_mode & 0o777 == copies.EXECUTABLE
 
     def test_a_pruned_snapshot_is_named_and_leaves_no_empty_directory(self) -> None:
         """git does not track directories, so one left empty here is invisible in
@@ -337,27 +335,27 @@ class TestTwoMachines(support.TwoMachinesCase):
         self.first.run("add", str(self.first.home / ".config"))
         self.first.run("sync")
         self.second.run("init", str(self.remote))
-        self.assertTrue(self.second.snapshot(".config/nvim/init.lua").is_file())
+        assert self.second.snapshot(".config/nvim/init.lua").is_file()
 
         self.first.run("remove", str(self.first.home / ".config" / "nvim" / "init.lua"))
         self.first.run("sync")
         self.second.run("sync")
 
-        self.assertIn(".config/nvim/init.lua", self.second.git("log", "-1", "--format=%s"))
+        assert ".config/nvim/init.lua" in self.second.git("log", "-1", "--format=%s")
         left = self.second.snapshot(".config")
-        self.assertFalse(left.exists(), f"{left} was left behind empty")
+        assert not left.exists(), f"{left} was left behind empty"
 
     def test_a_removal_elsewhere_prunes_this_machines_snapshot(self) -> None:
         """A snapshot left behind is committed, and would become the merge base
         for a file that came back later under the same name."""
         self.second.run("init", str(self.remote))
-        self.assertTrue(self.second.snapshot(".bashrc").is_file())
+        assert self.second.snapshot(".bashrc").is_file()
         self.first.run("remove", str(self.first.home / ".bashrc"))
         self.first.run("sync")
         self.second.run("sync")
-        self.assertFalse(self.second.snapshot(".bashrc").exists())
+        assert not self.second.snapshot(".bashrc").exists()
         # Plan §4: `remove` keeps the file in $HOME -- on every machine.
-        self.assertTrue((self.second.home / ".bashrc").is_file())
+        assert (self.second.home / ".bashrc").is_file()
 
     def test_a_host_overlay_is_what_syncs_on_that_host(self) -> None:
         """Plan §3.3: the overlay replaces the shared file on this host. Writing
@@ -368,12 +366,12 @@ class TestTwoMachines(support.TwoMachinesCase):
         self.first.run("sync")
         shared = self.first.stored(".gitconfig")
         overlay = self.first.stored(".gitconfig", host=True)
-        self.assertTrue(overlay.is_file())
-        self.assertFalse(shared.exists())
+        assert overlay.is_file()
+        assert not shared.exists()
 
         self.first.write(".gitconfig", support.gitconfig("machine-a") + "[core]\n\tpager = bat\n")
-        self.assertEqual(0, self.first.run("sync").returncode)
-        self.assertIn("pager = bat", overlay.read_text())
+        assert self.first.run("sync").returncode == 0
+        assert "pager = bat" in overlay.read_text()
 
     def test_a_push_the_remote_rejected_is_retried_after_pulling(self) -> None:
         """Plan §3.4 step 5. The remote genuinely moves inside the window between
@@ -382,15 +380,15 @@ class TestTwoMachines(support.TwoMachinesCase):
         self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
 
         done = self.first.run("sync")
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        assert done.returncode == 0, done.stdout + done.stderr
         # `support.git` strips, so the trailing newline is not in the comparison.
         on_remote = support.git(["show", f"{support.BRANCH}:.bashrc"], self.remote, self.first.env)
-        self.assertEqual("ONE\ntwo\nthree\nfour\nfive", on_remote)
+        assert on_remote == "ONE\ntwo\nthree\nfour\nfive"
         # And what the other machine pushed is still there.
         settings = support.git(
             ["show", f"{support.BRANCH}:{paths.META}/config.toml"], self.remote, self.first.env
         )
-        self.assertIn("edited on another machine", settings)
+        assert "edited on another machine" in settings
 
     def test_a_push_refused_for_any_other_reason_is_reported(self) -> None:
         """The other half of the retry: if nothing came in, pushing again would
@@ -402,8 +400,8 @@ class TestTwoMachines(support.TwoMachinesCase):
         )
         self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         done = self.first.run("sync")
-        self.assertEqual(2, done.returncode)
-        self.assertIn("could not fetch", done.stderr)
+        assert done.returncode == 2
+        assert "could not fetch" in done.stderr
 
 
 class TestAGitLevelConflict(support.TwoMachinesCase):
@@ -431,24 +429,24 @@ class TestAGitLevelConflict(support.TwoMachinesCase):
         """Edit and `add`, which commits without pushing -- the ordinary way a
         machine ends up holding a commit the remote has not seen."""
         machine.write(".bashrc", text)
-        self.assertEqual(0, machine.run("add", str(machine.home / ".bashrc")).returncode)
+        assert machine.run("add", str(machine.home / ".bashrc")).returncode == 0
 
     def test_it_names_the_file_and_a_way_out(self) -> None:
         self.second.run("init", str(self.remote))
         self.commit_locally(self.second, "THEIRS\ntwo\nthree\nfour\nfive\n")
         self.first.write(".bashrc", "MINE\ntwo\nthree\nfour\nfive\n")
-        self.assertEqual(0, self.first.run("sync").returncode)
+        assert self.first.run("sync").returncode == 0
 
         done = self.second.run("sync")
-        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
-        self.assertIn(".bashrc", done.stderr)
+        assert done.returncode == 2, done.stdout + done.stderr
+        assert ".bashrc" in done.stderr
         # The sentence has to be actionable, which is what plan §5 asks of every
         # error, and `git pull` is the way out until tupferl settles this itself
         # (issue #10). The whole command, not the word "git": git's own stderr
         # reaches the user through `gitrepo.reason` on the *other* branch of this
         # function, and it contains "git" there too -- so the loose spelling
         # passed for a failure this test is not about.
-        self.assertIn(f"git -C {self.second.repo} pull", done.stderr)
+        assert f"git -C {self.second.repo} pull" in done.stderr
 
     def test_the_repository_is_left_exactly_as_it_was_found(self) -> None:
         """The abort is the point. A half-merged tree makes the *next* run refuse
@@ -461,11 +459,11 @@ class TestAGitLevelConflict(support.TwoMachinesCase):
         self.first.run("sync")
         was = self.second.git("rev-parse", "HEAD")
 
-        self.assertEqual(2, self.second.run("sync").returncode)
-        self.assertIsNone(gitrepo.unfinished(self.second.repo), "the merge was not aborted")
-        self.assertEqual("", self.second.git("status", "--porcelain"), "the tree was left dirty")
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
-        self.assertNotIn("<<<<<<<", self.second.stored(".bashrc").read_text())
+        assert self.second.run("sync").returncode == 2
+        assert gitrepo.unfinished(self.second.repo) is None, "the merge was not aborted"
+        assert self.second.git("status", "--porcelain") == "", "the tree was left dirty"
+        assert self.second.git("rev-parse", "HEAD") == was
+        assert "<<<<<<<" not in self.second.stored(".bashrc").read_text()
 
     def test_a_merge_that_fails_without_conflicting_files_says_so_instead(self) -> None:
         """The other half of `if stuck:`, and it needs its own fixture: a merge
@@ -475,16 +473,16 @@ class TestAGitLevelConflict(support.TwoMachinesCase):
         would read as a bug in the naming."""
         stranger = support.make_remote(self.tmp / "stranger.git", self.second.env)
         seed = support.make_repo(self.tmp / "seed", self.second.env, remote=stranger)
-        self.assertTrue(seed.is_dir())
+        assert seed.is_dir()
         self.second.run("init", str(self.remote))
         support.git(
             ["remote", "set-url", "origin", str(stranger)], self.second.repo, self.second.env
         )
 
         done = self.second.run("sync")
-        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
-        self.assertIn("could not merge", done.stderr)
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        assert done.returncode == 2, done.stdout + done.stderr
+        assert "could not merge" in done.stderr
+        assert gitrepo.unfinished(self.second.repo) is None
 
 
 class TestTheSnapshotIsWrittenLast(support.TwoMachinesCase):
@@ -512,9 +510,9 @@ class TestTheSnapshotIsWrittenLast(support.TwoMachinesCase):
         self.first.run("sync")
 
         done = self.second.run("sync")
-        self.assertEqual(1, done.returncode)
-        self.assertIn("skipped .config/nvim/init.lua", done.stdout)
-        self.assertEqual(was, self.second.snapshot(".config/nvim/init.lua").read_text())
+        assert done.returncode == 1
+        assert "skipped .config/nvim/init.lua" in done.stdout
+        assert self.second.snapshot(".config/nvim/init.lua").read_text() == was
 
 
 class TestWhatSyncSaysAboutTheRemote(support.TwoMachinesCase):
@@ -534,23 +532,23 @@ class TestWhatSyncSaysAboutTheRemote(support.TwoMachinesCase):
 
     def said(self, machine: support.Computer, *args: str) -> str:
         status, out = machine.say("sync", *args)
-        self.assertEqual(0, status, out)
+        assert status == 0, out
         return out
 
     def test_a_push_is_reported(self) -> None:
         """The first sync of a new file, which is a user's first sync."""
         self.first.write(".vimrc", "set number\n")
-        self.assertEqual(0, self.first.call("add", str(self.first.home / ".vimrc")))
+        assert self.first.call("add", str(self.first.home / ".vimrc")) == 0
         said = self.said(self.first)
-        self.assertIn("pushed", said)
-        self.assertIn(f"origin/{support.BRANCH}", said)
+        assert "pushed" in said
+        assert f"origin/{support.BRANCH}" in said
 
     def test_a_quiet_run_says_it_reached_the_remote_anyway(self) -> None:
         """The run that used to print almost nothing, and the one where "did it
         work?" is hardest to answer from the output."""
         said = self.said(self.first)
-        self.assertIn("already up to date", said)
-        self.assertNotIn("pushed", said)
+        assert "already up to date" in said
+        assert "pushed" not in said
 
     def test_what_came_in_is_counted(self) -> None:
         """More than one, so a report saying "1" or "some" fails.
@@ -567,26 +565,26 @@ class TestWhatSyncSaysAboutTheRemote(support.TwoMachinesCase):
         Two commands, two repositories, one fact.
         """
         was = self.first.git("rev-parse", "HEAD")
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         for name in (".vimrc", ".zshrc"):
             self.second.write(name, f"# {name}\n")
-            self.assertEqual(0, self.second.call("add", str(self.second.home / name)))
-        self.assertEqual(0, self.second.call("sync"))
+            assert self.second.call("add", str(self.second.home / name)) == 0
+        assert self.second.call("sync") == 0
 
         coming = int(self.second.git("rev-list", "--count", f"{was}..HEAD"))
-        self.assertGreater(coming, 1, "the fixture brings in one commit, so it cannot show a count")
-        self.assertIn(f"took in {coming} commits", self.said(self.first))
+        assert coming > 1, "the fixture brings in one commit, so it cannot show a count"
+        assert f"took in {coming} commits" in self.said(self.first)
 
     def test_the_line_comes_before_the_files(self) -> None:
         """Above the per-file list, not after it. It answers a different question
         from `report`'s, and burying it under the list is what made the old
         silence easy to miss."""
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.second.write(".bashrc", "changed on the other machine\n")
-        self.assertEqual(0, self.second.call("sync"))
+        assert self.second.call("sync") == 0
         rows = [row for row in self.said(self.first).splitlines() if row.strip()]
-        self.assertTrue(rows[0].startswith(f"origin/{support.BRANCH}:"), rows)
-        self.assertIn("updated .bashrc", rows[1])
+        assert rows[0].startswith(f"origin/{support.BRANCH}:"), rows
+        assert "updated .bashrc" in rows[1]
 
     def test_a_retry_counts_what_it_pulled_on_the_way(self) -> None:
         """The remote moving mid-sync, which is the one run where both halves of
@@ -605,8 +603,8 @@ class TestWhatSyncSaysAboutTheRemote(support.TwoMachinesCase):
         support.move_on_first_push(self.remote, self.first.env, self.tmp)
         self.first.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         said = self.said(self.first)
-        self.assertIn("took in 1 commit", said)
-        self.assertIn("pushed", said)
+        assert "took in 1 commit" in said
+        assert "pushed" in said
 
     def test_a_count_git_will_not_give_is_reported_as_arriving_anyway(self) -> None:
         """`gitrepo.distance` answering `None` while a merge is about to happen.
@@ -622,21 +620,21 @@ class TestWhatSyncSaysAboutTheRemote(support.TwoMachinesCase):
         becoming `2` and `1` becoming `0`; only the second matters, and this is
         what refuses it.
         """
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.second.write(".bashrc", "changed on the other machine\n")
-        self.assertEqual(0, self.second.call("sync"))
+        assert self.second.call("sync") == 0
         with mock.patch.object(gitrepo, "distance", return_value=None):
             said = self.said(self.first)
-        self.assertIn("took in 1 commit", said)
-        self.assertIn("updated .bashrc", said)
+        assert "took in 1 commit" in said
+        assert "updated .bashrc" in said
 
     def test_a_machine_with_no_remote_still_says_so(self) -> None:
         """The sentence that was already there, and the reason this issue was
         visible at all. It must not have been replaced by the new one."""
         self.first.git("remote", "remove", "origin")
         said = self.said(self.first)
-        self.assertIn("no remote configured", said)
-        self.assertNotIn("already up to date", said)
+        assert "no remote configured" in said
+        assert "already up to date" not in said
 
 
 class TestTheRemoteLine(unittest.TestCase):
@@ -658,19 +656,19 @@ class TestTheRemoteLine(unittest.TestCase):
             sync.crossed(self.THERE, sync.Traffic(pulled=3, pushed=False)),
             sync.crossed(self.THERE, sync.Traffic(pulled=3, pushed=True)),
         }
-        self.assertEqual(4, len(said), said)
+        assert len(said) == 4, said
 
     def test_nothing_either_way_is_up_to_date(self) -> None:
-        self.assertEqual(
-            "origin/main: already up to date",
-            sync.crossed(self.THERE, sync.Traffic(pulled=0, pushed=False)),
+        assert (
+            sync.crossed(self.THERE, sync.Traffic(pulled=0, pushed=False))
+            == "origin/main: already up to date"
         )
 
     def test_the_plural_is_counted(self) -> None:
         """One and many, because `1 commits` is the mistake this shape invites."""
-        self.assertIn("1 commit", sync.crossed(self.THERE, sync.Traffic(1, False)))
-        self.assertNotIn("1 commits", sync.crossed(self.THERE, sync.Traffic(1, False)))
-        self.assertIn("2 commits", sync.crossed(self.THERE, sync.Traffic(2, False)))
+        assert "1 commit" in sync.crossed(self.THERE, sync.Traffic(1, False))
+        assert "1 commits" not in sync.crossed(self.THERE, sync.Traffic(1, False))
+        assert "2 commits" in sync.crossed(self.THERE, sync.Traffic(2, False))
 
     def test_every_line_names_the_ref(self) -> None:
         """A sentence that said "pushed" without saying where would be true of a
@@ -682,4 +680,4 @@ class TestTheRemoteLine(unittest.TestCase):
             sync.Traffic(2, True),
         ):
             with self.subTest(traffic=traffic):
-                self.assertTrue(sync.crossed(self.THERE, traffic).startswith(self.THERE))
+                assert sync.crossed(self.THERE, traffic).startswith(self.THERE)

@@ -53,7 +53,7 @@ class TwoCommits(support.TwoMachinesCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.diverge_by_committing(FROM_B, FROM_A)
 
     def diverge_by_committing(self, mine: str, theirs: str, executable: bool = False) -> None:
@@ -63,15 +63,15 @@ class TwoCommits(support.TwoMachinesCase):
             (self.second.home / MANAGED).chmod(0o755)
             (self.first.home / MANAGED).chmod(0o755)
         # `add` commits without pushing on both, and then only `machine-a` syncs.
-        self.assertEqual(0, self.second.call("add", str(self.second.home / MANAGED)))
-        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.second.call("add", str(self.second.home / MANAGED)) == 0
+        assert self.first.call("add", str(self.first.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
 
     def settle(self, *args: str, keys: str | None = None) -> None:
         """Sync `machine-b` and insist it finished. Exit 0 is the assertion that
         something was decided: an unsettled conflict is 1 and a run that could
         not proceed is 2, so neither can reach the caller's checks."""
-        self.assertEqual(0, self.second.call("sync", *args, keys=keys))
+        assert self.second.call("sync", *args, keys=keys) == 0
 
     def concluded(self) -> None:
         """The merge is over: nothing unmerged, nothing dirty, no `MERGE_HEAD`.
@@ -81,9 +81,9 @@ class TwoCommits(support.TwoMachinesCase):
         start -- which is the failure `integrate`'s abort exists to prevent, in
         the branch that is supposed to succeed.
         """
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual([], gitrepo.unmerged(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert gitrepo.unmerged(self.second.repo) == []
+        assert self.second.git("status", "--porcelain") == ""
 
     def everywhere(self, want: str) -> None:
         """`want` is `machine-b`'s file and its stored copy, and reaches the
@@ -92,10 +92,10 @@ class TwoCommits(support.TwoMachinesCase):
         The last is the one a weaker test would leave out: a choice that was
         written and then lost on the other computer is not a settled conflict.
         """
-        self.assertEqual(want, self.second.read(MANAGED))
-        self.assertEqual(want, self.second.stored(MANAGED).read_text(encoding="utf-8"))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(want, self.first.read(MANAGED))
+        assert self.second.read(MANAGED) == want
+        assert self.second.stored(MANAGED).read_text(encoding="utf-8") == want
+        assert self.first.call("sync") == 0
+        assert self.first.read(MANAGED) == want
 
 
 class TestTheFixtureReallyProducesACommitConflict(TwoCommits):
@@ -109,10 +109,7 @@ class TestTheFixtureReallyProducesACommitConflict(TwoCommits):
     def test_the_second_machine_holds_an_unpushed_commit(self) -> None:
         """What `add` leaves behind, and the reason the issue calls this easy to
         reach."""
-        self.assertNotEqual(
-            self.second.git("rev-parse", "HEAD"),
-            self.second.git("rev-parse", "origin/main"),
-        )
+        assert self.second.git("rev-parse", "origin/main") != self.second.git("rev-parse", "HEAD")
 
     def test_git_cannot_merge_the_two_branches_on_its_own(self) -> None:
         """The precondition, asserted by asking git rather than by assuming.
@@ -121,12 +118,10 @@ class TestTheFixtureReallyProducesACommitConflict(TwoCommits):
         does its own merge from a clean tree.
         """
         self.second.git("fetch", "origin")
-        self.assertNotEqual(
-            0,
-            support.git_merged(self.second.repo, self.second.env),
-            "git merged cleanly, so there is no conflict to settle",
+        assert support.git_merged(self.second.repo, self.second.env) != 0, (
+            "git merged cleanly, so there is no conflict to settle"
         )
-        self.assertIn(MANAGED, gitrepo.unmerged(self.second.repo))
+        assert MANAGED in gitrepo.unmerged(self.second.repo)
         support.git_aborted(self.second.repo, self.second.env)
 
 
@@ -148,16 +143,16 @@ class TestTheFlags(TwoCommits):
         undone rather than left half-done, because a half-merged tree makes the
         next run refuse to start."""
         was = self.second.git("rev-parse", "HEAD")
-        self.assertEqual(2, self.second.call("sync", "--no-input"))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert self.second.call("sync", "--no-input") == 2
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.git("rev-parse", "HEAD") == was
 
     def test_the_next_sync_still_works_after_one_was_left_unsettled(self) -> None:
         """The point of aborting. Without it the second run finds an unfinished
         merge and refuses, turning one conflict into a machine that cannot sync
         at all."""
-        self.assertEqual(2, self.second.call("sync", "--no-input"))
+        assert self.second.call("sync", "--no-input") == 2
         self.settle("--theirs")
         self.everywhere(FROM_A)
 
@@ -188,10 +183,10 @@ class TestTheKeys(TwoCommits):
         skipped one is written into the working tree, and only the abort takes it
         back out. Without this the test cannot see it left behind."""
         was = self.second.git("rev-parse", "HEAD")
-        self.assertEqual(2, self.second.call("sync", keys="s"))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert self.second.call("sync", keys="s") == 2
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.git("rev-parse", "HEAD") == was
 
 
 class TestTheExecutableBit(TwoCommits):
@@ -201,18 +196,18 @@ class TestTheExecutableBit(TwoCommits):
 
     def setUp(self) -> None:
         support.TwoMachinesCase.setUp(self)
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.diverge_by_committing(FROM_B, FROM_A, executable=True)
 
     def test_the_fixture_really_committed_an_executable_file(self) -> None:
         """Otherwise the assertion below holds for a fixture that never set the
         bit, which is a negative claim with no precondition."""
-        self.assertIn("100755", self.second.git("ls-files", "-s", MANAGED))
+        assert "100755" in self.second.git("ls-files", "-s", MANAGED)
 
     def test_a_settled_file_is_still_executable(self) -> None:
         self.settle("--ours")
-        self.assertTrue((self.second.home / MANAGED).stat().st_mode & 0o111)
-        self.assertIn("100755", self.second.git("ls-files", "-s", MANAGED))
+        assert (self.second.home / MANAGED).stat().st_mode & 0o111
+        assert "100755" in self.second.git("ls-files", "-s", MANAGED)
 
 
 class TestAFileOnlyOneSideStillHas(TwoCommits):
@@ -230,30 +225,30 @@ class TestAFileOnlyOneSideStillHas(TwoCommits):
         # this one is ever reached -- which is what the first attempt at this
         # fixture did, and it failed in `setUp` rather than in a test.
         self.first.write(MANAGED, FROM_A)
-        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
-        self.assertEqual(FROM_A, self.second.read(MANAGED))
+        assert self.first.call("add", str(self.first.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
+        assert self.second.call("init", str(self.remote)) == 0
+        assert self.second.read(MANAGED) == FROM_A
 
         # Now they disagree about whether it should exist at all: `machine-b`
         # edits and commits without pushing, `machine-a` stops managing it.
         self.second.write(MANAGED, FROM_B)
-        self.assertEqual(0, self.second.call("add", str(self.second.home / MANAGED)))
-        self.assertEqual(0, self.first.call("remove", str(self.first.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.second.call("add", str(self.second.home / MANAGED)) == 0
+        assert self.first.call("remove", str(self.first.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
 
     def test_it_is_reported_rather_than_guessed_at(self) -> None:
         done = self.second.run("sync", "--ours")
-        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
-        self.assertIn(MANAGED, done.stderr)
-        self.assertIn("removed or replaced it", done.stderr)
+        assert done.returncode == 2, done.stdout + done.stderr
+        assert MANAGED in done.stderr
+        assert "removed or replaced it" in done.stderr
 
     def test_the_repository_is_left_exactly_as_it_was(self) -> None:
         was = self.second.git("rev-parse", "HEAD")
-        self.assertEqual(2, self.second.call("sync", "--ours"))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert self.second.call("sync", "--ours") == 2
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.git("rev-parse", "HEAD") == was
 
 
 class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachinesCase):
@@ -283,9 +278,9 @@ class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachinesCase):
     def setUp(self) -> None:
         super().setUp()
         self.first.write(MANAGED, self.SHARED)
-        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.first.call("add", str(self.first.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
+        assert self.second.call("init", str(self.remote)) == 0
         # Both hold the same committed version. `machine-b` changes the first
         # line *and* line 20; `machine-a` changes only the first. So they overlap
         # in one place and `machine-b` is alone in the other.
@@ -293,19 +288,17 @@ class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachinesCase):
             MANAGED, self.SHARED.replace("l0\n", "B-FIRST\n").replace("l20\n", "B-ONLY\n")
         )
         self.first.write(MANAGED, self.SHARED.replace("l0\n", "A-FIRST\n"))
-        self.assertEqual(0, self.second.call("add", str(self.second.home / MANAGED)))
-        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.second.call("add", str(self.second.home / MANAGED)) == 0
+        assert self.first.call("add", str(self.first.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
 
     def test_the_fixture_really_has_a_merge_base(self) -> None:
         """The precondition, and the whole reason this class exists."""
         self.second.git("fetch", "origin")
-        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        assert support.git_merged(self.second.repo, self.second.env) != 0
         stages = gitrepo.conflicted(self.second.repo)
-        self.assertIn(gitrepo.BASE, stages.get(MANAGED, {}), "no stage 1: there is no base")
-        self.assertEqual(
-            self.SHARED.encode(), gitrepo.version(self.second.repo, gitrepo.BASE, MANAGED)
-        )
+        assert gitrepo.BASE in stages.get(MANAGED, {}), "no stage 1: there is no base"
+        assert gitrepo.version(self.second.repo, gitrepo.BASE, MANAGED) == self.SHARED.encode()
         support.git_aborted(self.second.repo, self.second.env)
 
     def test_the_base_settles_the_edit_only_one_side_made(self) -> None:
@@ -317,12 +310,12 @@ class TestWhenTheTwoCommitsShareAnAncestor(support.TwoMachinesCase):
         absence is the assertion; `B-ONLY` being present is only the precondition
         for it meaning anything.
         """
-        self.assertEqual(0, self.second.call("sync", keys="b"))
+        assert self.second.call("sync", keys="b") == 0
         settled = self.second.read(MANAGED)
-        self.assertIn("B-ONLY", settled)
-        self.assertNotIn("l20", settled, "the base was not used: a one-sided edit came back")
-        self.assertIn("A-FIRST", settled)
-        self.assertIn("B-FIRST", settled)
+        assert "B-ONLY" in settled
+        assert "l20" not in settled, "the base was not used: a one-sided edit came back"
+        assert "A-FIRST" in settled
+        assert "B-FIRST" in settled
 
 
 class TestTheExecutableBitComesFromTheIndex(support.TwoMachinesCase):
@@ -342,29 +335,29 @@ class TestTheExecutableBitComesFromTheIndex(support.TwoMachinesCase):
         (self.second.home / MANAGED).chmod(0o755)
         self.first.write(MANAGED, FROM_A)
         (self.first.home / MANAGED).chmod(0o644)
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
-        self.assertEqual(0, self.second.call("add", str(self.second.home / MANAGED)))
-        self.assertEqual(0, self.first.call("add", str(self.first.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.second.call("init", str(self.remote)) == 0
+        assert self.second.call("add", str(self.second.home / MANAGED)) == 0
+        assert self.first.call("add", str(self.first.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
 
     def test_the_two_sides_really_disagree_about_the_bit(self) -> None:
         """Otherwise everything below holds for a fixture that set one mode."""
         self.second.git("fetch", "origin")
-        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        assert support.git_merged(self.second.repo, self.second.env) != 0
         stages = gitrepo.conflicted(self.second.repo)[MANAGED]
-        self.assertEqual(0o100755, stages[gitrepo.OURS])
-        self.assertEqual(0o100644, stages[gitrepo.THEIRS])
+        assert stages[gitrepo.OURS] == 0o100755
+        assert stages[gitrepo.THEIRS] == 0o100644
         support.git_aborted(self.second.repo, self.second.env)
 
     def test_keeping_the_repositorys_side_takes_its_mode_too(self) -> None:
         """The working tree is `755` throughout, so this can only pass by
         reading stage 3's mode out of the index."""
-        self.assertEqual(0, self.second.call("sync", "--theirs"))
-        self.assertFalse((self.second.home / MANAGED).stat().st_mode & 0o111)
+        assert self.second.call("sync", "--theirs") == 0
+        assert not (self.second.home / MANAGED).stat().st_mode & 0o111
 
     def test_keeping_this_machines_side_keeps_its_own(self) -> None:
-        self.assertEqual(0, self.second.call("sync", "--ours"))
-        self.assertTrue((self.second.home / MANAGED).stat().st_mode & 0o111)
+        assert self.second.call("sync", "--ours") == 0
+        assert (self.second.home / MANAGED).stat().st_mode & 0o111
 
 
 class TestWhatIsNotAFileOnBothSides(support.TwoMachinesCase):
@@ -386,7 +379,7 @@ class TestWhatIsNotAFileOnBothSides(support.TwoMachinesCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.victim = self.tmp / "victim"
         self.victim.write_text("SECRET-ORIGINAL\n", encoding="utf-8")
         for machine, target in ((self.second, self.victim), (self.first, self.tmp / "elsewhere")):
@@ -395,22 +388,22 @@ class TestWhatIsNotAFileOnBothSides(support.TwoMachinesCase):
             link.symlink_to(target)
             machine.git("add", "-A")
             machine.git("commit", "-m", "a symlink, committed by hand")
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.first.call("sync") == 0
 
     def test_the_fixture_really_committed_a_symlink(self) -> None:
         """Otherwise the refusal below is a claim about nothing."""
-        self.assertIn("120000", self.second.git("ls-files", "-s", self.LINK))
+        assert "120000" in self.second.git("ls-files", "-s", self.LINK)
 
     def test_it_is_refused_rather_than_written_through(self) -> None:
         done = self.second.run("sync", "--ours")
-        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
-        self.assertIn(self.LINK, done.stderr)
+        assert done.returncode == 2, done.stdout + done.stderr
+        assert self.LINK in done.stderr
 
     def test_the_file_the_link_pointed_at_is_untouched(self) -> None:
         """The assertion that matters, and it is about a file *outside* the
         repository -- which is why "it was refused" is not enough on its own."""
         self.second.call("sync", "--ours")
-        self.assertEqual("SECRET-ORIGINAL\n", self.victim.read_text(encoding="utf-8"))
+        assert self.victim.read_text(encoding="utf-8") == "SECRET-ORIGINAL\n"
 
 
 class TestWhenSettlingIsInterrupted(TwoCommits):
@@ -436,10 +429,10 @@ class TestWhenSettlingIsInterrupted(TwoCommits):
     def test_an_error_at_the_prompt_leaves_no_half_merged_tree(self) -> None:
         was = self.second.git("rev-parse", "HEAD")
         self.raising(TupferlError)
-        self.assertEqual(2, self.second.call("sync"))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert self.second.call("sync") == 2
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.git("rev-parse", "HEAD") == was
 
     def test_a_keyboard_interrupt_leaves_no_half_merged_tree(self) -> None:
         """`BaseException`, not `Exception`: Ctrl-C at a prompt is the most
@@ -447,17 +440,17 @@ class TestWhenSettlingIsInterrupted(TwoCommits):
         self.raising(KeyboardInterrupt)
         with self.assertRaises(KeyboardInterrupt):
             self.second.call("sync")
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
 
     def test_the_next_sync_still_works_afterwards(self) -> None:
         """The whole point: an interrupted prompt must not cost the machine its
         ability to sync."""
         self.raising(TupferlError)
-        self.assertEqual(2, self.second.call("sync"))
+        assert self.second.call("sync") == 2
         self.stack.close()
-        self.assertEqual(0, self.second.call("sync", "--theirs"))
-        self.assertEqual(FROM_A, self.second.read(MANAGED))
+        assert self.second.call("sync", "--theirs") == 0
+        assert self.second.read(MANAGED) == FROM_A
 
 
 class TestWhenTheSettledFilesCannotBeStaged(TwoCommits):
@@ -490,9 +483,9 @@ class TestWhenTheSettledFilesCannotBeStaged(TwoCommits):
     def test_it_says_so_and_names_a_next_step(self) -> None:
         self.breaking()
         status, said = self.second.say("sync", "--theirs")
-        self.assertEqual(2, status, said)
-        self.assertIn("could not stage the settled files", said)
-        self.assertIn("tupferl doctor", said)
+        assert status == 2, said
+        assert "could not stage the settled files" in said
+        assert "tupferl doctor" in said
 
     def test_the_message_is_true_about_the_merge_being_undone(self) -> None:
         """The substantive half. That sentence is a claim about what happened to
@@ -503,11 +496,11 @@ class TestWhenTheSettledFilesCannotBeStaged(TwoCommits):
         was = self.second.git("rev-parse", "HEAD")
         self.breaking()
         status, said = self.second.say("sync", "--theirs")
-        self.assertEqual(2, status, said)
-        self.assertIn("the merge was undone", said)
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert status == 2, said
+        assert "the merge was undone" in said
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.git("rev-parse", "HEAD") == was
 
 
 class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
@@ -535,9 +528,9 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
         # snapshot exists at `state/laptop/`. Without it the first collision is
         # a conflict with no merge base rather than the one the issue describes,
         # and the fixture fails in `setUp` for a reason unrelated to it.
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
-        self.assertEqual(0, self.second.call("sync"))
+        assert self.first.call("sync") == 0
+        assert self.second.call("init", str(self.remote)) == 0
+        assert self.second.call("sync") == 0
 
     def collide(self, name: str) -> None:
         """Make both machines commit to `name` without either seeing the other.
@@ -546,9 +539,9 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
         gets a commit the remote has never seen -- the issue's own reproduction.
         """
         self.second.write(name, "FROM-B\ntwo\nthree\n")
-        self.assertEqual(0, self.second.call("add", str(self.second.home / name)))
+        assert self.second.call("add", str(self.second.home / name)) == 0
         self.first.write(name, "FROM-A\ntwo\nthree\n")
-        self.assertEqual(0, self.first.call("sync"))
+        assert self.first.call("sync") == 0
 
     def test_a_snapshot_is_never_offered_at_the_prompt(self) -> None:
         """`--ours` answers every conflict the prompt is given, so a sync that
@@ -571,9 +564,9 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
         """
         self.collide(".bashrc")
         status, said = self.second.say("sync", "--ours")
-        self.assertEqual(2, status, said)
-        self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", said)
-        self.assertIn("not a dotfile this machine merges", said)
+        assert status == 2, said
+        assert f"{paths.META}/state/{self.TWIN}/.bashrc" in said
+        assert "not a dotfile this machine merges" in said
 
     def test_the_ordinary_dotfile_beside_it_is_not_what_stopped_the_sync(self) -> None:
         """`.bashrc` collides too, and it *is* mergeable -- so the refusal has to
@@ -584,10 +577,10 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
         """
         self.collide(".bashrc")
         status, said = self.second.say("sync", "--ours")
-        self.assertEqual(2, status, said)
+        assert status == 2, said
         refused = said.split("disagree about", 1)[1].split(" in a way", 1)[0]
-        self.assertIn(f"{paths.META}/state/{self.TWIN}/.bashrc", refused)
-        self.assertNotIn(" .bashrc", refused)
+        assert f"{paths.META}/state/{self.TWIN}/.bashrc" in refused
+        assert " .bashrc" not in refused
 
     def test_the_merge_is_undone_rather_than_half_settled(self) -> None:
         """The refusal has to leave the repository where the next run can start.
@@ -601,20 +594,20 @@ class TestWhatThisMachineWillNotMerge(support.TwoMachinesCase):
         # is a different commit for a reason that has nothing to do with the
         # refusal. The first version of this test read it first and failed.
         was = self.second.git("rev-parse", "HEAD")
-        self.assertEqual(2, self.second.call("sync", "--ours"))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual("", self.second.git("status", "--porcelain"))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert self.second.call("sync", "--ours") == 2
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("status", "--porcelain") == ""
+        assert self.second.git("rev-parse", "HEAD") == was
 
     def test_the_snapshot_on_disk_is_still_one_machine_s_own(self) -> None:
         """What the whole issue is about. The snapshot must remain a state this
         machine was really in -- not a merge of two of them, which is what
         settling it at the prompt produced."""
         self.collide(".bashrc")
-        self.assertEqual(2, self.second.call("sync", "--ours"))
+        assert self.second.call("sync", "--ours") == 2
         snapshot = self.second.repo / paths.META / "state" / self.TWIN / ".bashrc"
-        self.assertEqual("FROM-B\ntwo\nthree\n", snapshot.read_text())
-        self.assertNotIn("FROM-A", snapshot.read_text())
+        assert snapshot.read_text() == "FROM-B\ntwo\nthree\n"
+        assert "FROM-A" not in snapshot.read_text()
 
 
 class TestSettlingWithTheEditor(TwoCommits):
@@ -623,9 +616,9 @@ class TestSettlingWithTheEditor(TwoCommits):
     def test_the_editor_settles_it_like_any_other_conflict(self) -> None:
         where = support.fake_editor(self.tmp / "fake-editor", 'printf "SETTLED-BY-HAND\\n" > "$1"')
         self.second.env["EDITOR"] = str(where)
-        self.assertEqual(0, self.second.call("sync", keys="e"))
-        self.assertEqual("SETTLED-BY-HAND\n", self.second.read(MANAGED))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        assert self.second.call("sync", keys="e") == 0
+        assert self.second.read(MANAGED) == "SETTLED-BY-HAND\n"
+        assert gitrepo.unfinished(self.second.repo) is None
 
 
 if __name__ == "__main__":
@@ -644,11 +637,11 @@ class TestWhenTheMergeCannotBeConcluded(TwoCommits):
         was = self.second.git("rev-parse", "HEAD")
         support.break_commits(self.second.home)
         done = self.second.run("sync", "--ours")
-        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
-        self.assertIn("could not commit", done.stderr)
-        self.assertIn("the merge was undone", done.stderr)
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
-        self.assertEqual(was, self.second.git("rev-parse", "HEAD"))
+        assert done.returncode == 2, done.stdout + done.stderr
+        assert "could not commit" in done.stderr
+        assert "the merge was undone" in done.stderr
+        assert gitrepo.unfinished(self.second.repo) is None
+        assert self.second.git("rev-parse", "HEAD") == was
 
 
 class TestUndoneUndoesTheMergeItself(support.SandboxCase):
@@ -687,13 +680,13 @@ class TestUndoneUndoesTheMergeItself(support.SandboxCase):
     def test_the_fixture_really_left_a_merge_in_progress(self) -> None:
         """The assertion below is vacuous without it: a repository that was never
         mid-merge reports nothing unfinished whatever `undone` does."""
-        self.assertIsNotNone(gitrepo.unfinished(self.repo))
+        assert gitrepo.unfinished(self.repo) is not None
 
     def test_it_raises_and_leaves_no_merge_behind(self) -> None:
         with self.assertRaises(TupferlError) as raised:
             sync.undone(self.repo, "something went wrong")
-        self.assertIn("the merge was undone", str(raised.exception))
-        self.assertIsNone(gitrepo.unfinished(self.repo))
+        assert "the merge was undone" in str(raised.exception)
+        assert gitrepo.unfinished(self.repo) is None
 
 
 class TestWhenSeveralFilesCannotBeSettled(support.TwoMachinesCase):
@@ -706,23 +699,23 @@ class TestWhenSeveralFilesCannotBeSettled(support.TwoMachinesCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         # Two files, each a delete against an edit, so both come back refused.
         for name in (".zshrc", ".inputrc"):
             self.first.write(name, "shared\n")
-            self.assertEqual(0, self.first.call("add", str(self.first.home / name)))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("sync"))
+            assert self.first.call("add", str(self.first.home / name)) == 0
+        assert self.first.call("sync") == 0
+        assert self.second.call("sync") == 0
         for name in (".zshrc", ".inputrc"):
             self.second.write(name, "edited here\n")
-            self.assertEqual(0, self.second.call("add", str(self.second.home / name)))
-            self.assertEqual(0, self.first.call("remove", str(self.first.home / name)))
-        self.assertEqual(0, self.first.call("sync"))
+            assert self.second.call("add", str(self.second.home / name)) == 0
+            assert self.first.call("remove", str(self.first.home / name)) == 0
+        assert self.first.call("sync") == 0
 
     def test_both_are_named_in_sorted_order(self) -> None:
         done = self.second.run("sync", "--ours")
-        self.assertEqual(2, done.returncode, done.stdout + done.stderr)
-        self.assertIn(".inputrc, .zshrc", done.stderr)
+        assert done.returncode == 2, done.stdout + done.stderr
+        assert ".inputrc, .zshrc" in done.stderr
 
 
 class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachinesCase):
@@ -748,7 +741,7 @@ class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachinesCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.victim = self.tmp / "victim"
         self.victim.write_text("SECRET-ORIGINAL\n", encoding="utf-8")
         for machine in (self.first, self.second):
@@ -766,22 +759,22 @@ class TestWhenOneSideReplacedTheFileWithASymlink(support.TwoMachinesCase):
         # this fixture needs. (The broken-link fixture above exits 0 instead,
         # because `is_file()` is false for a link to nothing, so it is never
         # managed at all.)
-        self.assertEqual(1, self.first.call("sync"))
+        assert self.first.call("sync") == 1
 
     def test_git_splits_a_type_change_into_two_single_staged_paths(self) -> None:
         """Recorded as a test because it is the reason the mode check cannot be
         exercised through a type change, and because a future git that stopped
         doing it would change which branch refuses this."""
         self.second.git("fetch", "origin")
-        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        assert support.git_merged(self.second.repo, self.second.env) != 0
         stages = gitrepo.conflicted(self.second.repo)
-        self.assertEqual({gitrepo.THEIRS: 0o120000}, stages[self.NAME])
-        self.assertEqual({gitrepo.OURS: 0o100644}, stages[f"{self.NAME}~HEAD"])
+        assert stages[self.NAME] == {gitrepo.THEIRS: 0o120000}
+        assert stages[f"{self.NAME}~HEAD"] == {gitrepo.OURS: 0o100644}
         support.git_aborted(self.second.repo, self.second.env)
 
     def test_it_is_refused_and_the_link_target_is_untouched(self) -> None:
-        self.assertEqual(2, self.second.call("sync", "--ours"))
-        self.assertEqual("SECRET-ORIGINAL\n", self.victim.read_text(encoding="utf-8"))
+        assert self.second.call("sync", "--ours") == 2
+        assert self.victim.read_text(encoding="utf-8") == "SECRET-ORIGINAL\n"
 
 
 class TestAConflictAboutNothingButTheMode(support.TwoMachinesCase):
@@ -795,27 +788,26 @@ class TestAConflictAboutNothingButTheMode(support.TwoMachinesCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         for machine, mode in ((self.second, 0o755), (self.first, 0o644)):
             machine.write(MANAGED, "identical\n")
             (machine.home / MANAGED).chmod(mode)
-            self.assertEqual(0, machine.call("add", str(machine.home / MANAGED)))
-        self.assertEqual(0, self.first.call("sync"))
+            assert machine.call("add", str(machine.home / MANAGED)) == 0
+        assert self.first.call("sync") == 0
 
     def test_the_two_sides_differ_only_in_the_mode(self) -> None:
         self.second.git("fetch", "origin")
-        self.assertNotEqual(0, support.git_merged(self.second.repo, self.second.env))
+        assert support.git_merged(self.second.repo, self.second.env) != 0
         stages = gitrepo.conflicted(self.second.repo)[MANAGED]
-        self.assertNotEqual(stages[gitrepo.OURS], stages[gitrepo.THEIRS])
-        self.assertEqual(
-            gitrepo.version(self.second.repo, gitrepo.OURS, MANAGED),
-            gitrepo.version(self.second.repo, gitrepo.THEIRS, MANAGED),
+        assert stages[gitrepo.THEIRS] != stages[gitrepo.OURS]
+        assert gitrepo.version(self.second.repo, gitrepo.THEIRS, MANAGED) == gitrepo.version(
+            self.second.repo, gitrepo.OURS, MANAGED
         )
         support.git_aborted(self.second.repo, self.second.env)
 
     def test_it_settles_with_nobody_asked(self) -> None:
         """`--no-input` is enough, which is the assertion: a run that had to ask
         would report the conflict and exit 1."""
-        self.assertEqual(0, self.second.call("sync", "--no-input"))
-        self.assertEqual("identical\n", self.second.read(MANAGED))
-        self.assertIsNone(gitrepo.unfinished(self.second.repo))
+        assert self.second.call("sync", "--no-input") == 0
+        assert self.second.read(MANAGED) == "identical\n"
+        assert gitrepo.unfinished(self.second.repo) is None

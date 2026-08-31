@@ -52,7 +52,7 @@ class Conflicted(support.TwoMachinesCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.second.call("init", str(self.remote)) == 0
         self.diverge(".bashrc", FROM_A.encode(), FROM_B.encode())
 
     def settle(self, *args: str, keys: str | None = None) -> str:
@@ -63,7 +63,7 @@ class Conflicted(support.TwoMachinesCase):
         silently failed to apply cannot reach the assertions in the caller.
         """
         done = self.second.run("sync", *args, keys=keys)
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        assert done.returncode == 0, done.stdout + done.stderr
         return done.stdout
 
     def everywhere(self, want: str) -> None:
@@ -74,10 +74,10 @@ class Conflicted(support.TwoMachinesCase):
         out: plan §7.2's property 5 is that a choice made at the prompt survives
         the next sync on the other computer.
         """
-        self.assertEqual(want, self.second.read(".bashrc"))
-        self.assertEqual(want, self.second.stored(".bashrc").read_text(encoding="utf-8"))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(want, self.first.read(".bashrc"))
+        assert self.second.read(".bashrc") == want
+        assert self.second.stored(".bashrc").read_text(encoding="utf-8") == want
+        assert self.first.call("sync") == 0
+        assert self.first.read(".bashrc") == want
 
     def editor_writing(self, text: str) -> None:
         """Point `machine-b`'s `$EDITOR` at a script that writes `text`.
@@ -97,35 +97,35 @@ class TestTheFlags(Conflicted):
 
     def test_ours_keeps_this_computer(self) -> None:
         text = self.settle("--ours")
-        self.assertIn("kept local .bashrc", text)
+        assert "kept local .bashrc" in text
         self.everywhere(FROM_B)
 
     def test_theirs_keeps_the_repository(self) -> None:
         text = self.settle("--theirs")
-        self.assertIn("kept remote .bashrc", text)
+        assert "kept remote .bashrc" in text
         self.everywhere(FROM_A)
 
     def test_no_input_leaves_both_copies_alone(self) -> None:
         done = self.second.run("sync", "--no-input")
-        self.assertEqual(1, done.returncode)
-        self.assertIn("conflict in .bashrc", done.stdout)
-        self.assertEqual(FROM_B, self.second.read(".bashrc"))
-        self.assertEqual(FROM_A, self.second.stored(".bashrc").read_text(encoding="utf-8"))
+        assert done.returncode == 1
+        assert "conflict in .bashrc" in done.stdout
+        assert self.second.read(".bashrc") == FROM_B
+        assert self.second.stored(".bashrc").read_text(encoding="utf-8") == FROM_A
 
     def test_a_terminal_that_is_not_there_is_no_input(self) -> None:
         """No flag at all, and no stdin. A prompt here would block a cron job
         for ever; reading EOF and calling it a decision would be worse."""
         done = self.second.run("sync")
-        self.assertEqual(1, done.returncode)
-        self.assertIn("conflict in .bashrc", done.stdout)
+        assert done.returncode == 1
+        assert "conflict in .bashrc" in done.stdout
 
     def test_ours_and_theirs_cannot_both_be_given(self) -> None:
         """ "Keep mine" and "keep theirs" cannot both be the answer, and a run
         that honoured the last one would resolve real conflicts by argument
         order."""
         done = self.second.run("sync", "--ours", "--theirs")
-        self.assertEqual(2, done.returncode)
-        self.assertIn("not allowed with", done.stderr)
+        assert done.returncode == 2
+        assert "not allowed with" in done.stderr
 
 
 class TestTwoConflictsAtOnce(support.TwoMachinesCase):
@@ -143,18 +143,18 @@ class TestTwoConflictsAtOnce(support.TwoMachinesCase):
         super().setUp()
         for name in self.NAMES:
             self.first.write(name, "shared\n")
-            self.assertEqual(0, self.first.call("add", str(self.first.home / name)))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+            assert self.first.call("add", str(self.first.home / name)) == 0
+        assert self.first.call("sync") == 0
+        assert self.second.call("init", str(self.remote)) == 0
         for name in self.NAMES:
             self.diverge(name, b"FROM-A\n", b"FROM-B\n")
 
     def test_a_flag_answers_each_of_them(self) -> None:
         done = self.second.run("sync", "--ours")
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertIn("kept local .vimrc", done.stdout)
-        self.assertIn("kept local .inputrc", done.stdout)
-        self.assertIn("0 in conflict", done.stdout)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "kept local .vimrc" in done.stdout
+        assert "kept local .inputrc" in done.stdout
+        assert "0 in conflict" in done.stdout
 
     def test_the_prompt_asks_about_each_of_them(self) -> None:
         """Two keys for two files, and they are different keys -- so a run that
@@ -165,9 +165,9 @@ class TestTwoConflictsAtOnce(support.TwoMachinesCase):
         the first key answers `.inputrc`.
         """
         done = self.second.run("sync", keys="lr")
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertEqual("FROM-B\n", self.second.read(".inputrc"))
-        self.assertEqual("FROM-A\n", self.second.read(".vimrc"))
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert self.second.read(".inputrc") == "FROM-B\n"
+        assert self.second.read(".vimrc") == "FROM-A\n"
 
 
 class TestTheKeys(Conflicted):
@@ -175,42 +175,42 @@ class TestTheKeys(Conflicted):
 
     def test_the_prompt_shows_both_sides_before_asking(self) -> None:
         text = self.second.run("sync", keys="s").stdout
-        self.assertIn("FROM-B", text)
-        self.assertIn("FROM-A", text)
-        self.assertIn("this computer", text)
-        self.assertIn("the repository", text)
-        self.assertIn("[l] keep local", text)
-        self.assertIn("[e] edit merged file", text)
+        assert "FROM-B" in text
+        assert "FROM-A" in text
+        assert "this computer" in text
+        assert "the repository" in text
+        assert "[l] keep local" in text
+        assert "[e] edit merged file" in text
 
     def test_l_keeps_this_computer(self) -> None:
-        self.assertIn("kept local .bashrc", self.settle(keys="l"))
+        assert "kept local .bashrc" in self.settle(keys="l")
         self.everywhere(FROM_B)
 
     def test_r_keeps_the_repository(self) -> None:
-        self.assertIn("kept remote .bashrc", self.settle(keys="r"))
+        assert "kept remote .bashrc" in self.settle(keys="r")
         self.everywhere(FROM_A)
 
     def test_b_keeps_both(self) -> None:
-        self.assertIn("kept both .bashrc", self.settle(keys="b"))
+        assert "kept both .bashrc" in self.settle(keys="b")
         self.everywhere(BOTH_KEPT)
 
     def test_e_keeps_what_the_editor_saved(self) -> None:
         self.editor_writing(BY_HAND)
-        self.assertIn("edited .bashrc", self.settle(keys="e"))
+        assert "edited .bashrc" in self.settle(keys="e")
         self.everywhere(BY_HAND)
 
     def test_s_leaves_both_copies_alone_and_says_a_human_is_needed(self) -> None:
         done = self.second.run("sync", keys="s")
-        self.assertEqual(1, done.returncode)
-        self.assertIn("conflict in .bashrc", done.stdout)
-        self.assertEqual(FROM_B, self.second.read(".bashrc"))
-        self.assertEqual(FROM_A, self.second.stored(".bashrc").read_text(encoding="utf-8"))
+        assert done.returncode == 1
+        assert "conflict in .bashrc" in done.stdout
+        assert self.second.read(".bashrc") == FROM_B
+        assert self.second.stored(".bashrc").read_text(encoding="utf-8") == FROM_A
 
     def test_d_shows_the_whole_diff_and_asks_again(self) -> None:
         done = self.second.run("sync", keys="dl")
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertIn("-FROM-B", done.stdout)
-        self.assertIn("+FROM-A", done.stdout)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "-FROM-B" in done.stdout
+        assert "+FROM-A" in done.stdout
         self.everywhere(FROM_B)
 
 
@@ -221,7 +221,7 @@ class TestWhatSettlingLeavesBehind(Conflicted):
         """Otherwise the next run compares against a state neither computer
         holds, and re-raises a conflict the user already settled."""
         self.settle("--ours")
-        self.assertEqual(FROM_B, self.second.snapshot(".bashrc").read_text(encoding="utf-8"))
+        assert self.second.snapshot(".bashrc").read_text(encoding="utf-8") == FROM_B
 
     def test_a_second_sync_changes_nothing(self) -> None:
         """Plan §7.2's property 3, at the state a settled conflict leaves. A
@@ -229,35 +229,33 @@ class TestWhatSettlingLeavesBehind(Conflicted):
         keeps finding something to do."""
         self.settle("--ours")
         text = self.settle()
-        self.assertNotIn(".bashrc", text.split("\n\n")[0])
-        self.assertIn("0 changed", text)
+        assert ".bashrc" not in text.split("\n\n")[0]
+        assert "0 changed" in text
 
     def test_the_repository_is_left_clean(self) -> None:
         """A copy written and not committed is one the next run commits with a
         message that names nothing."""
         self.settle("--theirs")
-        self.assertEqual("", self.second.git("status", "--porcelain"))
+        assert self.second.git("status", "--porcelain") == ""
 
     def test_the_commit_names_the_file(self) -> None:
         self.settle("--ours")
-        self.assertIn(".bashrc", self.second.git("log", "-1", "--format=%s"))
+        assert ".bashrc" in self.second.git("log", "-1", "--format=%s")
 
     def test_keeping_the_repository_backs_up_what_it_replaced(self) -> None:
         """Plan §5: `$HOME`'s copy is the user's, and `[r]` overwrites it. This
         backup is the only surviving copy of what they had."""
         self.settle("--theirs")
         saved = list(self.second.backups.rglob(".bashrc"))
-        self.assertEqual(1, len(saved), f"expected one backup, found {saved}")
-        self.assertEqual(FROM_B, saved[0].read_text(encoding="utf-8"))
+        assert len(saved) == 1, f"expected one backup, found {saved}"
+        assert saved[0].read_text(encoding="utf-8") == FROM_B
 
     def test_keeping_this_computer_backs_up_nothing(self) -> None:
         """`[l]` writes only the repository, so nothing in `$HOME` is replaced.
         A backup taken anyway would push a real one out of plan §5's window of
         five -- and it is `RULES`' `to_home` column that decides both."""
         self.settle("--ours")
-        self.assertFalse(
-            self.second.backups.exists(), "a backup was taken of a file nothing replaced"
-        )
+        assert not self.second.backups.exists(), "a backup was taken of a file nothing replaced"
 
 
 class TestABinaryConflict(support.TwoMachinesCase):
@@ -268,21 +266,21 @@ class TestABinaryConflict(support.TwoMachinesCase):
     def setUp(self) -> None:
         super().setUp()
         (self.first.home / ".icon").write_bytes(b"\x00base\n")
-        self.assertEqual(0, self.first.call("add", str(self.first.home / ".icon")))
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(0, self.second.call("init", str(self.remote)))
+        assert self.first.call("add", str(self.first.home / ".icon")) == 0
+        assert self.first.call("sync") == 0
+        assert self.second.call("init", str(self.remote)) == 0
         self.diverge(".icon", b"\x00from-a\n", b"\x00from-b\n")
 
     def test_it_is_one_choice_for_the_whole_file(self) -> None:
         done = self.second.run("sync", keys="s")
-        self.assertIn("not a text file", done.stdout)
-        self.assertIn("whole file", done.stdout)
-        self.assertNotIn("[b] keep both", done.stdout)
+        assert "not a text file" in done.stdout
+        assert "whole file" in done.stdout
+        assert "[b] keep both" not in done.stdout
 
     def test_a_side_can_still_be_taken(self) -> None:
         done = self.second.run("sync", keys="r")
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertEqual(b"\x00from-a\n", (self.second.home / ".icon").read_bytes())
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert (self.second.home / ".icon").read_bytes() == b"\x00from-a\n"
 
 
 if __name__ == "__main__":
@@ -316,14 +314,14 @@ class TestAFileWithWindowsLineEndings(Conflicted):
         self.second.env["EDITOR"] = str(support.fake_editor(self.tmp / "quitter", "exit 0"))
 
         done = self.second.run("sync", keys="e")
-        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
-        self.assertIn("still has tupferl's conflict markers", done.stdout)
+        assert done.returncode == 1, done.stdout + done.stderr
+        assert "still has tupferl's conflict markers" in done.stdout
         for where_now in (
             self.second.home / ".bashrc",
             self.second.stored(".bashrc"),
             self.second.snapshot(".bashrc"),
         ):
-            self.assertNotIn(b"<<<<<<<", where_now.read_bytes(), f"markers reached {where_now}")
+            assert b"<<<<<<<" not in where_now.read_bytes(), f"markers reached {where_now}"
 
     def test_a_choice_still_settles_it(self) -> None:
         """The other half: the guard must not refuse every CRLF file.
@@ -332,11 +330,11 @@ class TestAFileWithWindowsLineEndings(Conflicted):
         CRLF file and an LF one as the same string -- which would make this pass
         against a sync that had silently rewritten the user's line endings.
         """
-        self.assertIn("kept local .bashrc", self.settle(keys="l"))
+        assert "kept local .bashrc" in self.settle(keys="l")
         want = self.CRLF_B.encode()
-        self.assertEqual(want, (self.second.home / ".bashrc").read_bytes())
-        self.assertEqual(0, self.first.call("sync"))
-        self.assertEqual(want, (self.first.home / ".bashrc").read_bytes())
+        assert (self.second.home / ".bashrc").read_bytes() == want
+        assert self.first.call("sync") == 0
+        assert (self.first.home / ".bashrc").read_bytes() == want
 
 
 class TestAPromptNobodyAnswers(Conflicted):
@@ -360,14 +358,14 @@ class TestAPromptNobodyAnswers(Conflicted):
         ):
             done = self.second.run("sync", keys="")
 
-        self.assertNotEqual(0, done.returncode, "the prompt answered a key nobody typed")
-        self.assertIn(".bashrc: 1 conflict to settle", done.stdout)
-        self.assertIn("[l] keep local", done.stdout)
+        assert done.returncode != 0, "the prompt answered a key nobody typed"
+        assert ".bashrc: 1 conflict to settle" in done.stdout
+        assert "[l] keep local" in done.stdout
 
     def test_the_precondition_that_the_fallback_is_what_normally_saves_it(self) -> None:
         """Without this, the test above is equally satisfied by a fixture whose
         prompt never appears at all -- and `support.FALLBACK` would be free to
         stop working with nothing to notice."""
         done = self.second.run("sync", keys="")
-        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
-        self.assertIn("conflict in .bashrc", done.stdout)
+        assert done.returncode == 1, done.stdout + done.stderr
+        assert "conflict in .bashrc" in done.stdout
