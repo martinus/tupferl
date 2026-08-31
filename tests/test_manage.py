@@ -53,10 +53,10 @@ def holding(machine: support.Machine) -> support.Machine:
 
 
 @pytest.fixture
-def ready(started: support.Machine) -> support.Machine:
-    """`started`, with an unmanaged `.bashrc` waiting in `$HOME`."""
-    started.write(started.home / ".bashrc", "x")
-    return started
+def ready(holding: support.Machine) -> support.Machine:
+    """`holding`, with `init` run -- so the file is there and so is a repository."""
+    holding.init()
+    return holding
 
 
 @pytest.fixture
@@ -592,13 +592,19 @@ class Hosts(support.Sandbox):
     envs: dict[str, dict[str, str]]
 
     def repo_of(self, host: str) -> Path:
-        """Derived from that host's own `XDG_DATA_HOME` rather than spelled out.
+        """That host's repository, asked of `tupferl.paths` under its own environment.
 
-        `paths.repo_dir()` cannot be used: it reads the ambient environment,
-        which here belongs to neither machine. Taking the base from the env this
-        fixture built leaves only `paths`' own suffix repeated.
+        **This used to spell the layout out** -- `XDG_DATA_HOME / "tupferl" /
+        "repo"` -- with a docstring saying `paths.repo_dir()` "cannot be used:
+        it reads the ambient environment, which here belongs to neither
+        machine". That claim was false, and `support.Computer.__init__` had been
+        disproving it since it was written: it asks the same question inside
+        `mock.patch.dict(os.environ, ..., clear=True)`, with a comment saying
+        exactly why a test that spells the layout out itself cannot notice the
+        layout changing.
         """
-        return Path(self.envs[host]["XDG_DATA_HOME"]) / "tupferl" / "repo"
+        with mock.patch.dict(os.environ, self.envs[host], clear=True):
+            return paths.repo_dir()
 
 
 @pytest.fixture
@@ -1019,12 +1025,10 @@ def spoken(*argv: str) -> str:
 
 
 @pytest.fixture
-def unshared(sandbox: support.Sandbox) -> support.Sandbox:
-    """An initialised machine with an unmanaged `.bashrc` waiting."""
-    remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
-    assert call("init", str(remote)) == 0
-    (sandbox.home / ".bashrc").write_text("one\n", encoding="utf-8")
-    return sandbox
+def unshared(initialised: support.Machine) -> support.Machine:
+    """`initialised`, with an unmanaged `.bashrc` waiting."""
+    initialised.write(initialised.home / ".bashrc", "one\n")
+    return initialised
 
 
 @pytest.mark.usefixtures("unshared")
@@ -1039,10 +1043,10 @@ class TestSayingTheWorkIsNotSharedYet:
     the whole reason the gap is easy to miss.
     """
 
-    def test_add_says_the_file_is_not_shared_yet(self, unshared: support.Sandbox) -> None:
+    def test_add_says_the_file_is_not_shared_yet(self, unshared: support.Machine) -> None:
         assert manage.NOT_SHARED in spoken("add", str(unshared.home / ".bashrc"))
 
-    def test_it_names_the_command_that_would_share_it(self, unshared: support.Sandbox) -> None:
+    def test_it_names_the_command_that_would_share_it(self, unshared: support.Machine) -> None:
         """**Not `assertIn(manage.NOT_SHARED, ...)`, which is the constant
         compared with itself.** Every other test here asserts the message
         *arrives*, and all of them go on passing if it is shortened to "not
@@ -1056,14 +1060,14 @@ class TestSayingTheWorkIsNotSharedYet:
         advice = next(line for line in said.splitlines() if "not shared" in line)
         assert "tupferl sync" in advice
 
-    def test_remove_says_it_too(self, unshared: support.Sandbox) -> None:
+    def test_remove_says_it_too(self, unshared: support.Machine) -> None:
         """The same gap in the other direction: the file is gone from this
         machine's repository and still on every other one."""
         assert call("add", str(unshared.home / ".bashrc")) == 0
         assert manage.NOT_SHARED in spoken("remove", str(unshared.home / ".bashrc"))
 
     def test_an_add_that_changed_nothing_does_not_send_the_user_to_sync(
-        self, unshared: support.Sandbox
+        self, unshared: support.Machine
     ) -> None:
         """The arm where nothing was committed. There is no work waiting, so
         the advice would be to run a sync with nothing in it -- and a line that
@@ -1079,19 +1083,16 @@ class TestSayingTheWorkIsNotSharedYet:
 
 
 @pytest.fixture
-def initialised(sandbox: support.Sandbox) -> support.Sandbox:
-    """A machine that has run `init` against its own bare remote."""
-    remote = support.make_remote(sandbox.tmp / "remote.git", sandbox.env)
-    with support.quiet():
-        assert cli.main(["init", str(remote)]) == 0
-    return sandbox
+def initialised(machine: support.Machine) -> support.Machine:
+    """`started`, but with `init` run **in this process** rather than as a subprocess.
 
-
-def added(*paths: str) -> str:
-    """One `add` that must exit 0, and what it printed."""
-    with support.quiet() as said:
-        assert cli.main(["add", *paths]) == 0
-    return said.getvalue()
+    The two are not interchangeable and the difference is the point: `started`
+    goes through `Machine.init`, which spawns `python -m tupferl` and is what
+    the classes asserting on a real exit status want. The classes below assert
+    on what was *printed*, which `support.quiet` can only capture in-process.
+    """
+    assert call("init", str(machine.remote)) == 0
+    return machine
 
 
 def summary(*paths: str) -> list[str]:
@@ -1103,7 +1104,9 @@ def summary(*paths: str) -> list[str]:
     silently shift what these tests believe they are counting.
     """
     return [
-        line for line in added(*paths).splitlines() if line.strip() and line != manage.NOT_SHARED
+        line
+        for line in spoken("add", *paths).splitlines()
+        if line.strip() and line != manage.NOT_SHARED
     ]
 
 
@@ -1111,7 +1114,7 @@ def summary(*paths: str) -> list[str]:
 class TestAddingADirectoryOfMany:
     """#28 end to end: the README's own example is a directory of hundreds."""
 
-    def test_a_hundred_files_are_one_line(self, initialised: support.Sandbox) -> None:
+    def test_a_hundred_files_are_one_line(self, initialised: support.Machine) -> None:
         where = initialised.home / ".local" / "share" / "app"
         where.mkdir(parents=True)
         for number in range(100):
@@ -1121,7 +1124,7 @@ class TestAddingADirectoryOfMany:
         assert len(said) == 1, said
         assert "added 100 files" in said[0]
 
-    def test_a_re_add_reports_only_what_changed(self, initialised: support.Sandbox) -> None:
+    def test_a_re_add_reports_only_what_changed(self, initialised: support.Machine) -> None:
         """The case the summary must not get wrong: 100 files, two edited.
 
         The other 98 are byte-for-byte identical, so `store` answers `None` and
@@ -1133,7 +1136,7 @@ class TestAddingADirectoryOfMany:
         where.mkdir(parents=True)
         for number in range(100):
             (where / f"f{number:03d}.conf").write_text("x\n", encoding="utf-8")
-        added(str(where))
+        spoken("add", str(where))
 
         for number in (0, 1):
             (where / f"f{number:03d}.conf").write_text("changed\n", encoding="utf-8")
@@ -1141,7 +1144,7 @@ class TestAddingADirectoryOfMany:
         assert len(said) == 2, said
         assert all(line.startswith("updated ") for line in said), said
 
-    def test_refusals_are_still_one_line_each(self, initialised: support.Sandbox) -> None:
+    def test_refusals_are_still_one_line_each(self, initialised: support.Machine) -> None:
         """The part a long listing used to push off the screen, and the reason
         this issue is about noise rather than tidiness."""
         where = initialised.home / ".local" / "share" / "app"
@@ -1151,14 +1154,14 @@ class TestAddingADirectoryOfMany:
         (where / "link").symlink_to(initialised.home / ".bashrc")
         (where / "big.bin").write_bytes(b"x" * (2 << 20))
 
-        said = added(str(where))
+        said = spoken("add", str(where))
         skipped = [line for line in said.splitlines() if line.startswith("skipped ")]
         assert len(skipped) == 2, said
         assert "added 20 files" in said
 
 
 @dataclass(frozen=True)
-class Keyed(support.Sandbox):
+class Keyed(support.Machine):
     """An initialised machine whose `$HOME` holds a realistic `~/.ssh`."""
 
     ssh: Path
@@ -1167,7 +1170,14 @@ class Keyed(support.Sandbox):
         with support.quiet() as said:
             return cli.main(["add", *args]), said.getvalue()
 
-    def stored(self) -> set[str]:
+    def kept(self) -> set[str]:
+        """What of `~/.ssh` reached the repository.
+
+        Not `stored`, which `support.Machine` already means something else by --
+        "where would the copy of this one name live". Two questions, and the
+        name went to the one that asks about a whole directory only because this
+        class was written before it was a `Machine`.
+        """
         repo = paths.repo_dir()
         return {
             str(path.relative_to(repo)) for path in (repo / ".ssh").rglob("*") if path.is_file()
@@ -1175,7 +1185,7 @@ class Keyed(support.Sandbox):
 
 
 @pytest.fixture
-def keyed(initialised: support.Sandbox) -> Keyed:
+def keyed(initialised: support.Machine) -> Keyed:
     ssh = initialised.home / ".ssh"
     ssh.mkdir()
     for name, body in (
@@ -1221,7 +1231,7 @@ class TestAddingSomethingThatHoldsACredential:
         assert status == 0, said
         assert "skipped" in said
         assert "id_ed25519" in said
-        assert keyed.stored() == {".ssh/config", ".ssh/known_hosts", ".ssh/id_ed25519.pub"}
+        assert keyed.kept() == {".ssh/config", ".ssh/known_hosts", ".ssh/id_ed25519.pub"}
 
     def test_anyway_stores_it(self, keyed: Keyed) -> None:
         """The refusal has to be overrulable, or it is worked around by moving
@@ -1229,7 +1239,7 @@ class TestAddingSomethingThatHoldsACredential:
         rule."""
         status, said = keyed.add("--anyway", str(keyed.ssh / "id_ed25519"))
         assert status == 0, said
-        assert ".ssh/id_ed25519" in keyed.stored()
+        assert ".ssh/id_ed25519" in keyed.kept()
 
     def test_anyway_reaches_a_directory_walk_too(self, keyed: Keyed) -> None:
         """The flag threads through `collect`, not only `check`. Wired to one of
@@ -1238,7 +1248,7 @@ class TestAddingSomethingThatHoldsACredential:
         status, said = keyed.add("--anyway", str(keyed.ssh))
         assert status == 0, said
         assert "skipped" not in said
-        assert ".ssh/id_ed25519" in keyed.stored()
+        assert ".ssh/id_ed25519" in keyed.kept()
 
 
 @pytest.mark.usefixtures("two_machines")

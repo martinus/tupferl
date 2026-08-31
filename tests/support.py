@@ -818,6 +818,31 @@ class Sandbox:
         return where
 
 
+def fingerprint(home: Path) -> set[tuple[str, int, bytes]]:
+    """Every file under `home` outside `.git`, by name, mode and **content**.
+
+    What "this command wrote nothing" is asserted against, in `test_status.py`
+    and `test_diff.py`. Here rather than in either because it was written twice,
+    with the same trap named in both docstrings: **path, size and mode cannot
+    fail**. The edit those tests make is one line to upper case, so the file
+    before and the file after are the same length with the same mode, and a
+    fingerprint taken that way came back equal after a real `sync`.
+
+    `.git` is excluded because `status` and `diff` both fetch, which moves
+    remote-tracking refs -- the one thing they are allowed to touch.
+
+    The mtime is left out deliberately: it is the one field a *read* can move on
+    some filesystems, which would make this flaky rather than strict. Content
+    covers everything mtime would have.
+    """
+    seen = set()
+    for path in home.rglob("*"):
+        if ".git" in path.parts or not path.is_file():
+            continue
+        seen.add((str(path.relative_to(home)), path.stat().st_mode, path.read_bytes()))
+    return seen
+
+
 @contextmanager
 def sandbox(host: str = HOST) -> Iterator[Sandbox]:
     """A `Sandbox`, torn down on the way out.
@@ -1328,12 +1353,6 @@ class MachineCase(SandboxCase):
 
     def init(self) -> subprocess.CompletedProcess[str]:
         return self.box.init()
-
-    def log(self) -> list[str]:
-        return self.box.log()
-
-    def stored(self, name: str, host: bool = False) -> Path:
-        return self.box.stored(name, host)
 
     def snapshot(self, name: str) -> Path:
         return self.box.snapshot(name)

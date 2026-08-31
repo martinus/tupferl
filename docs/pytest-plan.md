@@ -2287,6 +2287,106 @@ Said here rather than filed: the file dies with Phase C, and an issue closed by
 a deletion is the backlog §4 warns about. Whoever sweeps `tools/` whole before
 then should expect them.
 
+### What `/simplify` found, after the PR was open and CI was green
+
+Four reviewers over the diff. **Two of the findings were defects rather than
+polish, and one of them was in code written earlier the same day** -- which is
+the row of CLAUDE.md §3's table this cluster belongs in, and the argument for
+not reading a quality pass as a formality.
+
+**The scope latch (`tools/verdict.py`).** The fix above records the scope of a
+fixture that raised, keyed by nodeid. It was *read* at every non-``call`` phase,
+so once a test's own function-scoped fixture had failed in ``setup``, any later
+failure of that test was credited too. Measured before the fix, on a class-scoped
+fixture raising after ``yield``:
+
+```
+noticed: ['test_a.py::TestX::test_it', 'test_a.py::TestX::test_it']   # twice
+broke  : []
+```
+
+and the flattering pair -- a function-scoped fixture hitting `MemoryError`,
+which `_carrier` correctly refuses to credit, with a class teardown falling over
+behind it -- came back with a killer nodeid for a row where nothing asserted
+anything. That is the direction `tools/verdict.py`'s own docstring says every
+bug in its class has erred. The scope is a fact about one *phase* and is read as
+one now.
+
+**The finder (`tools/unassert.py`), and the root beneath it.** The module
+docstring claims the tool "finds a call by scanning balanced parentheses, not by
+matching a regex". That was true of `close`, `split_args` and `flatten`, and
+never of `CALL.search`. Chasing it found something worse: **`_scan` did not skip
+comments**, so a `#` comment holding an odd number of quote characters -- "the
+suite's", which is how English is written -- opened a string that never closed
+and inverted every judgement after it. Measured on
+`tests/test_verdict_unittest.py`: **12,379 characters of real string content
+read as code**.
+
+The consequence was concrete and aimed squarely at B6:
+
+| module | string literals the tool would have rewritten | converts in |
+|---|---:|---|
+| `tests/test_unassert.py` | 31 | done |
+| `tests/test_run_tests.py` | 6 | B6 |
+| `tests/test_verdict.py` | 4 | B6 |
+| `tests/test_verdict_unittest.py` | 4 | never |
+| `tests/test_mutate.py` | 3 | B6 |
+
+Every one is the source of a *probe module*, written as a literal precisely so
+the harness can drive a `unittest`-style test. Rewriting one changes what the
+harness is being driven with. **Zero, across every remaining module, after the
+fix** -- and `_scan` skipping comments also stops a bracket or a comma inside a
+comment being counted, which `close` and `split_args` were both exposed to.
+
+A comment *inside* a call is now refused rather than flattened: it cannot
+survive being joined onto one line, and dropping it would delete something a
+person wrote.
+
+**Precedence (`tools/unassert.py`).** `bracket` encoded the right rule --
+"an unnecessary pair of parentheses is noise, a missing pair is a changed
+assertion" -- and was wired to 1 of the 15 forms. The other fourteen spliced raw
+argument text around `==`, `in` and `<`. The rule is `ast`'s now and applies to
+all of them; it changes four real rewrites, all in modules B6 converts:
+
+```
+assert cache.cost == (found.times or {})           # was: == found.times or {}
+assert "…" in (both[0][1] if both[0] else "")      # was: in x if c else ""
+```
+
+All four were equivalent **by luck** -- `{}` is falsy, and `X if C else ""`
+fails both readings when `C` is falsy -- so this was exposure rather than a live
+defect, and is recorded as such. The one that would not have been lucky is
+`assertEqual(a == b, c)`, which spliced bare is the *chained* comparison
+`c == a == b`.
+
+**Efficiency was measured clean.** Interleaved A/B/A/B/A/B of the four converted
+modules: 14.8 s either side, median paired difference **+0.5% for 29 more
+tests** -- per-test cost down about 10%. The `pytest_fixture_setup` wrapper
+costs **~0.67 µs per fixture setup** over a synthetic 60,000-setup table, which
+is ~0.45 ms on a 14.7 s run. `Watcher.scopes` holds one entry per *failing*
+setup, and a probe runs under `-x`.
+
+**Declined, with reasons.** A `Computer.must()` collapsing the nine
+`status, x = say(...); assert status == 0` pairs would reach `tests/support.py`
+and four modules this cluster does not open. The `synced` fixtures in
+`test_status` and `test_diff` share a five-line prelude but carry different
+methods and different preconditions, and the duplication is carried from `main`
+rather than introduced. `Hosts` re-implementing `support.Computer` is real and
+pre-existing; only the false docstring claim beside it was fixed here (§0), and
+it was false in a checkable way -- `Computer.__init__` asks `paths.repo_dir()`
+under a patched environment, which the docstring said could not be done.
+
+**Applied:** the two defects above, plus `added()` deleted (it was
+`spoken("add", ...)`), `unshared` and `ready` derived from the fixtures they
+repeated, `initialised` built off `machine` rather than re-making a remote,
+`MachineCase`'s dead `log`/`stored` delegates removed, `fingerprint` hoisted to
+`support.py` (`test_diff`'s `contents` was the same walk with a weaker
+projection, and both docstrings named the same trap), `START` aliased to
+`support.STARTS_AS` in both modules -- they were byte-identical to the template
+they must match -- and two inline re-implementations of `Synced.diff` replaced.
+
+Preflight after: **1908 tests, 0 failures, 0 skipped.**
+
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
 **Goal:** the pytest-only end state. **PR scope:**

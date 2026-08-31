@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -45,35 +44,16 @@ PHRASES = {
     "merges": "changed on both, and the two merge cleanly",
 }
 
-#: What the second machine's `.bashrc` starts as. Every line distinct, so a
-#: one-line edit below is a one-hunk difference rather than an ambiguous one.
-START = "one\ntwo\nthree\nfour\nfive\n"
+#: What `.bashrc` holds on both machines when a fixture here starts, which is
+#: `support.STARTS_AS` because that is what `template()` synced. Aliased rather
+#: than written out again: a second copy is free to drift from the tree these
+#: tests are handed, and the drift would show up as a diff nobody asked for
+#: rather than as a failure naming the constant.
+START = support.STARTS_AS
 
 #: The control file, and the reason it is here: it stays untouched in every
 #: fixture, so a phrase landing on *it* is a failure.
 CONTROL = "set number\nset expandtab\n"
-
-
-def fingerprint(home: Path) -> set[tuple[str, int, bytes]]:
-    """Every file under `home` outside `.git`.
-
-    Path, mode and **content**. Size and mode alone was the first version of
-    this and it could not fail: the edit these tests make is one line to
-    upper case, so `ONE\ntwo\n...` is the same 24 bytes as the file it
-    replaced, and the fingerprint after a real `sync` came back equal to the
-    one before it. That is CLAUDE.md §2's fixture too weak to tell the two
-    answers apart, found by the half of the test that exists to catch it.
-
-    The mtime is left out deliberately: it is the one field a *read* can
-    move on some filesystems, which would make this flaky rather than
-    strict. Content covers everything mtime would have.
-    """
-    seen = set()
-    for path in home.rglob("*"):
-        if ".git" in path.parts or not path.is_file():
-            continue
-        seen.add((str(path.relative_to(home)), path.stat().st_mode, path.read_bytes()))
-    return seen
 
 
 @dataclass(frozen=True)
@@ -402,12 +382,12 @@ class TestStatusWritesNothing:
         with nothing to do.
         """
         synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
-        before = fingerprint(synced.second.home)
+        before = support.fingerprint(synced.second.home)
         synced.status()
-        assert fingerprint(synced.second.home) == before
+        assert support.fingerprint(synced.second.home) == before
 
         assert synced.second.call("sync") == 0
-        assert fingerprint(synced.second.home) != before
+        assert support.fingerprint(synced.second.home) != before
 
     def test_no_backup_directory_appears(self, synced: Synced) -> None:
         """The backup root is created lazily by the first `sync` that replaces

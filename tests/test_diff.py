@@ -31,9 +31,12 @@ from tests import support
 from tupferl import inspection, merge, sync
 from tupferl.copies import Blob
 
-#: The base both machines start from. Distinct lines, so a one-line edit is one
-#: unambiguous hunk.
-START = "one\ntwo\nthree\nfour\nfive\n"
+#: What `.bashrc` holds on both machines when a fixture here starts, which is
+#: `support.STARTS_AS` because that is what `template()` synced. Aliased rather
+#: than written out again: a second copy is free to drift from the tree these
+#: tests are handed, and the drift would show up as a diff nobody asked for
+#: rather than as a failure naming the constant.
+START = support.STARTS_AS
 
 #: What `$HOME` gets, and what the repository gets. Different lengths as well as
 #: different text: a diff that swapped the two sides would still show one `-`
@@ -46,21 +49,6 @@ THEIRS = "one\nfrom the repo\nthree\nfour\nfive\n"
 CONTROL = "set number\nset expandtab\n"
 
 
-def contents(home: Path) -> dict[str, bytes]:
-    """Every file under `home` outside `.git`, by name and by bytes.
-
-    Bytes rather than size and mode: the edits here are one line to another
-    of a similar length, and `tests/test_status.py`'s first fingerprint could
-    not tell two 24-byte files apart. Same trap, same answer.
-    """
-    return {
-        str(path.relative_to(home)): path.read_bytes()
-        for path in home.rglob("*")
-        if path.is_file() and ".git" not in path.parts
-    }
-
-
-@dataclass(frozen=True)
 class Synced(support.TwoMachines):
     """`machine-b`, synced, with `.bashrc` and `.vimrc` both managed."""
 
@@ -746,9 +734,7 @@ class TestNamingOneFile:
         that already worked. The real one is below.
         """
         synced.apart()
-        status, said = synced.second.say("status", "--diff", "~/.bashrc")
-        assert status == 0, said
-        assert "-edited on this computer" in said
+        assert "-edited on this computer" in synced.diff("~/.bashrc")
 
     def test_the_name_that_list_prints_is_accepted(self, synced: Synced) -> None:
         """#27: `tupferl list` prints `.bashrc`, and `diff` has to take it back.
@@ -771,8 +757,7 @@ class TestNamingOneFile:
         assert listed == [".bashrc"], "the fixture no longer prints the name under test"
 
         with mock.patch.object(Path, "cwd", return_value=synced.tmp):
-            status, said = synced.second.say("status", "--diff", ".bashrc")
-        assert status == 0, said
+            said = synced.diff(".bashrc")
         assert "-edited on this computer" in said
 
     def test_an_unmanaged_file_is_an_error_that_names_the_way_out(self, synced: Synced) -> None:
@@ -800,13 +785,13 @@ class TestDiffWritesNothing:
 
     def test_the_merge_it_runs_reaches_no_file(self, synced: Synced) -> None:
         synced.apart()
-        before = contents(synced.second.home)
+        before = support.fingerprint(synced.second.home)
         synced.diff()
-        assert contents(synced.second.home) == before
+        assert support.fingerprint(synced.second.home) == before
         # The precondition, without which "nothing moved" is equally true of a
         # machine with nothing to move -- CLAUDE.md §2.
         assert synced.second.call("sync", "--ours") == 0
-        assert contents(synced.second.home) != before
+        assert support.fingerprint(synced.second.home) != before
 
 
 @pytest.mark.usefixtures("sandbox")

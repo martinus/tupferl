@@ -498,6 +498,25 @@ class Watcher:
 
         Only the *last* raiser is kept, which is the one whose exception
         propagates: pytest stops setting up an item at the first failure.
+
+        **What is recorded is a fact about one *phase*, and `answered` reads it
+        as one.** This hook only ever observes ``setup``; keyed by nodeid alone
+        and consulted at every phase, it *latches* -- a test whose own fixture
+        raised during setup would have any later failure credited too, and the
+        measured case was a class-scoped fixture blowing up after ``yield``
+        being reported as that test noticing. Worse with `_carrier`: a
+        function-scoped fixture hitting `MemoryError` is correctly refused as an
+        answer, and the class teardown behind it was then credited instead --
+        a killer nodeid for a row where nothing asserted anything, which is the
+        direction this whole file exists to lean against.
+
+        A wider fixture cannot reach here on behalf of a narrower one, because
+        pytest sets the closure up outermost-first: a session fixture that
+        raises never transits a function-scoped hook, and both its tests are
+        correctly `broke`. The one spelling that defeats that is a
+        `request.getfixturevalue("wide")` *inside* a function-scoped fixture,
+        which does produce a false `noticed` -- measured. Nothing in `tests/`
+        does it today, and the twelve modules Phase B has left should not start.
         """
         try:
             return (yield)
@@ -525,7 +544,8 @@ class Watcher:
         if reason := _carrier(nodeid, call.excinfo, self.each):
             self.broke.append(reason)
             return
-        if call.when != "call" and self.scopes.get(nodeid) != "function":
+        per_test = call.when == "setup" and self.scopes.get(nodeid) == "function"
+        if call.when != "call" and not per_test:
             # `setUpClass`, `setUpModule`, their teardowns, and any fixture
             # wider than one test. Nothing in them evaluated an assertion *for
             # this test*, so crediting the mutation to them would be crediting a

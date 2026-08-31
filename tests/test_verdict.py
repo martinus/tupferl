@@ -505,6 +505,39 @@ class TestAPerTestFixtureIsTheTestsOwnSetup(Probe):
         self.assertEqual([], found["broke"], found["broke"])
         self.assertEqual(1, len(found["noticed"]))
 
+    def test_a_later_phase_is_not_covered_by_the_setup_that_was_credited(self) -> None:
+        """The scope is a fact about one *phase*, and it must not latch.
+
+        Found by review, measured before the fix: keyed by nodeid alone and read
+        at every phase, one test's own fixture failing in ``setup`` credited
+        *any* later failure of that test as well -- here a class-scoped fixture
+        blowing up after ``yield``, reported as the same nodeid noticing twice.
+
+        The pair in one run is what makes this checkable: the same test has to
+        appear in both buckets, once for each phase, which no single rule that
+        looks at the nodeid alone can produce.
+        """
+        self.module(
+            "test_a",
+            """
+            import pytest
+            @pytest.fixture
+            def narrow():
+                raise AssertionError("mine alone")
+            @pytest.fixture(scope="class")
+            def wide():
+                yield
+                raise RuntimeError("class teardown fell over")
+            class TestX:
+                def test_it(self, narrow, wide):
+                    pass
+            """,
+        )
+        found = self.verdict("test_a")
+        self.assertEqual(["test_a.py::TestX::test_it"], found["noticed"])
+        self.assertEqual(1, len(found["broke"]), found["broke"])
+        self.assertIn("teardown failed", found["broke"][0])
+
     def test_a_module_scoped_fixture_that_raises_is_still_not_an_answer(self) -> None:
         """The other side, and without it the rule above is just "credit every
         setup failure" -- which would credit one broken session fixture as a kill
