@@ -3001,6 +3001,117 @@ would have failed `ruff` and `mypy` had it — while the same bug in a tool that
 ran once would have been silent. A rewriter over the real tree should be
 idempotent and should be run twice to prove it.
 
+### Gate
+
+`tools/` and the three `tupferl/` files whose sweep selection names one of the
+four converted modules — computed from `targets_for`, not guessed. The control
+is a `main` worktree on the same machine, and **the selections are
+byte-identical between the trees**, checked in both directions, so it is an
+exact row-for-row baseline rather than a remembered number.
+
+| `--only tools/`, 2621 rows | control (`main`) | branch |
+|---|---:|---:|
+| caught | 2393 | **2394** |
+| SURVIVED | 204 | 205 |
+| `BROKE` | 13 | **11** |
+| `TIMEOUT` | 11 | 11 |
+| baseline | green | green |
+
+`tupferl/__main__.py`, `manifest.py` and `paths.py`, 168 rows: **168 caught, 0
+survived, 0 unanswered — on both arms**, with identical spent-tag reports.
+`tupferl/__init__.py` generates no rows.
+
+**The first branch arm failed this gate, and the failure is the useful part.**
+It came back 2379 caught, 25 `BROKE`, with **42 rows moved**. What follows is
+what each was, because a gate whose numbers matched first time would have said
+less than this one did.
+
+#### The comparison itself was wrong twice before it was right
+
+Keyed on `(path, line, operator, label)`, 2621 rows collapse to **2542 keys** —
+77 keys occur twice, which is the collision CLAUDE.md records killing the old
+hash-keyed survivor record. Keyed on *position* is no better: `slowest_first`
+orders by recorded cost and the two arms have different machine-local caches,
+so **2453 of 2621 positions differ**. Counting outcomes **per key** needs
+neither and is exact.
+
+#### Eight rows were a pre-existing hole, and they are fixed
+
+`line_starts`' counter and `cap`'s round-robin are the two loops a one-line
+mutation makes infinite, and `test_mutants` bounds the classes that call them
+**directly**. Three classes reach them another way and carried no bound:
+`TestEveryTagGuardsARowThatExists` and `TestFindingATagNoRowCanReach` through
+`dead_tags`, which walks every mutable file and generates for each, and
+`GeneratedTable` through `mutate.generated`. Every one of the eight rows named
+one of those three as its killer.
+
+**Unbounded on `main` too**, verified in the control worktree — so which arm
+reported `BROKE` depended only on which route the sweep tried first, and the
+arms have separate caches. CLAUDE.md's most-repeated lesson for the sixth time:
+*the killer a sweep reports is one route to the line, not all of them.*
+
+Bounded through `support.bounds`, one line per class. Re-swept
+`--only tools/mutants.py`, 635 rows: **600 caught, 35 survived, 0 `BROKE`, 0
+`TIMEOUT`** — where the first branch arm had 8 `BROKE` in that file.
+`GeneratedTable` carries it on the base so both subclasses inherit it, proved
+rather than assumed: a spy plugin reading `ITIMER_REAL` in
+`pytest_runtest_call` finds 5.0s armed in **6 of 6** subclass tests, against an
+honest wait of 0.02s per test.
+
+#### Everything else was settled by re-running rows one at a time, on both trees
+
+Driven with the selection `targets_for` generates and the `failfast=True` a
+sweep passes — the arguments a sweep uses, because CLAUDE.md records four rows
+reported fixed on a hand-driven `run` that used `run`'s own defaults instead.
+
+| rows | branch | `main` | what it was |
+|---:|---|---|---|
+| 7 `caught → survived` | 3 caught / 8 survived | **identical** | the outward walk reaching past the selection |
+| 17 unanswered | 15 caught | 16 caught | unanswerable *under a sweep*, not unanswerable |
+| 3 newly unexcused | 3 caught | 3 caught | same |
+| 1 (`_Lanes._sample`) | caught/caught/broke | broke/broke/broke | unstable on both trees |
+
+The seven survivors were killed on `main` by tests **outside their selection**
+— `test_watch.py` killing a `tools/mutants.py` row, `test_manage.py` killing a
+`tools/mutate.py` row whose selection is `tests.test_mutate
+tests.test_packaging tests.test_profiles tests.test_support`. How far the walk
+gets depends on ordering and on what else is in flight, which is the mechanism
+this plan's dead-end section records producing **24 false `caught` verdicts,
+reproducibly**.
+
+`tools/mutate.py:1211` in `_Lanes._sample` is the one row that looked
+branch-specific on a single reading and is not: interleaved A/B/A/B/A/B, the
+branch answered it twice and `main` never. It carries no `# survivor:` tag,
+which is [#109](https://github.com/martinus/tupferl/issues/109).
+
+#### One improvement is B6's own
+
+`tools/mutants.py:1576` in `_imported()` went **broke → caught**. On `main` it
+failed as `setup failed -- AttributeError` inside
+`TestChoosingTheTests.setUpClass`; this cluster made that a module-scoped
+fixture, which pytest enters inside the first requesting test's protocol — so
+the failure is now an answer. Four `_lane` rows and `Work.take` also recovered,
+which is what #96 predicted once those probes ran on an idle machine.
+
+#### And the gate found something in the harness itself
+
+Chasing a spent-tag report — `manifest.py:335`'s row "now caught, so the tag is
+spent", inviting deletion of a disposition whose equivalence argument is still
+correct — turned up what caught it: `TestEveryTagGuardsARowThatExists`, which
+calls `dead_tags(REPO_ROOT)` where `REPO_ROOT` inside a probe is the
+**mutated** sandbox. Any mutation on any tagged statement changes which
+operators that statement generates, the tag reads as dead, and the test fails
+without asserting anything about the line.
+
+Measured over the control arm plus the `tupferl/` subset: **295 of 2789 rows —
+10.6% —** record one of those two tests as their killer, 157 in
+`tools/mutants.py` and 105 in `tools/mutate.py`, which carries ~128 tags. That
+inflates `caught`, which is the flattering direction.
+[#110](https://github.com/martinus/tupferl/issues/110), at P2.
+
+Both issues are the gate paying for its two hours: neither is visible from the
+suite, the preflight, or any CI leg.
+
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
 **Goal:** the pytest-only end state. **PR scope:**
