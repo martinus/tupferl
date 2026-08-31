@@ -2624,6 +2624,14 @@ two comments in `test_overlays` still said `setUp` in a file that has none.
   per file is identical to `main`, and it binds `test_diff`, `test_status` and
   `test_sync_properties` as well. A separate change.
 
+### The gate, re-run after the review
+
+The review edited tests, so every verdict above it was computed against a tree
+that no longer exists -- CLAUDE.md §1's reason for putting a generated analysis
+last. Re-run whole: **1309 rows in 278s, 1283 caught / 26 survived / 0 `BROKE` /
+0 `TIMEOUT`**, baseline green, and the survivor set identical to B3's, B4a's and
+this cluster's own pre-review run, label for label.
+
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
 **Goal:** the pytest-only end state. **PR scope:**
