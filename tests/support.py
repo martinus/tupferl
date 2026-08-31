@@ -40,7 +40,6 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 from unittest import mock
 
 from hypothesis import strategies as st
@@ -788,19 +787,19 @@ def typing(keys: str | None) -> Iterator[None]:
 class Sandbox:
     """A throwaway `$HOME` with `os.environ` already pointed inside it.
 
-    What `SandboxCase` used to *be*, extracted so that the class and
-    `tests/conftest.py`'s `sandbox` fixture are two adapters over one
-    definition. Both exist through Phase B -- B3 converted five of this base's
-    modules and B4a/B4b convert the rest -- and two hand-maintained copies of
-    "what a sandbox is" would be free to drift for exactly as long as it takes
-    nobody to notice. Measured cost of not extracting: `env` alone is read 93
-    times across the five modules B3 converted.
+    **Historical --** what `support.SandboxCase` used to *be*. It was extracted
+    in B3 so that the `unittest` class and `tests/conftest.py`'s `sandbox`
+    fixture were two adapters over one definition rather than two
+    hand-maintained copies of "what a sandbox is", free to drift for exactly as
+    long as it takes nobody to notice. B4b converted the last `TestCase` and
+    the class is gone; the extraction is what is left, and it earned its keep --
+    `env` alone is read 93 times across the five modules B3 converted.
 
     **A module wanting more than this subclasses it** rather than holding one
     and re-exporting the fields: `@dataclass(frozen=True) class Doctored(Sandbox)`
     adding `repo` and `remote` inherits `tmp`, `home`, `env` and `write` with no
     property stubs. The first version of B3 wrote ten of those stubs across five
-    modules, and B4a/B4b would have copied the pattern into nine more.
+    modules, and B4a and B4b would have copied the pattern into nine more.
 
     No `host` field: nothing reads one, and `env["TUPFERL_HOSTNAME"]` has it for
     anything that ever needs to. `sandbox()` still takes the argument, because
@@ -860,58 +859,6 @@ def sandbox(host: str = HOST) -> Iterator[Sandbox]:
         seed_home(home, host)
         with sandboxed(home, host) as env:
             yield Sandbox(tmp=tmp, home=home, env=env)
-
-
-class SandboxCase(unittest.TestCase):
-    """A test with a throwaway `$HOME`, and `os.environ` pointed inside it.
-
-    **The `unittest` adapter over `sandbox` above**, kept until its last user
-    converts (`docs/pytest-plan.md`, clusters B4a and B4b) and deleted in that
-    PR. It builds no sandbox of its own -- it copies three fields off one -- so
-    the two spellings cannot disagree about what a sandbox *is*.
-    """
-
-    host = HOST
-
-    def setUp(self) -> None:
-        self.box = self.enterSandbox()
-        self.tmp = self.box.tmp
-        self.home = self.box.home
-        self.env = self.box.env
-
-    def enterSandbox(self) -> Sandbox:
-        """`sandbox(self.host)`, unwound by `addCleanup`.
-
-        Spelled out rather than `enterContext`, which is 3.11 and this project
-        supports 3.10 -- the same reason the rest of this file reaches for
-        `ExitStack`.
-
-        **`(None, None, None)` reports every test as having exited cleanly, so
-        `sandbox()` must not care whether the body raised.** It does not today:
-        it is `tempdir` and `sandboxed`, both of which unwind the same way
-        either direction. Said here because the equivalence of the two adapters
-        rests on it, and `discard`'s docstring gestures at exactly the change
-        that would break it -- keeping the tree when a test failed, so a person
-        can look at it.
-        """
-        made = sandbox(self.host)
-        built = made.__enter__()
-        self.addCleanup(made.__exit__, None, None, None)
-        return built
-
-    def write(self, where: Path, text: str) -> Path:
-        """Write a file, making its parents. Returns it, so calls can chain."""
-        return self.box.write(where, text)
-
-    def assertContains(self, haystack: str, needle: str, *args: Any) -> None:
-        """`assertIn` with the haystack in the message.
-
-        `assertIn` prints both sides, which for a multi-line report is a wall of
-        text with the interesting part in the middle. This says what was looked
-        for first.
-        """
-        if needle not in haystack:
-            self.fail(f"{needle!r} not found in:\n{haystack}")
 
 
 class Computer:
@@ -1124,40 +1071,14 @@ def two_machines() -> Iterator[TwoMachines]:
     """A `TwoMachines`, torn down on the way out.
 
     Composed from `tempdir` and `copy_template` rather than repeating either,
-    for the reason `sandbox()` gives one level down: the two adapters over this
-    -- `TwoMachinesCase` and `tests/conftest.py`'s fixture -- must not be able to
-    disagree about what the fixture *is*.
+    for the reason `sandbox()` gives one level down: a second spelling of what
+    this fixture *is* would be free to disagree with it. There were two until
+    B4b -- this and `TwoMachinesCase` -- and `tests/conftest.py`'s fixture is
+    the only one now, holding no setup of its own.
     """
     with tempdir() as tmp:
         first, second, remote = copy_template(tmp)
         yield TwoMachines(tmp=tmp, first=first, second=second, remote=remote)
-
-
-class TwoMachinesCase(unittest.TestCase):
-    """The `unittest` adapter over `two_machines` above.
-
-    Kept until its last user converts (`docs/pytest-plan.md`, cluster B4b) and
-    deleted in that PR. It builds nothing of its own -- it copies four fields off
-    one `TwoMachines` -- so the two spellings cannot disagree.
-
-    Named with the `Case` suffix `SandboxCase` already established, so that the
-    definition can keep the good name. The rename cost 23 call sites in the four
-    modules B4b converts, and it is a pure substitution: B4b then deletes the
-    class rather than renaming anything back.
-    """
-
-    def setUp(self) -> None:
-        made = two_machines()
-        self.box = made.__enter__()
-        self.addCleanup(made.__exit__, None, None, None)
-        self.tmp = self.box.tmp
-        self.first = self.box.first
-        self.second = self.box.second
-        self.remote = self.box.remote
-
-    def diverge(self, name: str, mine: bytes, theirs: bytes) -> None:
-        """See `TwoMachines.diverge`."""
-        self.box.diverge(name, mine, theirs)
 
 
 def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
@@ -1323,36 +1244,3 @@ def machine(host: str = HOST) -> Iterator[Machine]:
     with sandbox(host) as box:
         remote = make_remote(box.tmp / "remote.git", box.env)
         yield Machine(**vars(box), remote=remote, repo=paths.repo_dir())
-
-
-class MachineCase(SandboxCase):
-    """The `unittest` adapter over `machine` above.
-
-    Kept until its last user converts (`docs/pytest-plan.md`, cluster B4b) and
-    deleted in that PR. `enterSandbox` is the whole of it: `SandboxCase.setUp`
-    already assigns `tmp`, `home` and `env` off whatever that returns, and a
-    `Machine` *is* a `Sandbox`.
-    """
-
-    box: Machine
-
-    def enterSandbox(self) -> Machine:
-        """`machine(self.host)`, unwound by `addCleanup`. See `SandboxCase.enterSandbox`."""
-        made = machine(self.host)
-        built = made.__enter__()
-        self.addCleanup(made.__exit__, None, None, None)
-        return built
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.remote = self.box.remote
-        self.repo = self.box.repo
-
-    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return self.box.run_cli(*args)
-
-    def init(self) -> subprocess.CompletedProcess[str]:
-        return self.box.init()
-
-    def snapshot(self, name: str) -> Path:
-        return self.box.snapshot(name)

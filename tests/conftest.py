@@ -16,10 +16,10 @@ Where a fixture has exactly one user it stays in that module -- `test_paths`'
 where B1 left them.
 
 **What a sandbox *is* lives in `tests/support.py`, not here.** `support.sandbox`
-is the definition; this file is the pytest adapter over it and
-`support.SandboxCase` is the `unittest` one. Both adapters exist until B4b
-converts the last `TestCase` user, and neither holds setup of its own, so they
-cannot drift apart in the meantime.
+is the definition and this file is the pytest adapter over it, holding no setup
+of its own. There was a `unittest` adapter beside it -- `support.SandboxCase`,
+with `MachineCase` and `TwoMachinesCase` -- from B3 until B4b converted the last
+`TestCase` user and deleted all three.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _every_test_puts_the_environment_back() -> Iterator[None]:
     """Fail the test that leaves `os.environ` changed, rather than the next nine.
 
     **Written because B3 produced exactly this and it was diagnosed backwards.**
-    A test that used `SandboxCase` only for its side effect -- the patched
+    A test that used the sandbox only for its side effect -- the patched
     environment -- named no fixture when it was converted, so it got none and set
     `PATH=/nonexistent` in the real one. What went red was nine *later* tests
     that could not find git, in three other classes.
