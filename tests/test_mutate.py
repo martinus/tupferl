@@ -5004,7 +5004,7 @@ class TestWhatAcceptWritesDown(unittest.TestCase):
                 )
             )
         self.assertIn("2 survivor(s) excused", said.getvalue())
-        self.assertIn("1 of those are unanswerable", said.getvalue())
+        self.assertIn("1 of those are unanswerable under a sweep", said.getvalue())
 
     def test_a_record_with_nothing_unanswerable_says_so_by_silence(self) -> None:
         """The other half, for `TODO`'s reason: a line on every run is noise."""

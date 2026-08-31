@@ -1338,6 +1338,12 @@ has been dropped.
   | `_Lanes.release` | 1 | `MemoryError`, 29s |
   | `_born_from_proc` | 1 | 0.3s |
 
+  **`SIGKILL` and `TIMEOUT` mean different things here**, and the summary's two
+  numbers hide that: the thirteen `SIGKILL`/`MemoryError` rows are answerable on
+  an idle machine and the six `TIMEOUT` rows are not answerable at all. Reading
+  them as one category is what made the first attempt at this reach for a single
+  mechanism.
+
   **#96 proposed refusing to *generate* these, and the measurement refutes it.**
   Built and measured before being taken back out: an exclusion naming
   `_Lanes`, `_lane`, `_born*`, the pool and `Work.take` as *scopes* removes 99
@@ -1350,6 +1356,21 @@ has been dropped.
 
   Nor is there a cost argument for it. The 19 rows are **1890 lane-seconds of
   92401, 2.0%** — and the SIGKILL ones die in five seconds, not in a runaway.
+
+  **The rows are unanswerable *under a sweep*, and the qualifier is measured
+  rather than hedging.** Run alone on an idle machine, `_lane`'s `found.add`
+  row and `_born`'s `branch` row are both `caught` in 42.8s -- warm cache and
+  cold, identically, so it is not an ordering effect. With 49 GiB free the
+  unguarded nested harness fits; with 36 lanes sharing the machine it does not.
+  That is `_Lanes`' own split showing itself: `_BUDGET` shrinks an *honest*
+  nested harness and `_Lanes` answers a dishonest one, so mutating `_Lanes`,
+  `_lane` or `_born` leaves the probe with neither.
+
+  Two consequences worth writing at the tag: a **narrow** run will report these
+  tags spent, which is correct rather than a reason to delete them; and the
+  distinction does not apply to the six `TIMEOUT` rows, where a drained sandbox
+  queue cannot be recovered by any amount of free memory and nothing has ever
+  caught them.
 
   **So the fix is 19 `# survivor:` tags with reasons written in them**, which is
   the mechanism this file already documents for exactly this (`BROKE` and

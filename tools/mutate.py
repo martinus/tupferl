@@ -867,29 +867,40 @@ def _lane(leader: int, table: dict[int, Process]) -> set[int]:
     # nor the kill. That is the eleven-minutes-alive symptom the union was added
     # to remove, still present in the fix for it.
     #
-    # **No mutation of this walk can be answered, and the seven tags below say so
-    # one statement at a time.** A probe runs a nested sweep of its own, so a
-    # probe carrying a broken `_lane` hosts a sweep whose `_end_lane` kills the
-    # wrong set -- the probe among them. The row comes back `broke` by SIGKILL,
-    # which is never `caught`. #91 is the same mechanism one level up, and
-    # `_permitted` is why it stays inside the lane rather than taking the
-    # session; it cannot make the row answerable, because the code that would
-    # have to notice is the code being mutated. Measured 2026-08-31 on the whole
-    # table: all seven `broke` in 5-6s.
+    # **No mutation of this walk can be answered *under a sweep*, and the seven
+    # tags below say so one statement at a time.** A probe runs a nested harness
+    # of its own. `_BUDGET` shrinks an honest one -- see `_Lanes` -- and this
+    # walk is what answers a *dishonest* one, so a probe carrying it broken hosts
+    # a nested harness with no guard at all and the outer lane's ceiling kills
+    # the probe. The row is `broke` by SIGKILL, which is never `caught`.
+    #
+    # **The qualifier is measured, not hedging.** Run alone on an idle machine
+    # the same row is `caught` in 42.8s, by
+    # `TestWhichProcessesALaneAnswersFor::test_a_cycle_in_the_table_does_not_hang_the_sampler`
+    # -- warm cache and cold, identically, so it is not an ordering effect. With
+    # 49 GiB free the unguarded nested harness simply fits; with 36 lanes sharing
+    # the machine it does not. All seven `broke` in 5-6s on the whole-table sweep
+    # of 2026-08-31.
+    #
+    # So a *narrow* run will report these tags spent, and that is correct rather
+    # than a reason to delete them: it is the same row answered under conditions
+    # a sweep does not have. #91 is the same mechanism one level up, and
+    # `_permitted` is why a broken walk stays inside its own lane rather than
+    # taking the session.
     seen: set[int] = set()
     stack = [leader]
     while stack:
         pid = stack.pop()
-        # survivor: branch, negate -- unanswerable, for the reason above the walk.
+        # survivor: branch, negate -- unanswerable under a sweep, for the reason above the walk.
         if pid in seen:
             continue
-        # survivor: drop-call -- unanswerable, for the reason above the walk.
+        # survivor: drop-call -- unanswerable under a sweep, for the reason above the walk.
         seen.add(pid)
-        # survivor: drop-call -- unanswerable, for the reason above the walk.
+        # survivor: drop-call -- unanswerable under a sweep, for the reason above the walk.
         found.add(pid)
-        # survivor: drop-call -- unanswerable, for the reason above the walk.
+        # survivor: drop-call -- unanswerable under a sweep, for the reason above the walk.
         stack.extend(kids.get(pid, ()))
-    # survivor: return-value -- unanswerable, for the reason above the walk.
+    # survivor: return-value -- unanswerable under a sweep, for the reason above the walk.
     return found & set(table)
 
 
@@ -914,14 +925,17 @@ def _born() -> dict[int, float]:
     the behaviour that existed before this and is no worse than it. It is not a
     licence to skip the check, which is why the caller says so out loud.
     """
-    # survivor: branch -- unanswerable, and for `_lane`'s reason: this is the second,
-    #   independent fact `_permitted` vetoes a kill with, so a probe whose copy of it is wrong
-    #   loses the veto and takes its own tree down. Measured 2026-08-31: all four rows of this
-    #   function `broke` by SIGKILL in 4-5s.
+    # survivor: branch -- unanswerable under a sweep, and for `_lane`'s reason: this is the
+    #   second, independent fact `_permitted` vetoes a kill with, so a probe whose copy of it is
+    #   wrong loses the veto and takes its own tree down. All four rows of this function `broke`
+    #   by SIGKILL in 4-5s on the whole-table sweep of 2026-08-31 -- and this one is `caught` in
+    #   42.8s run alone, by `TestWhichClockIsRead::test_it_prefers_proc_where_there_is_one`, warm
+    #   and cold alike. Both facts, because the second is what makes a narrow run report this tag
+    #   spent, and that report is right rather than a reason to delete it.
     if Path("/proc/self/stat").exists():
-        # survivor: return-value -- unanswerable, as the branch above.
+        # survivor: return-value -- unanswerable under a sweep, as the branch above.
         return _born_from_proc()
-    # survivor: return-value -- unanswerable, as the branch above.
+    # survivor: return-value -- unanswerable under a sweep, as the branch above.
     return _born_from_ps()
 
 
@@ -936,7 +950,8 @@ def _born_from_proc() -> dict[int, float]:
         #   same table. The 2026-08-31 sweep grades one of its two rows `broke` rather than
         #   `survived`, which does not change that reasoning: `_born` feeds `_permitted`, so a
         #   probe reading every `/proc` entry as a pid loses the veto exactly as `_born`'s own
-        #   rows do. Equivalent *and* unanswerable, which is why the operator is named once.
+        #   rows do. Equivalent *and* unanswerable under a sweep, which is why the operator is
+        #   named once.
         if not entry.name.isdigit():
             continue
         try:
@@ -1182,10 +1197,10 @@ class _Lanes:
             held = self._killed.pop(group, 0)
             # survivor: branch, connector, drop-not, negate -- TODO: why is this acceptable?
             if not self._ceilings and self._thread is not None:
-                # survivor: drop-call -- unanswerable: the sampler thread is never stopped, so
-                #   the nested harness a probe runs accumulates one per lane it opens and the
-                #   probe dies of `MemoryError` before any test can look. Measured 2026-08-31:
-                #   `broke` in 29s, the longest of the thirteen.
+                # survivor: drop-call -- unanswerable under a sweep: the sampler thread is
+                #   never stopped, so the nested harness a probe runs accumulates one per lane it
+                #   opens and the probe dies of `MemoryError` before any test can look. Measured
+                #   2026-08-31: `broke` in 29s, the longest of the thirteen SIGKILL rows.
                 self._stop.set()
                 self._thread = None
         # survivor: return-value -- TODO: why is this acceptable?
@@ -2901,8 +2916,9 @@ def _report_known(sorted_out: Survivors) -> None:
     if unanswerable := sum(1 for _, why in sorted_out.accepted if "unanswerable" in why):
         print(
             paint.paint(
-                f"{unanswerable} of those are unanswerable: the mutation disables the bound its "
-                f"own probe runs under, so the row can only ever be BROKE or TIMEOUT.",
+                f"{unanswerable} of those are unanswerable under a sweep: the mutation "
+                f"disables the bound its own probe runs under, so the row is BROKE or TIMEOUT "
+                f"whenever the machine is shared.",
                 paint.QUIET,
             )
         )
