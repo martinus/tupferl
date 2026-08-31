@@ -1643,6 +1643,24 @@ read this file:
   than failing. A `BROKE` row is never `caught`, so that line is unguarded on
   the runs where it fires.
 
+  **A second instance, and this one is worse because a cold machine always gets
+  the bad answer.** `tools/mutate.py`'s `_attempt`, the `drop-call` on the
+  `source.write_text(_applied(...))` that applies the mutant: run *alone* and
+  cold it is `TIMEOUT` at 300s in **5 of 5 attempts across two trees** — three
+  on a branch, two on `main`, so it is not anybody's diff. In a whole-table
+  sweep of `main` it came back `caught` in 3.5s, by
+  `TestABatchSweepEndToEnd::test_a_batch_run_writes_its_report_and_marks_itself_done`;
+  in the same sweep of a branch it timed out.
+
+  The mechanism is the one above with the consequence sharpened: drop that write
+  and the probe's nested harness never applies *its* mutations, so every nested
+  row survives and walks the whole suite. Whether the killer is reached before
+  that happens is decided by `Killers.ahead_of` and `Learned` — and
+  `sweeps/killers.json` is gitignored and machine-local, so **the first sweep on
+  any fresh machine reports this row unguarded** and every later one may not.
+  Filed as #107; do not tag it, because a tag excusing a row the suite often
+  *does* catch would be reported spent half the time and silence it the rest.
+
 - **Historical — the lane count was held at 16 by a constant (`_LANES`, now
   removed), and lifting it was worth 30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind
   its comment ("the most lanes worth running, whatever the machine reports"). On
