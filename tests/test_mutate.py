@@ -2006,6 +2006,21 @@ class GeneratedTable:
     said it "inherits nothing else".
     """
 
+    #: On the base, so both subclasses inherit it. `generated` calls
+    #: `mutants.generate` and `mutants.cap`, which is two routes into loops a
+    #: one-line mutation makes infinite -- `line_starts`' counter and `cap`'s
+    #: round-robin. `test_mutants` bounds the classes that call those two
+    #: *directly*; these reach them through `generated` and had nothing, which
+    #: is CLAUDE.md's recorded mistake for the sixth time: the bound went where
+    #: the sweep pointed and the hang was somewhere else. Measured -- four
+    #: `cap` rows the gate's control arm reported `caught` came back `BROKE`
+    #: here, naming `TestWhatTheGeneratedTableSaysBeforeItRuns` as the killer.
+    #:
+    #: The honest wait is 0.02s per test, measured, against `PATIENCE`'s 5s and
+    #: the harness's 30s alarm -- comfortably between the two, which is what a
+    #: bound has to be.
+    _bounded = support.bounds(support.PATIENCE, "generating the table hung")
+
     def repository(self, boxes: support.Boxes) -> Path:
         """Two mutable files whose changed lines differ in number, committed and
         then changed, so `generated` has a real diff to read.

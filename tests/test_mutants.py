@@ -929,6 +929,16 @@ class TestFindingATagNoRowCanReach:
     operators over one statement, and a live tag that must not be reported.
     """
 
+    #: `dead_tags` walks every mutable file and generates for each, so it goes
+    #: through `mutants.line_starts` -- a `while` in which every arm advances its
+    #: counter, so a mutation dropping one spins for ever. This class is one of
+    #: the routes to that line and had no bound of its own, which is CLAUDE.md's
+    #: recorded mistake for the sixth time: the bound went where the sweep
+    #: pointed and the hang was somewhere else. Measured -- four `line_starts`
+    #: rows the gate's control arm reported `caught` came back `BROKE` here,
+    #: with these two classes named as the killer.
+    _bounded = support.bounds(support.PATIENCE, "walking every tag hung")
+
     def dead(self, box: Path) -> list[tuple[str, int, str]]:
         (box / "tools").mkdir(parents=True)
         (box / "tupferl").mkdir(parents=True)
@@ -982,6 +992,16 @@ class TestEveryTagGuardsARowThatExists:
     Static and pure, which is the point: both cost a whole-table sweep to notice
     otherwise, and one of them had been wrong for as long as it had existed.
     """
+
+    #: `dead_tags` walks every mutable file and generates for each, so it goes
+    #: through `mutants.line_starts` -- a `while` in which every arm advances its
+    #: counter, so a mutation dropping one spins for ever. This class is one of
+    #: the routes to that line and had no bound of its own, which is CLAUDE.md's
+    #: recorded mistake for the sixth time: the bound went where the sweep
+    #: pointed and the hang was somewhere else. Measured -- four `line_starts`
+    #: rows the gate's control arm reported `caught` came back `BROKE` here,
+    #: with these two classes named as the killer.
+    _bounded = support.bounds(support.PATIENCE, "walking every tag hung")
 
     def test_the_tree_has_tags_to_check(self) -> None:
         """Or a `dead_tags` that resolved nothing would read as a clean tree."""
