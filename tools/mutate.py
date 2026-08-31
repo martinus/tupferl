@@ -1096,7 +1096,6 @@ class _Lanes:
         #: What a group was holding when this killed it, until `release` says it.
         self._killed: dict[int, int] = {}
         self._thread: threading.Thread | None = None
-        # survivor: drop-assign -- TODO: why is this acceptable?
         self._stop = threading.Event()
         #: The most address space any single watched process has been seen
         #: holding. Run-wide rather than per lane: what it answers is "was the
@@ -1117,12 +1116,10 @@ class _Lanes:
 
     def watch(self, group: int, ceiling: int) -> None:
         """Count `group` against `ceiling` from now on. ``0`` is no cap."""
-        # survivor: boundary, branch, off-by-one -- TODO: why is this acceptable?
         if ceiling <= 0:
             return
         with self._lock:
             self._ceilings[group] = ceiling
-            # survivor: branch -- TODO: why is this acceptable?
             if self._thread is None:
                 # One sampler for every lane, started with the first and stopped
                 # with the last. Per-lane threads would each walk the whole
@@ -1153,14 +1150,11 @@ class _Lanes:
     def release(self, group: int) -> int:
         """Stop counting, and say what it held if this is what killed it."""
         with self._lock:
-            # survivor: drop-call -- TODO: why is this acceptable?
             self._ceilings.pop(group, None)
             held = self._killed.pop(group, 0)
-            # survivor: branch, connector, drop-not, negate -- TODO: why is this acceptable?
             if not self._ceilings and self._thread is not None:
                 self._stop.set()
                 self._thread = None
-        # survivor: return-value -- TODO: why is this acceptable?
         return held
 
     def _sample(self, stop: threading.Event) -> None:
@@ -1168,7 +1162,6 @@ class _Lanes:
         while not stop.wait(_SAMPLE):
             with self._lock:
                 watched = dict(self._ceilings)
-            # survivor: branch -- TODO: why is this acceptable?
             if not watched:
                 continue
             table = _processes()
@@ -1198,27 +1191,19 @@ class _Lanes:
                 if sizes := [table[pid].address for pid in members]:
                     with self._lock:
                         self._widest = max(self._widest, *sizes)
-                # survivor: boundary, branch -- TODO: why is this acceptable?
                 if held <= ceiling:
                     continue
                 with self._lock:
                     # Re-checked under the lock: `release` may have run while
                     # the process table was being read, and a kill after that
                     # names ids the kernel is free to have reused.
-                    # survivor: branch, negate -- TODO: why is this acceptable?
                     if leader not in self._ceilings:
                         continue
-                    # survivor: drop-assign -- TODO: why is this acceptable?
                     self._killed[leader] = held
-                # survivor: drop-call -- TODO: why is this acceptable?
                 _end_lane(leader, members)
             # After the loop, so it is one instant rather than a running total,
             # and outside the per-lane `continue`s above, which skip a lane that
             # is inside its ceiling -- exactly the lanes this has to count.
-            # survivor: branch -- equivalent: with `crowd` empty the sum is 0 and `max(mark, 0)` is
-            #   `mark`, because the mark starts at 0 and never falls. So taking the branch anyway
-            #   reaches the same answer, and what the guard actually saves is the lock -- acquired
-            #   once a second per sweep, which is real and is not observable from any assertion.
             if crowd:
                 with self._lock:
                     self._crowd = max(self._crowd, sum(table[pid].resident for pid in crowd))
@@ -1475,9 +1460,35 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
         for index in range(count):
             root = Path(holder) / f"tree{index}"
             shutil.copytree(Path.cwd(), root, ignore=_SKIP, symlinks=True)
-            # survivor: drop-call -- TODO: why is this acceptable?
             available.put(root)
         yield available
+
+
+@contextmanager
+def _lent(available: queue.Queue[Path]) -> Iterator[Path]:
+    """One sandbox out of the pool, and back into it whatever happens.
+
+    Written once because it was written twice: `_borrow` and `_attempt` each had
+    their own `get` / `try` / `finally` / `put`, and both are load-bearing in the
+    same way. A `put` that does not happen drains the queue by one, and the next
+    borrower after the last copy goes waits on it for ever -- a hang, not an
+    error, and under a sweep a `BROKE` row rather than a diagnosis.
+
+    Collecting them here is also what lets `mutants.UNBOUNDED` name the pool as
+    a scope. Naming `_attempt` instead would have taken the row ordering it
+    decides with it -- the measured `first`/`Learned` composition, which is
+    exactly what wants mutating -- so without this helper the choice was
+    excluding far too much or leaving one of the two unanswerable.
+
+    **The main thread must never call this.** Every borrower is a pool task, for
+    the deadlock `_sandboxes` records: a baseline holding the only copy while
+    every lane waits behind it.
+    """
+    root = available.get()
+    try:
+        yield root
+    finally:
+        available.put(root)
 
 
 def _borrow(
@@ -1488,12 +1499,8 @@ def _borrow(
     Never `failfast`: a red baseline is a thing you want the whole of, and a
     green one never stops early anyway, so there is nothing to buy.
     """
-    root = available.get()
-    try:
+    with _lent(available) as root:
         return _run(tests, root, timeout=timeout, memory=memory, each=each)
-    finally:
-        # survivor: drop-call -- TODO: why is this acceptable?
-        available.put(root)
 
 
 def _applied(original: str, mutation: Mutation) -> str:
@@ -1648,7 +1655,6 @@ class Work:
             if self._next >= self._rows:
                 return None
             got = self._next
-            # survivor: drop-assign, off-by-one -- TODO: why is this acceptable?
             self._next += 1
             return got
 
@@ -1664,8 +1670,7 @@ def _attempt(
     learned: Learned | None = None,
 ) -> Verdict:
     """Apply one mutation in a borrowed sandbox and report what the suite said."""
-    root = available.get()
-    try:
+    with _lent(available) as root:
         source = root / mutation.path
         original = source.read_text(encoding="utf-8")
         source.write_text(_applied(original, mutation), encoding="utf-8")
@@ -1729,9 +1734,6 @@ def _attempt(
             # Into the sandbox, not the working tree. Only so the next mutation
             # to borrow this copy starts from clean source.
             source.write_text(original, encoding="utf-8")
-    finally:
-        # survivor: drop-call -- TODO: why is this acceptable?
-        available.put(root)
 
 
 #: What one lane is measured to occupy, as opposed to what `MEMORY` lets it
@@ -3643,10 +3645,11 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
     # survivor: order -- TODO: why is this acceptable?
     for path in sorted(touched):
         tests = mutants.targets_for(path, root, index) or WHOLE_SUITE
+        source = (root / path).read_text(encoding="utf-8")
         # survivor: connector -- TODO: why is this acceptable?
         table.extend(
             mutants.generate(
-                (root / path).read_text(encoding="utf-8"),
+                source,
                 path,
                 touched[path],
                 tests=tests,
@@ -3654,6 +3657,26 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
                 skip=args.skip_operator or None,
             )
         )
+        # Said out loud for the reason `--limit` says what it dropped, one step
+        # earlier: these rows are absent from the table, so nothing below can
+        # mention them and a reader comparing this run against an older one
+        # would see the count fall with no explanation. See `mutants.UNBOUNDED`.
+        if gone := mutants.refused(
+            source,
+            path,
+            touched[path],
+            tests=tests,
+            operators=args.operator or None,
+            skip=args.skip_operator or None,
+        ):
+            print(
+                paint.paint(
+                    f"note: {len(gone)} row(s) of {path} are not generated -- they mutate the "
+                    "guard and the pool a probe needs to bound itself, so they can only ever "
+                    "be BROKE. See mutants.UNBOUNDED (#96).",
+                    paint.ODD,
+                )
+            )
         if tests == WHOLE_SUITE:
             print(
                 paint.paint(
