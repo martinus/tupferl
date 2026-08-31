@@ -79,10 +79,55 @@ jobs:
     # `gitrepo.is_repository` resolves both sides for.
     # A hang here is otherwise GitHub's six-hour default, and the gate
     # `needs:` this job -- so one wedged leg holds the whole pull request
-    # with nothing in the log to read. Every leg but `macos` finishes in
-    # under a minute; this is a backstop, not a budget to fill.
+    # with nothing in the log to read. This is a backstop, not a budget to
+    # fill: the slowest shard measured 183s.
     timeout-minutes: 20
     runs-on: macos-latest
+    strategy:
+      # **Four shards, and the number came from arithmetic rather than taste.**
+      # Measured on run 33375672036, this leg against `test (3.12)`: identical
+      # setup (6s each), 251s of test run against 74s. Two of that is a real
+      # difference -- 0.51s per test here against 0.195s, and six workers
+      # against eight -- and the third is not:
+      #
+      #   sum of batch times   971s (macos)   374s (3.12)
+      #   ideal makespan       162s            47s
+      #   longest single batch 248s            70s
+      #   actual wall          251s            74s
+      #
+      # Both legs finish when their *longest batch* does, well above the ideal,
+      # because `pack` balances by test count and a batch of 159 tests here
+      # ranges from 32s to 248s. Four shards break that pile across machines --
+      # each one packs its own share (`run_tests`'s module docstring).
+      #
+      # **Measured after landing: 263s to 183s, and the estimate written here
+      # first said 85s.** It was wrong for the reason the paragraph above
+      # names, applied one level up and missed: `pack` decides *both* splits,
+      # so the shards are balanced by count too. Equal counts, 492 tests each,
+      # and very unequal work -- 103s, 172s, 332s and 443s of serial time, with
+      # the slow scopes landing together. Shard 3 then spent 142s of its 176s
+      # in one batch of 41 tests.
+      #
+      # So four machines bought 1.4x, and what is left is not a sharding
+      # question at all: `pack` weighting by *duration* rather than by count
+      # would fix both splits at once, since it is one function. Not done here
+      # -- it needs a duration source that survives a fresh runner -- and worth
+      # saying that `pack`'s docstring measures that gain at "about 5%", which
+      # is true of the 64-worker machine it was measured on, where `sum/workers`
+      # is negligible, and not of a six-worker runner where it is the whole
+      # story.
+      #
+      # Actions minutes are free on a public repository, so four macOS runners
+      # cost queue time and nothing else.
+      #
+      # **`fail-fast: false` because a shard is a quarter of the evidence.**
+      # Cancelling the other three on the first red one leaves a reader knowing
+      # that something failed and not whether the rest would have. The gate is
+      # unaffected either way: a matrix is one entry in `needs:`, keyed on the
+      # job id, and its result is the worst of the legs.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,8 +154,15 @@ jobs:
       #   the address-space field it alone reads cannot be compared with
       #   anything. `_processes` dispatches to `ps` instead, and what that
       #   reader does give is checked by a class that runs everywhere.
+      # **A shard is green over its own share and says nothing about the
+      # others**, which is the failure this split could introduce: four green
+      # legs over three quarters of the suite. `run_tests` reconciles the ids
+      # *it* was given, and `pack` places every scope exactly once, so the four
+      # partition the suite -- asserted end to end by
+      # `test_run_tests.test_the_shards_together_run_every_test`, and refused
+      # loudly by `main` if the matrix ever outgrows the scope count.
       - run: >
-          python -m tools.run_tests --no-skips
+          python -m tools.run_tests --no-skips --shard ${{ matrix.shard }}/4
           --exclude tests.test_gitrepo.TestAPathThatIsNotUtf8
           --exclude tests.test_verdict.TestTheMemoryCapsArithmetic
           --exclude tests.test_verdict.TestAnOutOfMemoryTestIsNotAnAnswer
