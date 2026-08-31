@@ -54,7 +54,12 @@ from tupferl import paths
 #: The three versions of `.bashrc` this module works with. Distinct on every
 #: line that matters, so an assertion that the wrong one arrived cannot pass by
 #: resembling the right one.
-SHARED = "one\ntwo\nthree\nfour\nfive\n"
+#:
+#: `SHARED` is what the template synced, so it is aliased rather than written
+#: out again -- a second copy is free to drift from the tree these tests are
+#: handed, and the drift would arrive as a diff nobody asked for rather than as
+#: a failure naming the constant. `test_diff` and `test_status` say the same.
+SHARED = support.STARTS_AS
 OVERLAY = "one\nTWO on machine-b only\nthree\nfour\nfive\n"
 RESHARED = "one\ntwo\nthree\nfour\nFIVE edited on machine-a\n"
 
@@ -283,7 +288,7 @@ def only_an_overlay(two_machines: support.TwoMachines) -> support.TwoMachines:
     # No sync here: `add` writes *and commits* the overlay and the snapshot,
     # so neither test taking this reads anything a sync would leave behind, and
     # neither asserts about the remote. Measured, interleaved, two runs
-    # each: 0.272s per setUp with it, 0.217s without -- ~55ms x 2 tests,
+    # each: 0.272s per build with it, 0.217s without -- ~55ms x 2 tests,
     # paid again for every mutant in a sweep.
     assert box.first.call("add", "--host", str(box.first.home / ".vimrc")) == 0
     assert not box.first.stored(".vimrc").exists(), "the fixture stored it as shared"
@@ -348,8 +353,8 @@ class TestTwoHostsOverrideTheSameFile:
     def test_each_keeps_its_own_and_the_shared_copy_survives_both(
         self, both_override: support.TwoMachines
     ) -> None:
-        # One each, which is what it takes: `setUp` already left both overlays
-        # on the remote, and this is `machine-a` taking `machine-b`'s in.
+        # One each, which is what it takes: `both_override` already left both
+        # overlays on the remote, and this is `machine-a` taking `machine-b`'s in.
         # Measured with `rev-parse HEAD` around each call -- of four syncs only
         # the first moved anything, so the extra pair claimed a "chance to be
         # wrong" the fixture never gave them.

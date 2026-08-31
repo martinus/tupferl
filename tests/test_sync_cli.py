@@ -52,8 +52,13 @@ class OneMachine(support.Machine):
 
 
 def subject(box: support.Machine) -> str:
-    """The subject line of this repository's last commit."""
-    return support.git(["log", "-1", "--format=%s"], box.repo, box.env)
+    """The subject line of this repository's last commit.
+
+    `Machine.log()` rather than a `git log -1` of its own: the shared class has
+    carried that since B4a and `test_manage.py` reads it ten times. Named here
+    anyway, because `log()[0]` asks the reader to know which end is newest.
+    """
+    return box.log()[0]
 
 
 @pytest.fixture
@@ -102,8 +107,7 @@ class TestSyncOneMachine:
         one_machine.sync()
         one_machine.write(one_machine.home / ".bashrc", "ONE\ntwo\nthree\n")
         one_machine.sync()
-        subject = support.git(["log", "-1", "--format=%s"], one_machine.repo, one_machine.env)
-        assert subject == f"sync from {one_machine.host}: .bashrc"
+        assert subject(one_machine) == f"sync from {one_machine.host}: .bashrc"
 
     def test_a_second_sync_writes_no_commit(self, one_machine: OneMachine) -> None:
         one_machine.sync()
@@ -272,7 +276,15 @@ class TestWhatStopsASync:
         """A smoke test, and no more than one: with nothing to settle it cannot
         see whether a settler was installed or called, because there is no
         conflict to hand one. What each flag *does* is
-        `tests/test_sync_conflicts.py`, which has one."""
+        `tests/test_sync_conflicts.py`, which has one.
+
+        **Parametrized rather than a loop, and it costs three fixtures rather
+        than one -- 0.51s against ~0.29s.** Paid deliberately: `one_machine`
+        leaves an `add`'s commit unpushed, so in a loop only the *first* flag
+        met a sync with anything to do. `test_a_second_sync_writes_no_commit`
+        beside this is the proof -- a second run on the same machine reports
+        "0 changed". Three fixtures is three first syncs, one per flag.
+        """
         assert one_machine.sync(flag)[0] == 0
 
     def test_an_unfinished_merge_stops_it(self, one_machine: OneMachine) -> None:
@@ -315,7 +327,7 @@ class TestTwoMachines:
         computer, because plan §4 says init "then runs a first sync"."""
         done = two_machines.second.run("init", str(two_machines.remote))
         assert done.returncode == 0
-        assert two_machines.second.read(".bashrc") == "one\ntwo\nthree\nfour\nfive\n"
+        assert two_machines.second.read(".bashrc") == support.STARTS_AS
         assert "restored .bashrc" in done.stdout
 
     def test_edits_that_do_not_overlap_merge_without_asking(
@@ -743,13 +755,13 @@ class TestTheRemoteLine:
     def test_the_four_are_all_different(self) -> None:
         """As a set, because two wordings that collided would make one of the
         tests above pass for the wrong reason."""
-        said = {
+        wordings = {
             sync.crossed(THERE, sync.Traffic(pulled=0, pushed=False)),
             sync.crossed(THERE, sync.Traffic(pulled=0, pushed=True)),
             sync.crossed(THERE, sync.Traffic(pulled=3, pushed=False)),
             sync.crossed(THERE, sync.Traffic(pulled=3, pushed=True)),
         }
-        assert len(said) == 4, said
+        assert len(wordings) == 4, wordings
 
     def test_nothing_either_way_is_up_to_date(self) -> None:
         assert (

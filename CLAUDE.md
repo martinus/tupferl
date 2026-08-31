@@ -615,20 +615,24 @@ Five things are not where a newcomer would guess, all on purpose:
 
   So the decorator goes on the class and is the load-bearing statement -- *this
   class runs in a sandbox* -- rather than an inference from whether some method
-  still happens to use the value. B4a converted 21 such classes and B4b 36
-  more, which carry **35 marks** -- `test_sync_cli`'s `TestTheRemoteLine` is
-  pure and needs none, and saying so is the point: the mark states a property,
-  so a class that lacks one has to be a class the property is false of.
+  still happens to use the value. The mark states a property, so a class
+  *without* one has to be a class the property is false of -- B4b's four
+  modules have exactly one, `test_sync_cli`'s `TestTheRemoteLine`, which is
+  pure and touches no sandbox.
 
   **The three `unittest` adapters this rule was written about no longer exist.**
   `SandboxCase`, `MachineCase` and `TwoMachinesCase` were deleted in B4b with
   their last users, so the counts that used to sit here -- 20 classes naming one
   directly, 38 reaching one through a module-local base -- are now zero by
   construction rather than by progress. That is the shape §0 warns about at its
-  most flattering: a grep coming back empty reads as work finished. What is left
-  to convert is `test_support`, `test_paint`, `test_watch`, `test_reached`
-  (B5) and the four harness modules (B6), and `docs/pytest-plan.md`'s status
-  line is the number to read rather than a count kept here.
+  most flattering: a grep coming back empty reads as work finished.
+
+  **No count of converted classes is kept here, and no list of what is left**,
+  which is the correction the first version of this paragraph needed: it carried
+  both, and the class count was wrong by one on the day it was written.
+  `docs/pytest-plan.md`'s status line is the number to read, because
+  `tests/test_pytest_plan.py` recomputes it from the tree and nothing recomputes
+  a figure typed here.
 
   **The leak half is guarded rather than trusted.** `tests/conftest.py`'s
   `_every_test_puts_the_environment_back` is autouse and fails the test that
@@ -1480,9 +1484,13 @@ read this file:
 
 - **Copy the two-machine fixture rather than building it — 120.4ms to 4.3ms,
   24% off the serial suite** (#19). `support.template()`
-  builds the tree once per *process* and `copy_template` copies it; 146 of the
-  suite's tests take it, all of them through the `two_machines` fixture since
-  B4b converted the last `TestCase` user.
+  builds the tree once per *process* and `copy_template` copies it; **190 of
+  the suite's 1920 tests** take it, all of them through the `two_machines`
+  fixture since B4b converted the last `TestCase` user. That count was 146 when
+  #19 was measured and is re-counted here because this entry was edited without
+  re-checking it: `pytest --collect-only --fixtures-per-test`, 2026-08-31. The
+  durable half of this entry is the 120.4 ms against 4.3 ms below; the number of
+  callers is a moving target and is dated for that reason.
 
   | | median |
   |---|---|

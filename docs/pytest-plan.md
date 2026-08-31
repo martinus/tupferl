@@ -2431,7 +2431,7 @@ Preflight after: **1915 tests, 0 failures, 0 skipped.**
 
 ## B4b as built — 2026-08-31
 
-Four modules, 2228 lines in and 2507 out, 36 classes, **408 assertions** --
+Four modules, 2228 lines in and 2507 out, 37 classes, **408 assertions** --
 comparable to B3's 506 and the last cluster of end-to-end sync tests. 127
 collected items before, 132 after; **every one of the 127 distinct test names
 survives**, and the growth is two `subTest` loops becoming `parametrize`.
@@ -2556,6 +2556,73 @@ the verdict-layer fix B4a landed is what keeps the 104 rows it recovered in the
 `caught` column here -- this is the first cluster to convert fixtures *with*
 that fix already in place, and it is the run that shows it holds for a second
 cluster's worth of them.
+
+### What `/simplify` found, after the PR was open and CI was green
+
+Four reviewers over the diff. **The most useful finding was a number, not
+code**, which is the second cluster running to say so.
+
+**Two counts in `CLAUDE.md` were wrong, and this PR wrote one of them.** The
+`usefixtures` entry said B4b converted "36 classes, which carry 35 marks"; the
+tree has **37 and 36**. The arithmetic was right and the base was wrong -- and
+the paragraph's own last sentence had already said the plan's status line is the
+number to read "rather than a count kept here", two lines below a count kept
+there. Both the count and the hand-written list of what B5 and B6 still convert
+are gone; `tests/test_pytest_plan.py` recomputes the status line from the tree
+and nothing recomputes a figure typed into `CLAUDE.md`.
+
+The second was older. #19's entry says "146 of the suite's tests take"
+the two-machine fixture -- true when it was measured and **190 of 1920** now,
+across 45 classes rather than 40. This PR *edited that sentence* to drop its
+`TwoMachinesCase` half without re-checking the figure beside it, which is §0's
+rule missed inside the edit that §0 required. Re-measured with
+`pytest --collect-only --fixtures-per-test`, dated, and corrected in all four
+places that hand-copy it (`CLAUDE.md`, `tests/conftest.py`, and twice in
+`tests/support.py`).
+
+**A sixth `said` local.** The F823 section above records five call sites where a
+method becoming a module function collided with a caller's local. There was a
+sixth, in `TestTheRemoteLine`, which ruff does not flag because that method never
+calls the global -- so the collision is inert until somebody adds a call. Renamed.
+The lesson is narrower than the original one and worth having: **ruff finds the
+collisions that already break, not the ones that are merely armed.**
+
+**`subject()` was a fourth spelling of `Machine.log()`.** The helper was carried
+faithfully from a method, and one of its three call sites still inlined the
+`git log -1` *and* bound the result to a local called `subject`. It reads
+`box.log()[0]` now, keeping the name because `log()[0]` asks the reader to know
+which end is newest.
+
+Two smaller ones: `test_sync_cli` retyped the template's own bytes where
+`support.STARTS_AS` exists -- the call B4a made for the identical literal in
+`test_diff` and `test_status`, so `test_overlays`' `SHARED` is aliased too -- and
+two comments in `test_overlays` still said `setUp` in a file that has none.
+
+### Declined, and why
+
+- **Reverting `test_the_resolution_flags_are_accepted_when_there_is_no_conflict`
+  to a loop.** Measured at 0.51s against ~0.29s: three fixtures rather than one,
+  paid again for every mutant. Declined because the parametrized version is
+  *stronger*, which the measurement does not show. `one_machine` leaves an
+  `add`'s commit unpushed, so in a loop only the first flag met a sync with
+  anything to do -- and `test_a_second_sync_writes_no_commit`, beside it, is the
+  proof that a second run reports "0 changed". Three fixtures is three first
+  syncs, one per flag. Written into the test.
+- **Building `crlf` on `two_machines` instead of on `conflicted`**, saving one
+  `diverge` (~60ms x 2 tests). The stacking is what `main` did and the end state
+  is what the tests assert about; re-deriving the fixture is a redesign, and this
+  cluster's rule is convert rather than redesign.
+- **Folding `two_commits` and `executable` into one helper with a flag.** They
+  are three lines each and the flag is the whole difference; a helper serving
+  exactly two callers is not fewer lines and puts the `executable=True` a level
+  away from the fixture that means it. The duplication is also deliberate --
+  `main` spelled it as `support.TwoMachinesCase.setUp(self)`, skipping the base
+  on purpose.
+- **Hoisting `assert box.second.call("init", str(box.remote)) == 0` onto
+  `TwoMachines`.** 29 occurrences across `tests/`, and `diverge`'s docstring
+  already records the hazard of forgetting it. Real, and not this PR's: the count
+  per file is identical to `main`, and it binds `test_diff`, `test_status` and
+  `test_sync_properties` as well. A separate change.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 

@@ -956,9 +956,11 @@ STARTS_AS = "one\ntwo\nthree\nfour\nfive\n"
 def template() -> Path:
     """The two-machine tree, built once per process and never handed out.
 
-    #19. `TwoMachines.setUp` built this from scratch for every test: a real
-    `init`, `add` and `sync`, which is **146 of the suite's tests** across 40
-    classes. Measured on an idle machine, seven builds each:
+    #19. `TwoMachinesCase.setUp` built this from scratch for every test: a real
+    `init`, `add` and `sync`, which is **190 of the suite's 1920 tests** across
+    45 classes -- re-counted 2026-08-31 with
+    `pytest --collect-only --fixtures-per-test`, from the 146 the issue measured.
+    Measured on an idle machine, seven builds each:
 
     | | median |
     |---|---|
@@ -1029,7 +1031,7 @@ class TwoMachines:
     naming one of the two would be read as naming the pair.
 
     **The tree is copied, not built** (#19). This fixture used to run a real
-    `init`, `add` and `sync` for each of the 146 tests that take it; it now
+    `init`, `add` and `sync` for each of the 190 tests that take it; it now
     copies `template()`, which is 4.3 ms against 120.4 ms. See there for the
     numbers and for why the template is per *process* rather than per class.
 
@@ -1072,9 +1074,9 @@ def two_machines() -> Iterator[TwoMachines]:
 
     Composed from `tempdir` and `copy_template` rather than repeating either,
     for the reason `sandbox()` gives one level down: a second spelling of what
-    this fixture *is* would be free to disagree with it. There were two until
-    B4b -- this and `TwoMachinesCase` -- and `tests/conftest.py`'s fixture is
-    the only one now, holding no setup of its own.
+    this fixture *is* would be free to disagree with it. There were two adapters
+    over it until B4b -- `TwoMachinesCase` and `tests/conftest.py`'s fixture --
+    and the fixture is the only one now, holding no setup of its own.
     """
     with tempdir() as tmp:
         first, second, remote = copy_template(tmp)

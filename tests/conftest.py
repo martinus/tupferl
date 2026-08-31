@@ -102,7 +102,7 @@ def two_machines() -> Iterator[support.TwoMachines]:
 
     A `copytree` of a template built once per process -- 4.3 ms against the
     120.4 ms a real `init`/`add`/`sync` costs (#19), which is what makes this
-    affordable per test for the 146 tests that take it.
+    affordable per test for the 190 tests that take it.
 
     It does **not** patch `os.environ`: each machine carries its own environment
     and applies it per command, which is how two hostnames coexist in one
