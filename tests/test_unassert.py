@@ -16,9 +16,36 @@ this tool cannot see.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
+from tests import support
 from tools import unassert
+
+#: What one conversion may take. The whole module runs in 0.04s, so this is
+#: three orders of magnitude above the longest honest wait -- and `bounded`
+#: brings it under whatever per-test alarm the sweep actually armed, rather than
+#: under the 30s default, which is the distinction `bounded` exists for.
+BOUND = 5.0
+
+
+@pytest.fixture(autouse=True)
+def _no_test_here_may_hang() -> Iterator[None]:
+    """Bound every test in this module, because `_scan` is a `while` loop.
+
+    Every mutation of an `i += 1` in a scanner is an infinite loop by
+    construction -- `i -= 1` and `i += 0` alike -- and a hang is filed `BROKE`,
+    which is never `caught`. Measured: 3 rows of a 96-row diff sweep, on top of
+    9 the file already carried from cluster B3.
+
+    On the *module* rather than on a class or a call, which is CLAUDE.md's five
+    "where to arm it" lessons taken together: every test here reaches `_scan`,
+    most of them through two or three different callers, and a bound placed
+    where a sweep pointed has been wrong five times for exactly that reason.
+    """
+    with support.deadline(support.bounded(BOUND), "unassert did not finish"):
+        yield
 
 
 def only(text: str) -> str:
@@ -49,6 +76,24 @@ class TestWhatItRefuses:
         assert refused == ["assertRaises: takes 2, found 1"] or refused == [
             "assertRaises: no rule for it"
         ]
+
+    def test_a_form_that_is_known_but_given_too_few_arguments_is_refused(self) -> None:
+        """The arity check itself, which nothing reached: the fixture above uses
+        `assertRaises`, and `assertRaises` is not in `FORMS` at all -- so it
+        stops at "no rule for it" one branch earlier. Both mutations of the
+        bound survived until this was written."""
+        done, refused = unassert.convert("self.assertEqual(a)")
+        assert done == "self.assertEqual(a)"
+        assert refused == ["assertEqual: takes 2, found 1"]
+
+    def test_a_form_given_too_many_is_refused_too(self) -> None:
+        """The other side of the window. Two arguments is the form, three is the
+        form plus `unittest`'s message, and four is a call this tool has no
+        reading of -- so `<= form[0] + 1` is a boundary with a case either
+        side."""
+        done, refused = unassert.convert('self.assertEqual(a, b, "why", extra)')
+        assert refused == ["assertEqual: takes 2, found 4"]
+        assert "self.assert" in done
 
     def test_what_is_refused_still_reads_self_assert(self) -> None:
         """Which is the whole point: in a converted class that is an
