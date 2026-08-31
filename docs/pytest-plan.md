@@ -1388,6 +1388,13 @@ gate reads "zero newly-surviving and zero newly-*unexcused*"** and a row that
 becomes unanswerable during the conversion is loud rather than lost in a wall of
 `BROKE`.
 
+**Read those reasons before treating a spent-tag report as a finding.** Thirteen
+of the 19 are unanswerable *under a sweep* and come back `caught` in 42.8s run
+alone -- measured warm and cold alike, so it is not an ordering effect. A narrow
+run over `tools/mutate.py` therefore reports their tags spent, which is the same
+row answered under conditions B6's gate will not have. The other six are
+`TIMEOUT`s on a drained sandbox queue and are not answerable at all.
+
 **[#96](https://github.com/martinus/tupferl/issues/96) itself asked for
 something else and is deliberately left open**: refusing to *generate* those
 rows. That was built and measured before being taken back out — a scope-keyed
