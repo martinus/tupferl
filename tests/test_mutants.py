@@ -47,6 +47,28 @@ from .support import requires_git
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: Why the two assertions about the *real tree's* tags stand down inside a
+#: mutation probe, said once because both need it.
+#:
+#: They are claims about the repository's own source, and under a probe the
+#: source is a copy something deliberately altered -- so a mutation on any
+#: tagged statement changes which operators that statement generates, the tag
+#: reads as dead, and the test fails **for the mutation rather than for the
+#: code**. The row is then filed `caught` with nothing behavioural having
+#: noticed anything.
+#:
+#: Measured 2026-08-31 over a 2789-row table (#110): these two were the recorded
+#: killer for **226 rows across six files** -- 105 in `tools/mutate.py`, 20 in
+#: `tools/verdict_unittest.py`, 7 in `tools/run_tests.py` -- whose behaviour
+#: they say nothing whatever about. `TestFindingATagNoRowCanReach` below is
+#: deliberately *not* gated: it builds its own fixture tree, so its 67 kills are
+#: all in `tools/mutants.py` and every one is a real test of the generator.
+#:
+#: A skip rather than an early `return`, so a run that expected these to
+#: execute can see that they did not. It cannot turn a CI leg red under
+#: `--no-skips`: the variable is set by `mutate._run` and by nothing else.
+MUTATED_TREE = "an assertion about the repository's tags, and this tree is a mutated copy"
+
 
 def mutate(
     body: str, lines: set[int] | None = None, operators: list[str] | None = None
@@ -997,10 +1019,12 @@ class TestEveryTagGuardsARowThatExists:
     #: above, which carries the argument.
     _bounded = support.bounds(support.PATIENCE, "walking every tag hung")
 
+    @pytest.mark.skipif(support.over_a_mutated_tree(), reason=MUTATED_TREE)
     def test_the_tree_has_tags_to_check(self) -> None:
         """Or a `dead_tags` that resolved nothing would read as a clean tree."""
         assert len(_tags()) >= SOME_TAGS
 
+    @pytest.mark.skipif(support.over_a_mutated_tree(), reason=MUTATED_TREE)
     def test_no_tag_names_an_operator_its_statement_cannot_produce(self) -> None:
         dead = [
             f"{path}:{line} {operator}" for path, line, operator in mutants.dead_tags(REPO_ROOT)

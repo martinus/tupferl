@@ -786,6 +786,29 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
+    def test_the_probe_is_told_its_tree_is_a_mutated_copy(self) -> None:
+        """Read off the spawn, like the rest of this class, because it is the
+        same protocol: `tests/support.py`'s `over_a_mutated_tree` reads it at
+        the other end and two tests in `tests/test_mutants.py` stand down on it.
+
+        Spelled literally rather than through `mutate._MUTATED`, which would
+        make this a restatement instead of a check -- the same argument
+        `SANDBOX`'s docstring makes about asserting its keys.
+
+        Unset, the two assertions it gates run against a mutated copy and fail
+        for the mutation rather than for the code: measured, 226 rows of a
+        2789-row table credited to a kill nothing behavioural made (#110).
+        """
+        _, env = self.spawn()
+        assert env["TUPFERL_MUTATE_MUTATED"] == "1"
+
+    def test_the_marker_is_not_part_of_the_sandbox_contract(self) -> None:
+        """`SANDBOX` is spread into `_collected` as well, which runs over the
+        *real* tree — so a marker living there would claim a mutated copy in the
+        one place the distinction matters, and the two gated assertions would
+        stop running in the preflight with nothing saying so."""
+        assert "TUPFERL_MUTATE_MUTATED" not in mutate.SANDBOX
+
 
 #: A test module that hangs on a blocking read, and one that does not. Written
 #: to a throwaway directory rather than kept in `tests/`, because `run_tests`

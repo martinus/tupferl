@@ -848,6 +848,27 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
         return its argument, and every assertion above would still pass."""
         assert support.ALARM == mutate._ALARM
 
+    def test_the_mutated_tree_marker_is_spelled_the_same_at_both_ends(self) -> None:
+        """The same hazard one variable over, and a worse failure. A typo here
+        leaves `over_a_mutated_tree` answering `False` inside every probe, the
+        two tag assertions run against a mutated copy, and 226 rows go back to
+        being credited to a kill nothing behavioural made -- silently, because
+        every one of those rows reads `caught` (#110)."""
+        assert support.MUTATED == mutate._MUTATED
+
+    def test_nothing_says_the_tree_is_mutated_under_an_ordinary_run(self) -> None:
+        """The other half. A helper that answered `True` everywhere would make
+        the two assertions it gates dead in the preflight and in CI, which is
+        the only place they ever run -- and nothing would say so, because a
+        skipped test is not a failure anywhere `--no-skips` is not passed."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(support.MUTATED, None)
+            assert support.over_a_mutated_tree() is False
+
+    def test_it_answers_true_where_the_harness_sets_it(self) -> None:
+        with mock.patch.dict(os.environ, {support.MUTATED: "1"}):
+            assert support.over_a_mutated_tree() is True
+
     def test_a_driven_bound_follows_the_alarm_that_was_armed(self) -> None:
         """A routed constant really is smaller in a child whose alarm is tighter.
 
