@@ -126,6 +126,42 @@ def split_args(text: str) -> list[str]:
     return out
 
 
+def flatten(expr: str) -> str:
+    """`expr` on one line, collapsing runs of whitespace **outside strings only**.
+
+    A multi-line argument has to become one line, or the rewritten `assert`
+    carries the old call's indentation into the middle of an expression. The
+    obvious spelling -- `" ".join(expr.split())` -- was what this did, and it
+    reached inside string literals: `assertIn("host  .gitconfig", out)` came back
+    asserting `"host .gitconfig"`, one space, against output that has two.
+
+    That is the silent kind. The rewritten line reads correctly, `ruff` and
+    `mypy` are happy, and the test fails later for a reason that looks like a
+    bug in the code under test -- which is how it was found, three files into
+    cluster B4a. Nothing about the tool's refusal machinery could have caught
+    it: the call *was* recognised, and it was rewritten into a different claim.
+    """
+    out: list[str] = []
+    seen = 0
+    space = False
+    for i, char, _ in _scan(expr):
+        if i > seen:
+            # `_scan` skips over a string literal without yielding, so the gap
+            # in the indices *is* the literal. Kept exactly as it was written.
+            out.append(expr[seen:i])
+            space = False
+        seen = i + 1
+        if char.isspace():
+            if not space:
+                out.append(" ")
+                space = True
+            continue
+        out.append(char)
+        space = False
+    out.append(expr[seen:])
+    return "".join(out).strip()
+
+
 def bracket(expr: str) -> str:
     """`expr`, parenthesised only if `not` would otherwise bind too tightly.
 
@@ -186,7 +222,7 @@ def convert(text: str) -> tuple[str, list[str]]:
             why = "no rule for it"
         args: list[str] = []
         if not why:
-            args = [" ".join(a.split()) for a in split_args(text[open_at + 1 : end])]
+            args = [flatten(a) for a in split_args(text[open_at + 1 : end])]
             assert form is not None
             if not form[0] <= len(args) <= form[0] + 1:
                 why = f"takes {form[0]}, found {len(args)}"

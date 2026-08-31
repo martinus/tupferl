@@ -102,6 +102,43 @@ class TestItFindsTheWholeCall:
         assert refused == ["assertEqual: unbalanced parentheses"]
 
 
+class TestWhitespaceInsideAStringSurvives:
+    """The one defect this tool has actually shipped, and the shape of it.
+
+    Joining a multi-line call onto one line was `" ".join(arg.split())`, which
+    does not know a string literal from an expression. `assertIn("host  .gitconfig",
+    out)` came back asserting one space against output that has two -- a
+    *different claim*, spelled correctly, passing `ruff` and `mypy`, and failing
+    later as though the code under test were wrong. It survived the whole
+    refusal machinery because the call was recognised: nothing was refused, the
+    rewrite was simply not equivalent.
+
+    Found three files into cluster B4a by a test going red. One literal in nine
+    converted modules had two spaces in it.
+    """
+
+    def test_two_spaces_in_a_literal_are_not_collapsed(self) -> None:
+        was = 'self.assertIn("host  .gitconfig", out)'
+        assert only(was) == 'assert "host  .gitconfig" in out'
+
+    def test_a_newline_inside_a_triple_quoted_literal_survives(self) -> None:
+        """The same hazard at its largest: a literal that *is* several lines."""
+        was = 'self.assertEqual("""a\n  b""", x)'
+        assert only(was) == 'assert x == """a\n  b"""'
+
+    def test_the_expression_around_it_is_still_flattened(self) -> None:
+        """The other half. A rewrite that stopped collapsing anything would pass
+        the two tests above and leave the call's own indentation inside the
+        `assert`, which is what the flattening is for."""
+        was = 'self.assertEqual(\n    "a  b",\n    f(\n        x,\n    ),\n)'
+        assert only(was) == 'assert f( x, ) == "a  b"'
+
+    def test_a_literal_at_the_very_end_of_an_argument_is_kept(self) -> None:
+        """The tail after the last character `_scan` yields, which is the branch
+        an off-by-one in `flatten` would drop silently."""
+        assert only('self.assertTrue(x == "a  b")') == 'assert x == "a  b"'
+
+
 #: One case per entry in `unassert.FORMS`. Module-level so that
 #: `test_every_form_has_a_case` reads the same table the parametrize runs over
 #: rather than a second copy of it.

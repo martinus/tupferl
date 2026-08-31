@@ -1,10 +1,10 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1, B2 and B3** with them, which converted the first seventeen
-modules.
-**Of 36 test modules, 18 still run through pytest's `unittest` adapter** — 16 of
-those convert in B4a–B6. The other two never do, and are **not** arrears:
+and **clusters B1, B2, B3 and B4a** with them, which converted the first
+twenty-one modules.
+**Of 36 test modules, 14 still run through pytest's `unittest` adapter** — 12 of
+those convert in B4b–B6. The other two never do, and are **not** arrears:
 `tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
 its subject, and `tests/test_sync_properties.py` is converted but exposes a
 class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
@@ -30,9 +30,10 @@ expectations this plan was written with. What each executed phase did
 differently from what it says below is in
 [Phase A as built](#phase-a-as-built--2026-08-30),
 [Phase A2 as built](#phase-a2-as-built--2026-08-30),
-[B1 as built](#b1-as-built--2026-08-30) and
-[B2 as built](#b2-as-built--2026-08-30) and
-[B3 as built](#b3-as-built--2026-08-31). **Read every "as built" section before
+[B1 as built](#b1-as-built--2026-08-30),
+[B2 as built](#b2-as-built--2026-08-30),
+[B3 as built](#b3-as-built--2026-08-31) and
+[B4a as built](#b4a-as-built--2026-08-31). **Read every "as built" section before
 the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
@@ -1357,7 +1358,7 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 | B1 | **Done** — see [B1 as built](#b1-as-built--2026-08-30). `test_cpus`, `test_packaging`, `test_errors`, `test_merge`, `test_config`, `test_ci`, `test_release`, `test_paths` | creates `tests/conftest.py` (initially near-empty) — **not done, deliberately**; see B1 as built | no support bases; `test_paths`' local `Environment` base → fixture. Also updates CLAUDE.md's "Build & test" serial-fallback line (`python -m unittest discover…` stops covering these modules) to `python -m pytest -q`. |
 | B2 | **Done** — see [B2 as built](#b2-as-built--2026-08-30). `test_config_properties`, `test_merge_properties`, `test_sync_properties`, `test_profiles` | none new | Hypothesis-native. Delete the `__module__`/`__name__`/`__qualname__` dunder hack in `test_sync_properties.py` (it existed for unittest id round-trip in sharding; pytest nodeids come from collection) — keep the `X = Machine.TestCase` assignments, which are the pytest-idiomatic spelling. `profiles.py` untouched. The pyproject mypy-override list stays valid (module names unchanged). |
 | B3 | **Done** — see [B3 as built](#b3-as-built--2026-08-31). `test_conflicts`, `test_gitrepo`, `test_cli`, `test_manifest`, `test_doctor` | **creates `tests/conftest.py`**, which B1 did not; `SandboxCase` → `sandbox` fixture (throwaway `$HOME`; `mock.patch.dict(os.environ, sandbox_env(...), clear=True)` as a yield-fixture). **Not `requires_git`** — its only user is `test_mutants`, so it belongs to B6; `test_doctor`'s `skipIf` *was* converted | pty/`run_cli` tests live here; S0's capture findings apply. `sandbox_env` and the `CARRIES` allowlist are untouched — the poison test in `test_support` still guards the `ENV_KEYS` linkage. |
-| B4a | `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture (copytree of the cached template + remote-url repair; the `template()`/`two_machines()` functions themselves unchanged) | the overlay both-copies rule and `TestTheSnapshotIsWrittenLast` transfer as-is. |
+| B4a | **Done** — see [B4a as built](#b4a-as-built--2026-08-31). `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture, and `support.Machine` → a `machine` one, which this row did not anticipate: `test_manage` takes it for six classes. The `template()`/`copy_template()` functions are unchanged | the overlay both-copies rule transfers as-is; `TestTheSnapshotIsWrittenLast` is in `test_sync_cli` and so belongs to B4b, which this row had wrong. |
 | B4b | `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | after this PR, delete `TwoMachines`/`SandboxCase` classes from `support.py` if no user remains (grep, don't assume). |
 | B5 | `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion. |
 | B6 | **Fix #96 first — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
@@ -2112,6 +2113,110 @@ Recorded because each is a shape the next cluster will meet:
    loop in `test_output_that_is_not_two_numbers_is_unknown` was attached to the
    test above it, which then failed with `NameError` on the parameter. Loud, and
    only because the parameter was read.
+
+## B4a as built — 2026-08-31
+
+Four modules, 3260 lines, 41 classes, **553 assertions** -- more than B3. 241
+collected items before, 270 after; **every one of the 241 distinct test names
+survives**, and the growth is `subTest` loops becoming `parametrize` plus two
+new zero-iteration guards.
+
+| module | before | after |
+|---|---:|---:|
+| `test_manage` | 94 | 94 |
+| `test_sync` | 60 | 68 |
+| `test_diff` | 49 | 63 |
+| `test_status` | 38 | 45 |
+
+### The machinery landed first again, and this time it renamed things
+
+Two bases, not one: the row above anticipated `TwoMachines` and missed
+`support.Machine`, which `test_manage` takes for six classes. Both got B3's
+treatment -- the dataclass is the definition, and the `unittest` class and the
+`tests/conftest.py` fixture are adapters over one contextmanager -- landed as
+its own commit with no test module touched and the suite green at 1861 either
+side.
+
+**The definitions took the good names and the adapters were renamed**, which
+is the one decision here worth arguing rather than recording:
+`support.Machine` → `MachineCase` and `support.TwoMachines` → `TwoMachinesCase`,
+matching the `SandboxCase` suffix already in the file, and the free function
+`two_machines(into)` → `copy_template(into)`, which is what it does.
+
+The alternative was to give the dataclasses odd names and touch nothing --
+24 call sites cheaper, in modules this cluster otherwise does not open. It was
+rejected because the *asymmetry* is what rots: with `Machine` meaning the
+dataclass in one module and the `TestCase` in another, the next person to write
+`support.Machine` gets whichever one their file happened to import. B4b deletes
+both classes, so the rename is 24 lines that die in the next PR rather than a
+name anybody has to live with.
+
+### The tool this cluster reused had a defect, and only a test found it
+
+`tools/unassert.py` came out of B3 with its safety property tested: an unknown
+method, a wrong arity and an unbalanced expression each come back byte-for-byte
+and reported. That property held. **The tool changed a claim anyway.**
+
+Joining a multi-line call onto one line was `" ".join(arg.split())`, which does
+not know a string literal from an expression:
+
+```python
+self.assertIn("host  .gitconfig", done.stdout)   # two spaces, a padded column
+assert "host  .gitconfig" in done.stdout         # what it should have written
+assert "host .gitconfig" in done.stdout          # what it wrote
+```
+
+Nothing was refused, because the call *was* recognised. The rewrite reads
+correctly, passes `ruff` and `mypy`, and fails later against real output --
+which is how it was found, three modules in, looking like a bug in `status`'s
+column padding.
+
+**The lesson is about where the safety property was drawn.** B3's argument for
+committing the tool was "it cannot silently half-convert", and that was true and
+insufficient: the hazard it left open is *fully* converting into a different
+claim. `flatten` collapses whitespace outside strings only now, `_scan` was
+already the one thing that knows where a literal ends, and
+`TestWhitespaceInsideAStringSurvives` has four cases -- all four go red against
+the old spelling, verified by putting it back.
+
+The audit that followed is the part worth copying: every string literal holding
+a run of two or more whitespace characters, in all nine modules the tool has
+ever touched, compared before and against after. **One**, and the suite had
+already caught it. B3's five files are clean.
+
+### What the fixtures cost, and what they removed
+
+Nine module-local fixture objects, all `@dataclass(frozen=True)` subclassing
+either `support.Sandbox` or `support.TwoMachines`: `Shapes` and `Synced`
+(`test_status`), `Synced`, `Paged` (`test_diff`), `Edited` (`test_sync`),
+`Hosts`, `Keyed` (`test_manage`), plus plain fixtures where the object needed no
+methods -- `started`, `ready`, `managed`, `holding`, `unshared`, `initialised`,
+`root`.
+
+Three notes worth keeping:
+
+- **`test_manage`'s `TestTheExitStatusEachCommandReturns` wanted a machine that
+  had *not* run `init`**, because the status `init` returns is what it asserts.
+  Mapping it to the same fixture as its neighbours turned three of its four
+  tests red at once -- loudly, which is the good case, and only because those
+  tests call `init` themselves rather than depending on it having happened.
+- **`test_sync`'s two review classes had identical setups**, and their bounds
+  did not: `synced()` armed `support.PATIENCE` and `stored_it()` armed nothing.
+  One fixture object now carries both helpers and both go through the bound,
+  which is CLAUDE.md's fourth "where to arm it" lesson -- a bound around one
+  call reads as though it covered the class.
+- **`self.addCleanup((home / ".bashrc").unlink)` after `os.mkfifo`, twice,
+  is simply gone.** The fixture's own `tempdir` removes the tree, and a fixture
+  is one test; `rmtree` unlinks a fifo like any other non-directory. Said here
+  rather than left as a silent deletion.
+
+`test_sync.py` and `test_manage.py` each carried a mid-file
+`if __name__ == "__main__": unittest.main()`, both dead since Phase A2. Deleted,
+which is the same note B6 has for `test_mutate.py`'s.
+
+### Gate
+
+Preflight: **1894 tests, 0 failures, 0 skipped**, from 1861.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 
