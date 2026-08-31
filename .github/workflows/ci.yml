@@ -80,7 +80,7 @@ jobs:
     # A hang here is otherwise GitHub's six-hour default, and the gate
     # `needs:` this job -- so one wedged leg holds the whole pull request
     # with nothing in the log to read. This is a backstop, not a budget to
-    # fill: a shard is about a minute and a half.
+    # fill: the slowest shard measured 183s.
     timeout-minutes: 20
     runs-on: macos-latest
     strategy:
@@ -98,16 +98,24 @@ jobs:
       # Both legs finish when their *longest batch* does, well above the ideal,
       # because `pack` balances by test count and a batch of 159 tests here
       # ranges from 32s to 248s. Four shards break that pile across machines --
-      # each one packs its own share (`run_tests`'s module docstring) -- so the
-      # floor becomes the slowest single scope, which is `test_sync_properties`
-      # at 15.7s locally. Expected 263s to about 85s.
+      # each one packs its own share (`run_tests`'s module docstring).
       #
-      # The deeper fix is `pack` weighting by duration rather than by count,
-      # which is about 35% on *every* leg and costs no runner at all. Not done
-      # here: it needs a duration source that survives a fresh runner, and
-      # `pack`'s docstring measures the gain at 5% -- true of the 64-worker
-      # machine it was measured on, where `sum/workers` is negligible, and not
-      # of a six-worker runner.
+      # **Measured after landing: 263s to 183s, and the estimate written here
+      # first said 85s.** It was wrong for the reason the paragraph above
+      # names, applied one level up and missed: `pack` decides *both* splits,
+      # so the shards are balanced by count too. Equal counts, 492 tests each,
+      # and very unequal work -- 103s, 172s, 332s and 443s of serial time, with
+      # the slow scopes landing together. Shard 3 then spent 142s of its 176s
+      # in one batch of 41 tests.
+      #
+      # So four machines bought 1.4x, and what is left is not a sharding
+      # question at all: `pack` weighting by *duration* rather than by count
+      # would fix both splits at once, since it is one function. Not done here
+      # -- it needs a duration source that survives a fresh runner -- and worth
+      # saying that `pack`'s docstring measures that gain at "about 5%", which
+      # is true of the 64-worker machine it was measured on, where `sum/workers`
+      # is negligible, and not of a six-worker runner where it is the whole
+      # story.
       #
       # Actions minutes are free on a public repository, so four macOS runners
       # cost queue time and nothing else.
