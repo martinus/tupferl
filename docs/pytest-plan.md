@@ -1,13 +1,13 @@
 # Converting tupferl to pytest — phased implementation plan
 
 Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1, B2, B3, B4a, B4b and B5** with them.
-**Of 36 test modules, 6 still run through pytest's `unittest` adapter** — 4 of
-those convert in B6. The other two never do, and are **not** arrears:
-`tests/test_verdict_unittest.py` stays as it is until Phase C deletes it with
-its subject, and `tests/test_sync_properties.py` is converted but exposes a
-class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
-the pytest-idiomatic spelling.
+and **clusters B1 through B6** with them — so **Phase B is finished**, and
+Phase C is next.
+**Of 36 test modules, 2 still run through pytest's `unittest` adapter**, and
+neither is arrears: `tests/test_verdict_unittest.py` stays as it is until
+Phase C deletes it with its subject, and `tests/test_sync_properties.py` is
+converted but exposes a class Hypothesis builds inside `hypothesis.stateful`,
+which the plan keeps as the pytest-idiomatic spelling.
 
 Both numbers are asserted by `tests/test_pytest_plan.py`, which asks the
 `unittest` loader what it takes back from each module — so this line cannot
@@ -33,8 +33,9 @@ differently from what it says below is in
 [B2 as built](#b2-as-built--2026-08-30),
 [B3 as built](#b3-as-built--2026-08-31),
 [B4a as built](#b4a-as-built--2026-08-31),
-[B4b as built](#b4b-as-built--2026-08-31) and
-[B5 as built](#b5-as-built--2026-08-31). **Read every "as built" section before
+[B4b as built](#b4b-as-built--2026-08-31),
+[B5 as built](#b5-as-built--2026-08-31) and
+[B6 as built](#b6-as-built--2026-08-31). **Read every "as built" section before
 the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
@@ -1362,7 +1363,7 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 | B4a | **Done** — see [B4a as built](#b4a-as-built--2026-08-31). `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture, and `support.Machine` → a `machine` one, which this row did not anticipate: `test_manage` takes it for six classes. The `template()`/`copy_template()` functions are unchanged | the overlay both-copies rule transfers as-is; `TestTheSnapshotIsWrittenLast` is in `test_sync_cli` and so belongs to B4b, which this row had wrong. |
 | B4b | **Done** — see [B4b as built](#b4b-as-built--2026-08-31). `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | all three `unittest` adapters had no user left and were deleted here, which this row anticipated for two of them. |
 | B5 | **Done** — see [B5 as built](#b5-as-built--2026-08-31). `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion — and they were wrong, in `test_reached` too. |
-| B6 | **#96's prerequisite is settled — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
+| B6 | **Done** — see [B6 as built](#b6-as-built--2026-08-31). `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
 
 **Size:** 7 PRs, each roughly 1–4 sessions. **Failure protocol:** FP per
 cluster; a newly-surviving row means the conversion weakened a test — fix the
@@ -2834,6 +2835,171 @@ The re-run passed. What is left is a real but pre-existing weakness -- a 12s
 bound against a 0.66s honest wait *on this machine*, and a macOS runner is not
 this machine. Filed rather than tuned blind (§5): raising it without knowing the
 runner's honest wait would be a fix built on the wrong mechanism.
+
+## B6 as built — 2026-08-31
+
+Four modules, 11738 lines in and 11802 out. 663 collected items before, 761
+after; **every one of the 663 distinct test names survives**, and 665 distinct
+names come out — the two new ones are the companion guard a computed
+`parametrize` needs, one per computed list. The rest of the growth is seventeen
+`subTest` loops expanding into a case each.
+
+| module | before | after |
+|---|---:|---:|
+| `test_run_tests` | 70 | 85 |
+| `test_mutants` | 112 | 166 |
+| `test_verdict` | 75 | 75 |
+| `test_mutate` | 406 | 435 |
+
+Preflight: **2089 tests, 0 failures, 0 skipped**, from 2059.
+
+### The assertions went first, and that commit is green on its own
+
+`python -m tools.unassert` rewrote 1105 of 1126 `self.assertX(...)` calls and
+refused 21 (19 `assertRaises`, 2 `assertRegex`). A plain `assert` reads the same
+inside a `TestCase`, so that landed as its own commit with every class still
+unconverted — which made the structural work a diff a person can read instead
+of eleven thousand lines of both at once.
+
+The tool's B5 warning held: `tests/test_mutants.py` is the woswoar port, written
+`assertEqual(actual, expected)` against this repository's `(expected, actual)`,
+so its output was yoda. `ruff --fix` (SIM300) put most back and **eleven dict
+and set literals** it does not see were flipped by hand — found with `ast`
+rather than by reading, because "literal on the left" is not something a regex
+can decide once list comprehensions are in play.
+
+### Two claims the runner change had already falsified
+
+Neither was found by looking for stale claims. Both turned up because the
+conversion touched the code they described, which is §0's argument for fixing
+them in the same change rather than filing them.
+
+**`TestABoundedCallStillReturns` said six `line_starts` rows could not be
+answered.** The argument was that `TestChoosingTheTests.setUpClass` builds the
+real import index — parsing every file in the repository — so a `line_starts`
+that never advances hung *this module's own fixture* before any test in it ran,
+and the per-test alarm could not help because `setUpClass` is not a test:
+`TIMEOUT` at 300s rather than `BROKE` at 30.
+
+Both halves had gone at **Phase A2** and nothing said so. `unittest` loaded
+classes alphabetically, so `TestChoosingTheTests` ran before
+`TestLineEndingsThatAreNotNewline`; pytest collects in definition order, where
+it runs long after. And `verdict.py` arms its alarm in
+`pytest_runtest_protocol`, which brackets setup as well as call.
+
+Measured on `at += 1` becoming `at -= 1`, driven with the selection
+`targets_for` generates and the `failfast=True` a sweep passes — CLAUDE.md's own
+rule about a single-row reproduction:
+
+| tree | verdict |
+|---|---|
+| this branch | **`caught` in 45s** |
+| a `main` worktree, same machine | **`caught` in 45s** |
+
+So the conversion did not repair it; A2 did. The killer is
+`TestTheOperators::test_each_operator_fires_on_its_own_fixture`, near the top of
+the file, which `failfast` stops at. That is one of the six rows — the one the
+old claim named — and the gate answers the rest.
+
+The same paragraph called `TestCappingTheTable` "in-process with no bound",
+which stopped being true when that class gained its own `deadline`.
+
+**`support.deadline`'s docstring prescribed `ExitStack` in `setUp`** because
+`TestCase.enterContext` is 3.11 and this project supports 3.10. An autouse
+fixture makes that question moot, and every one of the seven such `setUp`s is
+now one.
+
+### `parametrize` removes the `subTest` bound trap rather than guarding it
+
+CLAUDE.md's fifth "where to arm it" lesson is *arm it inside the `subTest`*,
+because `subTest` catches the `TimeoutError` a bound raises, records a failure
+and carries on with nothing armed — so twenty operators cost twenty times the
+bound, and `TestTheOperators` ran past 60s against a 30s alarm.
+
+One case is one test under `parametrize`, so the class fixture arms the bound
+afresh per case and `failfast` stops at the first that trips. **B6 met the trap
+twice in one cluster** — `test_mutants.TestTheOperators` and `test_mutate`'s
+`test_a_row_that_asked_nothing_is_excused_on_the_same_terms`, the second
+measured past 120s under the very mutation its bound was written for — and both
+lose their second copy of the bound.
+
+There is no `subTest` loop left in the suite outside `test_verdict_unittest.py`
+and the probe *fixtures* that use one on purpose, as the thing under test.
+
+### `requires_git` is the one skip, and its polarity is the hazard
+
+B3's row deferred it here because `test_mutants` is its only user. pytest has no
+`skipunless`, so `skipUnless(shutil.which("git"))` becomes
+`skipif(shutil.which("git") is None)` — **and the wrong way round it skips on
+every machine that has git**, which is every machine this runs on: green,
+silent, and testing nothing. The argument is written at the definition rather
+than at the call, and `--no-skips` on the macOS leg is what would say so.
+
+### Three bases, three fixtures, and one factory
+
+`Tree` (`test_run_tests`), `Probe` (`test_verdict`) and `GeneratedTable`
+(`test_mutate`) become plain classes built by fixtures. `Probe.fresh` keeps its
+meaning by holding an `ExitStack`: a second sandbox made mid-test does not
+remove the first, which is what makes "the second has not been written to" true
+rather than merely likely.
+
+`test_mutate` had **fifteen** copies of `Path(tempfile.mkdtemp(prefix=...))`
+plus `addCleanup(shutil.rmtree, box, True)`, and `test_mutants` three more of a
+variant. They go through a `boxes` factory over `support.tempdir` — a factory
+rather than one directory per test, because several helpers build a tree per
+call and are called twice in a test.
+
+**That pair was not what it looked like.** Its `True` is `ignore_errors`, so a
+delete that failed left the tree behind and said nothing, where
+`support.tempdir` names what survived. CLAUDE.md's rule ("a test wanting a
+throwaway directory uses `support.tempdir`, never `tmp_path`") is written
+against `tmp_path`; this is the *other* thing it was competing with, and the
+rule turns out to be right about it for a second reason nobody had stated.
+
+### `test_mutate.py`'s mid-file entry point, and what it actually did
+
+The B6 row said to delete it with a note. The note is worth more than the
+deletion: `if __name__ == "__main__": unittest.main()` sat **6000 lines above
+the end of the file**, so running the module directly defined the classes above
+it, ran *those*, and exited — reporting `OK` over a fraction of the file with
+nothing to say which fraction. That is the flattering green §8 collects, and
+pytest has no entry point to put it back at.
+
+### The two conversion checks B5 asked for, and what they found
+
+Both were run on all four modules. **Both found real instances**, which is the
+argument for B5's instruction to run them every cluster rather than once:
+
+- **unread parameters** — `test_mutants`' fixture rename left one
+  `self.targets("tupferl/sync.py", index)` that `ruff` could not see, because
+  `ruff format` had already wrapped it across two lines and the rewriter's regex
+  was single-line. It also found a pre-existing one:
+  `TestABatchSweepEndToEnd.truncated` took a `box` it never read.
+- **locals shadowing a name the conversion moved to module scope** —
+  `TestPacking` binds `batch` in two comprehensions, and the helper hoisted out
+  of `TestWhatABatchReports` was going to be called `batch`. It is `worker` now,
+  which is also what it drives. Two locals named `index` in `test_mutants` sent
+  the new module-scoped fixture to `import_index` for the same reason.
+
+Left alone and named rather than fixed: **twenty-five locals called `row`** in
+`test_mutate` shadow the module-level `row()` helper. That predates the cluster
+(#76 introduced the helper) and every one is a JSON record in a comprehension,
+so no call is wrong — but it is exactly the shape the check exists for, and
+renaming either side is a change of its own.
+
+### One tool bug, recorded because the tool is kept
+
+The structural threader that gives a fixture to every method using it, and to
+every caller of one, ran to a fixpoint — and its call-site rewrite matched
+`self.sleeper(` inside `self.sleeper(request, ...)`, so it re-added the argument
+on every round: `self.sleeper(request, request, request, ...)`, eleven deep,
+and 447 such insertions across the file before the loop gave up. Collapsed with
+a second regex and the tool fixed to use a negative lookahead.
+
+Worth writing down because the failure was **loud** — it did not settle, and
+would have failed `ruff` and `mypy` had it — while the same bug in a tool that
+ran once would have been silent. A rewriter over the real tree should be
+idempotent and should be run twice to prove it.
 
 ## Phase C — Teardown: delete the unittest verdict layer, settle CI and docs
 

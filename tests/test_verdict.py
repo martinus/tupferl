@@ -162,7 +162,7 @@ def pytest_needs() -> int:
     Measured at 109 ms -- it starts a real pytest -- and it was a module-level
     constant, so every import paid it: `tests/test_mutate.py` alone drove it
     fifteen times through nested `mutate.run` calls, 1.65 s. `CAPS` above has to
-    stay at module scope because `skipUnless` reads it when the class is
+    stay at module scope because `pytest.mark.skipif` reads it when the class is
     defined; this has no such excuse.
     """
     child = (

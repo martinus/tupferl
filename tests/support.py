@@ -178,9 +178,11 @@ def deadline(seconds: float, why: str) -> Iterator[None]:
     sweep named.** Measured twice: bounding the call left the *sibling* tests
     hanging on the same mutation, because they reach the line by another route --
     three of four `line_starts` rows and two of six `verdict` walk rows stayed
-    `BROKE`. The spelling is a `contextlib.ExitStack` entered in `setUp` and
-    closed by `addCleanup`; `TestCase.enterContext` would say it in one line and
-    is 3.11, which this project does not require.
+    `BROKE`. The spelling is an autouse `@pytest.fixture` on the class that
+    enters this as a `with` and yields -- one per test, entered and left with
+    it. It used to be a `contextlib.ExitStack` opened in `setUp` and closed by
+    `addCleanup`, because `TestCase.enterContext` is 3.11 and this project
+    supports 3.10; a fixture makes that question moot.
     """
 
     def ring(signum: int, frame: object) -> None:
