@@ -699,10 +699,16 @@ Five things are not where a newcomer would guess, all on purpose:
   - **The unfinished ones are counted out loud, every run.** A `TODO` tag
     silences its row exactly as a written reason does — that is what makes
     `--accept` usable — so without the count a green sweep is a claim nobody
-    made. As of 2026-08-29 there are 115 of them, all in `tools/mutate.py`,
+    made. As of 2026-08-31 there are **109** of them, all in `tools/mutate.py`,
     where the pool orchestration and `_Lanes` signal handling resist testing for
     the reasons four dead ends below already record. That number is debt, not
     progress; a sweep exits 0 over all of it.
+
+    It read 115 until this line was re-counted and the tree said 114, so the
+    figure had been wrong by one since it was written — which is what a
+    hand-maintained count does. The five that went with #96 are the shape this
+    number exists to make visible: four `TODO`s replaced by written reasons, and
+    two collapsed into one when `_borrow` and `_attempt` came to share `_lent`.
 
   **Historical — this replaced a file of sha256 keys
   (`known-survivors.json`), and none of the names below still exists.** The
@@ -812,7 +818,7 @@ measurement pins it.
 
 ### Gotchas
 
-Forty-eight of them, and each is here because it cost somebody an afternoon.
+Forty-nine of them, and each is here because it cost somebody an afternoon.
 Grouped rather than run together: as one flat list of 461 lines this was a
 section a reader scanned past. The entries themselves are unchanged and none
 has been dropped.
@@ -1307,6 +1313,84 @@ has been dropped.
   code.** Ask of any new one — a delete, a kill, a push — what the second,
   independent fact is that vetoes it.
 
+- **The other half of that: a probe cannot answer a row that disables the bound
+  it runs under — and the answer is a written disposition, not an exclusion.**
+  #91 fixed what a mutated harness *kills*; this is what it *counts*. A probe
+  runs this suite, this suite drives nested harnesses, so a probe carrying a
+  mutated `_lane` or `_born` hosts a sweep whose `_end_lane` takes the probe
+  with it, and one carrying a mutated sandbox pool hosts one that waits on an
+  empty queue for ever. `_permitted`'s trick does not transfer: a veto works
+  because *some* unmutated code is left to veto with, and here the code that
+  would have to hold the bound is the code being mutated.
+
+  **Measured, whole table, 2026-08-31** — `--all --only tools/mutate.py`, 1030
+  rows, green baseline: 795 caught, 216 survived, 13 `BROKE`, 6 `TIMEOUT`. The
+  19 unanswered rows sit in seven scopes, and 12 of them had no disposition, so
+  the sweep's own section read *"12 asked nothing, so the table is that much
+  smaller than it looks"*.
+
+  | scope | rows | how it dies |
+  |---|---:|---|
+  | `_lane` | 7 | SIGKILL, 5–6s |
+  | `_born` | 4 | SIGKILL, 4–5s |
+  | `Work.take` | 2 | 300s, the per-row bound |
+  | `_sandboxes`, `_borrow`, `_attempt`, `run` | 1 each | 300s |
+  | `_Lanes.release` | 1 | `MemoryError`, 29s |
+  | `_born_from_proc` | 1 | 0.3s |
+
+  **`SIGKILL` and `TIMEOUT` mean different things here**, and the summary's two
+  numbers hide that: the thirteen `SIGKILL`/`MemoryError` rows are answerable on
+  an idle machine and the six `TIMEOUT` rows are not answerable at all. Reading
+  them as one category is what made the first attempt at this reach for a single
+  mechanism.
+
+  **#96 proposed refusing to *generate* these, and the measurement refutes it.**
+  Built and measured before being taken back out: an exclusion naming
+  `_Lanes`, `_lane`, `_born*`, the pool and `Work.take` as *scopes* removes 99
+  rows to repair 19 — and **57 of the 99 are rows the suite catches today**,
+  24 more are read survivors. That is 3 caught rows destroyed per unanswered
+  row repaired, and it is this file's own recorded mistake at a coarser
+  granularity: *"the operator is required, and that is the whole design … a
+  bare tag would excuse a live guard about half the time it was used"*, 53%
+  measured there against **58% here**.
+
+  Nor is there a cost argument for it. The 19 rows are **1890 lane-seconds of
+  92401, 2.0%** — and the SIGKILL ones die in five seconds, not in a runaway.
+
+  **The rows are unanswerable *under a sweep*, and the qualifier is measured
+  rather than hedging.** Run alone on an idle machine, `_lane`'s `found.add`
+  row and `_born`'s `branch` row are both `caught` in 42.8s -- warm cache and
+  cold, identically, so it is not an ordering effect. With 49 GiB free the
+  unguarded nested harness fits; with 36 lanes sharing the machine it does not.
+  That is `_Lanes`' own split showing itself: `_BUDGET` shrinks an *honest*
+  nested harness and `_Lanes` answers a dishonest one, so mutating `_Lanes`,
+  `_lane` or `_born` leaves the probe with neither.
+
+  Two consequences worth writing at the tag: a **narrow** run will report these
+  tags spent, which is correct rather than a reason to delete them; and the
+  distinction does not apply to the six `TIMEOUT` rows, where a drained sandbox
+  queue cannot be recovered by any amount of free memory and nothing has ever
+  caught them.
+
+  **So the fix is 19 `# survivor:` tags with reasons written in them**, which is
+  the mechanism this file already documents for exactly this (`BROKE` and
+  `TIMEOUT` are excused on the same terms, #57). It costs no coverage, it is per
+  `(line, operator)` rather than per scope, and the sweep already counts it —
+  7 of the 19 were excused that way before this and only the other 12 were
+  loud. Two further reasons it beats refusing to generate:
+
+  - **a future unanswerable row in those scopes still shows up.** An exclusion
+    is permanent and silent, so a later change could make a *new* row in
+    `_Lanes` unanswerable and nothing would ever say. That matters most for
+    exactly the cluster the exclusion was wanted for.
+  - **the reason lives beside the line**, so the next reader of `_lane` learns
+    why a sweep cannot speak for it, which a constant in another module does
+    not tell them.
+
+  What an exclusion would still be right for is a row that is *dangerous* rather
+  than merely unanswerable — `mutants.UNMUTABLE` exists for that and is empty.
+  These are not: `_permitted` keeps a mutated `_lane` inside its own lane.
+
 - **Never launch a mutation sweep with `nohup`.** It sets SIGHUP to `SIG_IGN`,
   and a process started that way passes the *ignored* disposition to every
   descendant — so `tests/test_merge.py`'s stub, which killed itself with SIGHUP
@@ -1579,6 +1663,24 @@ read this file:
   Reordering changes which test is tried first, and one candidate blocks rather
   than failing. A `BROKE` row is never `caught`, so that line is unguarded on
   the runs where it fires.
+
+  **A second instance, and this one is worse because a cold machine always gets
+  the bad answer.** `tools/mutate.py`'s `_attempt`, the `drop-call` on the
+  `source.write_text(_applied(...))` that applies the mutant: run *alone* and
+  cold it is `TIMEOUT` at 300s in **5 of 5 attempts across two trees** — three
+  on a branch, two on `main`, so it is not anybody's diff. In a whole-table
+  sweep of `main` it came back `caught` in 3.5s, by
+  `TestABatchSweepEndToEnd::test_a_batch_run_writes_its_report_and_marks_itself_done`;
+  in the same sweep of a branch it timed out.
+
+  The mechanism is the one above with the consequence sharpened: drop that write
+  and the probe's nested harness never applies *its* mutations, so every nested
+  row survives and walks the whole suite. Whether the killer is reached before
+  that happens is decided by `Killers.ahead_of` and `Learned` — and
+  `sweeps/killers.json` is gitignored and machine-local, so **the first sweep on
+  any fresh machine reports this row unguarded** and every later one may not.
+  Filed as #107; do not tag it, because a tag excusing a row the suite often
+  *does* catch would be reported spent half the time and silence it the rest.
 
 - **Historical — the lane count was held at 16 by a constant (`_LANES`, now
   removed), and lifting it was worth 30%.** `_LANES = 16` sat in `run`'s `wanted` expression with nothing behind

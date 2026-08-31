@@ -866,15 +866,41 @@ def _lane(leader: int, table: dict[int, Process]) -> set[int]:
     # grandchild (`setsid`, out of it): the grandchild was in neither the count
     # nor the kill. That is the eleven-minutes-alive symptom the union was added
     # to remove, still present in the fix for it.
+    #
+    # **No mutation of this walk can be answered *under a sweep*, and the seven
+    # tags below say so one statement at a time.** A probe runs a nested harness
+    # of its own. `_BUDGET` shrinks an honest one -- see `_Lanes` -- and this
+    # walk is what answers a *dishonest* one, so a probe carrying it broken hosts
+    # a nested harness with no guard at all and the outer lane's ceiling kills
+    # the probe. The row is `broke` by SIGKILL, which is never `caught`.
+    #
+    # **The qualifier is measured, not hedging.** Run alone on an idle machine
+    # the same row is `caught` in 42.8s, by
+    # `TestWhichProcessesALaneAnswersFor::test_a_cycle_in_the_table_does_not_hang_the_sampler`
+    # -- warm cache and cold, identically, so it is not an ordering effect. With
+    # 49 GiB free the unguarded nested harness simply fits; with 36 lanes sharing
+    # the machine it does not. All seven `broke` in 5-6s on the whole-table sweep
+    # of 2026-08-31.
+    #
+    # So a *narrow* run will report these tags spent, and that is correct rather
+    # than a reason to delete them: it is the same row answered under conditions
+    # a sweep does not have. #91 is the same mechanism one level up, and
+    # `_permitted` is why a broken walk stays inside its own lane rather than
+    # taking the session.
     seen: set[int] = set()
     stack = [leader]
     while stack:
         pid = stack.pop()
+        # survivor: branch, negate -- unanswerable under a sweep, for the reason above the walk.
         if pid in seen:
             continue
+        # survivor: drop-call -- unanswerable under a sweep, for the reason above the walk.
         seen.add(pid)
+        # survivor: drop-call -- unanswerable under a sweep, for the reason above the walk.
         found.add(pid)
+        # survivor: drop-call -- unanswerable under a sweep, for the reason above the walk.
         stack.extend(kids.get(pid, ()))
+    # survivor: return-value -- unanswerable under a sweep, for the reason above the walk.
     return found & set(table)
 
 
@@ -899,8 +925,17 @@ def _born() -> dict[int, float]:
     the behaviour that existed before this and is no worse than it. It is not a
     licence to skip the check, which is why the caller says so out loud.
     """
+    # survivor: branch -- unanswerable under a sweep, and for `_lane`'s reason: this is the
+    #   second, independent fact `_permitted` vetoes a kill with, so a probe whose copy of it is
+    #   wrong loses the veto and takes its own tree down. All four rows of this function `broke`
+    #   by SIGKILL in 4-5s on the whole-table sweep of 2026-08-31 -- and this one is `caught` in
+    #   42.8s run alone, by `TestWhichClockIsRead::test_it_prefers_proc_where_there_is_one`, warm
+    #   and cold alike. Both facts, because the second is what makes a narrow run report this tag
+    #   spent, and that report is right rather than a reason to delete it.
     if Path("/proc/self/stat").exists():
+        # survivor: return-value -- unanswerable under a sweep, as the branch above.
         return _born_from_proc()
+    # survivor: return-value -- unanswerable under a sweep, as the branch above.
     return _born_from_ps()
 
 
@@ -912,7 +947,11 @@ def _born_from_proc() -> dict[int, float]:
         #   all-digit entry that is not a process, the `stat` read below is wrapped in
         #   `suppress(OSError)`, and the `int(entry.name)` that would raise on `cpuinfo` is inside
         #   `suppress(ValueError)`. Taking the branch anyway costs a failed open and reaches the
-        #   same table.
+        #   same table. The 2026-08-31 sweep grades one of its two rows `broke` rather than
+        #   `survived`, which does not change that reasoning: `_born` feeds `_permitted`, so a
+        #   probe reading every `/proc` entry as a pid loses the veto exactly as `_born`'s own
+        #   rows do. Equivalent *and* unanswerable under a sweep, which is why the operator is
+        #   named once.
         if not entry.name.isdigit():
             continue
         try:
@@ -1158,6 +1197,10 @@ class _Lanes:
             held = self._killed.pop(group, 0)
             # survivor: branch, connector, drop-not, negate -- TODO: why is this acceptable?
             if not self._ceilings and self._thread is not None:
+                # survivor: drop-call -- unanswerable under a sweep: the sampler thread is
+                #   never stopped, so the nested harness a probe runs accumulates one per lane it
+                #   opens and the probe dies of `MemoryError` before any test can look. Measured
+                #   2026-08-31: `broke` in 29s, the longest of the thirteen SIGKILL rows.
                 self._stop.set()
                 self._thread = None
         # survivor: return-value -- TODO: why is this acceptable?
@@ -1475,9 +1518,42 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
         for index in range(count):
             root = Path(holder) / f"tree{index}"
             shutil.copytree(Path.cwd(), root, ignore=_SKIP, symlinks=True)
-            # survivor: drop-call -- TODO: why is this acceptable?
+            # survivor: drop-call -- unanswerable: the pool is built one copy short of what
+            #   it promised, so a nested sweep's last borrower waits on an empty queue for ever.
+            #   That is a hang, so `timeout` at the per-row bound rather than `broke` -- and 300s
+            #   of a lane, every sweep, for a row that can never be `caught`. Measured 2026-08-31.
             available.put(root)
         yield available
+
+
+@contextmanager
+def _lent(available: queue.Queue[Path]) -> Iterator[Path]:
+    """One sandbox out of the pool, and back into it whatever happens.
+
+    Written once because it was written twice: `_borrow` and `_attempt` each had
+    their own `get` / `try` / `finally` / `put`, and both are load-bearing in the
+    same way. A `put` that does not happen drains the queue by one, and the next
+    borrower after the last copy goes waits on it for ever -- a hang, not an
+    error, and under a sweep a `BROKE` row rather than a diagnosis.
+
+    It also collapses two identical unanswerable rows into one. Both `put`s
+    were `drop-call` mutants that hang a nested sweep for ever, so both cost a
+    lane the 300s per-row bound and neither could ever be `caught`; one line
+    means one disposition to write and to keep true, rather than two that drift.
+
+    **The main thread must never call this.** Every borrower is a pool task, for
+    the deadlock `_sandboxes` records: a baseline holding the only copy while
+    every lane waits behind it.
+    """
+    root = available.get()
+    try:
+        yield root
+    finally:
+        # survivor: drop-call -- unanswerable: the pool loses a copy per borrow, so a nested
+        #   sweep's borrower after the last one waits on an empty queue for ever. A hang, so
+        #   `timeout` at the per-row bound rather than `broke`. Measured 2026-08-31 at 300s,
+        #   twice, before `_borrow` and `_attempt` shared this line.
+        available.put(root)
 
 
 def _borrow(
@@ -1488,12 +1564,8 @@ def _borrow(
     Never `failfast`: a red baseline is a thing you want the whole of, and a
     green one never stops early anyway, so there is nothing to buy.
     """
-    root = available.get()
-    try:
+    with _lent(available) as root:
         return _run(tests, root, timeout=timeout, memory=memory, each=each)
-    finally:
-        # survivor: drop-call -- TODO: why is this acceptable?
-        available.put(root)
 
 
 def _applied(original: str, mutation: Mutation) -> str:
@@ -1648,7 +1720,10 @@ class Work:
             if self._next >= self._rows:
                 return None
             got = self._next
-            # survivor: drop-assign, off-by-one -- TODO: why is this acceptable?
+            # survivor: drop-assign, off-by-one -- unanswerable, and for `_sandboxes`' reason
+            #   one queue over: a nested sweep's lanes are handed the same row for ever, or one
+            #   short of the first. Neither ends, so both are `timeout` at the per-row bound.
+            #   Measured 2026-08-31: 300s each.
             self._next += 1
             return got
 
@@ -1664,8 +1739,7 @@ def _attempt(
     learned: Learned | None = None,
 ) -> Verdict:
     """Apply one mutation in a borrowed sandbox and report what the suite said."""
-    root = available.get()
-    try:
+    with _lent(available) as root:
         source = root / mutation.path
         original = source.read_text(encoding="utf-8")
         source.write_text(_applied(original, mutation), encoding="utf-8")
@@ -1729,9 +1803,6 @@ def _attempt(
             # Into the sandbox, not the working tree. Only so the next mutation
             # to borrow this copy starts from clean source.
             source.write_text(original, encoding="utf-8")
-    finally:
-        # survivor: drop-call -- TODO: why is this acceptable?
-        available.put(root)
 
 
 #: What one lane is measured to occupy, as opposed to what `MEMORY` lets it
@@ -2349,7 +2420,10 @@ def run(
         # nothing else to read, and it is the case this run cannot repeat.
         for line in _loose_evidence(results, loose):
             print(paint.paint(line, paint.QUIET), flush=True)
-        # survivor: off-by-one -- TODO: why is this acceptable?
+        # survivor: off-by-one -- unanswerable, and for `_sandboxes`' reason arriving through
+        #   the pool's *size* rather than through a dropped `put`: a pool of zero copies, so the
+        #   `get` inside `_borrow` never returns. `timeout` at the per-row bound, measured
+        #   2026-08-31 at 300s. The `max_workers` beside it is the same row and the same reason.
         with _sandboxes(1) as spare, ThreadPoolExecutor(max_workers=1) as pool:
             loose_verdict = pool.submit(_borrow, spare, loose, timeout, memory, each).result()
         if loose_verdict.outcome != "survived":
@@ -2828,6 +2902,24 @@ def _report_known(sorted_out: Survivors) -> None:
             paint.paint(
                 f"{unfinished} of those say TODO: nobody has written the reason yet.",
                 paint.ODD,
+            )
+        )
+    # **The denominator, said by the run rather than by a document.** A row whose
+    # mutation disables the bound its own probe runs under can only ever be
+    # `BROKE` or `TIMEOUT` -- so it is not a guard this suite failed to provide,
+    # it is a question a sweep cannot ask. Nineteen of `tools/mutate.py`'s 1030
+    # rows are that, and without this line the fact lives only in prose, which
+    # `TODO`'s own count is here because prose does not survive.
+    #
+    # Keyed on the word in the reason, exactly as `TODO` above is: a tag is free
+    # text and the alternative is a second field nobody would fill in.
+    if unanswerable := sum(1 for _, why in sorted_out.accepted if "unanswerable" in why):
+        print(
+            paint.paint(
+                f"{unanswerable} of those are unanswerable under a sweep: the mutation "
+                f"disables the bound its own probe runs under, so the row is BROKE or TIMEOUT "
+                f"whenever the machine is shared.",
+                paint.QUIET,
             )
         )
     for spent in sorted_out.spent:

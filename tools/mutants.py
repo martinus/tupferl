@@ -1229,6 +1229,57 @@ def generate(
     return out
 
 
+def dead_tags(root: Path) -> list[tuple[str, int, str]]:
+    """Every `# survivor:` tag naming an operator its statement cannot produce.
+
+    **The other direction from `mutate.Survivors.spent`, and the one nothing
+    else can see.** `spent` asks whether a tag's rows are all now *caught*,
+    which needs a sweep and only reaches the tags that sweep touched. This asks
+    whether a tag has any row at all, which is pure -- so it runs in the
+    preflight, over the whole tree, every time, which is far more often than a
+    sweep runs.
+
+    Such a tag is invisible by construction: `excused` never resolves to it, so
+    it neither excuses anything nor gets reported as spent. It simply sits there
+    claiming somebody read a survivor. Two real instances, both found by the
+    first run of this: a tag written for `mutate._lane`'s walk placed above the
+    enclosing `while`, covering the loop header and none of the five statements
+    inside it; and `verdict_unittest.main`'s `off-by-one` reason four screens
+    from the `argv` indices it describes, above a `return` that has never
+    carried such a row.
+
+    Here rather than in `tests/`, because it is the same question `--accept` and
+    a sweep would want to ask, and neither can reach a helper that lives in a
+    test module.
+
+    It answers in `(path, statement, operator)` -- the statement the tag claims
+    to guard, not the tag's own line, which `mutate.Excuse` reports instead. The
+    statement is what a reader has to look at here: the complaint is that *this*
+    statement produces no such row, and the tag is the handful of lines above
+    it. Asking `excuse` for the tag's line would also have added an arm for a
+    `None` that `operators` has already ruled out, and an unreachable guard is
+    one this repository would rather not have.
+    """
+    found: list[tuple[str, int, str]] = []
+    for path, whole in sorted(every_line(root).items()):
+        source = (root / path).read_text(encoding="utf-8")
+        index, offsets = Tags(source), Offsets(source)
+        reachable = {
+            # survivor: off-by-one -- equivalent: `span` is one edit node's `(start, end)`, and an
+            #   edit node is always inside a single logical statement -- so `statement` normalises
+            #   either end to the same line, and `span[1]`/`span[-1]` are the same answer.
+            #   Measured over this tree's 3930 rows: the two ends agree on every one of them.
+            (index.statement(offsets.line_of(row.span[0])), row.operator)
+            for row in generate(source, path, whole)
+            if row.span is not None
+        }
+        for statement in range(len(source.split("\n"))):
+            for operator in sorted(index.operators(statement)):
+                if (statement, operator) not in reachable:
+                    found.append((path, statement + 1, operator))
+    return found
+
+
 def cap(mutations: Sequence[Mutation], limit: int) -> tuple[list[Mutation], list[Mutation]]:
     """Keep `limit` of them, round-robin across files; return what was dropped too.
 

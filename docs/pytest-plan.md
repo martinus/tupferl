@@ -1362,23 +1362,45 @@ drive nested harnesses and are the most alarm/timeout-sensitive):
 | B4a | **Done** — see [B4a as built](#b4a-as-built--2026-08-31). `test_sync`, `test_status`, `test_diff`, `test_manage` | `TwoMachines` → `two_machines` fixture, and `support.Machine` → a `machine` one, which this row did not anticipate: `test_manage` takes it for six classes. The `template()`/`copy_template()` functions are unchanged | the overlay both-copies rule transfers as-is; `TestTheSnapshotIsWrittenLast` is in `test_sync_cli` and so belongs to B4b, which this row had wrong. |
 | B4b | **Done** — see [B4b as built](#b4b-as-built--2026-08-31). `test_overlays`, `test_sync_cli`, `test_sync_commits`, `test_sync_conflicts` | per-module bases (`Conflicted`, `TwoCommits`, `OneMachine`, …) → module-local fixtures | all three `unittest` adapters had no user left and were deleted here, which this row anticipated for two of them. |
 | B5 | **Done** — see [B5 as built](#b5-as-built--2026-08-31). `test_support`, `test_paint`, `test_watch`, `test_reached` | local bases (`Boxed`, `Fixture`) → fixtures | `test_watch`'s bound-vs-alarm numbers (the 30s trap) re-checked against `bounded` after conversion — and they were wrong, in `test_reached` too. |
-| B6 | **Fix #96 first — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
+| B6 | **#96's prerequisite is settled — see below.** `test_run_tests`, `test_mutants`, `test_verdict`, `test_mutate` | `Probe`, `Tree`, table bases → fixtures | hardest: these drive *nested* harnesses; every recorded walk/BROKE gotcha applies. `test_mutate.py`'s mid-file `if __name__ == "__main__"` block (~line 349; the file continues for thousands of lines) is dead under pytest — delete it with a note. `tests/test_verdict_unittest.py` is left unittest-style *deliberately* (it dies in Phase C; pytest runs unittest tests either way, so leaving it costs nothing — say so in the PR). The `TODO` survivor tags in `tools/mutate.py` are not this phase's debt: leave them, count unchanged. |
 
 **Size:** 7 PRs, each roughly 1–4 sessions. **Failure protocol:** FP per
 cluster; a newly-surviving row means the conversion weakened a test — fix the
 test, never the disposition; a newly-BROKE row is almost always a bound/alarm
 race — apply the five-lessons checklist before touching anything else.
 
-### #96 is a prerequisite of B6, and of no other cluster
+### #96 is a prerequisite of B6, and of no other cluster — settled 2026-08-31
 
-**Fix [#96](https://github.com/martinus/tupferl/issues/96) before starting B6.**
-A sweep mutates its own memory guard and pool — `_Lanes.release`,
-`_Lanes._sample`, `_sandboxes`, `_borrow`, `Work.take` — so those rows come back
-`BROKE`, and a `BROKE` row is never `caught`. B6's gate is the 1030-row
-`tools/mutate.py` table, where the noise sits; converting `test_mutate.py` while
-those rows are unanswerable means the cluster's own acceptance check cannot
-distinguish "the conversion weakened a test" from "the harness cannot answer
-this row", which is the one thing the gate exists to tell apart.
+**What B6 needed was for every unanswerable row to carry a reason, and it now
+does.** A sweep mutates its own memory guard, its process-identity readers and
+its pool, so those rows come back `BROKE` or `TIMEOUT`, and neither is ever
+`caught`. B6's gate is the 1030-row `tools/mutate.py` table, where the noise
+sits; converting `test_mutate.py` while those rows are unanswerable means the
+cluster's own acceptance check cannot distinguish "the conversion weakened a
+test" from "the harness cannot answer this row", which is the one thing the gate
+exists to tell apart.
+
+Measured on the whole table, green baseline: **19 rows answered nothing**, in
+`_lane` (7), `_born` (4), `Work.take` (2), `_Lanes.release`, `_sandboxes`,
+`_borrow`, `_attempt`, `run` and `_born_from_proc` (1 each). Twelve had no
+disposition at all. All 19 now carry a written `# survivor:` reason, so **B6's
+gate reads "zero newly-surviving and zero newly-*unexcused*"** and a row that
+becomes unanswerable during the conversion is loud rather than lost in a wall of
+`BROKE`.
+
+**Read those reasons before treating a spent-tag report as a finding.** Thirteen
+of the 19 are unanswerable *under a sweep* and come back `caught` in 42.8s run
+alone -- measured warm and cold alike, so it is not an ordering effect. A narrow
+run over `tools/mutate.py` therefore reports their tags spent, which is the same
+row answered under conditions B6's gate will not have. The other six are
+`TIMEOUT`s on a drained sandbox queue and are not answerable at all.
+
+**[#96](https://github.com/martinus/tupferl/issues/96) itself asked for
+something else and is deliberately left open**: refusing to *generate* those
+rows. That was built and measured before being taken back out — a scope-keyed
+exclusion removes 99 rows to repair 19, and 57 of the 99 are rows the suite
+catches today. CLAUDE.md's gotchas carry the numbers and the argument; whether
+to close the issue on them is the maintainer's call, not this plan's.
 
 **Measured, so this is a schedule rather than a worry.** Counting the caught
 rows of `tools/mutate.py` that each cluster's modules actually kill:
@@ -1394,9 +1416,12 @@ So B2–B5 are unaffected and should not wait. Re-run that count before B3, B4a
 and B4b rather than trusting these three small numbers: they came from sweeps
 taken on 2026-08-30 and a cluster that changes a module changes what kills what.
 
-**And do #96 last rather than first for a second reason:** its fix touches
-`tools/mutants.py`, whose tests B6 converts. Adjacent is better than four
-clusters apart.
+**And the reason for doing it immediately before B6 rather than earlier held
+up, though not for the reason given.** It was expected to touch
+`tools/mutants.py`, whose tests B6 converts; in the end it touched only
+`tools/mutate.py` and CLAUDE.md, because the mechanism it needed already
+existed. What it did need was a whole-table sweep of `tools/mutate.py` — which
+is B6's gate, so the baseline was paid for once and serves both.
 
 ## Step 1a as built — 2026-08-30
 
