@@ -915,6 +915,56 @@ class TestCollectingWhatAKilledSweepLeft:
             self.tree(box, "mutate-new", mutate._stamp())
             assert mutate.unstamped(box) == []
 
+    def test_the_tree_we_are_standing_in_is_never_removed(self) -> None:
+        """**The veto, and it is why deleting here is acceptable at all.**
+
+        A probe runs a *mutated* copy of this module, so the liveness test above
+        is not something the harness may rely on: the first sweep taken over
+        this change mutated it on row 1 and the probe deleted the live sweep's
+        own sandbox out from under it -- `FileNotFoundError: .../tree3/tools/
+        verdict.py`, and the run died. `Path.cwd()` is the kernel's answer
+        rather than anything computed here, which is the second, independent
+        fact #91 says to ask any new delete for.
+
+        The stamp says the owner is long dead, so every other rule here votes to
+        remove it; only being *inside* it saves it.
+        """
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            mine = self.tree(box, "mutate-here", json.dumps({"pid": self.dead(), "born": 1.0}))
+            (mine / "tree0").mkdir()
+            here = Path.cwd()
+            os.chdir(mine / "tree0")
+            try:
+                assert mutate._collect_abandoned(box) == []
+            finally:
+                os.chdir(here)
+            assert (mine / "tree0").exists()
+
+    def test_a_sibling_tree_of_the_one_we_are_in_is_also_spared(self) -> None:
+        """The lane next door. Deleting `tree3` while this probe works in
+        `tree5` breaks the sweep exactly as thoroughly, so the veto is on the
+        holder rather than on the one directory."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            mine = self.tree(box, "mutate-holder", json.dumps({"pid": self.dead(), "born": 1.0}))
+            (mine / "tree3").mkdir()
+            (mine / "tree5").mkdir()
+            here = Path.cwd()
+            os.chdir(mine / "tree5")
+            try:
+                assert mutate._collect_abandoned(box) == []
+            finally:
+                os.chdir(here)
+            assert (mine / "tree3").exists()
+
+    def test_a_dry_run_names_them_and_removes_nothing(self) -> None:
+        """What every ordinary sweep does. Counting is safe under a mutation in
+        a way that removing is not, so the count is unconditional and the `rm`
+        is `--collect`."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            gone = self.tree(box, "mutate-dry", json.dumps({"pid": self.dead(), "born": 1.0}))
+            assert mutate._collect_abandoned(box, dry=True) == [gone]
+            assert gone.exists(), "a dry run deleted something"
+
     def test_a_tree_it_makes_is_stamped_before_anything_else_goes_in(self) -> None:
         """A sweep killed a millisecond after `mkdtemp` still has to leave a
         tree that can be identified rather than one that has to be guessed at."""

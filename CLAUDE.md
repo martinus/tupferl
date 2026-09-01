@@ -1644,11 +1644,31 @@ has been dropped.
 
   The temporary trees are the other half and cannot be fixed the same way: they
   belong to the sweep, not the probe. `_owned_temp` stamps each one with the
-  sweep's pid *and birth time* and `_collect_abandoned` removes, at the next
-  run, only those whose owner is provably gone. **It cannot collect what
-  predates the stamp** -- nothing distinguishes an old tree from a live one --
-  so `unstamped` names those and a person runs one `rm -rf`. A tool that deletes
-  on your behalf should not be the one guessing.
+  sweep's pid *and birth time*, and `_collect_abandoned` removes only those
+  whose owner is provably gone.
+
+  **It is `--collect`, never automatic, and the first version was automatic --
+  which is how this file's own rule got proved again.** A probe runs a *mutated*
+  copy of `tools/mutate.py`, so the very first row of the very first sweep taken
+  over that change mutated the liveness test and the probe deleted the live
+  sweep's own sandbox out from under it: `FileNotFoundError:
+  .../tree3/tools/verdict.py`, and the run died on row 1 of 39. That is exactly
+  *a harness that mutates itself must not route a destructive operation through
+  mutable code*, which #91 had already paid for once with `_end_lane`, arriving
+  in a new place within a week. **When you add a delete, a kill or a push to
+  this harness, that rule is the first thing to check, not the last.**
+
+  Two things make it acceptable now. It is a flag, for `--accept`'s reason --
+  removing things is a decision, and a run that made it by itself would be
+  making it on somebody's behalf. And the veto is a fact the code cannot talk
+  itself out of: a tree holding `Path.cwd()`, or holding a parent of it, is a
+  tree *this process is standing in*, and the kernel answers that rather than
+  anything computed here. A mutation to the liveness test can now at worst
+  delete somebody else's abandoned tree.
+
+  **It cannot collect what predates the stamp** -- nothing distinguishes an old
+  tree from a live one -- so `unstamped` names those and a person runs one
+  `rm -rf`. A tool that deletes on your behalf should not be the one guessing.
 
 - **The sweep sizes itself from what is actually free, and says so.**
   `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the

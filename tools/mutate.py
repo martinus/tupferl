@@ -3760,7 +3760,7 @@ def _owned_temp(kind: str) -> Iterator[Path]:
         yield root
 
 
-def _collect_abandoned(where: Path | None = None) -> list[Path]:
+def _collect_abandoned(where: Path | None = None, dry: bool = False) -> list[Path]:
     """Remove temporary trees whose sweep no longer exists, and say which.
 
     **Because nothing inside a sweep can do it.** `_sandboxes` cleans up in a
@@ -3780,6 +3780,24 @@ def _collect_abandoned(where: Path | None = None) -> list[Path]:
     - a pid that is alive with the recorded birth time is left alone, and so is
       one whose birth time could not be read at all on this platform.
 
+    **Never automatic, and that is not caution -- it is a defect this had.** The
+    first version ran at the start of every sweep. A probe runs a *mutated* copy
+    of this module, so the first row of the very first sweep over this change
+    mutated the liveness test, and the probe deleted the live sweep's own
+    sandbox out from under it: `FileNotFoundError: .../tree3/tools/verdict.py`,
+    and the run died. That is CLAUDE.md's rule about a harness that mutates
+    itself -- *do not route a destructive operation through mutable code* --
+    which #91 already paid for once with `_end_lane`. It is behind `--collect`
+    now for `--accept`'s reason: removing things is a decision, and a run that
+    made it by itself would be deciding on somebody's behalf.
+
+    **`refuses` is the veto, and it is a fact this code cannot talk itself out
+    of.** A tree holding the current directory is a tree in use -- by *us* --
+    and `Path.cwd()` is the kernel's answer rather than anything derived here.
+    That is the second, independent fact #91 says to ask any new delete for; a
+    mutation to the liveness test above can now at worst delete somebody else's
+    abandoned tree, never the one it is standing in.
+
     It cannot help a second sweep running concurrently: that one's pid is alive
     and its trees are skipped, which is the whole point of the stamp.
 
@@ -3794,8 +3812,14 @@ def _collect_abandoned(where: Path | None = None) -> list[Path]:
     """
     root = Path(where) if where is not None else Path(tempfile.gettempdir())
     living = _born()
+    # Resolved, because a sandbox under `/tmp` on macOS is reached through a
+    # `/private/var` symlink and an unresolved comparison would miss it.
+    here = Path.cwd().resolve()
     swept = []
     for found in sorted(root.glob(f"{SETTINGS.tmp_prefix}*")):
+        settled = found.resolve()
+        if settled == here or settled in here.parents:
+            continue
         try:
             owner = json.loads((found / _OWNER).read_text(encoding="utf-8"))
             pid, born = int(owner["pid"]), owner["born"]
@@ -3806,7 +3830,8 @@ def _collect_abandoned(where: Path | None = None) -> list[Path]:
         # towards keeping a tree somebody may be using.
         if pid in living and (born is None or living[pid] == born):
             continue
-        shutil.rmtree(found, ignore_errors=True)
+        if not dry:
+            shutil.rmtree(found, ignore_errors=True)
         swept.append(found)
     return swept
 
@@ -4588,6 +4613,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--collect",
+        action="store_true",
+        help=(
+            "remove temporary trees left by a sweep that was killed; without it "
+            "they are only counted"
+        ),
+    )
+    parser.add_argument(
         "--prefix",
         type=float,
         default=PREFIX,
@@ -4596,21 +4629,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Before anything is sized or copied. `_share` reads `MemAvailable`, and a
-    # ghost from an abandoned run is memory this one will not see -- #114
-    # measured 3.2 GiB held by one such process for 36 hours, with every sweep
-    # in that window sizing itself against what was left. The processes are
-    # `verdict.watch_for_orphaning`'s job now; the trees they ran in are this
-    # one's, and nothing inside a killed sweep can ever do it.
-    #
-    # Said out loud rather than done quietly: this deletes directories, and a
-    # tool that removes things on your behalf should name them. Silence when
-    # there is nothing to collect, which is every ordinary run.
-    if swept := _collect_abandoned():
-        print(f"collected {len(swept)} abandoned temporary tree(s) from a sweep that was killed.")
-    # Named, not deleted: these predate the owner stamp, so nothing here can
-    # tell one that is in use from one that is not. One line, so the 2.5 GiB
-    # #114 found is visible rather than waiting for somebody to run `du`.
+    # **Counted always, removed only when asked.** The processes an abandoned
+    # sweep leaves are `verdict.watch_for_orphaning`'s job and it does them by
+    # itself; the trees are this one's, and deleting is a decision -- see
+    # `_collect_abandoned` for the sweep that deleted its own sandbox when this
+    # was automatic. Reporting is safe under a mutation in a way that removing
+    # is not, so the count is unconditional and the `rm` is a flag.
+    if args.collect:
+        for gone in _collect_abandoned():
+            print(f"collected {gone}")
+    elif waiting := _collect_abandoned(dry=True):
+        print(
+            f"{len(waiting)} temporary tree(s) belong to a sweep that is gone. "
+            "`--collect` removes them."
+        )
     if old := unstamped():
         where = Path(tempfile.gettempdir()) / f"{SETTINGS.tmp_prefix}*"
         print(
