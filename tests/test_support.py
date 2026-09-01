@@ -155,6 +155,101 @@ def every_wait() -> Iterator[tuple[str, int, str, bool]]:
             yield found.name, value.lineno, ast.unparse(value), routed(value, tree)
 
 
+#: The fewest computed `parametrize` lists this tree is known to hold. A floor
+#: for `every_computed_parametrize`'s own precondition, for `FLOOR`'s reason one
+#: walk up: a reader that matched nothing would report no unguarded lists and
+#: read as a clean bill of health.
+COMPUTED = 6
+
+
+def names_the_cases(call: ast.Call) -> str | None:
+    """The name a `parametrize` takes its cases from, or `None` for a literal.
+
+    Three shapes, and telling them apart is the whole job:
+
+    - ``parametrize("job", sorted(FOUND))`` -- a `Call` wrapping a `Name`;
+    - ``parametrize("command", PREFLIGHT)`` -- a bare `Name`;
+    - ``parametrize("side", ["base", "ours"])`` -- a `List`, which is written
+      out in front of the reader and needs no guard at all.
+
+    Only the first two can be empty without anybody noticing, because only they
+    are computed somewhere else.
+    """
+    if len(call.args) < 2:
+        return None
+    cases = call.args[1]
+    if isinstance(cases, ast.Call):
+        cases = cases.args[0] if cases.args else cases
+    return cases.id if isinstance(cases, ast.Name) else None
+
+
+def is_parametrize(node: ast.AST) -> bool:
+    """`@pytest.mark.parametrize(...)`, however it was spelled."""
+    if not isinstance(node, ast.Call):
+        return False
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "parametrize"
+
+
+def spelled_out(name: str, tree: ast.Module) -> bool:
+    """Whether `name` is bound, at module scope, to a non-empty literal.
+
+    `tests/test_release.py`'s `GUARDS` is a tuple written out in the file, and
+    its own module docstring already says why that needs no guard: "`GUARDS` and
+    `JOBS` are literals, so those cannot collapse to nothing". A name is not the
+    same thing as a computation, and treating every name as one made this report
+    four lists that cannot be empty -- which is how a checker earns the
+    exclusion list it should not have.
+    """
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(at, ast.Name) and at.id == name for at in node.targets):
+            continue
+        return isinstance(node.value, (ast.List, ast.Tuple, ast.Set)) and bool(node.value.elts)
+    return False
+
+
+def computed_in(tree: ast.Module) -> Iterator[tuple[int, str, bool]]:
+    """One module's computed `parametrize` lists, and whether a test names each.
+
+    Split from the file walk so the reader can be driven over source somebody
+    wrote for the purpose. A checker that only ever runs over the real tree can
+    only be tested by the tree being wrong, which is the one state it exists to
+    prevent.
+    """
+    looked: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            # **`node.body`, not `node`.** `ast.walk` of a `FunctionDef`
+            # includes its `decorator_list`, so the `parametrize` decorator's
+            # own mention of the name counted as a test looking at it -- and
+            # every computed list in the tree came back guarded whatever else
+            # was true. A reader that answers yes to everything is the shape
+            # this whole class exists to refuse, arriving in the reader.
+            for stmt in node.body:
+                looked |= {seen.id for seen in ast.walk(stmt) if isinstance(seen, ast.Name)}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not is_parametrize(node):
+            continue
+        if name := names_the_cases(node):
+            yield node.lineno, name, name in looked or spelled_out(name, tree)
+
+
+def every_computed_parametrize() -> Iterator[tuple[str, int, str, bool]]:
+    """`(module, line, name, guarded)` for each parametrize over a computed list.
+
+    `guarded` means the same module holds a test whose *body* mentions that
+    name. That is deliberately weak: the four guards this was written from do
+    not assert non-emptiness, they assert **content**, and each is stronger than
+    anything a generic check could demand. What must not happen is a fifth list
+    with no test looking at it at all.
+    """
+    for found in sorted(Path(support.ROOT, "tests").glob("test_*.py")):
+        tree = ast.parse(found.read_text(encoding="utf-8"))
+        for line, name, guarded in computed_in(tree):
+            yield found.name, line, name, guarded
+
+
 def bounds_when_armed(armed: str | None) -> dict[str, float]:
     """Every `DRIVEN` module's `BOUND`, as a fresh interpreter computes it.
 
@@ -932,6 +1027,83 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
 
 
 @pytest.mark.usefixtures("_alarm_put_back")
+class TestEveryComputedParametrizeIsWatched:
+    """A `parametrize` over a computed list needs a test that looks at the list.
+
+    **Zero cases is zero tests, and zero tests all pass.** `parametrize` over an
+    empty list does not fail -- the tests cease to exist, and a module that lost
+    two of them reports the same green as one that ran them. That is CLAUDE.md
+    §2's zero-iteration trap arriving at *collection* time, where no assertion
+    can see it.
+
+    Fifteen such lists in this tree, guarded by hand in as many places, and
+    nothing made the sixteenth author write one. So this walks, the way
+    `TestEveryWaitOnAChildIsBounded` below and `tests/test_errors.py` do.
+
+    **The check is deliberately weak: "some test in this module mentions the
+    name".** A generic helper that refused an empty list was proposed twice and
+    declined twice, and the reason survives here: the existing guards assert
+    *content* -- `GATE in FOUND`, `len(FOUND) >= FLOOR`, `assert KNOWN` -- and
+    every one is stronger than non-emptiness. Demanding a particular shape would
+    replace four strong checks with one weak one. What must not happen is a list
+    that no test looks at at all.
+    """
+
+    def test_the_walk_finds_the_lists_there_are(self) -> None:
+        """The precondition, and the reason the test below can fail at all: a
+        reader that matched nothing would report no unguarded lists and read as
+        a clean bill of health -- the trap it exists to catch, one level up. A
+        floor on the count rather than `assert found`, so that a reader which
+        found *one* is not mistaken for one that works."""
+        assert len(list(every_computed_parametrize())) >= COMPUTED
+
+    def test_every_computed_list_has_a_test_that_looks_at_it(self) -> None:
+        bare = [
+            f"{name}:{line} parametrize over {cases}"
+            for name, line, cases, guarded in every_computed_parametrize()
+            if not guarded
+        ]
+        assert bare == []
+
+    def test_the_reader_tells_a_computed_list_from_a_literal(self) -> None:
+        """Both answers, since the test above is a negative one and would hold
+        just as well against a reader that finds nothing. Written as source
+        rather than driven, because what is under test is the reader."""
+        literal = ast.parse(
+            '@pytest.mark.parametrize("side", ["ours", "theirs"])\ndef test_x(): pass\n'
+        )
+        assert list(computed_in(literal)) == []
+        bare = ast.parse('@pytest.mark.parametrize("job", CASES)\ndef test_x(): pass\n')
+        assert [(name, ok) for _, name, ok in computed_in(bare)] == [("CASES", False)]
+        wrapped = ast.parse('@pytest.mark.parametrize("job", sorted(CASES))\ndef test_x(): pass\n')
+        assert [(name, ok) for _, name, ok in computed_in(wrapped)] == [("CASES", False)]
+
+    def test_a_name_bound_to_a_literal_needs_no_guard(self) -> None:
+        """`tests/test_release.py`'s `GUARDS` is a tuple written out in the
+        file. A name is not the same thing as a computation, and reporting one
+        is how a checker earns the exclusion list it should not have."""
+        written = ast.parse(
+            'CASES = ("a", "b")\n@pytest.mark.parametrize("job", CASES)\ndef test_x(job): pass\n'
+        )
+        assert [ok for _, _, ok in computed_in(written)] == [True]
+        empty = ast.parse(
+            'CASES = ()\n@pytest.mark.parametrize("job", CASES)\ndef test_x(job): pass\n'
+        )
+        assert [ok for _, _, ok in computed_in(empty)] == [False], (
+            "an empty literal is the one this cannot wave through"
+        )
+
+    def test_a_list_a_test_does_look_at_is_accepted(self) -> None:
+        """The other half. Without it the reader could answer `False` to
+        everything and both tests above would still pass."""
+        watched = ast.parse(
+            '@pytest.mark.parametrize("job", CASES)\n'
+            "def test_x(job): pass\n"
+            "def test_there_are_some(): assert len(CASES) >= 3\n"
+        )
+        assert [ok for _, _, ok in computed_in(watched)] == [True]
+
+
 class TestEveryWaitOnAChildIsBounded:
     """No fixture in `tests/` waits on a child process against a bare number.
 
