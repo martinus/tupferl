@@ -1141,7 +1141,7 @@ def scope_names() -> set[str]:
 class TestTheWorkflowsExcludesStillNameSomething:
     """Every `--exclude` in ci.yml, against the scopes this tree really has.
 
-    The macOS leg names six classes it cannot run, and `main` refuses a pattern
+    The macOS leg names four classes it cannot run, and `main` refuses a pattern
     that matches nothing -- so a class renamed without touching the workflow
     turns that leg red. Red is the right answer, and *finding out on the runner*
     is not: this is the same check, here, where it costs one collect.
@@ -1155,8 +1155,15 @@ class TestTheWorkflowsExcludesStillNameSomething:
         """The companion to the parametrize below, and not a formality: a
         `wanted` that came back empty would parametrize over nothing, every case
         would pass by not existing, and the whole class would go green on a
-        workflow file it had failed to read."""
-        assert len(EXCLUDES) == 6, EXCLUDES
+        workflow file it had failed to read.
+
+        **6 until Phase C**, which deleted `tests/test_verdict_unittest.py` and
+        the two patterns naming it. `main` refuses a pattern that matches
+        nothing, so leaving them would have turned the macOS leg red for the
+        deletion rather than for a defect -- and this line is what says so
+        here, one collect, instead of on the runner.
+        """
+        assert len(EXCLUDES) == 4, EXCLUDES
 
     @pytest.mark.parametrize("pattern", EXCLUDES)
     def test_every_exclude_names_at_least_one_scope(

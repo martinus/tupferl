@@ -6,13 +6,11 @@ count of tests behind, so the distinction has to be drawn where the exception
 objects still exist rather than reconstructed from what pytest printed. That is
 what this file is.
 
-This is the pytest backend, and it is what a sweep uses.
-`tools/verdict_unittest.py` is the classifier that was here before, kept until
-`docs/pytest-plan.md`'s Phase C and reachable with
-``TUPFERL_MUTATE_VERDICT=unittest`` so that a row the two disagree about can be
-re-run against the old one rather than argued about. `cap` and `each_test` are
-duplicated between the two files rather than shared, because the isolation
-property below forbids either from importing anything of ours.
+This is the only backend. `tools/verdict_unittest.py` classified ``unittest``
+result objects here until `docs/pytest-plan.md`'s Phase C deleted it, together
+with the ``TUPFERL_MUTATE_VERDICT`` switch that chose between the two while the
+conversion was being measured. What that arrangement cost, and what its removal
+buys back, is recorded in the plan rather than here.
 
 **It is read, not imported.** `mutate` reads this source out of its *own* tree
 and hands it to ``python -c`` in the sandbox. Two properties fall out, and both
@@ -39,7 +37,7 @@ not, and it is the directory pytest then takes as its ``rootdir``.
 | ``tearDownClass`` / ``tearDownModule`` | ``teardown`` | `broke` |
 | a module that will not import | no phase; `pytest_collectreport` | `broke` |
 
-So the fixture/test line that `verdict_unittest` had to draw with an
+So the fixture/test line the retired `unittest` backend had to draw with an
 `isinstance` against `unittest.suite._ErrorHolder` is drawn here by the phase
 pytest already reports, plus one fact phase cannot carry: the **scope** of the
 fixture that raised, taken from `pytest_fixture_setup`. Under `unittest` the

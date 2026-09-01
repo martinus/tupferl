@@ -1,17 +1,22 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1 through B6** with them — so **Phase B is finished**, and
-Phase C is next.
-**Of 36 test modules, 2 still run through pytest's `unittest` adapter**, and
-neither is arrears: `tests/test_verdict_unittest.py` stays as it is until
-Phase C deletes it with its subject, and `tests/test_sync_properties.py` is
-converted but exposes a class Hypothesis builds inside `hypothesis.stateful`,
-which the plan keeps as the pytest-idiomatic spelling.
+Status: **Phases 0, A, A2, B and C executed** (2026-08-30 to 2026-09-01) — so
+the conversion is finished and **Phase D is next**, which is
+extraction-readiness rather than conversion work.
+**Of 34 test modules, 1 still runs through pytest's `unittest` adapter**, and
+it is not arrears: `tests/test_sync_properties.py` is converted but exposes a
+class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
+the pytest-idiomatic spelling.
 
 Both numbers are asserted by `tests/test_pytest_plan.py`, which asks the
 `unittest` loader what it takes back from each module — so this line cannot
 quietly go stale and "continue the plan" is a safe instruction.
+
+**The module total fell by two and that is a deletion, not a conversion.**
+Phase C removed `tests/test_verdict_unittest.py` and `tests/test_unassert.py`
+with their subjects. Both numbers in the line above therefore dropped for a
+reason that is not progress, which is exactly the reading a falling count
+invites — said here because no test can tell the two apart.
 
 **"Still run as `unittest`" is the number to state, and it took two tries to
 find a predicate that means it.** "Converted" was the first, and the guard
@@ -21,8 +26,8 @@ asked `issubclass` of each module's attributes, filtered by `__module__`, and
 cluster B2 then edited exactly that attribute: deleting
 `test_sync_properties.py`'s dunder rewrite dropped the count by one for free. A
 number a `__module__ = __name__` can lower is not a number of work done, so the
-guard asks the loader instead — what `python -m unittest discover` and
-`tools/verdict_unittest.py` actually run.
+guard asks the loader instead — what pytest's own `unittest` adapter runs, and
+what `tools/verdict_unittest.py` ran until Phase C deleted it.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did

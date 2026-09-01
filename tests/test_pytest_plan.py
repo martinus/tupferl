@@ -56,19 +56,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = ROOT / "docs" / "pytest-plan.md"
 
-#: The modules pytest will still run through its `unittest` adapter once Phase B
-#: is over, and why. **Neither is work left to do**, which is why they are named
-#: here rather than left to look like arrears:
+#: The modules pytest still runs through its `unittest` adapter, and why.
+#: **This is not work left to do**, which is why it is named here rather than
+#: left to look like arrears: `test_sync_properties` exposes a class Hypothesis
+#: builds inside `hypothesis.stateful`. The plan keeps `X = Machine.TestCase` as
+#: the pytest-idiomatic spelling, so that module is finished and will still be
+#: unittest-backed for ever.
 #:
-#: - `test_verdict_unittest` dies with its subject in Phase C, and until then
-#:   `tools/verdict_unittest.py` needs one module it can still grade --
-#:   `tests/test_mutate.py`'s `EITHER_LAYER` row points at it;
-#: - `test_sync_properties` exposes a class Hypothesis builds inside
-#:   `hypothesis.stateful`. The plan keeps `X = Machine.TestCase` as the
-#:   pytest-idiomatic spelling, so that module is finished and will still be
-#:   unittest-backed for ever.
+#: **It held two entries until Phase C.** `test_verdict_unittest` was the other,
+#: kept only so the retired classifier had one module it could still grade; the
+#: file was deleted with its subject, so the exception went with it rather than
+#: being converted. A `PERMANENT` that shrinks by a *deletion* is the one way
+#: this dict can fall without a conversion behind it -- worth saying, because
+#: the plan's own number falls too and reads like progress.
 PERMANENT = {
-    "test_verdict_unittest": "dies with its subject in Phase C",
     "test_sync_properties": "the class is Hypothesis's, built in `hypothesis.stateful`",
 }
 

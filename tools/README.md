@@ -30,13 +30,6 @@ are what `mutate.py` and `run_tests.py` are built from. `verdict.py` in particul
 *standalone* file on purpose — it is read as source and executed inside each
 mutation's sandbox, so it must not import anything from this package.
 
-`verdict_unittest.py` is the same file's predecessor, classifying `unittest`
-result objects where `verdict.py` classifies pytest reports. It is reached only
-with `TUPFERL_MUTATE_VERDICT=unittest`, which exists so a row the two disagree
-about can be re-run against the classifier that was here before rather than
-argued about, and it is deleted with that switch at the end of the conversion
-([`docs/pytest-plan.md`](../docs/pytest-plan.md), Phase C).
-
 ## Why these and not `mutmut` / `pytest-xdist`
 
 Three properties, each of which cost a real debugging session to learn:

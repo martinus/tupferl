@@ -1244,9 +1244,10 @@ def dead_tags(root: Path) -> list[tuple[str, int, str]]:
     claiming somebody read a survivor. Two real instances, both found by the
     first run of this: a tag written for `mutate._lane`'s walk placed above the
     enclosing `while`, covering the loop header and none of the five statements
-    inside it; and `verdict_unittest.main`'s `off-by-one` reason four screens
-    from the `argv` indices it describes, above a `return` that has never
-    carried such a row.
+    inside it; and the retired `verdict_unittest.main`'s `off-by-one` reason
+    four screens from the `argv` indices it describes, above a `return` that had
+    never carried such a row. That second file was deleted in Phase C; the
+    instance is kept because the shape it names is what this check looks for.
 
     Here rather than in `tests/`, because it is the same question `--accept` and
     a sweep would want to ask, and neither can reach a helper that lives in a
