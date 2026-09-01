@@ -1327,11 +1327,17 @@ class TestReviewingOneChange:
     nothing a sweep could see. CLAUDE.md records that trap; this is it again.
     """
 
-    def review(self, prompt: Prompt, keys: str, diff: str | None = None) -> str:
+    def review(
+        self,
+        prompt: Prompt,
+        keys: str,
+        diff: str | None = None,
+        way: str = conflicts.SENDING,
+    ) -> str:
         prompt.terminal.type(keys + support.FALLBACK)
         with support.deadline(support.PATIENCE, f"the review never settled on {keys!r}"):
             change = one_change() if diff is None else one_change(diff)
-            return conflicts.review(change, prompt.terminal.source, prompt.out)
+            return conflicts.review(change._replace(way=way), prompt.terminal.source, prompt.out)
 
     # One method per key rather than a loop over `REVIEWS`. `Prompted` builds
     # one terminal per *test*, so a second `type()` in the same one appends to a
@@ -1350,6 +1356,58 @@ class TestReviewingOneChange:
         """The three above are `REVIEWS` spelled out, so this is what notices a
         fourth being added to the tuple with nothing driving it."""
         assert conflicts.REVIEWS == (conflicts.LOCAL, conflicts.REMOTE, conflicts.SKIP)
+
+    def test_an_arriving_change_answers_with_the_repository(self, prompt: Prompt) -> None:
+        assert self.review(prompt, conflicts.REMOTE, way=conflicts.TAKING) == conflicts.REMOTE
+
+    def test_an_arriving_change_can_be_skipped(self, prompt: Prompt) -> None:
+        assert self.review(prompt, conflicts.SKIP, way=conflicts.TAKING) == conflicts.SKIP
+
+    def test_l_is_not_an_answer_for_an_arriving_change(self, prompt: Prompt) -> None:
+        """`[l]` on a file the repository changed and `$HOME` did not is either
+        exactly `[s]` or a revert of somebody else's committed work -- see
+        `ARRIVALS`. Pressed anyway it must re-ask, not settle.
+
+        `support.FALLBACK` answers the re-ask, so the assertion is that the run
+        got as far as a second question rather than treating `l` as an answer.
+        """
+        assert self.review(prompt, conflicts.LOCAL, way=conflicts.TAKING) == conflicts.SKIP
+        said = prompt.out.getvalue()
+        assert "is not one of the keys" in said, said
+        assert said.count("newer copy") == 2, "the prompt did not ask again"
+
+    def test_the_keys_on_offer_differ_by_direction(self, prompt: Prompt) -> None:
+        """Both directions in one assertion, because a single hard-coded key
+        line is right for neither and would pass a test of either alone."""
+        sending = conflicts.offers(one_change(), colour=False)
+        taking = conflicts.offers(one_change()._replace(way=conflicts.TAKING), colour=False)
+        assert f"[{conflicts.LOCAL}]" in sending
+        assert f"[{conflicts.LOCAL}]" not in taking, taking
+        for both in (sending, taking):
+            assert f"[{conflicts.REMOTE}]" in both
+            assert f"[{conflicts.SKIP}] skip" in both
+            assert f"[{conflicts.DIFF}] show the whole diff" in both
+
+    def test_the_sentence_says_which_way_the_file_is_going(self, prompt: Prompt) -> None:
+        """The two are asserted against each other rather than each on its own:
+        `HAPPENING` with one row copied into both keys passes "it names the
+        file" twice and tells the user the wrong thing once."""
+        sending = conflicts.happening(one_change(), colour=False)
+        taking = conflicts.happening(one_change()._replace(way=conflicts.TAKING), colour=False)
+        assert sending != taking
+        assert "you changed this here" in sending
+        assert "yours has not changed" in taking
+        for said in (sending, taking):
+            assert ".bashrc" in said
+
+    def test_every_direction_has_a_sentence_a_key_line_and_an_answer_set(self) -> None:
+        """`sync.WAY` picks the direction and this module has to have a row for
+        it in all three tables. A direction missing from one of them is a
+        `KeyError` at the prompt -- on the run where a person is watching."""
+        ways = {conflicts.SENDING, conflicts.TAKING}
+        assert set(conflicts.HAPPENING) == ways
+        assert set(conflicts.OFFERS) == ways
+        assert set(conflicts.ENDS_ON) == ways
 
     def test_the_question_the_diff_and_the_keys_are_all_printed(self, prompt: Prompt) -> None:
         """Three prints, three assertions. Each survived on its own before this:

@@ -17,6 +17,7 @@ classes here against 20.48s for the module they were in.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -558,12 +559,159 @@ def edited(two_machines: support.TwoMachines) -> Edited:
 
 
 @pytest.mark.usefixtures("edited")
+class TestWhatTheMergeAlreadyAskedAbout:
+    """`sync.Settled`, which is what stops one file being put to the user twice.
+
+    `tests/test_sync_commits.py` drives the whole trap end to end -- settle two
+    commits, and the bytes that come out arrive as an ordinary change over
+    `$HOME`. What that cannot show is that the record is **per file**: with one
+    file in the run, a `Settled` that noted every managed name behaves exactly
+    like one that noted the right one, and it would silence the review
+    entirely. Two files, one recorded, is the fixture that tells them apart.
+    """
+
+    def reviewed(self, box: Edited, already: sync.Settled) -> list[str]:
+        """The names `settle` puts to a reviewer, given what is already settled.
+
+        The reviewer answers `[r]` so the run finishes; what is asserted is
+        *which* files reached it, which no report line can say -- an arriving
+        change accepted at the prompt and one applied without asking produce the
+        same `updated .bashrc`.
+        """
+        asked: list[str] = []
+
+        def reviewer(change: conflicts.Change) -> str:
+            asked.append(str(change.name))
+            return conflicts.REMOTE
+
+        with mock.patch.dict(os.environ, box.first.env, clear=True):
+            sync.settle(
+                box.first.repo,
+                box.first.home,
+                box.first.name,
+                conflicts.always(conflicts.SKIP),
+                reviewer,
+                already,
+            )
+        return asked
+
+    def two_changed(self, box: Edited) -> None:
+        """`.bashrc` edited here and `.vimrc` changed in the repository, so one
+        file is travelling each way and neither can stand in for the other."""
+        box.first.write(".vimrc", "set number\n")
+        assert box.first.call("add", str(box.first.home / ".vimrc")) == 0
+        (box.first.repo / ".vimrc").write_text("set number\nset ruler\n", encoding="utf-8")
+
+    def test_both_directions_reach_the_reviewer(self, edited: Edited) -> None:
+        """The precondition. With nothing recorded, both files are asked about
+        -- and without this, every assertion below is satisfied by a `settle`
+        that reviews nothing at all."""
+        self.two_changed(edited)
+        assert sorted(self.reviewed(edited, sync.Settled())) == [".bashrc", ".vimrc"]
+
+    def test_a_recorded_name_is_not_asked_about_again(self, edited: Edited) -> None:
+        self.two_changed(edited)
+        already = sync.Settled()
+        already.note(PurePosixPath(".vimrc"))
+        assert self.reviewed(edited, already) == [".bashrc"]
+
+    def test_recording_one_name_does_not_silence_the_other(self, edited: Edited) -> None:
+        """The half a blanket record passes. `Settled` noting every managed name
+        would satisfy the test above and remove the review this whole change
+        exists to add."""
+        self.two_changed(edited)
+        already = sync.Settled()
+        already.note(PurePosixPath(".bashrc"))
+        assert self.reviewed(edited, already) == [".vimrc"]
+
+
+@pytest.mark.usefixtures("edited")
+class TestBeingAskedBeforeAnArrivingChangeIsApplied:
+    """The other half of the review: the repository moved and `$HOME` did not.
+
+    This is the case `sync` used to apply in silence -- it replaced a file in
+    `$HOME` and said `updated .gitconfig` afterwards, which is the one change a
+    user cannot see coming.
+
+    `RESTORED` is not here and is not an oversight: `sync.WAY` leaves it out
+    because `tupferl init` ends in a sync, so reviewing restores would turn
+    setting up a second machine into one keypress per managed file.
+    """
+
+    def arriving(self, box: Edited) -> None:
+        """Put this machine's edit away and move the *repository's* copy instead.
+
+        Committed, not merely written: an uncommitted working-tree change would
+        be reported by `doctor` as an interrupted run, and the next `settle`
+        commits it as a side effect -- so the fixture would be arranging the
+        state under test by accident.
+        """
+        box.first.write(MANAGED, "alpha\nbeta\n")
+        assert box.first.call("sync", "--auto") == 0
+        box.first.stored(MANAGED).write_text("alpha FROM ELSEWHERE\nbeta\n", encoding="utf-8")
+        support.git(["commit", "-am", "elsewhere"], box.first.repo, box.first.env)
+
+    def test_the_arriving_change_is_shown_and_asked_about(self, edited: Edited) -> None:
+        """The sentence, the diff and the keys, from a real sync through a pty.
+
+        The diff's `+` side is the assertion rather than its presence: an
+        arriving change rendered the other way round would show the user their
+        own file as the thing being added, which is the failure `merge.unified`'s
+        `reverse` exists to prevent and which reads perfectly well.
+        """
+        self.arriving(edited)
+        status, said = edited.synced("r")
+        assert status == 0, said
+        assert "the repository has a newer copy" in said, said
+        assert "+alpha FROM ELSEWHERE" in said, said
+        assert "[r] update $HOME from the repository" in said, said
+
+    def test_r_takes_the_repositorys_copy(self, edited: Edited) -> None:
+        self.arriving(edited)
+        status, said = edited.synced("r")
+        assert status == 0, said
+        assert edited.first.read(MANAGED) == "alpha FROM ELSEWHERE\nbeta\n", said
+        assert "updated" in said
+
+    def test_s_leaves_both_copies_alone_and_exits_one(self, edited: Edited) -> None:
+        """**And `$HOME` is asserted, not just the status.** `LEFT` writes
+        nothing, so a `settle` that applied the change and *reported* it as left
+        alone exits 1 too -- and would have overwritten the file the user
+        declined."""
+        self.arriving(edited)
+        status, said = edited.synced("s")
+        assert status == 1, said
+        assert "left alone" in said
+        assert edited.first.read(MANAGED) == "alpha\nbeta\n", said
+        assert edited.first.stored(MANAGED).read_text() == "alpha FROM ELSEWHERE\nbeta\n"
+
+    def test_a_skipped_arrival_is_offered_again_next_time(self, edited: Edited) -> None:
+        """`[s]` is "not now", so the run after it must ask again -- otherwise
+        declining once is declining for ever, silently."""
+        self.arriving(edited)
+        assert edited.synced("s")[0] == 1
+        status, said = edited.synced("r")
+        assert status == 0, said
+        assert edited.first.read(MANAGED) == "alpha FROM ELSEWHERE\nbeta\n", said
+
+    def test_the_diff_is_the_one_status_would_have_shown(self, edited: Edited) -> None:
+        """One rule for the direction, `sync.pushes`, so the preview and the
+        prompt cannot describe one file differently. Asserted by running both
+        and comparing the lines that carry content."""
+        self.arriving(edited)
+        preview = edited.first.say("status", "--diff")[1]
+        said = edited.synced("r")[1]
+        for line in ("-alpha", "+alpha FROM ELSEWHERE"):
+            assert line in preview, preview
+            assert line in said, said
+
+
+@pytest.mark.usefixtures("edited")
 class TestBeingAskedBeforeAChangeIsStored:
     """The per-file review: `sync` shows what this computer changed and asks.
 
-    Only what *this* computer changed. An incoming change is applied without
-    asking -- see the guard in `sync.settle` for why, and `status --diff` for
-    where to look at one before it arrives.
+    The arriving direction is the class above. `RESTORED` is reviewed by
+    neither -- see `sync.WAY`.
 
     Every test here drives the real prompt through a pty, because the thing
     under test is a keypress reaching a decision. `support.FALLBACK` is appended
@@ -694,17 +842,21 @@ class TestWhenTheReviewDoesNotHappen:
         job and a CI step have. Without this the default became a hang."""
         assert "[l] store" not in edited.stored_it()
 
-    def test_an_incoming_change_is_never_asked_about(self, edited: Edited) -> None:
-        """The deliberate omission. The repository's copy moves and `$HOME` does
-        not, so a review would have something to show -- and the run must apply
-        it silently anyway. A pty is given here so that a prompt *could* happen:
-        without one this passes for the reason above rather than for its own.
+    def test_an_incoming_change_is_not_asked_about_either_without_a_terminal(
+        self, edited: Edited
+    ) -> None:
+        """Arriving changes are reviewed now, so every flag above has to cover
+        them too -- and so does the no-terminal case, which is the one that
+        keeps `init`, CI and a timer-driven sync working.
+
+        Driven with `--auto` rather than a pipe, so that this is about the flag
+        rather than about the fixture: `stored_it` already covers the pipe.
         """
         assert edited.first.call("sync", "--auto") == 0
         edited.first.stored(MANAGED).write_text("alpha FROM ELSEWHERE\nbeta\n", encoding="utf-8")
         support.git(["commit", "-am", "elsewhere"], edited.first.repo, edited.first.env)
 
-        status, said = edited.first.say("sync", keys="")
+        status, said = edited.first.say("sync", "--auto", keys="")
         assert status == 0, said
-        assert "[l] store" not in said, "an incoming change was put to the user"
+        assert "[r] update" not in said, "an arriving change was put to the user anyway"
         assert edited.first.read(MANAGED) == "alpha FROM ELSEWHERE\nbeta\n"

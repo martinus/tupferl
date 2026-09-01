@@ -115,7 +115,8 @@ what that machine last agreed with the repository.
 That merge base is why `sync` can tell *you changed it* from *the other computer
 changed it* from *both did*, per file, without being told.
 
-A change **you** made is shown and put to you before it is stored:
+**Every file a sync would move is shown and put to you before it is written**,
+whichever way it is going. A change you made:
 
 ```
 $ tupferl sync
@@ -132,11 +133,40 @@ $ tupferl sync
   [d] show the whole diff   [s] skip
 ```
 
-`[r]` is the undo: your edit goes, the repository's copy comes back. A change
-the *other* computer made is applied without asking — `tupferl status --diff`
-shows what is waiting before you sync. `--auto` skips the question entirely,
-and so do `--ours`, `--theirs`, `--no-input`, and any run whose input is not a
-terminal, so `init`, cron jobs and CI are unaffected.
+`[r]` is the undo: your edit goes, the repository's copy comes back.
+
+And a change the *other* computer made, which is the one you cannot see coming:
+
+```
+$ tupferl sync
+
+.gitconfig: the repository has a newer copy; yours has not changed.
+
+--- .gitconfig (this computer)
++++ .gitconfig (the repository)
+@@ -1,3 +1,4 @@
+ [user]
+ 	name = Martin
++	email = m@example.com
+
+  [r] update $HOME from the repository
+  [d] show the whole diff   [s] skip
+```
+
+There is no `[l]` there on purpose. On a file only the repository changed,
+"keep mine" is either exactly `[s]` — not this run — or it means storing your
+unchanged file over another machine's committed work and pushing that, which is
+a revert rather than a review. To make the incoming change *not* win, edit the
+file; that makes it a real two-sided conflict, with the full prompt below.
+
+A file that is simply **missing** from `$HOME` is restored without asking. That
+is the tool's promise rather than a change to review, and `tupferl init` ends in
+a sync — so reviewing restores would turn setting up a second computer into one
+keypress per managed file.
+
+`--auto` skips the questions entirely, and so do `--ours`, `--theirs`,
+`--no-input`, and any run whose input is not a terminal, so `init`, cron jobs
+and CI are unaffected.
 
 When **both** sides changed the same file, that is the one case tupferl cannot
 decide, and it asks differently:

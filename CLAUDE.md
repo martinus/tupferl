@@ -584,7 +584,7 @@ failure §8 collects, so reach for `pytest -q`.
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on. **Its status line says which cluster is next, and `tests/test_pytest_plan.py` asserts it against the tree** -- so "continue the plan" is a safe instruction and the line cannot go stale. It did, within a day of being written |
 
-Five things are not where a newcomer would guess, all on purpose:
+Six things are not where a newcomer would guess, all on purpose:
 
 - **`tests/support.py` builds a sandbox environment from nothing, not from
   `os.environ`.** Every variable tupferl reads is listed once, in
@@ -617,6 +617,30 @@ Five things are not where a newcomer would guess, all on purpose:
   snapshot claiming `$HOME` was already updated, and the next run copies the
   stale `$HOME` file over the new one. `tests/test_sync.py`'s
   `TestTheSnapshotIsWrittenLast` is the only thing that can see it.
+- **`sync.Settled` is a mutable record threaded *down* rather than a value
+  handed back up**, and that is the trade rather than an oversight. One run
+  holds two prompts over one file: `reconcile` settles a conflict between two
+  *commits*, and the bytes that come out reach `settle` as an ordinary arriving
+  change over `$HOME` — so reviewing arrivals asked the same person about the
+  same file twice, once about the commits and once about their result. The names
+  are learnt four calls below `main` and spent three calls below it on the other
+  branch, and returning them means a new return type on `reconcile`, `integrate`
+  and `deliver`, two of which already return a number meaning something else.
+
+  Two things about it are load-bearing. It holds **managed names, not git
+  paths**: `reconcile` walks the index, where this host's overlay of `.vimrc` is
+  `.tupferl/hosts/<host>/.vimrc`, and comparing the two spellings directly
+  matches nothing — a record that silently does nothing, which reads exactly
+  like a run with no merge behind it. `manifest.managed_name` is the one
+  translation, and `manifest.mergeable` is now one line over it rather than a
+  second copy of the same three cases. And it **accumulates across `deliver`'s
+  retries**: a push rejected because the remote moved runs `integrate` again,
+  and a file settled on the *first* merge must not be asked about on the second
+  pass over `$HOME`.
+
+  A blanket record would pass the obvious test and remove the review entirely,
+  so `tests/test_sync.py`'s `TestWhatTheMergeAlreadyAskedAbout` uses two files
+  and records one.
 
 ### Testing rules this project adds to §2
 

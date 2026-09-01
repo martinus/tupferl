@@ -166,6 +166,43 @@ def mergeable(name: PurePosixPath, repo: Path, host: str) -> bool:
     `.tupferl/hosts/<host>/.vimrc`. Comparing the two directly rejects every
     legitimate overlay conflict. Measured, before it was written that way.
 
+    One line over `managed_name` below, which answers the harder question --
+    *which* managed file is this? -- and had the same three cases in it. Two
+    copies of the rule is two answers about an overlay, which is the case both
+    of them exist for.
+    """
+    return managed_name(name, repo, host) is not None
+
+
+def managed_name(name: PurePosixPath, repo: Path, host: str) -> PurePosixPath | None:
+    """The managed name a *repository* path has on this host, or `None`.
+
+    The inverse of `location`, and the reason it exists is that `location` is
+    not injective from the outside: this host's overlay of `.vimrc` lives at
+    `.tupferl/hosts/<host>/.vimrc`, so a caller holding a path out of git's
+    index -- `gitrepo.conflicted` is the one -- has no way back to `.vimrc`
+    without knowing the layout. `sync.reconcile` needs exactly that, to record
+    which *managed* file it put to the user.
+
+    `None` for anything that is not this machine's to merge: any snapshot, and
+    another host's overlay. That is the same three-way answer `mergeable` gave,
+    so `mergeable` is now one line over this rather than a second copy of the
+    rule -- which is what stopped the two disagreeing about an overlay, the case
+    both of them exist for.
+
+    Three admissions, and the last two are the reason this is not simply "skip
+    everything under `paths.META`":
+
+    - **an ordinary dotfile**, anywhere outside `paths.META`, which is its own
+      managed name;
+    - **`config.toml`**, which really is a file two machines can disagree about,
+      and refusing it would send the user to `git pull` for something the tool
+      is otherwise happy to manage. It is a dotfile in `$HOME` now, so it
+      arrives on the first branch like `.bashrc` does;
+    - **this host's own overlay**, which is a dotfile that happens to live under
+      `paths.META`, and whose managed name is what is left after the overlay
+      root.
+
     Every path it compares against comes from `paths`, rather than `"hosts"`,
     `"state"` and `"config.toml"` spelled again here. The layout has one owner,
     and a second copy of it in the one function that decides what may be merged
@@ -173,13 +210,11 @@ def mergeable(name: PurePosixPath, repo: Path, host: str) -> bool:
     """
     where = repo / name
     if not where.is_relative_to(repo / paths.META):
-        return True
-    # No case for the settings file any more. It used to live at
-    # `.tupferl/config.toml` -- inside `META`, which is otherwise tupferl's own
-    # and not mergeable -- so it needed an exception to be syncable at all. It
-    # is a dotfile in `$HOME` now, so it arrives here like `.bashrc` does, on
-    # the first branch above, and `META` holds only machinery again.
-    return where.is_relative_to(paths.host_overlay(repo, host))
+        return name
+    overlay = paths.host_overlay(repo, host)
+    if not where.is_relative_to(overlay):
+        return None
+    return PurePosixPath(where.relative_to(overlay))
 
 
 def relative(wanted: str | Path, home: Path) -> PurePosixPath:
