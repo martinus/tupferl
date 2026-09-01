@@ -487,11 +487,6 @@ class Verdict(NamedTuple):
     #: unless the outcome is `caught`. `detail` is for a reader and this is for
     #: `killers` -- see `Killers`.
     killer: str = ""
-    #: What each test that ran cost, by id. Not persisted to the `--json`
-    #: report, which is about verdicts; `Killers` keeps them, because ordering
-    #: by yield-per-second needs a denominator and measuring it separately would
-    #: be a second source of truth about the same suite.
-    times: dict[str, float] | None = None
     #: The failing traceback, for a `caught` verdict. Carried but never printed
     #: by a mutation row -- `caught` is the whole answer there, and two hundred
     #: tracebacks is noise. `run`'s baseline branch is the one reader: a red
@@ -567,11 +562,6 @@ class Report(NamedTuple):
     #: rows and `tools/reached.py` reads them back: a sweep recorded under the
     #: old two-pass tool is still read correctly, and says so (woswoar#269).
     widened: bool = False
-    #: What each test that ran cost, by id, across every row *and every baseline
-    #: shard* of this run. Not persisted with the verdicts -- it is not an answer
-    #: about the code, it is what `Killers` needs to put the cheap high-yield
-    #: tests first.
-    times: dict[str, float] | None = None
     #: What the run cost, for `_report_stats`. `None` on a report assembled
     #: rather than run -- an empty table, or one read back from disk.
     pace: Pace | None = None
@@ -1482,14 +1472,11 @@ def _run(
             "caught",
             str(written["noticed"][0]),
             str(remembered[0]) if remembered else "",
-            written["times"] or None,
             str(reasons[0]) if reasons else "",
         )
     if not written["ran"]:
         return Verdict("broke", "the targets held no tests")
-    # A survivor ran its whole selection, so its timings are the complete ones --
-    # as are a baseline shard's, which is where most of them come from.
-    return Verdict("survived", times=written["times"] or None)
+    return Verdict("survived")
 
 
 def _tail(noise: Path) -> str:
@@ -1599,7 +1586,7 @@ def _applied(original: str, mutation: Mutation) -> str:
 #: so nearly all of the signal is in the most recent one or two -- and every test
 #: kept here is one every later row pays for before reaching its own selection.
 #: Eight leaves room for a few interleaved lanes without the head becoming a
-#: second, unbudgeted `prefix()`.
+#: second selection in its own right.
 LEARNED = 8
 
 
@@ -1615,10 +1602,8 @@ class Learned:
     `Killers.known` is exact per-mutant memory keyed on
     `sha256(path, operator, old, new)`, so it misses by construction on the sweep
     that matters most -- `--base main` generates rows from *changed* lines, whose
-    text is new. `Killers.prefix()` is computed once before the table starts,
-    from the previous run's cache, and cannot know that the row now running is in
-    the same function as the one before it. Neither looks at adjacency; this only
-    looks at adjacency.
+    text is new, so `known` cannot hold them. This looks at adjacency, which
+    nothing else does.
 
     **Consulted in `_attempt`, not in `ahead_of`.** `run` submits every row to
     the pool up front, so a row's `first` is fixed before any verdict exists;
@@ -1761,12 +1746,9 @@ def _attempt(
             # time no verdict exists yet and there is nothing to have learned.
             ahead = learned.ahead(mutation) if learned is not None else ()
             # **The exact killer goes in front of the learned front, not
-            # behind it.** `Killers.ahead_of` already drops the cheap prefix
-            # for a row whose killer is known -- "exact beats general, the
-            # prefix would only be work before the answer" -- and `Learned` is
-            # general in exactly the same way: it is what caught the *previous*
-            # rows, which is a proxy for what catches this one, and here the
-            # thing being proxied is already in hand.
+            # behind it.** `Learned` is a general guess -- what caught the
+            # *previous* rows, a proxy for what catches this one -- and here
+            # the thing being proxied is already in hand.
             #
             # It was the other way round until measured, so up to
             # `LEARNED` - 1 tests ran ahead of the one test known to catch the
@@ -2241,7 +2223,6 @@ def run(
     #: `results[n]` came from `table[places[n]]`. Two lists rather than a list of
     #: pairs, so nothing downstream has to unpack a shape it did not ask for.
     places: list[int] = []
-    timings: dict[str, float] = {}
     red = False
     #: One `Learned` for every lane, which under a stride is the shape that
     #: works: a lane sees roughly every Nth row, so a private front would learn a
@@ -2273,8 +2254,6 @@ def run(
         with speaking:
             # survivor: off-by-one -- TODO: why is this acceptable?
             done += 1
-            # survivor: drop-call -- TODO: why is this acceptable?
-            timings.update(verdict.times or {})
             results.append(Result(mutation, verdict))
             # The row's own position, kept beside the result rather than
             # recovered from it afterwards. Sorting by `id(mutation)` would work
@@ -2347,12 +2326,6 @@ def run(
         nonlocal red
         looked = checked.result()
         with speaking:
-            # Before any early return: a shard that ran a whole selection with
-            # nothing failing has measured every test in it, which is where most
-            # of what `Killers` orders by comes from. A red one still measured
-            # whatever ran before it went red.
-            # survivor: connector, drop-call -- TODO: why is this acceptable?
-            timings.update(looked.times or {})
             if looked.outcome == "survived" or red:
                 return
             # `survived` is the untouched suite passing, which is the one place
@@ -2489,7 +2462,7 @@ def run(
     # whether a survivor here has been run against everything, and with `walk`
     # off it has not. Hard-coding it would make the one report that must not
     # claim the guarantee the one that claims it loudest.
-    report = Report(results, red, widened=walk, times=timings or None, pace=pace)
+    report = Report(results, red, widened=walk, pace=pace)
     # survivor: drop-call -- `_RUNS` exists so a spec file calling `verify` twice has both tables
     #   decide the exit status -- woswoar#213's symptom. `TestWhatASpecFileExitsWith` covers the
     #   two-table case through `main`; this row is the append seen from inside `run`, where nothing
@@ -3112,15 +3085,6 @@ def _loose_evidence(results: Sequence[Result], loose: Sequence[str]) -> list[str
 #: moment a test is renamed, which is why nothing here trusts it: see `Killers`.
 KILLERS = Path("sweeps/killers.json")
 
-#: How long the cheap-first prefix may take before a row falls through to its
-#: own selection. Half a second, which is where the curve turns: measured on
-#: milestone 3's table, 40 tests cost 0.33s and cover 57% of caught rows, and
-#: the next ten cost 4.1s for 28 points more -- eight times the price per point.
-#: A budget rather than a count, because what matters is the seconds every row
-#: pays up front, and tests do not all cost the same.
-PREFIX = 0.5
-
-
 #: Survivors somebody has looked at, keyed the way `Killers` keys a killer.
 #:
 #: **Committed, unlike everything else a sweep writes.** `sweeps/` is ignored
@@ -3441,84 +3405,29 @@ class Killers:
     730s before the field existed.
     """
 
-    def __init__(self, where: Path | None, budget: float = PREFIX) -> None:
+    def __init__(self, where: Path | None) -> None:
         self.where = where
-        self.budget = budget
-        #: What the last `ahead_of` decided, for a caller that wants to say so.
-        self.head: list[str] = []
         # survivor: off-by-one -- TODO: why is this acceptable?
         self.dropped = 0
         self.known: dict[str, str] = {}
-        self.cost: dict[str, float] = {}
-        #: What each *row* cost last time, by `_key`. `cost` above is per test
-        #: and answers "which tests are cheap and catch a lot"; this is per
-        #: mutation and answers "which rows should run first". Two different
-        #: questions that happen to share a file.
+        #: What each *row* cost last time, by `_key`, for `slowest_first`.
         self.seconds: dict[str, float] = {}
         # survivor: branch -- TODO: why is this acceptable?
         if where is not None and where.is_file():
             try:
                 saved = json.loads(where.read_text(encoding="utf-8"))
-                # A flat mapping is the older shape, from before costs were
-                # recorded. Read rather than discarded: the killers in it are
-                # still good, and the costs refill on the next run.
+                # A flat mapping is the older shape, from before row costs
+                # were recorded. Read rather than discarded: the killers in it
+                # are still good, and the costs refill on the next run.
                 rows = saved.get("killers", saved) if isinstance(saved, dict) else {}
                 # survivor: connector -- TODO: why is this acceptable?
                 self.known = {str(k): str(v) for k, v in rows.items() if isinstance(v, str) and v}
-                found = saved.get("costs", {}) if isinstance(saved, dict) else {}
-                # survivor: drop-assign -- TODO: why is this acceptable?
-                self.cost = {str(k): float(v) for k, v in found.items()}
                 spent = saved.get("seconds", {}) if isinstance(saved, dict) else {}
                 self.seconds = {str(k): float(v) for k, v in spent.items()}
             except (OSError, ValueError, AttributeError, TypeError):
                 # A half-written or hand-edited file is not worth a failure: the
                 # worst an empty cache does is run at yesterday's speed.
-                self.known, self.cost, self.seconds = {}, {}, {}
-
-    def prefix(self) -> list[str]:
-        """Cheap tests that between them catch a lot, cheapest yield first.
-
-        Greedy on *rows newly caught per second*, which is the 4-approximation
-        for Min-Sum Set Cover (Feige, Lovász, Tetali) -- and the best any
-        polynomial algorithm gets unless P=NP. It is computed here from what the
-        cache already holds rather than from a checked-in list, so it cannot rot
-        against a suite that has moved.
-
-        This is what a row with no remembered killer runs first. The measured
-        shape on milestone 3's table: the first seven tests cost under a
-        millisecond each and cover 15% of everything, all of them pure-logic
-        tests -- the decision table, the report, the commit message. A `sync.py`
-        row's full selection is 22s by comparison.
-
-        Under-counts on purpose. `failfast` stops at the first test to notice, so
-        only one killer per row is ever observed and a test gets no credit for
-        rows something else reached first. Real coverage is at least this.
-        """
-        rows: dict[str, set[str]] = {}
-        for key, test in self.known.items():
-            if test in self.cost:
-                rows.setdefault(test, set()).add(key)
-        covered: set[str] = set()
-        chosen: list[str] = []
-        spent = 0.0
-        # survivor: boundary -- TODO: why is this acceptable?
-        while spent < self.budget:
-            best, yield_ = "", 0.0
-            for test, caught in rows.items():
-                fresh = len(caught - covered)
-                # A floor on the divisor: a test too fast to measure would
-                # otherwise divide by zero, and those are exactly the ones worth
-                # having first.
-                rate = fresh / max(self.cost[test], 0.001)
-                if fresh and rate > yield_:
-                    best, yield_ = test, rate
-            # survivor: boundary -- TODO: why is this acceptable?
-            if not best or spent + self.cost[best] > self.budget:
-                break
-            chosen.append(best)
-            covered |= rows[best]
-            spent += self.cost[best]
-        return chosen
+                self.known, self.seconds = {}, {}
 
     def ahead_of(self, table: Sequence[Mutation]) -> list[Mutation]:
         """The same table, with each remembered killer moved to the front.
@@ -3532,63 +3441,33 @@ class Killers:
         recorded an error for that one name -- and the consequence was the
         same.)
         """
-        head = self.prefix()
-        wanted = {self.known[_key(row)] for row in table if _key(row) in self.known} | set(head)
+        wanted = {self.known[_key(row)] for row in table if _key(row) in self.known}
         usable = _loadable(wanted)
-        # survivor: arith, branch -- TODO: why is this acceptable?
-        if dropped := len(wanted) - len(usable):
-            # survivor: drop-call -- TODO: why is this acceptable?
-            print(f"{dropped} remembered test(s) no longer load, so their rows run as usual.")
-        head = [test for test in head if test in usable]
-        # survivor: branch -- TODO: why is this acceptable?
-        if head:
-            spent = sum(self.cost.get(test, 0.0) for test in head)
-            # survivor: drop-call -- TODO: why is this acceptable?
-            print(
-                f"{len(head)} cheap test(s), {spent:.2f}s, run first where nothing is remembered."
-            )
-
+        # Recorded rather than printed here: `main` says it, in colour, beside
+        # everything else it says about the run. This was assigned nowhere at
+        # all until the cheap prefix came out and left `main`'s branch visibly
+        # unreachable -- so the count read 0 for every run there has ever been,
+        # while `ahead_of` printed its own bare copy of the same sentence and
+        # made the silence look like nothing to report.
+        # survivor: arith -- TODO: why is this acceptable?
+        self.dropped = len(wanted) - len(usable)
         ahead = []
         for row in table:
             killer = self.known.get(_key(row), "")
             if killer and killer in usable:
-                # Exact beats general: this test is known to catch *this* row, so
-                # the prefix would only be work before the answer. `exact` says
-                # so to `_attempt`, which owes the same precedence against
-                # `Learned` and for the same reason.
+                # `exact` says so to `_attempt`, which owes this test
+                # precedence over `Learned`: general beats nothing, but a test
+                # known to catch *this* row beats a guess about what catches
+                # rows like it.
                 ahead.append(row._replace(first=(killer,), exact=True))
                 continue
             # Nothing remembered -- a new row, or one whose killer stopped
-            # working. Cut to what this row can reach: a test in a module that
-            # does not import the mutated file cannot see the mutation, so
-            # running it is pure cost.
-            #
-            # `run_tests.selects` rather than comparing module names, which was
-            # the first version and dropped the prefix in the two places it was
-            # most wanted. An empty selection is `WHOLE_SUITE` -- what a file
-            # nothing imports gets -- so its rows run *everything*, ~51s each,
-            # and the prefix was cut to nothing for exactly them. And a selection
-            # naming a class rather than a module never matched at all.
-            reachable = row.tests.split()
-            # survivor: order -- TODO: why is this acceptable?
-            mine = [
-                test
-                for test in head
-                if not reachable or any(_reaches(test, only) for only in reachable)
-            ]
-            ahead.append(row._replace(first=tuple(mine)) if mine else row)
+            # working. It runs its own selection, in the usual order.
+            ahead.append(row)
         return ahead
 
     def learn(self, report: Report) -> None:
-        """Remember what caught each mutation, and forget what stopped catching it.
-
-        Costs come from `Report.times`, which `run` fills from every row it
-        collected *and* every baseline shard. The shards are the richest source
-        by far: they alone run a whole selection with nothing failing, so they
-        measure every test in it rather than the handful before the first
-        failure.
-        """
-        self.cost.update(report.times or {})
+        """Remember what caught each mutation, and forget what stopped catching it."""
         for result in report.results:
             key = _key(result.mutation)
             # survivor: boundary, branch, off-by-one -- TODO: why is this acceptable?
@@ -3614,7 +3493,7 @@ class Killers:
         # survivor: off-by-one -- TODO: why is this acceptable?
         self.where.write_text(
             json.dumps(
-                {"killers": self.known, "costs": self.cost, "seconds": self.seconds},
+                {"killers": self.known, "seconds": self.seconds},
                 indent=1,
                 sort_keys=True,
             ),
@@ -4559,14 +4438,10 @@ def sweep(table: Sequence[Mutation], args: argparse.Namespace) -> Report:
                 paint.BAD + paint.HEAD,
             )
         )
-    # `times` carried through, not dropped. Re-wrapping the report without them
-    # is what made the cheap prefix silently learn nothing: the run measured
-    # every test and the number reached `Killers` as an empty dict.
     return Report(
         collected,
         report.baseline_red,
         widened=report.widened,
-        times=report.times,
         pace=report.pace,
     )
 
@@ -4735,13 +4610,6 @@ def main(argv: list[str] | None = None) -> int:
             "they are only counted"
         ),
     )
-    parser.add_argument(
-        "--prefix",
-        type=float,
-        default=PREFIX,
-        metavar="SECONDS",
-        help=f"budget for the cheap-tests-first prefix, 0 to disable (default {PREFIX:g})",
-    )
     args = parser.parse_args(argv)
 
     for line in about_temporary_trees(args.collect):
@@ -4765,7 +4633,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.base:
         table = generated(args)
-        killers = Killers(None if args.no_killers else args.killers, budget=args.prefix)
+        killers = Killers(None if args.no_killers else args.killers)
         if args.list:
             for row in table:
                 print(f"  {paint.paint(f'{row.operator:16}', paint.QUIET)} {row.label}")
@@ -4779,7 +4647,7 @@ def main(argv: list[str] | None = None) -> int:
         # within-file reorder survives that regrouping intact.
         table = slowest_first(table, killers.seconds)
         if args.baseline_only:
-            # Before the prefix is announced and before any sandbox is built: a
+            # Before any sandbox is built: a
             # red baseline voids every row, so being able to ask *only* that
             # question, in the time one shard takes rather than one sweep, is the
             # difference between a minute and a re-run. Two full sweeps were paid
@@ -4794,17 +4662,6 @@ def main(argv: list[str] | None = None) -> int:
                     f"{killers.dropped} remembered test(s) no longer load; "
                     f"those rows run as usual.",
                     paint.ODD,
-                )
-            )
-        # survivor: branch -- TODO: why is this acceptable?
-        if killers.head:
-            spent = sum(killers.cost.get(test, 0.0) for test in killers.head)
-            # survivor: drop-call -- TODO: why is this acceptable?
-            print(
-                paint.paint(
-                    f"{len(killers.head)} cheap test(s), {spent:.2f}s, run first "
-                    f"where nothing is remembered.",
-                    paint.QUIET,
                 )
             )
         if args.json:

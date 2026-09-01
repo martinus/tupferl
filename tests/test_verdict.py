@@ -890,67 +890,6 @@ class TestWhatTheBaselineNeeds:
         assert len(found["reasons"]) == 1
         assert "what went wrong" in found["reasons"][0]
 
-    def test_each_test_is_timed(self, probe: Probe) -> None:
-        """`mutate.Killers` orders the cheap high-yield tests first from these,
-        and the baseline runs are where they mostly come from."""
-        probe.module(
-            "test_a",
-            f"""
-            import time, unittest
-            class T(unittest.TestCase):
-                def test_it(self):
-                    time.sleep({SLEPT})
-            """,
-        )
-        found = probe.verdict("test_a")
-        assert list(found["times"]) == ["test_a.py::T::test_it"]
-        # An interval, not `>= 0`: a duration is never negative, so that
-        # assertion holds against a sum becoming a difference. `Killers` orders
-        # the cheap prefix from these numbers, so a wrong one silently
-        # mis-orders it.
-        assert found["times"]["test_a.py::T::test_it"] > SLEPT / 2
-        assert found["times"]["test_a.py::T::test_it"] < SLEPT * 20
-
-    def test_a_subtest_leaves_exactly_one_entry_for_its_owner(self, probe: Probe) -> None:
-        """**This asserted something it could not see, and CI is what found
-        it.** It compared a wall clock against `SLEPT * 2` -- which is precisely
-        the value the double-counting it named would produce, so no margin at
-        all -- and it turned the macOS leg red the first time three 0.067 s
-        sleeps took 0.419 s on a loaded runner. That leg's own wall clock varies
-        128 s to 230 s across four consecutive green runs of `main`, so the
-        threshold was never going to hold there.
-
-        Worse, it could not have failed for the reason it gave. Measured on
-        pytest 9.1.1: a `SubtestReport`'s ``duration`` is **0** -- three subcases
-        sleeping 0.067 s each report 0, 0, 0 against the owner's ``call`` report
-        of 0.2017 -- so removing `verdict.Watcher`'s ``context`` filter changes
-        the number here by nothing at all. `tools/verdict.py` now says the same
-        beside the filter, and no test can see that guard removed.
-
-        What is real, and is what this asserts: every subcase reports under its
-        *owner's* nodeid, so a test using `subTest` appears in `times` exactly
-        once however many cases it runs. `Killers.prefix` divides rows-caught by
-        cost, and a second key for the same test would be a row with no cost
-        against it. The upper bound is `SLEPT * 20`, the same loose sanity bound
-        its sibling above uses, and for the same reason: it catches a number
-        that has stopped being a duration, not one that is off by a factor.
-        """
-        probe.module(
-            "test_a",
-            f"""
-            import time, unittest
-            class T(unittest.TestCase):
-                def test_it(self):
-                    for n in range(3):
-                        with self.subTest(n=n):
-                            time.sleep({SLEPT / 3})
-            """,
-        )
-        found = probe.verdict("test_a")
-        assert list(found["times"]) == ["test_a.py::T::test_it"]
-        assert found["times"]["test_a.py::T::test_it"] > SLEPT / 2
-        assert found["times"]["test_a.py::T::test_it"] < SLEPT * 20
-
 
 class TestWhichTestsGetRun:
     """`collect`'s selection, where two mistakes each turn "run everything" into
@@ -1004,7 +943,7 @@ class TestWhichTestsGetRun:
     def test_first_does_not_turn_the_whole_suite_into_a_selection(self, probe: Probe) -> None:
         """The one that matters. An empty `names` *means* everything; pushing
         `first` onto that list makes it non-empty, so a row that must run the
-        whole suite would run the prefix and report it as "everything".
+        whole suite would run the front and report it as "everything".
         """
         probe.passing("test_a", "test_b", "test_c")
         found = probe.verdict(first=("test_a.T.test_it",))
@@ -1013,7 +952,7 @@ class TestWhichTestsGetRun:
         # second time, and the assertion had quietly become a measurement of
         # that rather than of what its docstring claims. Three still catches the
         # hazard -- a `first` merged into `names` runs one test, not three.
-        assert found["ran"] == 3, "the prefix replaced the suite instead of preceding it"
+        assert found["ran"] == 3, "the front replaced the suite instead of preceding it"
 
     def test_first_really_runs_before_the_rest(self, probe: Probe) -> None:
         """Its whole purpose: a remembered killer is run first so a caught
@@ -1037,7 +976,7 @@ class TestWhichTestsGetRun:
                     self.fail("the remembered killer")
             """,
         )
-        # `test_b`, not `test_a`. The prefix has to name something collection
+        # `test_b`, not `test_a`. The front has to name something collection
         # would reach *second*, or running it before and after give the same
         # failfast answer and the ordering is unobservable.
         found = probe.verdict(failfast=True, first=("test_b.T.test_it",))

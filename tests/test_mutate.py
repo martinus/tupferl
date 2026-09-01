@@ -426,14 +426,43 @@ class TestRememberingWhatCaughtEachMutation:
         (ahead,) = self.cache({mutate._key(one): REAL}).ahead_of([one])
         assert ahead.exact, "a remembered killer was not marked exact"
 
-    def test_the_cheap_prefix_is_not_marked_as_exact(self) -> None:
-        """The other half. The prefix is what a row with *no* remembered killer
-        falls back on -- tests that catch a lot per second across the table,
-        which is a claim about the suite and not about this row -- so it must
-        not claim the precedence an exact killer has earned."""
+    def test_a_row_with_nothing_remembered_is_not_marked_as_exact(self) -> None:
+        """The other half. `exact` is what buys precedence over `Learned`, so a
+        row the cache has never seen must not claim it -- the flag has to say
+        *this test caught this row*, never merely "something is in `first`"."""
         with support.quiet():
             (ahead,) = mutate.Killers(None).ahead_of([row()])
-        assert not ahead.exact, "the general prefix claimed to be exact"
+        assert not ahead.exact, "a row with no remembered killer claimed to be exact"
+        assert ahead.first == (), "a row with no remembered killer was given a front"
+
+    def test_a_killer_that_no_longer_loads_is_counted_for_the_caller(self) -> None:
+        """`main` prints this count, and printed `0` for every run there has
+        ever been: `dropped` was set in `__init__` and assigned nowhere else, so
+        the branch reading it could not execute. It was invisible because
+        `ahead_of` printed its own bare copy of the sentence, so a reader saw
+        the message and not the dead branch behind it.
+
+        Driven through a killer that really does not resolve, rather than by
+        setting the attribute: what rotted was the *assignment*, so a test that
+        assigns it proves nothing.
+        """
+        one = row()
+        cached = self.cache({mutate._key(one): "tests.test_nothing.T.test_gone"})
+        with support.quiet():
+            (ahead,) = cached.ahead_of([one])
+        assert cached.dropped == 1, "a killer that cannot load was not counted"
+        assert ahead.first == (), "a killer that cannot load was still put in front"
+        assert not ahead.exact
+
+    def test_a_killer_that_still_loads_is_not_counted_as_dropped(self) -> None:
+        """The other half, or `dropped` could be `len(wanted)` and still pass
+        the test above -- reporting every remembered test as broken on the run
+        where they all work."""
+        one = row()
+        cached = self.cache({mutate._key(one): REAL})
+        with support.quiet():
+            cached.ahead_of([one])
+        assert cached.dropped == 0, "a killer that loads was reported as dropped"
 
     def test_the_whole_selection_is_kept_behind_it(self) -> None:
         """The safety argument, asserted rather than assumed. Substituting the
@@ -700,7 +729,7 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         holder.verdict(holder.GREEN, **how)
         return list(holder.spawned["argv"]), dict(holder.spawned["env"])
 
-    def test_the_prefix_travels_as_json_rather_than_space_joined(self) -> None:
+    def test_the_front_travels_as_json_rather_than_space_joined(self) -> None:
         """A pytest nodeid can hold a space the moment anything is parametrized,
         and a space-joined slot shreds one name into several that select
         nothing -- silently, because selecting nothing is not an error to
@@ -708,9 +737,9 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         argv, _ = self.spawn(first=["a.py::T::test_one[a b]", "b.py::T::test_two"])
         assert json.loads(argv[8]) == ["a.py::T::test_one[a b]", "b.py::T::test_two"]
 
-    def test_an_empty_prefix_is_still_a_list(self) -> None:
+    def test_an_empty_front_is_still_a_list(self) -> None:
         """`verdict.main` reads the slot with `json.loads` unconditionally, so
-        an empty prefix has to be `[]` rather than the empty string it was."""
+        an empty front has to be `[]` rather than the empty string it was."""
         argv, _ = self.spawn()
         assert json.loads(argv[8]) == []
 
@@ -1134,7 +1163,7 @@ class TestAHungTestIsBoundedAndNotCredited:
         """Drive the real probe, in a real subprocess, on a real fifo.
 
         The argv is positional and shared with `mutate._run`: report, failfast,
-        memory, per-test seconds, the prefix, then the selection. Spelling it out
+        memory, per-test seconds, the front, then the selection. Spelling it out
         here is what made a protocol change visible -- when `first` gained its
         own slot, this helper's selection slid into it and the module ran twice.
 
@@ -1228,168 +1257,6 @@ class TestAHungTestIsBoundedAndNotCredited:
         assert verdict.each_test(2) == 2.0
 
 
-class TestTheCheapPrefix:
-    """`Killers.prefix`: cheap tests that between them catch a lot, first.
-
-    The remembered killer (above) helps a row that has been seen. This helps
-    every row, including one seen for the first time -- which is exactly the case
-    a per-row cache cannot serve.
-
-    Greedy on rows-newly-caught-per-second, which is the 4-approximation for
-    Min-Sum Set Cover and the best any polynomial algorithm gets unless P=NP.
-    """
-
-    def cache(self, known: dict[str, str], cost: dict[str, float]) -> mutate.Killers:
-        made = mutate.Killers(None)
-        made.known, made.cost = known, cost
-        return made
-
-    def test_a_cheap_test_that_catches_a_lot_comes_first(self) -> None:
-        """The ordering is by *rate*, not by either half alone: `slow` catches
-        the most and `rare` is the cheapest, and neither is the answer."""
-        cache = self.cache(
-            {f"k{n}": "tests.m.C.slow" for n in range(50)}
-            | {f"c{n}": "tests.m.C.quick" for n in range(20)}
-            | {"r0": "tests.m.C.rare"},
-            {"tests.m.C.slow": 0.40, "tests.m.C.quick": 0.02, "tests.m.C.rare": 0.001},
-        )
-        assert cache.prefix() == ["tests.m.C.quick", "tests.m.C.rare", "tests.m.C.slow"]
-
-    def test_it_stops_at_the_budget(self) -> None:
-        """Every row pays this up front, so it is bounded in seconds rather than
-        in tests -- tests do not all cost the same."""
-        cache = self.cache(
-            {f"k{n}": f"tests.m.C.t{n}" for n in range(20)},
-            {f"tests.m.C.t{n}": 0.2 for n in range(20)},
-        )
-        chosen = cache.prefix()
-        assert sum(0.2 for _ in chosen) <= mutate.PREFIX
-        assert len(chosen) < 20
-
-    def test_a_test_with_no_measured_cost_is_not_guessed_at(self) -> None:
-        """A killer recorded before costs existed has no denominator, and
-        inventing one would put it anywhere at all in the order."""
-        cache = self.cache({"k": "tests.m.C.unmeasured"}, {})
-        assert cache.prefix() == []
-
-    def test_nothing_is_covered_twice(self) -> None:
-        """Greedy credits a test only with rows nothing before it caught, or the
-        second-best test rides on the first one's coverage and the prefix fills
-        with duplicates."""
-        cache = self.cache(
-            {"a": "tests.m.C.one", "b": "tests.m.C.one", "c": "tests.m.C.two"},
-            {"tests.m.C.one": 0.01, "tests.m.C.two": 0.02},
-        )
-        assert cache.prefix() == ["tests.m.C.one", "tests.m.C.two"]
-
-
-class TestWhichRowsGetThePrefix:
-    def rows(self, tests: str = "tests.test_sync") -> list[Mutation]:
-        return [row()._replace(tests=tests)]
-
-    def cache(self) -> mutate.Killers:
-        made = mutate.Killers(None)
-        made.cost = {REAL: 0.001}
-        return made
-
-    def test_a_row_with_a_remembered_killer_does_not_pay_for_it(self) -> None:
-        """Exact beats general: that test is known to catch *this* row, so the
-        prefix would only be work in front of the answer."""
-        cache = self.cache()
-        one = self.rows("tests.test_mutate")[0]
-        cache.known = {mutate._key(one): REAL}
-        (ahead,) = cache.ahead_of([one])
-        assert ahead.first == (REAL,)
-
-    def test_a_row_with_nothing_remembered_gets_the_prefix(self) -> None:
-        cache = self.cache()
-        cache.known = {"someone-else": REAL}
-        with support.quiet():
-            (ahead,) = cache.ahead_of(self.rows("tests.test_mutate"))
-        assert ahead.first == (REAL,)
-
-    def test_the_prefix_is_cut_to_what_the_row_can_reach(self) -> None:
-        """A test in a module that does not import the mutated file cannot see
-        the mutation, so running it would be pure cost."""
-        cache = self.cache()
-        cache.known = {"someone-else": REAL}
-        with support.quiet():
-            (ahead,) = cache.ahead_of(self.rows("tests.test_paths"))
-        assert ahead.first == ()
-
-
-class TestTheCacheLearnsFromARealRun:
-    """The plumbing, not the algorithm.
-
-    `TestTheCheapPrefix` sets `cost` by hand, so every one of its assertions
-    passed while the harness was recording **zero** costs -- `sweep` re-wrapped
-    the report without `times` and the prefix quietly ordered nothing. A test
-    that builds its own inputs cannot see a data path that never delivers them,
-    which is CLAUDE.md §8's pass nobody can explain.
-    """
-
-    def test_a_run_measures_the_tests_it_ran(self) -> None:
-        found = swept_once(baseline=True)
-        times = found.times or {}
-        assert times, "the run recorded no test timings at all"
-        # `tests.test_paths` is UNWATCHED's whole selection, so its tests are
-        # exactly what should have been measured. Keyed by nodeid, which is what
-        # the ids `Killers` orders by are.
-        assert any(name.startswith("tests/test_paths.py::") for name in times), sorted(times)[:5]
-        assert all(seconds >= 0 for seconds in times.values())
-
-    def test_they_reach_the_cache(self) -> None:
-        found = swept_once(baseline=True)
-        cache = mutate.Killers(None)
-        cache.learn(found)
-        assert cache.cost == (found.times or {})
-
-
-class TestThePrefixReachesTheExpensiveRows:
-    """Which rows the prefix is cut to, and the two it used to be cut *out* of.
-
-    The first version compared module names -- `test.rsplit(".", 2)[0] in
-    reachable` -- which dropped the prefix in the two places it was worth most.
-    Both are here because neither is visible in a `tupferl/` sweep: every file
-    there has an importer, so every row names modules and matches. It is the
-    `tools/` sweeps, and any new file nothing imports yet, that hit them.
-    """
-
-    def cache(self) -> mutate.Killers:
-        made = mutate.Killers(None)
-        made.cost = {REAL: 0.001}
-        made.known = {"a-row-that-is-not-this-one": REAL}
-        return made
-
-    def ahead(self, tests: str) -> Mutation:
-        with support.quiet():
-            (ahead,) = self.cache().ahead_of([row()._replace(tests=tests)])
-        return ahead
-
-    def test_a_row_that_runs_everything_gets_the_whole_prefix(self) -> None:
-        """`WHOLE_SUITE` is the empty string -- what a file nothing imports gets,
-        so its rows run the entire suite at ~51s each. Cutting the prefix to
-        "modules named in an empty selection" left them with nothing, which is
-        the most expensive row in the table paying the most for the omission.
-
-        Safe only because `first` reaches the probe as its own argument. Merged
-        into the selection it would make an empty list non-empty, and "run
-        everything" would become "run the prefix" -- see `verdict.collect`.
-        """
-        assert self.ahead(mutate.WHOLE_SUITE).first == (REAL,)
-
-    def test_a_selection_naming_a_class_still_matches_its_tests(self) -> None:
-        """`tests.test_mutate.TestX` selects `tests.test_mutate.TestX.test_y`.
-        Comparing module names made this never match, so any row selected at
-        class granularity silently lost the prefix."""
-        assert self.ahead(REAL_CLASS).first == (REAL,)
-
-    def test_a_row_that_cannot_reach_it_still_does_not_pay(self) -> None:
-        """The guard the two above must not break: a test in a module that does
-        not import the mutated file cannot see the mutation."""
-        assert self.ahead("tests.test_paths").first == ()
-
-
 class TestEverySurvivorHasRunTheWholeSuite:
     """CLAUDE.md promises every survivor has been run against the whole suite
     before it is reported, and `Report.widened` is the flag that claims it.
@@ -1430,9 +1297,9 @@ class TestEverySurvivorHasRunTheWholeSuite:
             report = mutate.run([caught], baseline=False, workers=1)
         assert report.widened, "a walked report did not claim the guarantee"
 
-    def test_an_empty_selection_behind_a_prefix_still_discovers(self) -> None:
-        """The protocol half: an empty selection plus a prefix must run the
-        prefix *and* everything, not the prefix instead of everything.
+    def test_an_empty_selection_behind_a_front_still_discovers(self) -> None:
+        """The protocol half: an empty selection plus a `first` must run the
+        front *and* everything, not the front instead of everything.
 
         Driven in the probe's own two-test tree rather than against this
         repository, which would run the whole suite inside a test of it.
@@ -1448,10 +1315,10 @@ class TestEverySurvivorHasRunTheWholeSuite:
             names=(),
         )
         # Two tests in that module, each run once. This comment used to read
-        # "the prefix names one of them -- so it runs twice, once in front and
+        # "the front names one of them -- so it runs twice, once in front and
         # once as discovery reaches it", and asserted three: the duplication was
         # written down here as a fact and never costed. Two still catches what
-        # the test is for -- a prefix that *replaced* discovery would run one.
+        # the test is for -- a front that *replaced* discovery would run one.
         assert found["ran"] == 2
 
 
@@ -1464,7 +1331,7 @@ class TestARowActuallyRunsWithItsPrefix:
     drive a real mutation with a real `first`.
     """
 
-    def test_a_prefix_that_catches_it_still_reports_caught(self) -> None:
+    def test_a_front_that_catches_it_still_reports_caught(self) -> None:
         one = UNKNOWN_KEY_GUARD._replace(
             first=(
                 "tests.test_config.TestRejectingAnUnknownKey"
@@ -1474,9 +1341,9 @@ class TestARowActuallyRunsWithItsPrefix:
         found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
         assert [r.verdict.outcome for r in found.results] == ["caught"]
 
-    def test_a_prefix_that_misses_falls_through_to_the_selection(self) -> None:
+    def test_a_front_that_misses_falls_through_to_the_selection(self) -> None:
         """The safety argument, driven rather than asserted on a data structure:
-        a prefix that cannot see the mutation must cost one test, not the
+        a front that cannot see the mutation must cost one test, not the
         answer."""
         one = UNKNOWN_KEY_GUARD._replace(first=("tests.test_paths.TestWhereTheRepositoryGoes",))
         found = mutate.run([one], baseline=False, workers=1, summarise=False, strict=False)
@@ -1948,9 +1815,9 @@ class TestMovingTheKillerToTheFront:
 
     The only ordering mechanism in the file that learns *during* a run.
     `Killers.known` is keyed on the mutation's text, so it misses by
-    construction on `--base main`, whose rows are new lines; `Killers.prefix()`
-    is computed once before the table starts. Neither looks at the fact that
-    consecutive rows sit in the same function, which is what this is for --
+    construction on `--base main`, whose rows are new lines. It does not look
+    at the fact that consecutive rows sit in the same function, which is what
+    this is for --
     measured at 27-42% same killing test as the previous row, against 1-3% by
     chance.
     """
@@ -1985,9 +1852,8 @@ class TestMovingTheKillerToTheFront:
         assert learned.ahead(self.row()) == ("tests.test_sync.T.test_a", "tests.test_sync.T.test_b")
 
     def test_it_is_bounded(self) -> None:
-        """Or it grows to the size of the suite, and every row pays for the whole
-        of it before reaching its own selection -- a second `prefix()` with no
-        budget."""
+        """Or it grows to the size of the suite, and every row pays for the
+        whole of it before reaching its own selection."""
         learned = mutate.Learned(keep=3)
         for index in range(10):
             learned.saw(f"tests.test_sync.T.test_{index}")
@@ -6257,7 +6123,8 @@ class TestOrderingTheTableByWhatItCostLastTime:
 
     def test_it_says_how_much_of_the_table_it_could_order(self) -> None:
         """A silent reorder reads the same whether the cache loaded or not --
-        which is exactly how `Killers.cost` was empty for a whole milestone."""
+        which is exactly how the retired per-test cost map was empty for a
+        whole milestone and every test of it passed anyway."""
         table = self.rows(("a.py", "p"), ("a.py", "q"), ("b.py", "s"))
         with support.quiet() as said:
             mutate.slowest_first(table, self.timed(table[:1], 4.0))
@@ -6266,7 +6133,7 @@ class TestOrderingTheTableByWhatItCostLastTime:
 
 
 @functools.cache
-def swept_once(baseline: bool = False) -> mutate.Report:
+def swept_once() -> mutate.Report:
     """One real sweep of `UNWATCHED`, shared by every test that reads it.
 
     Each `mutate.run` copies the tree and spawns an interpreter, and the tests
@@ -6274,25 +6141,26 @@ def swept_once(baseline: bool = False) -> mutate.Report:
     bought nothing and cost a `copytree` and a subprocess each time.
     `functools.cache` rather than a `ClassVar` set by a fixture: same memo, no
     `None` state to narrow and no cast, and it is reachable from more than one
-    class. Keyed on `baseline`, because a run with the shards has `times` the
-    row's own selection cannot produce and a run without them is cheaper.
+    class.
 
     `strict=False` for the reason `TestTheHarnessAnswersBothWays` gives: an
     unanswerable row must come back *in the report* rather than as a
     `SystemExit` that escapes whichever test happened to ask first.
     """
     return mutate.run(
-        [UNWATCHED], baseline=baseline, workers=1, summarise=False, walk=False, strict=False
+        [UNWATCHED], baseline=False, workers=1, summarise=False, walk=False, strict=False
     )
 
 
 class TestRememberingWhatEachRowCost:
     """The measurement `slowest_first` orders by, end to end.
 
-    Driven through a real `mutate.run` rather than a hand-built `Verdict`, for
-    the reason the class above `test_a_run_measures_the_tests_it_ran` gives: a
+    Driven through a real `mutate.run` rather than a hand-built `Verdict`: a
     test that builds its own inputs cannot see a data path that never delivers
-    them. A `spent` that stayed 0.0 would order nothing and say nothing.
+    them. A `spent` that stayed 0.0 would order nothing and say nothing -- which
+    is not hypothetical, and the retired per-test cost map is the instance. It
+    recorded zero for a whole milestone while every test of it passed, because
+    each of those set its inputs by hand.
     """
 
     @pytest.fixture
@@ -6832,7 +6700,6 @@ class TestHowOneRunsOutcomeIsClassified:
         "noticed": [],
         "killers": [],
         "reasons": [],
-        "times": {},
         "ran": 3,
     }
 
@@ -7041,13 +6908,11 @@ class TestHowOneRunsOutcomeIsClassified:
                 "noticed": ["test_it (t.A.test_it)"],
                 "killers": ["t.A.test_it"],
                 "reasons": ["AssertionError: 1 != 2"],
-                "times": {"t.A.test_it": 0.5},
             }
         )
         assert found.outcome == "caught"
         assert found.killer == "t.A.test_it"
         assert "AssertionError" in found.why
-        assert found.times == {"t.A.test_it": 0.5}
 
     def test_a_notice_with_no_remembered_killer_still_counts(self) -> None:
         """`killers` can be empty where `noticed` is not, and the row is still a
@@ -7065,9 +6930,8 @@ class TestHowOneRunsOutcomeIsClassified:
         assert "no tests" in found.detail
 
     def test_a_green_run_that_noticed_nothing_survived(self) -> None:
-        """The ordinary survivor, and the timings come back with it -- a
-        survivor ran its whole selection, so its numbers are the complete ones
-        `slowest_first` orders the next sweep by."""
-        found = self.verdict({**self.GREEN, "times": {"t.A.b": 1.5}})
+        """The ordinary survivor: the suite ran, nothing failed, so the mutation
+        beat it."""
+        found = self.verdict(self.GREEN)
         assert found.outcome == "survived"
-        assert found.times == {"t.A.b": 1.5}
+        assert found.detail == ""

@@ -2100,11 +2100,11 @@ read this file:
   `f"{ahead} {mutation.first}"` — so up to `LEARNED - 1` general tests ran ahead
   of the one test known to catch the row, on **1105 of a 1309-row table**.
 
-  `Killers.ahead_of` already argues the opposite one function away: it drops the
-  cheap prefix entirely for a row whose killer is known, because "exact beats
-  general, the prefix would only be work before the answer". `Learned` is
-  general in the same way — what caught the *previous* rows is a proxy for what
-  catches this one, and here the thing being proxied is in hand.
+  The argument is that exact beats general: `Learned` is a proxy — what caught
+  the *previous* rows stands in for what catches this one — and here the thing
+  being proxied is in hand. (A second, general mechanism made the same argument
+  from the other side and has since been removed as unmeasurable; see the
+  cheap-prefix dead end below.)
 
   Measured over `--only tupferl/`, 1309 rows, warm cache, 32 lanes:
 
@@ -2137,6 +2137,52 @@ read this file:
   the composition itself.
 
 ### Measured dead ends — do not re-attempt without new evidence
+
+- **A cheap high-yield test prefix in front of every row: removed, because
+  nothing could measure it earning its place.** `Killers.prefix()` was a greedy
+  Min-Sum Set Cover over the killer cache — pick the test catching the most rows
+  per second, repeat until a 0.5s budget is spent — and it ran in front of any
+  row with no *exact* remembered killer. The one number ever taken for it was
+  taken on the table it was written against: 40 tests, 0.33s, 57% of caught rows.
+
+  It survives nowhere in the three regimes a sweep actually runs in, and the
+  reason is structural rather than a tuning failure — **it is computed from the
+  killer cache, so it is strongest exactly where it is least needed and absent
+  where it would help.**
+
+  | regime | what the prefix does |
+  |---|---|
+  | cold (`--no-killers`, or a new machine) | the cache is empty, so `prefix()` returns `[]` and it cannot exist |
+  | warm whole-tree | measured **+0.51s of 278s**, below measurement |
+  | warm `--base` diff | **77.1%** of one 275-row diff's rows already had an exact killer, which takes precedence — leaving ~23% for a mechanism whose best measured effect is below noise |
+
+  The third row is the one that was going to settle it, and the A/B was
+  abandoned rather than finished: a `--only tools/` diff sweep spends ten
+  minutes per arm in its baseline, because that selection includes
+  `tests/test_mutate.py` and its nested harnesses. Four arms is 45 minutes to
+  measure the remaining 23% of a mechanism already measured at below-noise on
+  the regime where it is *strongest*. **That is stated rather than hidden: the
+  diff regime was never measured directly.**
+
+  What removing it took out, and the second half is the argument: `PREFIX`,
+  `Killers.prefix`, `budget`, `head`, `cost`, the `--prefix` flag, the `costs`
+  key in `killers.json`, and **the entire per-test timing chain that existed
+  only to feed it** — `Watcher.times` and `pytest_runtest_logreport` in
+  `tools/verdict.py`, `Verdict.times`, `Report.times` and `run`'s `timings`.
+  Roughly 200 lines. `Killers.seconds` is *not* that chain and stays: it is per
+  *row*, and `slowest_first` reads it.
+
+  **It had already rotted into unreachable code and nothing said so.**
+  `Killers.head` was assigned in `__init__` and never again, so `main`'s
+  `if killers.head:` block — which announced the prefix to the user — could not
+  execute. `ahead_of` printed its own copy of the same line, so the message
+  appeared and the dead branch behind it was invisible. That is §0's warning
+  arriving as code rather than as prose.
+
+  **What would justify re-opening it**: a prefix built from something other than
+  the killer cache — coverage, say — so that it exists on a cold run, which is
+  the only regime where a general front has room to help. Rebuilding this one
+  answers a question already answered twice.
 
 - **Sorting the whole table by cost across files loses to sorting within each
   one — 205.2s and 204.2s against 185.0s and 185.5s, on identical total work.** Tried twice, for two
