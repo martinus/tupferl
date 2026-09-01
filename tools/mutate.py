@@ -123,9 +123,10 @@ from statistics import median
 from textwrap import indent
 from typing import Literal, NamedTuple
 
-from tools import mutants, paint, run_tests
+from tools import mutants, paint, run_tests, settings
 from tools.cpus import usable_cpus
 from tools.mutants import Mutation, check
+from tools.settings import SETTINGS
 
 #: Re-exported, because every spec file and every pasted pull-request output in
 #: this repository's history says `from tools.mutate import Mutation`. The
@@ -271,13 +272,13 @@ _FLOOR = 2 << 30
 #: alive at once. Carried in the environment because that is what survives
 #: ``python -c``, and read back by `_visible_memory` as one limit among the
 #: cgroup's.
-_BUDGET = "TUPFERL_MUTATE_BUDGET"
+_BUDGET = SETTINGS.budget_env
 
 #: What the whole run may spend, in bytes, when the caller says so outright.
 #: Set by `--budget`, and an environment variable rather than a module global so
 #: that a nested harness inherits the answer instead of re-deriving it from a
 #: machine it can no longer see.
-_TOTAL = "TUPFERL_MUTATE_TOTAL"
+_TOTAL = SETTINGS.total_env
 
 #: The per-test alarm this run actually armed, in seconds, for the suite running
 #: under it to read. `EACH_TEST` is only the *default*; `--each-test` overrides
@@ -295,7 +296,7 @@ _TOTAL = "TUPFERL_MUTATE_TOTAL"
 #: An environment variable for the same reason `_BUDGET` is one: it has to
 #: survive `python -c`, and the suite reads it through `tests/support.py`'s
 #: `bounded`, which is the one place the margin is decided.
-_ALARM = "TUPFERL_MUTATE_EACH_TEST"
+_ALARM = SETTINGS.alarm_env
 
 #: Set in a probe's environment to say that the tree underneath it is a
 #: *mutated copy*, not the repository.
@@ -309,15 +310,17 @@ _ALARM = "TUPFERL_MUTATE_EACH_TEST"
 #: about, 105 of them in this file. That inflates `caught`, which is the
 #: direction CLAUDE.md names as the one every bug in this class has taken.
 #:
-#: It is *not* in `SANDBOX`: that contract is spread into `_collected` too,
+#: It is *not* in `Settings.sandbox`: that contract is spread into `_collected` too,
 #: which runs over the real tree, and a marker claiming otherwise there would be
 #: a lie in the one place the distinction matters.
 #:
 #: An environment variable for the reason `_BUDGET` and `_ALARM` are: it has to
-#: survive ``python -c`` into a nested harness. `tests/support.py` spells it a
-#: second time and `test_support` asserts the two agree, as it already does for
-#: `_ALARM`.
-_MUTATED = "TUPFERL_MUTATE_MUTATED"
+#: survive ``python -c`` into a nested harness. `tests/support.py` used to spell
+#: it a second time, with `test_support` asserting the two agreed; since Phase D
+#: both ends read `[tool.mutate] env_prefix` through `tools/settings.py`, so
+#: there is one spelling and the agreement tests are kept as a tripwire against a
+#: literal returning rather than as a live guard.
+_MUTATED = SETTINGS.mutated_env
 
 #: What a run leaves for the operating system and for itself when the machine is
 #: its own. A gibibyte, which is `_LANE` -- the same number, because the thing
@@ -330,23 +333,14 @@ _SPARE = 1 << 30
 #: `tests/profiles.py` makes the profile derandomised as well as small, which is
 #: the half that matters for correctness -- a randomised baseline and a
 #: randomised mutant draw different examples, and "it failed" then means nothing.
-_PROFILE = "TUPFERL_HYPOTHESIS_PROFILE"
+_PROFILE = SETTINGS.hypothesis_profile_env
 
 #: The value it is set to. A constant rather than a literal in the `env` dict
 #: below, so a test can assert that the profile this asks for is one
 #: `tests/profiles.py` has registered -- `load_profile` on a name nobody
 #: registered raises inside the probe, where it surfaces as `BROKE` on every row
 #: rather than as the typo it is.
-_MUTATION_PROFILE = "mutation"
-
-#: The environment every pytest this module starts runs under, written once
-#: because it is a *contract* and two spellings of it are two contracts. `_run`
-#: spreads it into a probe's environment and `_collected` into its own, so what
-#: a sweep is graded against and what its cache is validated against cannot
-#: drift apart. `tests/test_mutate.py` asserts the keys literally rather than
-#: importing this, which is the difference between checking a claim and
-#: restating it.
-SANDBOX = {"PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+_MUTATION_PROFILE = SETTINGS.hypothesis_profile
 
 #: The two exit statuses that mean pytest listed what it could -- `ExitCode.OK`
 #: and `ExitCode.NO_TESTS_COLLECTED`. Written as numbers rather than imported:
@@ -385,15 +379,20 @@ _OK, _NONE = 0, 5
 #: `shutil.ignore_patterns` matches on the **base name at any depth**, checked
 #: rather than assumed -- a pattern that only applied at the root would leave a
 #: nested one copied and nothing here would notice until the next red leg.
+#: Split in two since Phase D. The names below are everybody's -- a repository,
+#: bytecode, the two linters' caches, a build artefact, Hypothesis's database --
+#: and `sandbox_ignore` is where a project spells its own. This tree's are
+#: `sweeps` and `.venv`, and a host using `venv/`, `.tox/` or `node_modules/`
+#: had no way to say so: a sandbox is copied once per lane per row, so this is
+#: the single largest cost a sweep can carry and it surfaces only as slowness.
 _SKIP = shutil.ignore_patterns(
     ".git",
     "__pycache__",
     ".mypy_cache",
     ".ruff_cache",
-    ".venv",
     "*.egg-info",
     ".hypothesis",
-    "sweeps",
+    *SETTINGS.sandbox_ignore,
 )
 
 
@@ -1338,7 +1337,7 @@ def _run(
     # Both files land outside the sandbox on purpose: the copy is what the
     # mutation edits, and a report written into it is one `open()` away from
     # being the mutation's to write.
-    with tempfile.TemporaryDirectory(prefix="tupferl-verdict-") as box:
+    with tempfile.TemporaryDirectory(prefix=SETTINGS.tmp("verdict-")) as box:
         report = Path(box) / "verdict.json"
         noise = Path(box) / "stderr.txt"
         with noise.open("w", encoding="utf-8") as spill:
@@ -1376,16 +1375,26 @@ def _run(
                 # here: it decides what the *suite* runs under, and measured, it
                 # takes 79.5ms off every probe. It is right for this project and
                 # would be wrong for one whose tests need an autoloaded plugin,
-                # so it becomes a setting when the harness is extracted rather
-                # than a constant then -- `docs/pytest-plan.md`, Phase D.
-                env={
-                    **os.environ,
-                    **SANDBOX,
-                    _BUDGET: str(memory),
-                    _ALARM: str(each),
-                    _MUTATED: "1",
-                    _PROFILE: _MUTATION_PROFILE,
-                },
+                # so Phase D made it `[tool.mutate] probe_autoload`. This spread
+                # goes through `Settings.environment` rather than `**SANDBOX`,
+                # because a dict of keys to *add* cannot turn one off, and a
+                # project that leaves autoload on would otherwise inherit an
+                # ambient one from whatever started the sweep.
+                env=SETTINGS.environment(
+                    os.environ,
+                    **{
+                        _BUDGET: str(memory),
+                        _ALARM: str(each),
+                        _MUTATED: "1",
+                        # Only when the project named a profile. A project
+                        # without Hypothesis has nothing to select and an empty
+                        # variable name is not a variable, so the hook is absent
+                        # rather than set to the empty string -- which
+                        # `hypothesis` would try to load and fail on inside the
+                        # probe, where a typo surfaces as `BROKE` on every row.
+                        **(SETTINGS.profile),
+                    },
+                ),
                 # A file rather than a pipe, and this is not a style choice. The
                 # suite's `python -m tupferl` grandchildren inherit the write
                 # end, so anything that drains a pipe before reaping -- which is
@@ -1499,7 +1508,7 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
     it stands, uncommitted changes and all, which is the whole situation this is
     used in.
     """
-    with tempfile.TemporaryDirectory(prefix="tupferl-mutate-") as holder:
+    with tempfile.TemporaryDirectory(prefix=SETTINGS.tmp("mutate-")) as holder:
         available: queue.Queue[Path] = queue.Queue()
         for index in range(count):
             root = Path(holder) / f"tree{index}"
@@ -1988,7 +1997,7 @@ def _budget() -> int:
     lanes fit, and on a machine with no one else on it the honest answer is
     nearly all of them.
 
-    So a dedicated machine keeps everything but `_SPARE`, and `TUPFERL_MUTATE_TOTAL`
+    So a dedicated machine keeps everything but `_SPARE`, and `_TOTAL`
     beats both -- because the one thing better than a good guess about who owns
     the machine is being told.
 
@@ -3119,12 +3128,17 @@ PREFIX = 0.5
 #: prevent, arriving through its own syntax.
 _TAGGED = "# survivor:"
 
-#: The line limit `ruff` enforces here, so a written tag never needs reflowing by
-#: hand and `ruff format --check` stays green after `--accept`. The same number
-#: as `pyproject.toml`'s `line-length`, and `tests/test_packaging.py` asserts
-#: they agree -- a tag wrapped to the wrong width turns the preflight red on
-#: generated text nobody would think to attribute.
-_COLUMNS = 100
+#: The line limit the host's formatter enforces, so a written tag never needs
+#: reflowing by hand and `ruff format --check` stays green after `--accept`.
+#: `tests/test_packaging.py` asserts it equals `pyproject.toml`'s `line-length` --
+#: a tag wrapped to the wrong width turns the preflight red on generated text
+#: nobody would think to attribute.
+#:
+#: **A setting since Phase D, and it had to become one**: `--accept` writes these
+#: tags into the *host's* source files, so a constant here at this repository's
+#: 100 makes every tag illegal in a project formatted at 88 -- the guard failing
+#: in exactly the project that cannot see it.
+_COLUMNS = SETTINGS.tag_columns
 
 _TAG = re.compile(r"#\s*survivor:\s*([\w\s,-]+?)\s*--\s*(\S.*?)\s*$")
 
@@ -3661,7 +3675,7 @@ def _collected(where: str) -> frozenset[str]:
             text=True,
             timeout=TIMEOUT,
             cwd=where,
-            env={**os.environ, **SANDBOX},
+            env=SETTINGS.environment(os.environ),
         )
     except (OSError, subprocess.SubprocessError) as why:
         print(f"pytest could not be asked what it collects ({why}), so nothing is run first.")
@@ -3695,6 +3709,19 @@ def _loadable(ids: Iterable[str]) -> set[str]:
     return wanted & _collected(os.getcwd())
 
 
+def _mutable_prefixes() -> str:
+    """`MUTABLE` as a refusal names it, or what to do when there is none.
+
+    An empty `mutable` is what a project gets by not writing the table at all,
+    and it has to say so: "nothing mutable changed" and "you have not told me
+    what is mutable" are the same exit status and only one of them is a fact
+    about the diff.
+    """
+    if not mutants.MUTABLE:
+        return f"nothing -- [{settings.TABLE}] mutable in {settings.FILE} is empty"
+    return " and ".join(f"{prefix}**.py" for prefix in mutants.MUTABLE)
+
+
 def generated(args: argparse.Namespace) -> list[Mutation]:
     """The table the diff implies, printed about before any of it runs."""
     root = Path.cwd()
@@ -3707,10 +3734,10 @@ def generated(args: argparse.Namespace) -> list[Mutation]:
         }
     if not touched:
         raise SystemExit(
-            "no mutable files at all under tupferl/ or tools/."
+            f"no mutable files at all under {_mutable_prefixes()}."
             if args.all
-            else f"nothing mutable changed against {args.base}. Only tupferl/**.py and "
-            f"tools/**.py are generated from; a change to tests/ is not a fix to test."
+            else f"nothing mutable changed against {args.base}. Only {_mutable_prefixes()} "
+            f"are generated from; a change to a test is not a fix to test."
         )
 
     index = mutants.importers(root)

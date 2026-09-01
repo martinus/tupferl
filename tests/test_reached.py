@@ -41,6 +41,7 @@ from typing import Any
 
 from tests import support
 from tools import reached
+from tools.settings import SETTINGS
 
 #: Seconds one driven `tools/reached.py` run may take before a test calls it
 #: hung. Below `tools/mutate.py`'s per-test alarm, for the reason
@@ -238,6 +239,43 @@ class TestAReportThatCannotBeBelieved:
     def test_an_explicit_claim_is_believed(self) -> None:
         assert reached.confirmed({"widened": True})
         assert not reached.confirmed({"widened": False})
+
+
+class TestTheHelpTellsYouHowToMakeTheInputs:
+    """The epilog is instructions, so it has to name *this* project's packages.
+
+    It said `coverage run --source=tupferl` until Phase D -- the last lowercase
+    `tupferl` in a live code path under `tools/`, invisible to that phase's own
+    case-sensitive grep gate, in the one tool whose entire output is a list of
+    things to go and do. A second project reading it is told to measure a
+    package it does not have.
+    """
+
+    def help(self) -> str:
+        done = subprocess.run(
+            [sys.executable, "-m", "tools.reached", "--help"],
+            cwd=support.ROOT,
+            capture_output=True,
+            text=True,
+            timeout=BOUND,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    def test_it_names_the_configured_packages(self) -> None:
+        """Compared against `[tool.mutate] mutable` turned into package names
+        rather than against the literal `tupferl,tools`, so the assertion moves
+        with the table instead of pinning this repository into the tool."""
+        want = ",".join(prefix.strip("/").replace("/", ".") for prefix in SETTINGS.mutable)
+        assert f"coverage run --source={want} -m pytest -q" in self.help()
+
+    def test_it_says_something_rather_than_nothing(self) -> None:
+        """The half a comparison against a derived string cannot make: a
+        `_sources` returning `None` puts the word `None` in the instructions,
+        and a reader who copies the line gets an error from `coverage` about a
+        file called `None` rather than about this."""
+        assert "--source=None" not in self.help()
+        assert "coverage run --source=" in self.help()
 
 
 class TestTheCommandLine:

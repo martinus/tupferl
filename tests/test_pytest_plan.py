@@ -33,7 +33,9 @@ and Phase C respectively stopped them being usable at all -- so the number means
 the thing the plan is about: modules pytest still takes through that adapter. It is also
 immune to the hazard the `__module__` filter existed for -- a module that
 *imports* a base from `tests/support.py` gains no runnable test by doing so, and
-those bases carry no `test_` methods to count. Measured: 159ms for all 35.
+those bases carry no `test_` methods to count. Measured: 159ms for all 35
+(2026-09-01; it read 35 against a tree of 34 until Phase D added a module and
+made it true, which is what a hand-typed figure beside a computed one does).
 
 The companion claim is the one a status line cannot make: that **every** module
 is accounted for. A module nobody scheduled is invisible to a count that only

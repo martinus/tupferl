@@ -44,6 +44,7 @@ import pytest
 from tests import support
 from tools import mutants, mutate, paint, reached, verdict
 from tools.mutants import Mutation, check
+from tools.settings import SETTINGS
 
 #: Seconds a driven probe may take before a test calls it hung. Well above the
 #: ~0.5s an honest `collect(ALARM)` spends and well below `tools/mutate.py`'s
@@ -720,6 +721,21 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         assert argv[9] == "1"
         assert argv[10:] == ["tests.test_paths"]
 
+    def test_the_report_lands_in_a_directory_named_for_this_project(self) -> None:
+        """The report is written outside the tree the mutation edits -- inside
+        it, the file the harness grades from would be one `open()` away from
+        being the mutation's to write -- and the directory it lands in is named
+        from `[tool.mutate] tmp_prefix`, so a leaked one says whose it was.
+
+        That prefix reaches three places and this is one of them; the sandbox
+        pool is the second, in `tests/test_settings.py`, and `Settings.tmp` is
+        the third and is where the joining happens. Asserted off the spawn
+        rather than by listing `/tmp`, because a directory that has already been
+        removed is exactly what this is meant to be able to see.
+        """
+        argv, _ = self.spawn()
+        assert Path(argv[4]).parent.name.startswith("tupferl-verdict-")
+
     def test_the_suite_runs_with_pytest_plugin_autoload_off(self) -> None:
         """Measured at 79.5 ms a probe, and it belongs here rather than in the
         verdict layer because it decides what the *suite* runs under: the
@@ -746,11 +762,15 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         assert env["TUPFERL_MUTATE_MUTATED"] == "1"
 
     def test_the_marker_is_not_part_of_the_sandbox_contract(self) -> None:
-        """`SANDBOX` is spread into `_collected` as well, which runs over the
-        *real* tree — so a marker living there would claim a mutated copy in the
-        one place the distinction matters, and the two gated assertions would
-        stop running in the preflight with nothing saying so."""
-        assert "TUPFERL_MUTATE_MUTATED" not in mutate.SANDBOX
+        """The sandbox contract is applied to `_collected` as well, which runs
+        over the *real* tree — so a marker living there would claim a mutated
+        copy in the one place the distinction matters, and the two gated
+        assertions would stop running in the preflight with nothing saying so.
+
+        Asked of the environment `_collected` would build rather than of the
+        dict, because since Phase D the contract is `Settings.environment` and
+        the question is about what a process actually receives."""
+        assert "TUPFERL_MUTATE_MUTATED" not in SETTINGS.environment({})
 
 
 #: A test module that hangs on a blocking read, and one that does not. Written

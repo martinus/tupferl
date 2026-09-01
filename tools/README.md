@@ -17,6 +17,7 @@ off-the-shelf equivalents. Read the docstring before changing a module.
 | the suite is slow enough that you are tempted to run a subset | [`run_tests.py`](run_tests.py) |
 | a long job is running detached and silence is ambiguous | [`watch.py`](watch.py) |
 | a tool's output needs a colour, and its log must not get one | [`paint.py`](paint.py) |
+| a name here says `tupferl` and should not | [`settings.py`](settings.py) |
 
 ```sh
 python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
@@ -25,10 +26,12 @@ python -m tools.reached sweeps/r.json sweeps/c.json   # survivors missing tests
 python -m tools.watch $PID --log sweeps/r.log --done sweeps/r.json.done --match 'caught|SURVIVED'
 ```
 
-`mutants.py`, `verdict.py`, `cpus.py` and `paint.py` are not run directly: they
-are what `mutate.py` and `run_tests.py` are built from. `verdict.py` in particular is a
-*standalone* file on purpose — it is read as source and executed inside each
-mutation's sandbox, so it must not import anything from this package.
+`mutants.py`, `verdict.py`, `cpus.py`, `paint.py` and `settings.py` are not run
+directly: they are what `mutate.py` and `run_tests.py` are built from.
+`verdict.py` in particular is a *standalone* file on purpose — it is read as
+source and executed inside each mutation's sandbox, so it must not import
+anything from this package. `settings.py` is the other end of that rule: it
+imports nothing but the standard library, because `tests/support.py` imports it.
 
 ## Why these and not `mutmut` / `pytest-xdist`
 
@@ -64,8 +67,10 @@ Phase A2 of `docs/pytest-plan.md`; its module docstring says why not
 
 ## What was changed in the port
 
-- **Paths and names.** `MUTABLE` is `("tupferl/", "tools/")`; the temporary
-  directory prefixes and the `TUPFERL_MUTATE_BUDGET` variable were renamed.
+- **Paths and names.** They were renamed in the port and are configuration
+  since Phase D: `MUTABLE`, the temporary directory prefixes and the
+  `<PREFIX>_MUTATE_BUDGET` family all come out of `[tool.mutate]` — see
+  [Configuring it for another project](#configuring-it-for-another-project).
 - **`UNMUTABLE` is empty.** In woswoar it excluded a script that wrote a real
   store into a sandbox; nothing here needs it yet. The mechanism is kept, with
   the rule that earns it recorded at the constant.
@@ -73,8 +78,9 @@ Phase A2 of `docs/pytest-plan.md`; its module docstring says why not
   contents are specific to woswoar's `bench` and `compare`, neither of which was
   ported. `run_tests.py` had a second, slightly different copy; both now call
   the one function.
-- **The Hypothesis profile is pinned per probe.** `mutate.py` sets
-  `TUPFERL_HYPOTHESIS_PROFILE=mutation`, which `tests/profiles.py` reads. Without
+- **The Hypothesis profile is pinned per probe.** `mutate.py` sets the variable
+  and value `[tool.mutate]` names — here `TUPFERL_HYPOTHESIS_PROFILE=mutation`,
+  which `tests/profiles.py` reads; a project that names neither gets no hook. Without
   it every mutant pays the full example budget; without the *derandomisation*
   that profile also carries, a baseline and a mutant draw different examples and
   "it failed" stops meaning "a test noticed".
@@ -93,3 +99,86 @@ Phase A2 of `docs/pytest-plan.md`; its module docstring says why not
 - **`bench.py`, `compare.py` and `sandbox.py` were not ported.** They compare
   two revisions of woswoar and are built around its store; the versions this
   project needs will be written when there is something to measure.
+
+## Configuring it for another project
+
+Everything the harness knows about the project it measures is a key in a
+`[tool.mutate]` table in that project's `pyproject.toml`, read by
+[`settings.py`](settings.py). Nothing under `tools/` spells a project's name.
+
+| key | what it decides | default |
+|---|---|---|
+| `mutable` | path prefixes whose `.py` files are mutated | none, and a run with none refuses |
+| `unmutable` | never mutated, whatever `mutable` says | none |
+| `env_prefix` | the `<P>_MUTATE_BUDGET` / `_TOTAL` / `_EACH_TEST` / `_MUTATED` family | none, so the bare names |
+| `tmp_prefix` | every temporary directory the harness makes | `mutate-` |
+| `hypothesis_profile_env`, `hypothesis_profile` | the variable and value a probe sets; either empty disables the hook | none |
+| `probe_autoload` | whether a probe lets pytest autoload installed plugins | `true` |
+| `probe_plugins` | plugins a probe force-loads through `PYTEST_PLUGINS` | none |
+| `tag_columns` | what `--accept` wraps a `# survivor:` tag to | `88` |
+| `sandbox_ignore` | names a sandbox copy leaves out, on top of the universal list | none |
+| `tests_dir` | where the test modules are | `tests` |
+| `test_module_patterns` | how a source stem predicts its test module's | `["test_{stem}", "test_{stem}_*"]` |
+
+The defaults are generic and this project's answers are in its own table, which
+is deliberate: had the defaults been tupferl's, a reader that never opened the
+file would produce an identical sweep and every test written for it would pass.
+An unknown key or a wrong type is refused with a message naming it, rather than
+silently keeping a default.
+
+`tag_columns` has to equal whatever the host's formatter enforces, because
+`--accept` writes comment lines into the host's own source files; here
+`tests/test_packaging.py` asserts it against `[tool.ruff] line-length`.
+
+`sandbox_ignore` is where a sweep's largest avoidable cost is decided: a sandbox
+is copied once per lane per row, so a virtualenv or a `node_modules` left in it
+is paid thousands of times. The universal names — `.git`, `__pycache__`, the two
+linter caches, `*.egg-info`, `.hypothesis` — are in `mutate._SKIP` and need no
+configuration.
+
+`tests_dir` and `test_module_patterns` are an **ordering** heuristic and not a
+gate — `verdict.collect` walks whatever the selection missed — so a wrong value
+costs a longer walk, never a wrong verdict. The walk itself already respects the
+host's own pytest configuration (`python_files`, `testpaths`, conftest
+hierarchies).
+
+Two limits of that pair, both stated rather than fixed, because neither can be
+exercised by a project with tupferl's flat layout:
+
+- **a host states its test-module convention twice** — here, and in pytest's
+  `python_files`. Defaulting one from the other is possible (`settings.load`
+  already parses the file that holds both) and is declined for now: tupferl
+  declares neither, so nothing here would prove the defaulting works.
+- **`tests_dir` is one directory and is not searched recursively.** A suite laid
+  out as `tests/unit/test_x.py` gets an empty selection for every row, so every
+  row runs the whole suite — slower, never wrong, and silent about it. It is the
+  knob most likely to be wrong for the second consumer.
+
+## What extraction still needs
+
+Phase D made the harness project-agnostic; it did not package it. What is left,
+recorded here rather than filed, because none of it is work anybody should start
+before there is a second consumer:
+
+- **a package name and an entry point.** `python -m tools.mutate` becomes
+  `python -m <name>`, and `settings.ROOT` — today "the tree this file lives in",
+  which is what makes a copied `tools/` configurable — becomes pytest's `rootdir`
+  or the invoking directory. That is one function, `settings._root`, and it is
+  the only place that knows where a project is.
+- **the `tests/support.py` pieces the harness's own tests borrow.** `tempdir`,
+  `bounded`, `bounds`, `deadline` and `over_a_mutated_tree` are used by
+  `test_mutate`, `test_mutants`, `test_verdict`, `test_reached`, `test_watch`
+  and `test_settings`. They are tupferl's file today and half of it is about
+  tupferl's sandbox.
+- **the read-source contract as package data.** `mutate._probe` reads
+  `verdict.py` off disk beside itself; an installed wheel has to ship it as a
+  file rather than only as a module.
+- **licence headers and attribution.** The woswoar Apache-2.0 provenance is
+  documented above and would need to travel with the files.
+- **a woswoar dry-run as the real acceptance test.** Everything here is measured
+  against one project. The scratch project in `tests/test_settings.py` proves the
+  knobs are read; it does not prove the set of knobs is the right set, and only a
+  second real suite can.
+- **whether `run_tests.py` ships or stays per-project.** It is a suite runner
+  with an accounting check, not part of the mutation harness, and `mutate.py`
+  imports it for exactly one thing.

@@ -181,12 +181,20 @@ class TestTheTagWidthMatchesTheFormatter:
     in a file the change never touched, which is a long way from the edit that
     caused it.
 
-    Asserted here rather than read from `pyproject.toml` by `tools/mutate.py`:
-    `tools/` may not import the package, and parsing TOML there would drag
-    `tomli` in on 3.10 for a constant that changes once a decade. This file
-    already opens `pyproject.toml` for the dependency surface, so the comparison
-    costs nothing new.
+    **The width is `[tool.mutate] tag_columns` since Phase D, not a constant** --
+    `--accept` writes those tags into the *host's* source, so a harness that
+    carried this repository's 100 into a project formatted at 88 would make every
+    tag it wrote illegal there, which is this guard failing in exactly the
+    project that cannot see it.
+
+    Two settings of two different tools then have to hold the same number, and
+    this is what keeps them equal. The reason given here for not reading it from
+    `pyproject.toml` -- "parsing TOML there would drag `tomli` in on 3.10" --
+    stopped being true in the same commit: `tools/settings.py` parses TOML on
+    every supported version, and carries its own copy of the shim because
+    `tools/` may not import the package.
     """
 
     def test_the_wrap_width_is_the_formatter_s_line_length(self) -> None:
         assert pyproject()["tool"]["ruff"]["line-length"] == mutate._COLUMNS
+        assert pyproject()["tool"]["mutate"]["tag_columns"] == mutate._COLUMNS
