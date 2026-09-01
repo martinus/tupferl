@@ -1787,6 +1787,14 @@ has been dropped.
   repository's own review pass took that leg from green to red on the next
   push.
 
+  **It caught a fresh instance while this line was being read**, which is the
+  argument for the leg rather than a story about it: a
+  `skipif(not Path("/proc/self/stat").exists())` written for a Linux-only fact
+  turned `macos (3)` red with `1 tests were skipped - an optional tool is
+  missing`, and nothing local could have said so. The prescribed shape below is
+  what replaced it -- both arms asserted, `None` on macOS checked against there
+  being no `/proc`, so neither platform runs a test that does nothing.
+
   Spelled `@pytest.mark.skipif` since B6 converted the last real `skipUnless`.
   **The polarity inverts and nothing checks it**: pytest has no `skipunless`, so
   `skipUnless(shutil.which("git"))` becomes

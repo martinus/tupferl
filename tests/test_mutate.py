@@ -1062,12 +1062,25 @@ class TestCollectingWhatAKilledSweepLeft:
         finally:
             mutate._stamp.cache_clear()
 
-    @pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="Linux reads /proc")
-    def test_our_own_birth_agrees_with_the_walk(self) -> None:
+    def test_our_own_birth_agrees_with_the_walk_or_says_it_cannot(self) -> None:
         """The two are compared with each other -- a stamp against `_born`'s map
         -- so reading them differently would make every stamp look stale and
-        every live sweep's tree collectable."""
-        assert mutate._my_birth() == mutate._born()[os.getpid()]
+        every live sweep's tree collectable.
+
+        **A plain `if`, not a `skipif`, and that is the whole of a red macos
+        leg.** The first version skipped where there is no `/proc`; every job
+        that runs tests passes `--no-skips`, so a skip *is* a failure there and
+        the leg went red with `1 tests were skipped - an optional tool is
+        missing`. The rule CLAUDE.md gives is to assert the half that holds
+        everywhere and label the rest -- so both arms are checked, and neither
+        platform runs a test that does nothing.
+        """
+        mine = mutate._my_birth()
+        if mine is None:
+            # macOS, and the only honest reason to have nothing to say.
+            assert not Path("/proc/self/stat").exists()
+        else:
+            assert mine == mutate._born()[os.getpid()]
 
     def test_a_birth_that_cannot_be_read_is_none_rather_than_an_error(self) -> None:
         """macOS, where there is no `/proc`. `_collect_abandoned` already treats
