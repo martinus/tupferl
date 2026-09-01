@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -2042,6 +2043,51 @@ def alive(pid: int) -> bool:
     )
     state = done.stdout.strip()
     return bool(state) and not state.startswith("Z")
+
+
+class TestTheBreadcrumbAKilledProbeLeaves:
+    """`<report>.running`: the only thing a `TIMEOUT` has to say for itself.
+
+    A probe that runs out of time is killed before it writes its report, so the
+    row said "no answer within 300s" and named nothing (#107). This is the note
+    that survives, because the file belongs to the caller rather than to the
+    process being killed.
+    """
+
+    _bounded = support.bounds(BOUND, "the probe never wrote its breadcrumb")
+
+    def leaves(self, extra: str = "") -> str:
+        """One real probe over one real test, and the note it left."""
+        with support.tempdir(prefix="tupferl-crumb-") as box:
+            report = box / "verdict.json"
+            script = (
+                f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+                "from tools import verdict\n"
+                f"verdict.collect(['tests.test_paths'], False, 0.0, (), False, "
+                f"__import__('pathlib').Path({str(report) + '.running'!r}))\n"
+            )
+            subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=BOUND,
+                check=False,
+            )
+            note = report.with_name(report.name + ".running")
+            return note.read_text(encoding="utf-8") if note.exists() else ""
+
+    def test_it_names_a_test_that_really_ran(self) -> None:
+        said = self.leaves()
+        assert "::" in said, said
+        assert "tests/test_paths.py" in said, said
+
+    def test_it_carries_a_clock(self) -> None:
+        """Without it the id cannot separate "one test hung" from "the suite was
+        slow", which are #107's two competing readings and want opposite fixes."""
+        began, _, nodeid = self.leaves().partition(" ")
+        assert nodeid, "the note has no test id"
+        assert abs(float(began) - time.time()) < BOUND, "the clock is not a timestamp"
 
 
 class TestAProbeThatOutlivesItsSweep:

@@ -6842,6 +6842,7 @@ class TestHowOneRunsOutcomeIsClassified:
         held: int = 0,
         stderr: str = "",
         hang: bool = False,
+        running: str | None = None,
         **how: Any,
     ) -> mutate.Verdict:
         """`_run` against a probe that behaved as described.
@@ -6868,6 +6869,11 @@ class TestHowOneRunsOutcomeIsClassified:
                 Path(kwargs["stderr"].name).write_text(stderr, encoding="utf-8")
                 if written is not None:
                     Path(argv[4]).write_text(json.dumps(written), encoding="utf-8")
+                if running is not None:
+                    # What `verdict.Watcher.pytest_runtest_logstart` leaves as
+                    # each test starts, and the only thing a killed probe has to
+                    # say for itself.
+                    Path(argv[4] + ".running").write_text(running, encoding="utf-8")
 
             def wait(self, timeout: float | None = None) -> int:
                 if hang:
@@ -6899,6 +6905,43 @@ class TestHowOneRunsOutcomeIsClassified:
         found = self.verdict(self.GREEN, hang=True)
         assert found.outcome == "timeout"
         assert "no answer within" in found.detail
+
+    def test_a_timeout_names_the_test_that_was_running(self) -> None:
+        """**The one verdict with nothing to read** (#107). A probe that runs out
+        of time is killed, so it writes no report, and the row said only "no
+        answer within 300s" -- naming neither the test in flight nor anything
+        else. Two sweeps disagreed about one row and neither left evidence.
+
+        `verdict` overwrites `<report>.running` as each test starts, and that
+        file survives the kill because it belongs to the caller.
+        """
+        found = self.verdict(hang=True, running="1000.0 tests/test_x.py::T::test_slow")
+        assert found.outcome == "timeout"
+        assert "tests/test_x.py::T::test_slow" in found.detail
+
+    def test_a_timeout_says_how_long_that_test_had_been_running(self) -> None:
+        """The name alone cannot tell the two readings apart, and they want
+        opposite fixes: nearly the whole budget under one id is a test that
+        hung, and a few seconds is a suite that was merely slow. #107's two
+        competing hypotheses are exactly that pair."""
+        began = time.time() - 42
+        found = self.verdict(hang=True, running=f"{began:.3f} tests/test_x.py::T::test_slow")
+        assert "after 42s" in found.detail, found.detail
+
+    def test_a_timeout_with_no_note_says_only_what_it_knows(self) -> None:
+        """A probe killed before its first test, or one from before this
+        existed. Silence rather than a guess: a `TIMEOUT` naming the wrong test
+        would be worse than one naming none."""
+        found = self.verdict(hang=True)
+        assert found.outcome == "timeout"
+        assert "no answer within" in found.detail
+        assert ", in " not in found.detail
+
+    def test_a_note_it_cannot_parse_is_still_reported(self) -> None:
+        """Written by an older probe, which a resumed sweep can meet. The id is
+        worth more than the clock, so losing the clock must not lose both."""
+        found = self.verdict(hang=True, running="tests/test_x.py::T::test_old")
+        assert "tests/test_x.py::T::test_old" in found.detail
 
     def test_a_lane_killed_for_memory_broke_rather_than_answered(self) -> None:
         """And it is read *before* the report, which is the whole subtlety. A
