@@ -426,6 +426,7 @@ committed; the only recovery is writing it again from memory.
   | the suite is slow enough that you are tempted to run a subset | [`tools/run_tests.py`](tools/run_tests.py) |
   | a long job is running detached and silence is ambiguous | [`tools/watch.py`](tools/watch.py) |
   | a tool's output needs a colour, and its log must not get one | [`tools/paint.py`](tools/paint.py) |
+  | a name under `tools/` says `tupferl` and should not | [`tools/settings.py`](tools/settings.py) |
 
   ```sh
   python -m tools.mutate --base main --json sweeps/r.json   # generated from the diff
@@ -437,7 +438,7 @@ committed; the only recovery is writing it again from memory.
   The first four were ported from `martinus/woswoar` (Apache-2.0), where they
   were written; their module docstrings carry the argument for each one's shape
   and say which of its evidence was measured there rather than here.
-  `tools/paint.py` was written here.
+  `tools/paint.py` and `tools/settings.py` were written here.
 
   **Historical — `tools/unassert.py` was a sixth row, and its deletion is the
   one thing in §7 that argues against §7.** It rewrote `self.assertX(...)` into
@@ -561,7 +562,7 @@ failure §8 collects, so reach for `pytest -q`.
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
 | `tests/` | **pytest-native, and run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness does not care how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. Phase B converted all 33 modules that had to convert; **some modules are still taken by the `unittest` loader and none is arrears**, and *which* and *how many* is [`docs/pytest-plan.md`](docs/pytest-plan.md)'s status line rather than anything here — Phase C changed the number and something else will, so typing it here is the rot this file opens with, and `tests/test_pytest_plan.py` recomputes it from the tree where nothing recomputes a figure typed here. Write a new module pytest-native: a plain `def test_...` is discovered, packed by its module, run and accounted for |
-| `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the classifier, and the only one — `verdict_unittest.py` and its tests were the `unittest` backend it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` while the conversion was measured against it and deleted with that switch in Phase C |
+| `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py` and `settings.py`, which are this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the classifier, and the only one — `verdict_unittest.py` and its tests were the `unittest` backend it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` while the conversion was measured against it and deleted with that switch in Phase C. **Nothing here spells a project's name**: since Phase D every one of them is a key in `pyproject.toml`'s `[tool.mutate]`, read by `settings.py` and documented in [`tools/README.md`](tools/README.md) |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on. **Its status line says which cluster is next, and `tests/test_pytest_plan.py` asserts it against the tree** -- so "continue the plan" is a safe instruction and the line cannot go stale. It did, within a day of being written |
 
@@ -868,6 +869,42 @@ going red. An extra ships to nobody, so the check that matters there is a
 different one: the floor has to be a version somebody actually ran. Both
 extras carry that argument as a comment beside them, and pytest's says what
 measurement pins it.
+
+### The harness knows nothing about tupferl, and that is a claim with a test
+
+Every name under `tools/` that used to say `tupferl` is a key in
+`pyproject.toml`'s `[tool.mutate]` table since Phase D — the mutable prefixes,
+the `TUPFERL_MUTATE_*` family, the temporary directory prefixes, the Hypothesis
+profile, the tests directory and the naming convention that predicts a test
+module. `tools/settings.py` reads it; `tools/README.md` documents it.
+
+**The defaults are generic and this project's answers are in the table**, which
+is the opposite of what `docs/pytest-plan.md` specified and is the one decision
+in that phase worth arguing. Had the defaults been tupferl's, a reader that
+opened the file and then threw the result away would produce a byte-identical
+sweep, and every test written for it would pass — the flattering green §8
+collects. Measured, by deleting the table: **13 tests across three files go
+red.** Four knobs stay green there because their default really does equal this
+project's value (`unmutable`, `probe_plugins`, `tests_dir`,
+`test_module_patterns`), and what covers those is the scratch project in
+`tests/test_settings.py`, which drives a copy of `tools/` inside a tree whose
+every knob differs and asks the harness — not the settings — what it thinks.
+
+Two rules follow for anything added under `tools/`:
+
+- **a new project-specific name goes in the table, not in the module.** The
+  grep that says so is `grep -rn "TUPFERL" tools/*.py`, and it should come back
+  with one line: a docstring in `verdict.py` naming a switch Phase C deleted.
+- **`tools/settings.py` imports nothing but the standard library.**
+  `tests/support.py` imports it — that is what makes `support.ALARM` and
+  `mutate._ALARM` one spelling instead of two literals a typo could part — so
+  anything it pulled in would be pulled into every test process and every probe.
+
+**A negative assertion about a configured walk needs its positive half**, and
+this is where that was measured rather than recited: with the reader disabled
+the walk comes back *empty*, so `"src/dangerous.py" not in walked` — the test
+for `unmutable` — was satisfied by there being nothing to look at. It asserts
+the sibling is present first.
 
 ### Gotchas
 

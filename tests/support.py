@@ -45,6 +45,7 @@ from unittest import mock
 import pytest
 from hypothesis import strategies as st
 
+from tools.settings import SETTINGS
 from tupferl import manifest, paths
 
 #: The repository root, so a subprocess can import the package under test without
@@ -54,15 +55,20 @@ from tupferl import manifest, paths
 ROOT = Path(__file__).resolve().parents[1]
 
 #: The environment variable `tools/mutate.py` sets to the per-test alarm it armed
-#: for this run. Spelled here rather than imported: `support` is the bottom of
-#: the test tree and importing the harness into it to read one string is the
-#: wrong direction. `test_support` asserts the two spellings agree, which is the
-#: same arrangement `CARRIES` already has with `TUPFERL_MUTATE_BUDGET`.
-ALARM = "TUPFERL_MUTATE_EACH_TEST"
-
-#: The variable `tools/mutate.py` sets when the tree under this suite is a
-#: mutated copy. Spelled here rather than imported, for `ALARM`'s reason.
-MUTATED = "TUPFERL_MUTATE_MUTATED"
+#: for this run, and the one it sets when the tree under this suite is a mutated
+#: copy. Both derived from the same `[tool.mutate] env_prefix` the harness
+#: derives them from, so the two ends cannot disagree.
+#:
+#: **This used to be two hand-written literals**, on the argument that `support`
+#: is the bottom of the test tree and importing the harness into it to read one
+#: string is the wrong direction. That argument stands and this is not it:
+#: `tools/settings.py` is the *configuration*, it imports nothing but the
+#: standard library, and it is what Phase D made the single spelling of a name
+#: whose two halves a typo could silently part. `test_support` asserted the two
+#: literals agreed; what it asserts now is that both are still routed here,
+#: which is the only way they can part again.
+ALARM = SETTINGS.alarm_env
+MUTATED = SETTINGS.mutated_env
 
 #: The only names carried in from the ambient environment, each with a reason:
 #:
@@ -75,9 +81,9 @@ MUTATED = "TUPFERL_MUTATE_MUTATED"
 #: - the two `PYTHON*` bytecode names: `tools/mutate.py` sets them so that its
 #:   sandboxes cannot leave a `.pyc` behind for the next mutation to read, and a
 #:   subprocess started here would otherwise drop them.
-#: - `TUPFERL_MUTATE_BUDGET`: how much memory a nested mutation harness may
-#:   assume. Dropping it lets an inner harness size itself for the whole host.
-#: - `TUPFERL_MUTATE_EACH_TEST`: the per-test alarm the harness armed. Dropping
+#: - the harness's budget variable: how much memory a nested mutation harness
+#:   may assume. Dropping it lets an inner harness size itself for the whole host.
+#: - the harness's alarm variable: the per-test alarm the harness armed. Dropping
 #:   it lets a subprocess fixture bound itself against the default instead.
 #: - `PYTHONWARNINGS`: CI sets it to `error::DeprecationWarning`, and a sandbox
 #:   that drops it downgrades that guard to a warning *only in the subprocesses*
@@ -91,7 +97,7 @@ CARRIES = (
     "PYTHONDONTWRITEBYTECODE",
     "PYTHONPYCACHEPREFIX",
     "PYTHONWARNINGS",
-    "TUPFERL_MUTATE_BUDGET",
+    SETTINGS.budget_env,
     ALARM,
 )
 

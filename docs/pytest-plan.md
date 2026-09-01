@@ -1,9 +1,9 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **Phases 0, A, A2, B and C executed** (2026-08-30 to 2026-09-01) — so
-the conversion is finished and **Phase D is next**, which is
-extraction-readiness rather than conversion work.
-**Of 34 test modules, 1 still runs through pytest's `unittest` adapter**, and
+Status: **Phases 0, A, A2, B, C and D executed** (2026-08-30 to 2026-09-01) —
+so the conversion is finished, and so is the extraction-readiness work that
+followed it. **There is no Phase E: the plan is done.**
+**Of 35 test modules, 1 still runs through pytest's `unittest` adapter**, and
 it is not arrears: `tests/test_sync_properties.py` is converted but exposes a
 class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
 the pytest-idiomatic spelling.
@@ -41,7 +41,8 @@ differently from what it says below is in
 [B4b as built](#b4b-as-built--2026-08-31),
 [B5 as built](#b5-as-built--2026-08-31) and
 [B6 as built](#b6-as-built--2026-08-31) and
-[Phase C as built](#phase-c-as-built--2026-09-01). **Read every "as built"
+[Phase C as built](#phase-c-as-built--2026-09-01) and
+[Phase D as built](#phase-d-as-built--2026-09-01). **Read every "as built"
 section before the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
@@ -3360,6 +3361,125 @@ config-default path); one demonstration probe run with every knob overridden
 in a scratch project (PR body shows it); `grep -rn "TUPFERL" tools/` returns
 only the settings defaults and prose. **Size:** 1 PR, ~300–500 lines.
 **Failure protocol:** FP.
+
+## Phase D as built — 2026-09-01
+
+One PR. `tools/settings.py` is new (~250 lines with its argument),
+`tests/test_settings.py` is new (53 tests), and `pyproject.toml` gained a
+`[tool.mutate]` table. Every other file lost a name rather than gaining one.
+
+### The one place it diverges from the plan above, and why
+
+**The plan asked for "defaults equal to today's constants so an absent table
+changes nothing". It was built the other way round: the defaults are generic and
+tupferl's values are in the table.**
+
+The plan's arrangement is the one in which nothing can tell a working config
+reader from one that never opens the file. If `mutable` defaulted to
+`("tupferl/", "tools/")` *and* the table said the same, a bug that dropped the
+table on the floor would produce a byte-identical sweep and every test written
+for the feature would pass — CLAUDE.md §8's flattering green, arriving through
+the feature's own design.
+
+Measured, by deleting the table from `pyproject.toml` and running the guards:
+**13 tests across `test_settings.py`, `test_mutate.py` and `test_profiles.py`
+go red.** Under the plan's arrangement the number would be zero.
+
+The gate the phase actually names — a whole-tree sweep unchanged — is met either
+way, because the table restores today's values exactly. `TODAY` in
+`tests/test_settings.py` is a `Settings` holding every constant Phase D removed
+from `tools/`, asserted one knob per parametrize case, and it is the only place
+in the tree those literals still appear.
+
+**Four knobs are green with the table deleted**, because their default really
+does equal this project's value: `unmutable` (empty), `probe_plugins` (empty),
+`tests_dir` (`tests`) and `test_module_patterns`. Nothing about the repository
+can distinguish those, which is what `TestASecondProjectConfiguresIt` is for.
+
+### The instrument that answers "does a second project configure it"
+
+A scratch tree with **every** knob different from both the defaults and
+tupferl's: `mutable = ["src/"]`, `unmutable = ["src/dangerous.py"]`,
+`env_prefix = "OTHER"`, `tmp_prefix = "other-"`, `tests_dir = "checks"`,
+`test_module_patterns = ["check_{stem}"]`, autoload back *on*, two named
+plugins. `tools/` is copied into it — which is both what makes
+`settings.ROOT` land on the scratch `pyproject.toml` and what extraction will
+actually look like — and a subprocess asks the *harness* rather than the
+settings:
+
+```
+{"root": "/tmp/check-5m_mnrec", "mutable": ["src/"],
+ "unmutable": ["src/dangerous.py"], "walked": ["src/thing.py"],
+ "targets": "checks.check_thing", "alarm": "OTHER_MUTATE_EACH_TEST",
+ "budget": "OTHER_MUTATE_BUDGET", "total": "OTHER_MUTATE_TOTAL",
+ "mutated": "OTHER_MUTATE_MUTATED", "profile_env": "OTHER_HYPOTHESIS",
+ "profile": "quick", "tmp": "other-verdict-", "refusal": "src/**.py",
+ "sandbox": {"PYTHONDONTWRITEBYTECODE": "1",
+             "PYTEST_PLUGINS": "myplugin,otherplugin"}}
+```
+
+110 ms, measured. `checks/` holds `check_thing.py` **and** `test_thing.py`, so
+the selection separates "it found the directory" from "it kept the old
+convention" — both files are there and only one is an answer.
+
+### What the perturbation found that the tests did not
+
+`test_the_unmutable_entry_is_left_out_of_the_walk` passed with the config reader
+disabled. With no `mutable`, the walk comes back **empty**, and "this file is
+not in the answer" is satisfied by there being no answer — the negative
+assertion whose precondition was never established that CLAUDE.md §2 lists. It
+asserts the sibling is present first now. That is the only finding, and it came
+from perturbing the file rather than from reading the diff.
+
+### Decisions worth carrying forward
+
+- **`probe_plugins` travels as `PYTEST_PLUGINS`, not as an argv slot.**
+  `tools/verdict.py` is read as source text into the sandbox and may import
+  nothing from `tools`, so it cannot be handed a settings object; pytest's own
+  variable needs no plumbing and no new command-line position. The one thing
+  that stays hardcoded in the probe is `-p no:cacheprovider`, which is sandbox
+  hygiene rather than a project's business.
+- **`hypothesis_profile_env` is not derived from `env_prefix`.** It names a
+  variable the *host suite* owns (`tests/profiles.py` here), and deriving it
+  would let a change of prefix silently rename somebody else's variable.
+- **`tests/support.py` imports `tools.settings`.** Its docstring used to argue
+  the opposite — "`support` is the bottom of the test tree and importing the
+  harness into it to read one string is the wrong direction" — and that argument
+  stands; this is not it. `settings.py` is the configuration, imports nothing
+  but the standard library, and is what turns four hand-written literals in two
+  files into one spelling. `test_support`'s two agreement tests are vacuous by
+  construction now and were kept, with docstrings saying so: what they still
+  catch is either end going back to a literal.
+- **`settings._root` is the single seam extraction moves.** "The tree this file
+  lives in" is what makes a copied `tools/` configurable and is immune to the
+  `os.chdir` the suite does constantly; an installed harness would answer
+  pytest's `rootdir` there and nothing else would change. Reading the *running*
+  tree rather than the sandbox's is not what stops a mutation editing its own
+  budget — inside a probe this file **is** the sandbox's copy. What stops it is
+  that `pyproject.toml` is not a `.py` file under a `mutable` prefix.
+- **An unknown key or a wrong type is refused, naming it.** `type(value) is not
+  want` rather than `isinstance`, because `bool` is a subclass of `int` and TOML
+  has both; and a list check that asks "are all items strings" accepts
+  `"src/"` and turns one prefix into eleven one-character ones.
+
+### Two things this phase did not do
+
+- **`tools/README.md` carries the extraction checklist** — package name and
+  entry point, the `tests/support.py` pieces the harness's own tests borrow, the
+  read-source contract as package data, licence headers, a woswoar dry-run, and
+  whether `run_tests.py` ships. None of it is work to start before there is a
+  second consumer.
+- **The set of knobs is proved read, not proved right.** Only a second real
+  suite can say whether it is the right set, and woswoar's conversion is that
+  test.
+
+### A figure that was wrong and is now accidentally right
+
+`tests/test_pytest_plan.py`'s docstring said "159ms for all 35" while the tree
+held 34 modules. Phase D added `test_settings.py` and made it true. It is dated
+now, and it is the third hand-typed count in this repository to be found wrong
+by one — the first two are in CLAUDE.md's "Measured, and kept" and its `TODO`
+tag count.
 
 ## Risks named up front
 

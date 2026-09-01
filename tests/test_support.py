@@ -845,7 +845,14 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
     def test_the_harness_and_the_fixture_spell_the_name_the_same(self) -> None:
         """Two spellings of one variable, and a typo in either is invisible: the
         harness would set a name nothing reads, `bounded` would find nothing and
-        return its argument, and every assertion above would still pass."""
+        return its argument, and every assertion above would still pass.
+
+        **Both sides derive it from `[tool.mutate] env_prefix` since Phase D**,
+        so they cannot part by a typo any more -- which makes this vacuous today
+        and is the improvement, not a reason to delete it. What it still catches
+        is either side going back to a literal, which is how it was written for
+        the whole of the time the hazard above was live.
+        """
         assert support.ALARM == mutate._ALARM
 
     def test_the_mutated_tree_marker_is_spelled_the_same_at_both_ends(self) -> None:
@@ -853,7 +860,10 @@ class TestBoundingAFixtureAgainstTheAlarmActuallyArmed:
         leaves `over_a_mutated_tree` answering `False` inside every probe, the
         two tag assertions run against a mutated copy, and 226 rows go back to
         being credited to a kill nothing behavioural made -- silently, because
-        every one of those rows reads `caught` (#110)."""
+        every one of those rows reads `caught` (#110).
+
+        Derived at both ends now, for `ALARM`'s reason and with `ALARM`'s
+        caveat."""
         assert support.MUTATED == mutate._MUTATED
 
     def test_nothing_says_the_tree_is_mutated_under_an_ordinary_run(self) -> None:

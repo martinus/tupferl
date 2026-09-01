@@ -96,6 +96,7 @@ import pytest
 
 from tools import paint
 from tools.cpus import usable_cpus
+from tools.settings import SETTINGS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -738,7 +739,7 @@ def main(argv: list[str] | None = None) -> int:
     # predates the port.
     batches = pack(scopes, jobs * 2)
 
-    with tempfile.TemporaryDirectory(prefix="tupferl-batches-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=SETTINGS.tmp("batches-")) as tmp:
 
         def run(indexed: tuple[int, list[str]]) -> dict[str, Any]:
             index, names = indexed

@@ -720,6 +720,21 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         assert argv[9] == "1"
         assert argv[10:] == ["tests.test_paths"]
 
+    def test_the_report_lands_in_a_directory_named_for_this_project(self) -> None:
+        """The report is written outside the tree the mutation edits -- inside
+        it, the file the harness grades from would be one `open()` away from
+        being the mutation's to write -- and the directory it lands in is named
+        from `[tool.mutate] tmp_prefix`, so a leaked one says whose it was.
+
+        That prefix reaches three places and this is one of them; the sandbox
+        pool is the second, in `tests/test_settings.py`, and `Settings.tmp` is
+        the third and is where the joining happens. Asserted off the spawn
+        rather than by listing `/tmp`, because a directory that has already been
+        removed is exactly what this is meant to be able to see.
+        """
+        argv, _ = self.spawn()
+        assert Path(argv[4]).parent.name.startswith("tupferl-verdict-")
+
     def test_the_suite_runs_with_pytest_plugin_autoload_off(self) -> None:
         """Measured at 79.5 ms a probe, and it belongs here rather than in the
         verdict layer because it decides what the *suite* runs under: the

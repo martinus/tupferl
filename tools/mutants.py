@@ -62,6 +62,8 @@ from itertools import groupby
 from pathlib import Path
 from typing import NamedTuple
 
+from tools.settings import SETTINGS
+
 
 class Mutation(NamedTuple):
     """One edit that some test is supposed to notice."""
@@ -144,7 +146,12 @@ NO_MUTATE = re.compile(r"#\s*pragma:\s*no\s+mutate\b")
 
 #: Only these are worth mutating. Never `tests/**`: breaking a test proves
 #: nothing about the fix, and the run would report the assertion it removed.
-MUTABLE = ("tupferl/", "tools/")
+#:
+#: Read from `pyproject.toml`'s `[tool.mutate]` since Phase D rather than spelled
+#: here, and still a module constant because every caller reads it in a loop.
+#: `mock.patch.object` on it is what the tests for `UNMUTABLE` use, and that
+#: still works -- it is the same name in the same place, with a different source.
+MUTABLE = SETTINGS.mutable
 
 #: Never generated for, whatever `MUTABLE` says. Empty today, and kept because
 #: of what filled it in woswoar: a script under `tools/` built a sandbox and
@@ -156,7 +163,7 @@ MUTABLE = ("tupferl/", "tools/")
 #: The rule that follows for this project: anything added under `tools/` that
 #: writes outside a directory it created itself belongs in here, and belongs in
 #: here *as well as* guarding itself. One mutation can break either lock.
-UNMUTABLE: tuple[str, ...] = ()
+UNMUTABLE: tuple[str, ...] = SETTINGS.unmutable
 
 
 def mutable(path: str) -> bool:
@@ -1645,21 +1652,22 @@ def importers(root: Path) -> dict[str, set[str]]:
     direct: dict[str, set[str]] = {}
     helpers: dict[str, set[str]] = {}
     uses_helper: dict[str, set[str]] = {}
+    tests, package = SETTINGS.tests_dir, SETTINGS.tests_package
     # survivor: order -- `sorted` for a stable answer across machines, over a `glob` whose order is
     #   the filesystem's. One machine agrees with itself either way.
-    for source in sorted((root / "tests").glob("*.py")):
+    for source in sorted((root / tests).glob("*.py")):
         # `module_of` rather than the stem, so `tests/__init__.py` indexes as
         # `tests` -- what an import actually spells. The same special case
         # `module_of` already carries for `tupferl/__init__.py`, applied to the
         # other half of the same mapping; without it anything ever added to
         # `tests/__init__.py` would drop out of the closure silently.
-        name = module_of(f"tests/{source.name}")
+        name = module_of(f"{tests}/{source.name}")
         try:
             tree = ast.parse(source.read_text(encoding="utf-8"))
         except (OSError, SyntaxError):
             continue
-        pulled = {module for node in _statements(tree) for module in _imported(node, "tests")}
-        if source.name.startswith("test_"):
+        pulled = {module for node in _statements(tree) for module in _imported(node, package)}
+        if SETTINGS.is_test_module(source.stem):
             # One pass, not two over the same set: `direct` for everything, and
             # additionally `uses_helper` for the `tests.*` entries.
             for module in pulled:
@@ -1673,7 +1681,7 @@ def importers(root: Path) -> dict[str, set[str]]:
                 #   -- `from . import support` yields the bare package name, which is the key
                 #   `tests/__init__.py` is indexed under. That file is empty in this tree, so the
                 #   first half has nothing to link and no fixture separates them.
-                if module == "tests" or module.startswith("tests."):
+                if module == package or module.startswith(f"{package}."):
                     uses_helper.setdefault(module, set()).add(name)
         else:
             helpers[name] = pulled
@@ -1707,11 +1715,8 @@ def targets_for(path: str, root: Path, index: dict[str, set[str]] | None = None)
     tests" and skip the row, which reads as coverage nobody has.
     """
     stem = Path(path).stem
-    named = {
-        f"tests.{found.stem}"
-        for found in (root / "tests").glob("test_*.py")
-        if found.stem == f"test_{stem}" or found.stem.startswith(f"test_{stem}_")
-    }
+    found = [source.stem for source in (root / SETTINGS.tests_dir).glob("*.py")]
+    named = {f"{SETTINGS.tests_package}.{name}" for name in SETTINGS.test_modules(stem, found)}
     imported = (index if index is not None else importers(root)).get(module_of(path), set())
     # The union, not the name match short-circuiting the index. Measured on
     # woswoar#216: taking one same-named test module because the name matched

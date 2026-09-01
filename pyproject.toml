@@ -140,3 +140,38 @@ module = [
 ]
 disallow_untyped_decorators = false
 disallow_subclassing_any = false
+
+# Everything the mutation harness in `tools/` knows about *this* project, and the
+# only place any of it is written down. `tools/settings.py` reads it and holds
+# generic defaults, so the harness carries no project name of its own -- which is
+# what makes extracting it a packaging exercise rather than a rewrite
+# (docs/pytest-plan.md, Phase D).
+#
+# Every key is stated, including the two whose value equals the default, because
+# this table is also the documentation of what the table takes: a knob that only
+# appears in a dataclass is a knob nobody knows to reach for.
+[tool.mutate]
+# Never `tests/`: breaking a test proves nothing about the fix, and the run would
+# report the assertion it removed.
+mutable = ["tupferl/", "tools/"]
+# Empty here. It exists because in the project this harness came from, a script
+# under `tools/` built a sandbox and then wrote a real store into it, so a mutant
+# that broke the one line pointing it at that sandbox wrote into the developer's
+# live installation (woswoar#245).
+unmutable = []
+# `TUPFERL_MUTATE_BUDGET`, `_TOTAL`, `_EACH_TEST`, `_MUTATED`. `tests/support.py`
+# derives the same names from the same key, so renaming this renames both halves.
+env_prefix = "TUPFERL"
+tmp_prefix = "tupferl-"
+# The variable `tests/profiles.py` reads, and a profile it registers. Not derived
+# from `env_prefix`, because this names a variable the *suite* owns.
+hypothesis_profile_env = "TUPFERL_HYPOTHESIS_PROFILE"
+hypothesis_profile = "mutation"
+# Off, and measured: it takes 79.5 ms off every probe and makes a sweep
+# reproducible across machines whatever anyone has installed. Nothing in this
+# suite needs an autoloaded plugin -- Hypothesis is driven through its API here,
+# not through its pytest integration -- so the list below is empty.
+probe_autoload = false
+probe_plugins = []
+tests_dir = "tests"
+test_module_patterns = ["test_{stem}", "test_{stem}_*"]
