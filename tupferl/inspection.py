@@ -9,16 +9,24 @@ literally.
 promise about what the next `sync` will do, so it is worth very little if it is
 computed by a second copy of the loop that does it. `examine` is that loop with
 the writing taken out; this module reads its `Reading`s and turns each into a
-sentence. A row added to plan §7.4's table therefore reaches `status` by
-existing, rather than by somebody remembering to teach it.
+row. A row added to plan §7.4's table therefore reaches `status` by existing,
+rather than by somebody remembering to teach it.
+
+**A row is a direction, a name and a phrase, under one heading.** Each used to
+be a sentence carrying "the next sync" in it, so a machine with forty managed
+files printed the same six words forty times with the three that differ buried
+in them. The heading says it once and the marker -- `->`, `<-`, `<>`, `!!` --
+says which way the file is about to travel, which is the question a user has
+when they type this. See `SAYS`.
 
 **`status` fetches; it does not merge.** "What changed remotely" cannot be
 answered without asking the remote, and fetching moves only the remote-tracking
 refs -- no file in `$HOME`, no file in the working tree, no commit. What it
 *cannot* do is tell the user what a merge of those new commits would produce,
 because performing one is exactly the modification this command promises not to
-make. So when the remote is ahead, the per-file lines are labelled as what they
-are: the picture against this machine's checkout, before anything is pulled in.
+make. So when the remote is ahead, `remotely` says in one clause that the rows
+above are the picture against this machine's checkout, before anything is
+pulled in.
 
 **A fetch that fails is a worse status, not an error.** A laptop on a train
 still has a local half to report, and `status` is the command someone runs when
@@ -50,21 +58,50 @@ from tupferl import colours, gitrepo, manage, manifest, merge, paths, sync
 from tupferl.copies import Blob
 from tupferl.errors import TupferlError
 
-#: What `status` says about each action `resolve` can reach, in the tense of
-#: something that has not happened yet. A table for `sync.RULES`' reason: the
-#: alternative is a chain of comparisons that has to be found and extended when
-#: an action is added, where a missing row here is a `KeyError` on the first run.
+#: The line above the per-file rows, and the reason each row no longer carries
+#: "the next sync" in it. Said once: forty managed files meant forty copies of
+#: the same six words, with the three that differ buried in them.
 #:
-#: `CONFLICT` and `REFUSED` are deliberately absent. Both carry a *reason* --
-#: a hunk count, a sentence -- so their lines are built rather than looked up,
-#: and a row here would be a constant that could drift from the built one.
-#: `UNCHANGED` is absent too: it is never printed.
-SAYS: dict[str, str] = {
-    sync.TO_REPO: "changed here; the next sync stores it",
-    sync.TO_HOME: "changed in the repository; the next sync updates it",
-    sync.RESTORED: "missing from $HOME; the next sync restores it",
-    sync.MERGED: "changed on both, and the two merge cleanly",
+#: Two, because `--all` is a different list. Plain `status` shows only what is
+#: about to move, so every row under it is something the sync would do; `--all`
+#: is the inventory the `list` verb used to print, and most of its rows are
+#: `unchanged` -- over which "what the next sync would do" is a heading that
+#: does not describe what is under it.
+HEADING = "what the next sync would do:"
+EVERYTHING = "every managed file, and what the next sync would do:"
+
+#: What `status` says about each action `resolve` can reach: a direction marker
+#: and a short phrase. A table for `sync.RULES`' reason -- the alternative is a
+#: chain of comparisons that has to be found and extended when an action is
+#: added, where a missing row here is a `KeyError` on the first run.
+#:
+#: **ASCII markers and not arrows.** `->` and `<-` say the same thing as `→` and
+#: `←` on every terminal and in every locale, and a status a user cannot read
+#: over ssh to a machine with a C locale is worse than one that is slightly less
+#: pretty. The same argument `merge.is_text` makes about not assuming UTF-8.
+#:
+#: The marker is coloured by *whose change it is*, which is the meaning
+#: `colours.MINE` and `colours.THEIRS` already carry in the conflict prompt --
+#: cyan for this computer, yellow for the repository. `MERGED` gets neither,
+#: because both sides changed and picking one would be a claim; see `tells`.
+#:
+#: `CONFLICT` and `REFUSED` are deliberately absent. Both carry a *reason* -- a
+#: hunk count, a sentence -- so their lines are built rather than looked up, and
+#: a row here would be a constant that could drift from the built one.
+#: `UNCHANGED` is absent too, except under `--all`.
+SAYS: dict[str, tuple[str, str, str]] = {
+    sync.TO_REPO: ("->", colours.MINE, "store the change you made here"),
+    sync.TO_HOME: ("<-", colours.THEIRS, "update it from the repository"),
+    sync.RESTORED: ("<-", colours.THEIRS, "restore it; it is missing from $HOME"),
+    sync.MERGED: ("<>", colours.BOLD, "merge both changes; they do not overlap"),
 }
+
+#: The two rows `SAYS` cannot hold, kept beside it so that the width of the
+#: marker column is one fact rather than five literals. `!!` for a conflict
+#: because it is the only row that needs a person; `..` for a refusal because it
+#: is the only one the next sync will not touch at all.
+CONFLICTED = ("!!", colours.BOLD)
+SKIPPED = ("..", colours.DIM)
 
 
 def status(everything: bool = False, diffs: bool = False, wanted: str | None = None) -> int:
@@ -112,7 +149,11 @@ def status(everything: bool = False, diffs: bool = False, wanted: str | None = N
         return 0
     readings = narrowed(readings, wanted, home)
     marked = overlays(repo, host) if everything else None
-    per_file = sides(readings, marked)
+    # Asked of `sys.stdout` here rather than threaded in from `__main__`: this
+    # is the one function that prints, and `colours.coloured` wants the stream
+    # being written to. Everything the tests capture is a `StringIO`, so they
+    # get exactly the text they got before colour existed.
+    per_file = sides(readings, marked, colours.coloured(sys.stdout))
     lines.extend(per_file)
     if per_file:
         # A blank line only when there is something above it to separate from.
@@ -258,8 +299,10 @@ def overlays(repo: Path, host: str) -> set[PurePosixPath]:
     return {item.name for item in manifest.managed(repo, host) if item.host}
 
 
-def sides(readings: list[sync.Reading], marked: set[PurePosixPath] | None) -> list[str]:
-    """One line per managed file, aligned. `marked` is `--all`.
+def sides(
+    readings: list[sync.Reading], marked: set[PurePosixPath] | None, colour: bool = False
+) -> list[str]:
+    """One line per managed file, aligned, under `HEADING`. `marked` is `--all`.
 
     `None` means "only what has something to report", which is `status` on its
     own: silent about the unchanged ones, which are most of them on most
@@ -276,6 +319,13 @@ def sides(readings: list[sync.Reading], marked: set[PurePosixPath] | None) -> li
     gap the reader has to cross for no reason. A constant width would be worse
     still -- it is wrong for `.bashrc` and wrong for
     `.config/nvim/lua/plugins/telescope.lua`.
+
+    **The marker is padded and then painted, never the other way round.** An
+    escape sequence has no width and `f"{painted:2}"` counts its bytes as
+    columns, so painting first makes every coloured row two columns short and
+    every plain row right -- a table that is ragged only on a terminal, which is
+    the one place nothing in this suite looks. `tools/paint.py`'s docstring
+    records the same rule from the other side of the repository.
     """
     shown = (
         list(readings)
@@ -285,30 +335,38 @@ def sides(readings: list[sync.Reading], marked: set[PurePosixPath] | None) -> li
     if not shown:
         return []
     width = max(len(str(reading.name)) for reading in shown)
-    if marked is None:
-        return [f"{reading.name!s:<{width}}  {tells(reading.outcome)}" for reading in shown]
-    return [
-        f"{'host' if reading.name in marked else '    '}  "
-        f"{reading.name!s:<{width}}  {tells(reading.outcome)}"
-        for reading in shown
-    ]
+    lines = [colours.paint(HEADING if marked is None else EVERYTHING, colours.BOLD, colour), ""]
+    for reading in shown:
+        mark, code, said = tells(reading.outcome)
+        over = "" if marked is None else f"{'host' if reading.name in marked else '    '}  "
+        lines.append(
+            f"  {colours.paint(mark, code, colour)}  {over}{reading.name!s:<{width}}  {said}"
+        )
+    return lines
 
 
-def tells(outcome: sync.Outcome) -> str:
-    """What one file's outcome says, as the last column of a status line."""
+def tells(outcome: sync.Outcome) -> tuple[str, str, str]:
+    """One file's outcome as a marker, the colour for it, and a phrase.
+
+    Three pieces rather than one string, because the marker is padded to a
+    column and the phrase is not -- see `sides` for why painting before padding
+    is the mistake that only shows on a terminal.
+    """
     if outcome.action == sync.UNCHANGED:
         # Only reachable under `--all`; the plain status filters these out
-        # before it gets here. A blank would leave the column ragged and read
-        # as output that went missing.
-        return "unchanged"
+        # before it gets here. `==` rather than two spaces: a blank marker is a
+        # column of whitespace the reader has to cross to reach the name, and it
+        # cannot be told from a marker that failed to print. Dim, because a row
+        # saying nothing happened is the row a reader is scanning past.
+        return "==", colours.DIM, "unchanged"
     if outcome.action == sync.REFUSED:
-        return f"skipped: {outcome.why}"
+        return (*SKIPPED, f"skipped: {outcome.why}")
     if outcome.sides is not None:
         # `sides is not None` rather than `action == CONFLICT`, which is
         # `sync.report`'s reason too: the two say the same thing, and this one
         # also narrows the type for the count below.
         settle = manage.count(outcome.sides.conflicts, "conflict")
-        return f"changed on both, and they do not merge: {settle} to settle"
+        return (*CONFLICTED, f"both changed and the edits overlap: {settle} to settle")
     return SAYS[outcome.action]
 
 
@@ -327,7 +385,16 @@ def summary(readings: list[sync.Reading], marked: set[PurePosixPath] | None = No
     """
     unsettled = sum(1 for reading in readings if reading.outcome.sides is not None)
     moving = sum(1 for reading in readings if sync.changed(reading.outcome))
-    line = f"{manage.count(len(readings))} managed, {moving} to change, {unsettled} in conflict"
+    managed = manage.count(len(readings))
+    if moving or unsettled:
+        line = f"{managed} managed, {moving} to change, {unsettled} in conflict"
+    else:
+        # **The quiet case gets a sentence, not two zeroes.** This is the line a
+        # synced machine sees every time, and `0 to change, 0 in conflict` makes
+        # the reader do the arithmetic to reach "nothing to do" -- which is the
+        # one thing they wanted to know. The counts stay wherever either is
+        # non-zero, because *then* the numbers are the answer.
+        line = f"{managed} managed, nothing to do"
     if marked is None:
         return line
     overridden = sum(1 for reading in readings if reading.name in marked)
@@ -385,13 +452,21 @@ def remotely(repo: Path) -> list[str]:
         parts.append(f"{manage.count(behind, 'commit')} to pull")
     if ahead:
         parts.append(f"{manage.count(ahead, 'commit')} to push")
-    said = [f"{there}: {', '.join(parts)}."]
-    if behind:
-        said.append(
-            "The lines above compare $HOME with this computer's copy of the repository, "
-            "so they do not yet include what is waiting to be pulled."
-        )
-    return said
+    if not behind:
+        return [f"{there}: {', '.join(parts)}."]
+    # **One line, not two, and a clause rather than a paragraph.** This prints
+    # on every run where the remote has moved, which for a machine that syncs on
+    # a timer is most of them, and a standalone sentence of prose there reads as
+    # a warning that something is wrong.
+    #
+    # It says *that* the status excludes what is waiting, and not the mechanism
+    # -- which was two lines explaining that the rows compare $HOME with this
+    # computer's copy of the repository. A reader who wants the mechanism is
+    # reading this module; a reader at a terminal wants the fact. And "this
+    # status" rather than "the rows above", because there need not be any: a
+    # machine with nothing locally changed and a commit to pull prints this line
+    # with no rows over it at all.
+    return [f"{there}: {', '.join(parts)}; this status does not include it yet."]
 
 
 def difference(wanted: str | None, out: TextIO | None = None) -> int:

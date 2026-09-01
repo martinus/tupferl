@@ -812,7 +812,7 @@ class TestTheTwoMachineTemplate:
         assert first.read(".bashrc") == support.STARTS_AS
         status, said = first.say("status")
         assert status == 0, said
-        assert "1 file managed, 0 to change, 0 in conflict" in said
+        assert "1 file managed, nothing to do" in said
         # And the remote really holds it: the second machine can be brought up.
         assert second.call("init", str(remote)) == 0
         assert second.read(".bashrc") == support.STARTS_AS

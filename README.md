@@ -41,6 +41,26 @@ tupferl status --all        # every managed file, with its state
 tupferl status --diff       # the lines the next sync will change
 ```
 
+Each row says which way the file is about to travel, so the direction is
+readable at a glance rather than inferred from a sentence:
+
+```
+$ tupferl status
+what the next sync would do:
+
+  ->  .bashrc     store the change you made here
+  <-  .gitconfig  update it from the repository
+  <>  .vimrc      merge both changes; they do not overlap
+  !!  .tmux.conf  both changed and the edits overlap: 2 conflicts to settle
+
+origin/main: 1 commit to pull; this status does not include it yet.
+4 files managed, 4 to change, 1 in conflict
+```
+
+On a terminal the marker is coloured by whose change it is — the same cyan and
+yellow the conflict prompt uses for "this computer" and "the repository". With
+nothing pending the last line is `4 files managed, nothing to do`.
+
 `--diff` goes through the pager git is already configured with, in git's own
 order — `GIT_PAGER`, `pager.diff`, `core.pager`, `$PAGER` — so a machine set up
 for [delta](https://github.com/dandavison/delta) needs nothing here, including
@@ -52,8 +72,10 @@ the usual per-command form:
 ```
 
 The value is a shell command line, exactly as git treats it. Only when there is
-a terminal to page: redirected, it is a plain unified diff with no colour of its
-own, so `tupferl status --diff | delta` works too.
+a terminal to page — and tupferl colours the diff itself when there is one, so a
+machine with no pager configured still gets a readable one. Redirected, it is a
+plain unified diff with no colour at all, so `tupferl status --diff | delta`
+works too and `NO_COLOR` is honoured either way.
 
 The conflict prompt's `[e]` reads git's editor the same way: `GIT_EDITOR`, then
 `core.editor`, then `$VISUAL` and `$EDITOR`. For one run, say so on the command

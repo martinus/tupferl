@@ -827,9 +827,7 @@ class TestWhatEachCommandPrints:
     def test_list_counts_what_it_showed(self, ready: support.Machine) -> None:
         ready.run_cli("add", str(ready.home / ".bashrc"))
         done = ready.run_cli("status", "--all")
-        assert (
-            "1 file managed, 0 to change, 0 in conflict, 0 from this host's overlay" in done.stdout
-        )
+        assert "1 file managed, nothing to do, 0 from this host's overlay" in done.stdout
 
     def test_list_counts_the_overlay_separately(self, ready: support.Machine) -> None:
         """0 and 1 rather than 1 and 1: with equal counts a swapped pair still
@@ -838,9 +836,7 @@ class TestWhatEachCommandPrints:
         ready.run_cli("add", str(ready.home / ".bashrc"))
         ready.run_cli("add", "--host", str(ready.home / ".gitconfig-extra"))
         done = ready.run_cli("status", "--all")
-        assert (
-            "2 files managed, 0 to change, 0 in conflict, 1 from this host's overlay" in done.stdout
-        )
+        assert "2 files managed, nothing to do, 1 from this host's overlay" in done.stdout
 
 
 class TestCommitMessages:

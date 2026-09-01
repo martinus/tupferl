@@ -27,6 +27,7 @@ import atexit
 import io
 import os
 import pty
+import re
 import shutil
 import signal
 import subprocess
@@ -593,6 +594,18 @@ class Spill(io.StringIO):
         if self.tell() >= KEPT:
             return len(text)
         return super().write(text)
+
+
+#: Every SGR sequence, for the claim that painting adds colour and moves
+#: nothing: strip these and you have the plain run back. Deliberately broader
+#: than what `tupferl/colours.py` emits -- a stripper that knew only the seven
+#: codes in use could not tell a stray one from the text.
+#:
+#: Here rather than in the two test modules that want it. `tests/test_paint.py`
+#: keeps a copy of its own and must: its docstring commits it to importing the
+#: standard library and the tool it covers, and nothing else. Two spellings with
+#: a stated reason; three was the point at which this moved.
+ESCAPES = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class Screen(Spill):

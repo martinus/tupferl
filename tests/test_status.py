@@ -23,13 +23,14 @@ that the fixture could have shown a write.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from unittest import mock
 
 import pytest
 
 from tests import support
-from tupferl import inspection, paths, sync
+from tupferl import colours, inspection, paths, sync
 
 #: Every phrase `status` can put beside a file name, keyed by the state that
 #: produces it. Written out here rather than imported from
@@ -38,11 +39,20 @@ from tupferl import inspection, paths, sync
 #: carries the same note for the same reason -- it was written the other way
 #: first and every mutation of it survived.
 PHRASES = {
-    "here": "changed here; the next sync stores it",
-    "there": "changed in the repository; the next sync updates it",
-    "gone": "missing from $HOME; the next sync restores it",
-    "merges": "changed on both, and the two merge cleanly",
+    "here": "store the change you made here",
+    "there": "update it from the repository",
+    "gone": "restore it; it is missing from $HOME",
+    "merges": "merge both changes; they do not overlap",
 }
+
+#: The direction marker each state puts in the first column, written out for
+#: `PHRASES`' reason. It carries a claim the phrase does not: `here` and `there`
+#: are opposite directions, so a marker table that had them the same way round
+#: would be a status telling the user their edit was about to be overwritten --
+#: `test_the_two_files_can_say_different_things_at_once` is where that is caught,
+#: because one run showing both is the only fixture a single wrong constant
+#: cannot satisfy.
+MARKS = {"here": "->", "there": "<-", "gone": "<-", "merges": "<>"}
 
 #: What `.bashrc` holds on both machines when a fixture here starts, which is
 #: `support.STARTS_AS` because that is what `template()` synced. Aliased rather
@@ -106,11 +116,11 @@ class TestTheThreeShapesOfOneVerb:
         out = shapes.said("status", "--all")
         overlay = next(line for line in out.splitlines() if ".inputrc" in line)
         shared = next(line for line in out.splitlines() if ".bashrc" in line)
-        assert overlay.startswith("host"), overlay
+        assert "host" in overlay.split(), overlay
         # The negative half, and without it a marker painted on *every* row
         # passes: "is this file overridden here" is only an answer if it can
         # come back no.
-        assert not shared.startswith("host"), shared
+        assert "host" not in shared.split(), shared
         assert "unchanged" in overlay
         assert "1 from this host's overlay" in out
 
@@ -189,7 +199,7 @@ class Synced(support.TwoMachines):
         that answered `""` would make every `in` assertion below fail with "not
         in ''", which points at this function instead of at the missing line.
         """
-        found = [row for row in said.splitlines() if row.startswith(name)]
+        found = [row for row in said.splitlines() if name in row.split()]
         assert len(found) == 1, f"expected one line for {name} in:\n{said}"
         return found[0]
 
@@ -202,9 +212,22 @@ class Synced(support.TwoMachines):
         """
         said = self.status()
         assert phrase in self.line(said, name), said
-        others = [row for row in said.splitlines() if row and not row.startswith(name)]
+        others = [row for row in said.splitlines() if row and name not in row.split()]
         for row in others:
             assert phrase not in row, said
+
+    def marks(self, name: str, mark: str) -> None:
+        """`name`'s row opens with `mark`, and no other file's row does.
+
+        The direction column, held to the same standard as the phrase: `.vimrc`
+        is unchanged in every fixture here, so a marker printed on every row
+        would satisfy the first half on its own.
+        """
+        said = self.status()
+        assert self.line(said, name).split()[0] == mark, said
+        for row in said.splitlines():
+            if row.startswith("  ") and name not in row.split():
+                assert row.split()[0] != mark, said
 
 
 @pytest.fixture
@@ -242,7 +265,13 @@ class TestThePhrasesAreAllAccountedFor:
     """
 
     def test_every_phrase_the_table_holds_is_tested_below(self) -> None:
-        assert set(inspection.SAYS.values()) <= set(PHRASES.values())
+        assert {said for _, _, said in inspection.SAYS.values()} <= set(PHRASES.values())
+
+    def test_every_marker_the_table_holds_is_tested_below(self) -> None:
+        """The same accounting for the first column. Without it a marker added
+        for a new action arrives with nothing asserting it, exactly as a phrase
+        would -- and a marker is the part a reader scans."""
+        assert {mark for mark, _, _ in inspection.SAYS.values()} <= set(MARKS.values())
 
     def test_the_table_is_not_empty(self) -> None:
         """The precondition the two parametrized tests below cannot state.
@@ -285,21 +314,24 @@ class TestWhatEachChangeLooksLike:
         said = synced.status()
         assert ".bashrc" not in said
         assert ".vimrc" not in said
-        assert "2 files managed, 0 to change, 0 in conflict" in said
+        assert "2 files managed, nothing to do" in said
 
     def test_an_edit_in_home_changed_here(self, synced: Synced) -> None:
         synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         synced.says_about(".bashrc", PHRASES["here"])
+        synced.marks(".bashrc", MARKS["here"])
 
     def test_a_change_in_the_repository_changed_there(self, synced: Synced) -> None:
         """Written into the repository's working tree, which is where a `sync`
         that pulled somebody else's commit would have put it."""
         (synced.second.repo / ".bashrc").write_text("one\ntwo\nTHREE\nfour\nfive\n")
         synced.says_about(".bashrc", PHRASES["there"])
+        synced.marks(".bashrc", MARKS["there"])
 
     def test_a_file_deleted_from_home_is_missing(self, synced: Synced) -> None:
         (synced.second.home / ".bashrc").unlink()
         synced.says_about(".bashrc", PHRASES["gone"])
+        synced.marks(".bashrc", MARKS["gone"])
 
     def test_disjoint_changes_on_both_sides_merge(self, synced: Synced) -> None:
         """Both sides edited, different lines. `status` runs the real merge to
@@ -307,6 +339,7 @@ class TestWhatEachChangeLooksLike:
         synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         (synced.second.repo / ".bashrc").write_text("one\ntwo\nthree\nfour\nFIVE\n")
         synced.says_about(".bashrc", PHRASES["merges"])
+        synced.marks(".bashrc", MARKS["merges"])
 
     def test_overlapping_changes_report_the_hunk_count(self, synced: Synced) -> None:
         """The same two sides, editing the same line. The count comes from git's
@@ -314,7 +347,7 @@ class TestWhatEachChangeLooksLike:
         show rather than a guess made here."""
         synced.second.write(".bashrc", "one\nMINE\nthree\nfour\nfive\n")
         (synced.second.repo / ".bashrc").write_text("one\nTHEIRS\nthree\nfour\nfive\n")
-        synced.says_about(".bashrc", "changed on both, and they do not merge: 1 conflict")
+        synced.says_about(".bashrc", "both changed and the edits overlap: 1 conflict")
         assert "2 files managed, 0 to change, 1 in conflict" in synced.status()
 
     def test_two_conflicts_are_two(self, synced: Synced) -> None:
@@ -437,6 +470,51 @@ class TestTheShapeOfTheReport:
         synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         assert "unfinished git operation" not in synced.status()
 
+    def test_the_heading_is_said_once_and_not_on_every_row(self, synced: Synced) -> None:
+        """Each row used to carry "the next sync" in it, so a machine with forty
+        managed files printed the same six words forty times with the three that
+        differ buried in them. The count is the assertion: "a heading appears"
+        is equally true of a status that still repeats itself."""
+        synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        (synced.second.repo / ".vimrc").write_text("set number\nset ruler\n")
+        said = synced.status()
+        assert said.count("the next sync") == 1, said
+        assert said.splitlines()[0] == inspection.HEADING, said
+
+    def test_the_inventory_gets_a_heading_that_describes_an_inventory(self, synced: Synced) -> None:
+        """`--all` is mostly `unchanged` rows, over which "what the next sync
+        would do" describes nothing that is under it.
+
+        Both headings are asserted in one run, because a single constant used
+        for both places satisfies either test alone."""
+        assert synced.status().splitlines()[0] != inspection.EVERYTHING
+        status, listed = synced.second.say("status", "--all")
+        assert status == 0, listed
+        assert listed.splitlines()[0] == inspection.EVERYTHING, listed
+
+    def test_a_quiet_machine_is_told_so_rather_than_handed_two_zeroes(self, synced: Synced) -> None:
+        """`0 to change, 0 in conflict` makes the reader do the arithmetic to
+        reach "nothing to do", which is the one thing they wanted to know -- and
+        it is the line a synced machine sees every single time.
+
+        Both arms, because "always says nothing to do" passes the first alone
+        and "never does" passes the second."""
+        assert "nothing to do" in synced.status()
+        synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        pending = synced.status()
+        assert "nothing to do" not in pending, pending
+        assert "1 to change" in pending, pending
+
+    def test_a_conflict_alone_is_enough_to_lose_the_quiet_sentence(self, synced: Synced) -> None:
+        """A conflict changes nothing yet, so `moving` is zero for it -- and a
+        summary that asked only about `moving` would call a machine with an
+        unsettled conflict "nothing to do"."""
+        synced.second.write(".bashrc", "one\nMINE\nthree\nfour\nfive\n")
+        (synced.second.repo / ".bashrc").write_text("one\nTHEIRS\nthree\nfour\nfive\n")
+        said = synced.status()
+        assert "nothing to do" not in said, said
+        assert "0 to change, 1 in conflict" in said, said
+
     def test_nothing_to_report_does_not_open_with_a_blank_line(self, synced: Synced) -> None:
         """The separator is only earned by something above it. Printed
         unconditionally, a quiet machine's status starts with an empty line,
@@ -450,10 +528,12 @@ class TestTheShapeOfTheReport:
         `status` that never separates, or by one that always does."""
         synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         rows = synced.status().splitlines()
-        blank = [index for index, row in enumerate(rows) if not row.strip()]
-        assert len(blank) == 1, rows
-        assert rows[blank[0] - 1].startswith(".bashrc"), rows
-        assert "origin/" in rows[blank[0] + 1], rows
+        # Anchored on the remote line rather than counted, because the heading
+        # puts a blank under itself too and a count would then be pinning the
+        # heading rather than the separator this test is named for.
+        at = next(index for index, row in enumerate(rows) if "origin/" in row)
+        assert not rows[at - 1].strip(), rows
+        assert ".bashrc" in rows[at - 2].split(), rows
 
     def test_the_second_column_lines_up_under_names_of_different_lengths(
         self,
@@ -464,10 +544,64 @@ class TestTheShapeOfTheReport:
         unpadded and the two phrases one column apart."""
         synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
         (synced.second.repo / ".vimrc").write_text("set number\nset ruler\n")
-        rows = [row for row in synced.status().splitlines() if row.startswith(".")]
+        rows = [row for row in synced.status().splitlines() if row.startswith("  ")]
         assert len(rows) == 2, rows
-        starts = {row.index("changed") for row in rows}
+        # Where the phrase begins, found from the *last* run of two spaces
+        # rather than from a word both rows share -- the two phrases differ,
+        # since the two files are going opposite ways, which is the fixture's
+        # whole point.
+        starts = {row.rindex("  ") + 2 for row in rows}
         assert len(starts) == 1, rows
+
+
+@pytest.mark.usefixtures("synced")
+class TestTheMarkersAreColouredOnATerminal:
+    """The half no captured run can show.
+
+    Everything in this file reads `status` out of a `StringIO` under a sandbox
+    that sets `NO_COLOR`, so both halves of `colours.coloured` are false and
+    every painted branch is unreachable from every other test here -- the same
+    blind spot `tests/test_conflicts.py` had, measured there.
+    """
+
+    def coloured_status(self, synced: Synced) -> str:
+        """`status` in-process, writing to something that says it is a
+        terminal, with the sandbox's `NO_COLOR` taken back out."""
+        env = {key: value for key, value in synced.second.env.items() if key != "NO_COLOR"}
+        seen = support.Screen()
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(sys, "stdout", seen):
+            assert inspection.status() == 0
+        return seen.getvalue()
+
+    def test_the_marker_names_whose_change_it_is(self, synced: Synced) -> None:
+        """Cyan for this computer and yellow for the repository, which is what
+        those two colours already mean in the conflict prompt.
+
+        One run with both directions in it: a single hard-coded colour is right
+        for neither test alone but would pass one of them, and the pair is the
+        fixture that no constant satisfies.
+        """
+        synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        (synced.second.repo / ".vimrc").write_text("set number\nset ruler\n")
+        said = self.coloured_status(synced)
+        mine = next(row for row in said.splitlines() if ".bashrc" in row)
+        theirs = next(row for row in said.splitlines() if ".vimrc" in row)
+        assert f"{colours.MINE}->{colours.OFF}" in mine, mine
+        assert f"{colours.THEIRS}<-{colours.OFF}" in theirs, theirs
+
+    def test_the_column_is_padded_before_it_is_painted(self, synced: Synced) -> None:
+        """`f"{painted:2}"` counts the escape bytes as columns, so painting
+        first makes every coloured row short and every plain row right -- a
+        table ragged only on a terminal, which is the one place nothing else in
+        this suite looks.
+
+        Asserted by stripping the escapes and comparing the *plain* run, which
+        is the strongest available claim: colour adds colour and moves nothing.
+        """
+        synced.second.write(".bashrc", "ONE\ntwo\nthree\nfour\nfive\n")
+        (synced.second.repo / ".vimrc").write_text("set number\nset ruler\n")
+        painted = support.ESCAPES.sub("", self.coloured_status(synced))
+        assert painted == synced.status(), repr(painted)
 
 
 @pytest.mark.usefixtures("synced")
@@ -505,7 +639,7 @@ class TestTheRemoteHalf:
         said = synced.status()
         assert "1 commit to push" in said
         assert "to pull" not in said
-        assert "waiting to be pulled" not in said
+        assert "does not include it yet" not in said
 
     def test_the_two_counts_are_separate_numbers(self, synced: Synced) -> None:
         """Both directions at once, and the numbers differ -- so a status that
@@ -524,10 +658,10 @@ class TestTheRemoteHalf:
         """The caveat, and that it is *not* printed when there is nothing to
         pull -- otherwise it would be a sentence that is always there, which a
         reader stops seeing."""
-        assert "waiting to be pulled" not in synced.status()
+        assert "does not include it yet" not in synced.status()
         synced.first.write(".bashrc", "one\ntwo\nthree\nfour\nPUSHED\n")
         assert synced.first.call("sync") == 0
-        assert "waiting to be pulled" in synced.status()
+        assert "does not include it yet" in synced.status()
 
     def test_an_unreachable_remote_is_reported_and_the_rest_still_prints(
         self,
