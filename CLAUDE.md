@@ -210,6 +210,23 @@ The shapes repeat, so they are worth memorising:
   nothing" is equally satisfied by "there was nothing to look at");
 - a marker asserted in a shell's stdout that also appears in the harness's echo
   of the command that was typed;
+- **a `parametrize` over a computed list that comes back empty.** Zero cases is
+  zero tests, and zero tests all pass -- the tests do not fail, they *cease to
+  exist*, and a module that lost two of them reports the same green as one that
+  ran them. It is this same trap moved to *collection* time, where no assertion
+  can see it. `test_support.TestEveryComputedParametrizeIsWatched` walks
+  `tests/` for every such list and insists some test in the module names it.
+  **Deliberately weak** -- the existing guards assert *content*
+  (`GATE in FOUND`, `len(FOUND) >= FLOOR`) and each is stronger than
+  non-emptiness, so demanding a shape would replace four strong checks with one
+  weak one. What it forbids is a list nothing looks at.
+
+  Two things the reader got wrong first, both the shape it exists to refuse:
+  `ast.walk` of a `FunctionDef` **includes its decorator list**, so the
+  `parametrize` decorator's own mention of the name counted as a test looking at
+  it and every list in the tree came back guarded; and a name bound to a
+  *literal* tuple is not a computation, so reporting one is how a checker earns
+  the exclusion list it should not have. With both fixed it found one real gap.
 - **an assertion inside a loop that can iterate zero times.** `for row in
   produced(...): assertNotEqual(...)` is satisfied by producing nothing, which
   is exactly what the mutation under test does. Assert the count first;

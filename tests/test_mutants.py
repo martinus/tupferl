@@ -329,6 +329,18 @@ class TestTheOperators:
         # a fires-fixture and no must-not-fire fixture, which is half a test.
         assert named == set(_QUIET)
 
+    def test_there_are_cases_to_run(self) -> None:
+        """`_CASES` is computed from `_FIRES`, and a `parametrize` over an empty
+        list is **zero tests that all pass** -- the two below would cease to
+        exist and the module would report the same green as one that ran them.
+
+        `test_every_operator_has_a_test_here` above pins `_FIRES` against
+        `OPERATORS` and is the stronger claim; it cannot make this one, because
+        two empty sets are equal. The count is what separates them.
+        """
+        assert len(_CASES) == len(_FIRES)
+        assert len(_CASES) >= len(mutants.OPERATORS)
+
     @pytest.mark.parametrize(("name", "body", "expected"), _CASES)
     def test_each_operator_fires_on_its_own_fixture(
         self, name: str, body: str, expected: list[str]
