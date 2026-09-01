@@ -827,6 +827,14 @@ def watch_for_orphaning(poll: float = ORPHAN_POLL) -> threading.Thread | None:
         owner = int(os.environ[OWNER])
     except (KeyError, ValueError):
         owner = os.getppid()
+    # survivor: branch, negate -- unanswerable, and it is the veto proving itself. Removing this
+    #   check lets a process that is *not* its own group leader arm the watchdog, and the first
+    #   thing it then kills is the group it is in -- which, under a sweep, is the probe running
+    #   the suite. Both rows came back `BROKE` with "the probe was killed by SIGKILL", which is
+    #   never `caught`, so the line reads as guarded in neither number a reader looks at. The
+    #   same family as `_lane` and `_born` in `tools/mutate.py`, and excused on #57's terms: a
+    #   probe cannot answer a row that kills the probe. `test_verdict`'s
+    #   `test_anything_sharing_a_group_refuses_to_arm` is what covers it outside a sweep.
     if group != mine:
         # Not a session of our own, so the group is somebody else's and killing
         # it would reach processes this never started. Refusing is the old

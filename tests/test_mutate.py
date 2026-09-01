@@ -965,6 +965,53 @@ class TestCollectingWhatAKilledSweepLeft:
             assert mutate._collect_abandoned(box, dry=True) == [gone]
             assert gone.exists(), "a dry run deleted something"
 
+    def test_an_ordinary_run_says_nothing(self) -> None:
+        """Every sweep on a clean machine. A line about temporary directories on
+        a run that has none is noise in a tool whose output a person greps."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            assert mutate.about_temporary_trees(collect=False, where=box) == []
+
+    def test_a_run_counts_what_is_waiting_and_offers_the_flag(self) -> None:
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            self.tree(box, "mutate-a", json.dumps({"pid": self.dead(), "born": 1.0}))
+            said = mutate.about_temporary_trees(collect=False, where=box)
+            assert len(said) == 1
+            assert "1 temporary tree(s)" in said[0]
+            assert "--collect" in said[0], "the line has to say how to act on it"
+
+    def test_the_flag_names_each_one_it_removed(self) -> None:
+        """Named rather than counted, and this is the one place the two differ:
+        a count is a claim and a path is evidence, and this is the run that
+        actually deleted something."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            gone = self.tree(box, "mutate-b", json.dumps({"pid": self.dead(), "born": 1.0}))
+            said = mutate.about_temporary_trees(collect=True, where=box)
+            assert said == [f"collected {gone}"]
+            assert not gone.exists()
+
+    def test_an_unstamped_tree_is_reported_with_the_command_that_removes_it(self) -> None:
+        """It cannot be collected -- nothing here can tell an old tree from a
+        live one -- so the line has to hand the decision to a person, with the
+        command in it rather than a description of the command."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            self.tree(box, "mutate-c", None)
+            said = mutate.about_temporary_trees(collect=False, where=box)
+            assert len(said) == 1
+            assert "no owner stamp" in said[0]
+            assert f"rm -rf {box}/{SETTINGS.tmp_prefix}*" in said[0]
+
+    def test_collecting_does_not_silence_the_unstamped_ones(self) -> None:
+        """Both lines, because `--collect` cannot act on the second kind. A run
+        that removed what it could and said nothing about the rest would read as
+        having cleaned up."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            self.tree(box, "mutate-d", json.dumps({"pid": self.dead(), "born": 1.0}))
+            self.tree(box, "mutate-e", None)
+            said = mutate.about_temporary_trees(collect=True, where=box)
+            assert len(said) == 2, said
+            assert "collected" in said[0]
+            assert "no owner stamp" in said[1]
+
     def test_a_tree_it_makes_is_stamped_before_anything_else_goes_in(self) -> None:
         """A sweep killed a millisecond after `mkdtemp` still has to leave a
         tree that can be identified rather than one that has to be guessed at."""

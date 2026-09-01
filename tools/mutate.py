@@ -3816,6 +3816,9 @@ def _collect_abandoned(where: Path | None = None, dry: bool = False) -> list[Pat
     # `/private/var` symlink and an unresolved comparison would miss it.
     here = Path.cwd().resolve()
     swept = []
+    # survivor: order -- `sorted` for a stable answer across machines, over a `glob` whose order is
+    #   the filesystem's. Every tree is judged on its own stamp, so the order decides only which
+    #   line of output comes first and one machine agrees with itself either way.
     for found in sorted(root.glob(f"{SETTINGS.tmp_prefix}*")):
         settled = found.resolve()
         if settled == here or settled in here.parents:
@@ -3852,7 +3855,43 @@ def unstamped(where: Path | None = None) -> list[Path]:
         for made in root.glob(f"{SETTINGS.tmp(kind)}*")
         if made.is_dir() and not (made / _OWNER).exists()
     ]
+    # survivor: order -- `sorted` for a stable answer across machines, over a `glob` whose order is
+    #   the filesystem's. Only a count is printed from this, so the order is visible to nothing but
+    #   a test that asks for the list.
     return sorted(found)
+
+
+def about_temporary_trees(collect: bool, where: Path | None = None) -> list[str]:
+    """What a run says about the trees an abandoned sweep left, if anything.
+
+    **Counted always, removed only when asked.** The processes an abandoned
+    sweep leaves are `verdict.watch_for_orphaning`'s job and it does them by
+    itself; the trees are this one's, and deleting is a decision -- see
+    `_collect_abandoned` for the sweep that deleted its own sandbox back when
+    this was automatic. Reporting is safe under a mutation in a way that
+    removing is not, so the count is unconditional and the `rm` is a flag.
+
+    Lines returned rather than printed, and a `where` to point somewhere else,
+    because `main` reads the real temporary directory and a test that drove it
+    would be asserting about whatever else is on the machine. Six mutants of
+    this block survived while it was inline in `main` for exactly that reason.
+    """
+    said: list[str] = []
+    if collect:
+        said.extend(f"collected {gone}" for gone in _collect_abandoned(where))
+    elif waiting := _collect_abandoned(where, dry=True):
+        said.append(
+            f"{len(waiting)} temporary tree(s) belong to a sweep that is gone. "
+            "`--collect` removes them."
+        )
+    if old := unstamped(where):
+        root = Path(where) if where is not None else Path(tempfile.gettempdir())
+        said.append(
+            f"{len(old)} older temporary tree(s) carry no owner stamp, so this cannot tell "
+            f"whether they are in use.\n  If no sweep is running: "
+            f"rm -rf {root / f'{SETTINGS.tmp_prefix}*'}"
+        )
+    return said
 
 
 def _mutable_prefixes() -> str:
@@ -4629,26 +4668,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # **Counted always, removed only when asked.** The processes an abandoned
-    # sweep leaves are `verdict.watch_for_orphaning`'s job and it does them by
-    # itself; the trees are this one's, and deleting is a decision -- see
-    # `_collect_abandoned` for the sweep that deleted its own sandbox when this
-    # was automatic. Reporting is safe under a mutation in a way that removing
-    # is not, so the count is unconditional and the `rm` is a flag.
-    if args.collect:
-        for gone in _collect_abandoned():
-            print(f"collected {gone}")
-    elif waiting := _collect_abandoned(dry=True):
-        print(
-            f"{len(waiting)} temporary tree(s) belong to a sweep that is gone. "
-            "`--collect` removes them."
-        )
-    if old := unstamped():
-        where = Path(tempfile.gettempdir()) / f"{SETTINGS.tmp_prefix}*"
-        print(
-            f"{len(old)} older temporary tree(s) carry no owner stamp, so this cannot tell "
-            f"whether they are in use.\n  If no sweep is running: rm -rf {where}"
-        )
+    for line in about_temporary_trees(args.collect):
+        print(line)
 
     if args.all and args.base:
         parser.error("--all is every line; --base is what changed. Not both.")

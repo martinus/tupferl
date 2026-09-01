@@ -2019,14 +2019,29 @@ time.sleep({sleep})
 
 
 def alive(pid: int) -> bool:
-    """Whether `pid` exists, asked of the kernel rather than of `ps`."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # pragma: no cover - a pid we do not own
-        return True
-    return True
+    """Whether `pid` is a *running* process, counting a zombie as gone.
+
+    **`os.kill(pid, 0)` is the obvious spelling and it made a test here unable
+    to fail.** A probe killed while its sweep is still running has nobody to
+    reap it -- the sweep is asleep, not waiting -- so it sits as a zombie, and
+    `kill(pid, 0)` on a zombie succeeds. The test that asserts a probe is *left
+    alone* while its sweep lives therefore passed whether the watchdog fired or
+    not, which the mutation sweep found by leaving `if os.getppid() != owner:`
+    alive: made unconditional, the watchdog killed every probe at the first tick
+    and all four tests still passed.
+
+    `ps` rather than `/proc`, because the `macos` leg has no `/proc`. An empty
+    answer is a pid that no longer exists at all.
+    """
+    done = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        timeout=support.PATIENCE,
+        check=False,
+    )
+    state = done.stdout.strip()
+    return bool(state) and not state.startswith("Z")
 
 
 class TestAProbeThatOutlivesItsSweep:
