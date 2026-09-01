@@ -28,7 +28,7 @@ from unittest import mock
 import pytest
 
 from tests import support
-from tupferl import inspection, merge, sync
+from tupferl import colours, inspection, merge, sync
 from tupferl.copies import Blob
 
 #: What `.bashrc` holds on both machines when a fixture here starts, which is
@@ -697,6 +697,85 @@ class TestShowingTheDiffThroughTheUsersPager:
         paged.configure("cat")
         assert "--- .bashrc" in paged.diff()
         assert not paged.seen.exists()
+
+
+@pytest.mark.usefixtures("synced")
+class TestHowTheDiffIsLaidOut:
+    """The two things that made a multi-file diff hard to read.
+
+    Both are about `difference`'s composition rather than about any one diff, so
+    two files must differ -- with one, the separator has nothing to separate and
+    every assertion below is vacuous.
+    """
+
+    def apart_twice(self, synced: Synced) -> str:
+        """Make both managed files differ, and return what `diff` prints."""
+        synced.apart()
+        synced.second.write(".vimrc", "set number\n")
+        said = synced.diff()
+        assert ".bashrc" in said and ".vimrc" in said, "only one file differs"
+        return said
+
+    def test_two_files_are_separated_by_a_blank_line(self, synced: Synced) -> None:
+        """Joined by a single newline, one file's last context line sat directly
+        above the next file's `---` header, so a two-file diff read as one diff
+        with a stray header in the middle.
+
+        The blank line is asserted *above a header*, not merely somewhere in the
+        output: a diff of a file that ends in a newline has a trailing space as
+        its own last line, which looks like a separator without being one.
+        """
+        rows = self.apart_twice(synced).split("\n")
+        headers = [at for at, row in enumerate(rows) if row.startswith("--- ")]
+        assert len(headers) == 2, rows
+        assert rows[headers[1] - 1] == "", "no blank line between the two files"
+
+    def test_the_first_file_is_not_run_together_with_the_second(self, synced: Synced) -> None:
+        """The same claim from the other end, and the one that fails if the
+        separator is added *inside* a file's diff rather than between files:
+        each file contributes exactly one header pair."""
+        rows = self.apart_twice(synced).split("\n")
+        assert sum(row.startswith("--- ") for row in rows) == 2
+        assert sum(row.startswith("+++ ") for row in rows) == 2
+
+
+@pytest.mark.usefixtures("synced")
+class TestTheDiffIsColouredForATerminalOnly:
+    """Both halves, because either alone is satisfied by the wrong function.
+
+    "A pipe gets no escapes" holds for a `diff` that never colours anything --
+    which is what this was before -- and "a terminal gets escapes" says nothing
+    about the redirected case every other test in this file depends on.
+    """
+
+    def coloured_run(self, synced: Synced) -> str:
+        """`status --diff` in-process, writing to something that says it is a
+        terminal, with the sandbox's `NO_COLOR` taken back out."""
+        env = {key: value for key, value in synced.second.env.items() if key != "NO_COLOR"}
+        seen = support.Screen()
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert inspection.difference(None, out=seen) == 0
+        return seen.getvalue()
+
+    def test_a_terminal_gets_the_lines_in_colour(self, synced: Synced) -> None:
+        synced.apart()
+        said = self.coloured_run(synced)
+        assert f"{colours.REMOVED}-edited on this computer{colours.OFF}" in said
+        assert f"{colours.ADDED}+from the repo{colours.OFF}" in said
+
+    def test_the_header_is_structure_rather_than_a_removed_line(self, synced: Synced) -> None:
+        """`--- ` starts with `-`. Painting it red is the mistake `colours.diff`
+        is ordered to avoid, and end to end is where it would actually be seen."""
+        synced.apart()
+        header = next(row for row in self.coloured_run(synced).split("\n") if "--- " in row)
+        assert header.startswith(colours.BOLD)
+        assert colours.REMOVED not in header
+
+    def test_a_captured_stream_gets_exactly_what_it_always_did(self, synced: Synced) -> None:
+        """Every other assertion in this file, and `tupferl status --diff |
+        delta`, depend on this."""
+        synced.apart()
+        assert "\x1b" not in synced.diff()
 
 
 @pytest.mark.usefixtures("synced")

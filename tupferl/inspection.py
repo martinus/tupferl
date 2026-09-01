@@ -46,7 +46,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-from tupferl import gitrepo, manage, manifest, merge, paths, sync
+from tupferl import colours, gitrepo, manage, manifest, merge, paths, sync
 from tupferl.copies import Blob
 from tupferl.errors import TupferlError
 
@@ -158,6 +158,13 @@ def show(text: str, repo: Path, out: TextIO) -> None:
     caught and the text printed plainly, because this function's job is to show
     the diff and the pager is only how.
     """
+    # **Painted on `isatty`, which is also what decides paging** -- so the
+    # colour reaches `less` rather than being suppressed by the pipe into it.
+    # That is git's behaviour and the reason `LESS=FRX` is exported below: `R`
+    # is the flag that passes the escapes through. A redirected diff is
+    # something a program is about to read and gets exactly the bytes it always
+    # did, which is what keeps `tupferl status --diff | delta` working.
+    text = colours.diff(text, colours.coloured(out))
     command = pager(repo) if out.isatty() else ""
     if not command or command.strip() == "cat":
         # `cat` is git's spelling of "no pager", and running it would fork a
@@ -428,7 +435,14 @@ def difference(wanted: str | None, out: TextIO | None = None) -> int:
         # One call with everything in it, not one per file: a pager shown the
         # files one at a time is one the user has to quit once per file, and
         # `delta` would draw its header for each.
-        show("\n".join(shown), repo, out)
+        #
+        # **A blank line between files, and it is not decoration.** Joined by a
+        # single newline, one file's last context line sat directly above the
+        # next file's `---` header, so a two-file diff read as one diff with a
+        # stray header in the middle of it -- and a diff of a file ending in a
+        # newline has a trailing *space* as its last line, which looks like a
+        # separator without being one.
+        show("\n\n".join(shown), repo, out)
         return 0
     # Not through the pager. Two sentences, because one with the name
     # substituted into it says the opposite of what it means: "`.bashrc` differs
