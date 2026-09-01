@@ -843,6 +843,12 @@ def watch_for_orphaning(poll: float = ORPHAN_POLL) -> threading.Thread | None:
 
     def watch() -> None:
         while True:
+            # survivor: drop-call -- unanswerable, and behaviourally equivalent besides. Without the
+            #   sleep the loop still reaches the same answer; it just asks the kernel for its parent
+            #   as fast as it can, so every probe carries a thread pinning a core. It comes back
+            #   BROKE rather than SURVIVED because a probe hosting a nested harness then starves and
+            #   its tests run past their bounds -- a cost no assertion can see and no fixture can
+            #   separate from a loaded machine.
             time.sleep(poll)
             if os.getppid() != owner:
                 os.killpg(group, signal.SIGKILL)

@@ -1019,9 +1019,15 @@ class TestCollectingWhatAKilledSweepLeft:
 
         `tempfile.tempdir` is patched rather than `TMPDIR`, because
         `gettempdir()` caches its answer on first use and an environment
-        variable set afterwards would change nothing. `--base HEAD` reaches the
-        report and then exits on "nothing mutable changed", which is the
-        cheapest way through `main` that still runs it.
+        variable set afterwards would change nothing.
+
+        **`--only` names a path nothing matches, and that is not decoration.**
+        The first version passed `--base HEAD` alone and leaned on the working
+        tree being clean, so it exited early only when nobody had edited
+        anything -- green standing alone and red under the runner the moment
+        this very tag was added to `tools/verdict.py`, where it started a whole
+        real sweep instead. Filtering to an empty table reaches the report and
+        exits for a reason the test controls.
         """
         with support.tempdir(prefix="tupferl-collect-") as box:
             gone = self.tree(box, "mutate-said", json.dumps({"pid": self.dead(), "born": 1.0}))
@@ -1030,7 +1036,7 @@ class TestCollectingWhatAKilledSweepLeft:
                 support.quiet() as spill,
                 pytest.raises(SystemExit),
             ):
-                mutate.main(["--base", "HEAD", "--collect"])
+                mutate.main(["--base", "HEAD", "--only", "no/such/path", "--collect"])
             assert f"collected {gone}" in spill.getvalue()
 
     def test_a_tree_it_makes_is_stamped_before_anything_else_goes_in(self) -> None:
