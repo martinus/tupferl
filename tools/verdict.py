@@ -374,16 +374,12 @@ class Watcher:
         #: by nodeid. Filled by `pytest_fixture_setup` and read by `answered`,
         #: which is the only place the difference matters -- see its comment.
         self.scopes: dict[str, str] = {}
-        #: What each test cost, by nodeid, summed over its three phases.
-        #: `mutate.Killers` accumulates these so it can order the cheap
-        #: high-yield tests first.
-        self.times: dict[str, float] = {}
-        #: How many tests started, counting a test named in `first` again when
-        #: the selection reaches it -- so this is starts rather than distinct
-        #: tests, which is what `unittest`'s `testsRun` counted and what
-        #: `tests.test_mutate` reads to tell "the prefix *and* everything" from
-        #: "the prefix instead of everything". `mutate._run` reads only whether
-        #: it is zero.
+        #: How many tests started. Starts rather than distinct tests -- which
+        #: is what `unittest`'s `testsRun` counted -- though the two now agree
+        #: for the reason `collect` gives: the selection groups deselect
+        #: whatever `first` already ran, so no test starts twice. That is the
+        #: property `tests.test_verdict` reads this to assert. `mutate._run`
+        #: reads only whether it is zero.
         self.ran = 0
         #: Whether the run fell over rather than reporting: a module that would
         #: not import, or a selection pytest refused. No later group can change
@@ -471,38 +467,6 @@ class Watcher:
         if report.outcome == "failed":
             self.answered(item.nodeid, call, report)
         return report
-
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        """Charge each test for its three phases, and nothing twice.
-
-        A subtest's report is skipped rather than added, and it is recognised
-        by carrying a ``context`` -- what pytest hangs the subcase's parameters
-        on -- rather than by its class name.
-
-        **Measured on pytest 9.1.1, and it is weaker than it reads: a
-        `SubtestReport`'s ``duration`` is 0.** Three subcases sleeping 0.067 s
-        each report 0, 0, 0 against the owner's ``call`` report of 0.2017 -- the
-        machinery does not time subcases -- so adding them would change this
-        number by exactly nothing, and no fixture can make it change. The filter
-        stays as a guard against a pytest that starts timing them, which is a
-        future that has not arrived; that also means nothing can test it, and
-        `tests/test_verdict.py` says so where the test that pretended to used
-        to be. Deciding whether it earns its line is Phase C's, with the rest of
-        the documentation settling.
-
-        ``setup`` starts the sum again rather than adding to it, so a test named
-        in `first` and then reached again by the selection is charged for one
-        run instead of two. That is what the layer before this did, where one
-        assignment per test meant the last run won -- and it matters because
-        `Killers.prefix` divides rows-caught by cost, so a remembered killer
-        that looked twice as dear as it is would drop out of the cheap prefix.
-        """
-        if getattr(report, "context", None) is not None:
-            return
-        if report.when == "setup":
-            self.times[report.nodeid] = report.duration
-        else:
-            self.times[report.nodeid] = self.times.get(report.nodeid, 0.0) + report.duration
 
     @pytest.hookimpl(wrapper=True)
     def pytest_fixture_setup(
@@ -631,7 +595,7 @@ class Watcher:
         # the same sweep is a cache that never warms.
         return sorted(found - chosen)
 
-    def over(self, group: Sequence[str], failfast: bool) -> None:
+    def over(self, group: Sequence[str], failfast: bool, skip: Sequence[str] = ()) -> None:
         """One `pytest.main`, plus whatever its exit status says that no hook did.
 
         The flags are the ones Phase 0 measured. ``-p no:cacheprovider`` is what
@@ -643,7 +607,30 @@ class Watcher:
         statements need it.
         """
         said = len(self.broke)
-        argv = ["-q", "-p", "no:cacheprovider", *(["-x"] if failfast else []), *group]
+        # **`skip` is what the front already ran, and without it the front is not
+        # a reordering at all.** `first` gets its own `pytest.main` call, and the
+        # selection groups that follow contain those same tests -- so on a row
+        # the front does *not* catch, every front test executes twice. Measured
+        # before this existed: a front naming one test of a four-test module gave
+        # `ran=5` over 4 distinct tests.
+        #
+        # Nothing was wrong with the verdict; the cost was pure wall-clock on a
+        # miss, invisible to the summary, and small at the default depth of 8.
+        # It is what made a deeper front lose: replayed over a real cold run,
+        # depth 128 reaches a 74.0% hit rate against 66.8% at 8, and paid 103
+        # duplicated executions per miss against 7.9 to get there.
+        #
+        # pytest ignores a `--deselect` for a nodeid the group does not collect,
+        # checked rather than assumed -- which is what lets one list of front ids
+        # be handed to every later group whatever module each one is.
+        argv = [
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *(["-x"] if failfast else []),
+            *[arg for name in skip for arg in ("--deselect", name)],
+            *group,
+        ]
         code = int(pytest.main(argv, plugins=[self]))
         if code in ANSWERED:
             return
@@ -723,8 +710,12 @@ def collect(
     `WHOLE_SUITE` for a walking table.
     """
     watcher = Watcher(each_test(each), running)
-    for group in _groups(names, first, walk, watcher):
-        watcher.over(group, failfast)
+    # The front runs once, and every group after it deselects what it ran. That
+    # is what makes `first` a *reordering* of the selection rather than an extra
+    # pass over part of it -- see `Watcher.over`.
+    head = [as_path(name) for name in first]
+    for index, group in enumerate(_groups(names, first, walk, watcher)):
+        watcher.over(group, failfast, () if head and index == 0 else head)
         # Three ways to stop, and they are not the same question. `stopped` is
         # "no later group can change this answer". `failed` under `failfast` is
         # the caller's request. `noticed` under `walk` is the walk's own
@@ -741,7 +732,6 @@ def collect(
         "noticed": watcher.noticed,
         "killers": watcher.noticed,
         "reasons": watcher.reasons,
-        "times": watcher.times,
         "broke": watcher.broke,
     }
 

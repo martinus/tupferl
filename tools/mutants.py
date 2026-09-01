@@ -93,8 +93,7 @@ class Mutation(NamedTuple):
     #: Which operator produced this. Empty for a hand-written row.
     operator: str = ""
     #: Tests to run *before* `tests`: the one a previous sweep recorded as
-    #: catching this mutation, or -- when none was -- a cheap high-yield prefix.
-    #: Separate from `tests` and not folded into it,
+    #: catching this mutation. Separate from `tests` and not folded into it,
     #: which was the first shape and cost twice the wall clock: `run` shards the
     #: baseline check by distinct `tests` string, so a killer prepended there
     #: made every row its own shard -- 1 baseline run became 42, each a full
@@ -116,11 +115,11 @@ class Mutation(NamedTuple):
     #: forbid. `check` closes that half -- see the guard at the top of it.
     first: Sequence[str] = ()
     #: Whether `first` is the test recorded as catching *this* row, rather than
-    #: the general cheap-yield prefix. The two are both "run these first" and
-    #: are otherwise indistinguishable once written into one string, but they
-    #: deserve opposite treatment against `mutate.Learned`: an exact killer
-    #: belongs in front of it, a general prefix behind it. `mutate.Killers`
-    #: sets this; nothing else does.
+    #: a general guess about what catches rows like it. The two are both "run
+    #: these first" and are otherwise indistinguishable once written into one
+    #: string, but they deserve opposite treatment against `mutate.Learned`: an
+    #: exact killer belongs in front of it, a general guess behind it.
+    #: `mutate.Killers` sets this; nothing else does.
     exact: bool = False
 
 
