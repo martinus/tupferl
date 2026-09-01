@@ -238,6 +238,79 @@ class TestTheAccountingCheck:
         assert "tests/test_healthy.py::" not in done.stderr
 
 
+class TestExcludingAModuleThatWillNotImport:
+    """`--exclude` reaches `unloadable`, which is the one shape it could not name.
+
+    The flag is documented "for a suite that cannot run somewhere, so the rest
+    keeps `--no-skips`" -- and until #84 it refused the plainest example of a
+    suite that cannot run somewhere, with a message saying the pattern matched
+    nothing while the module sat in `unloadable` where the runner had just put
+    it. `--only` had reached both dicts since it was written; this reached one.
+    """
+
+    BROKEN = "import nothing_by_this_name\n"
+    FINE = (
+        "import unittest\n\n\nclass T(unittest.TestCase):\n"
+        "    def test_a(self) -> None:\n        self.assertTrue(True)\n"
+    )
+
+    def both(self, tree: Tree) -> None:
+        tree.add("test_broken.py", self.BROKEN)
+        tree.add("test_fine.py", self.FINE)
+
+    def test_a_broken_module_makes_the_run_red_when_nothing_excludes_it(self, tree: Tree) -> None:
+        """The precondition, and it is not decoration: without it every
+        assertion below is equally satisfied by a runner that never noticed the
+        broken module at all."""
+        self.both(tree)
+        done = tree.run_it()
+        assert done.returncode != 0, done.stdout
+        assert "test_broken" in done.stdout + done.stderr
+
+    def test_excluding_it_is_not_refused(self, tree: Tree) -> None:
+        """The bug. The message said the pattern matched nothing, about a module
+        the runner had definitely seen."""
+        self.both(tree)
+        done = tree.run_it("--exclude", "tests.test_broken")
+        assert "no test scope matches" not in done.stdout, done.stdout
+
+    def test_excluding_it_makes_the_run_green(self, tree: Tree) -> None:
+        """The behaviour change, stated out loud: it stops keeping the job red,
+        which is what "so the rest keeps `--no-skips`" asks for. Half a fix --
+        silencing the refusal and leaving the module in `unloadable` -- would
+        leave the leg red anyway and read as the flag not working."""
+        self.both(tree)
+        done = tree.run_it("--exclude", "tests.test_broken")
+        assert done.returncode == 0, done.stdout + done.stderr
+
+    def test_the_rest_of_the_suite_still_runs(self, tree: Tree) -> None:
+        """Green by running the other module, not green by running nothing --
+        which is the same exit status and the opposite outcome."""
+        self.both(tree)
+        done = tree.run_it("--exclude", "tests.test_broken")
+        assert "Ran 1 test" in done.stdout, done.stdout
+
+    def test_a_pattern_that_matches_neither_dict_is_still_refused(self, tree: Tree) -> None:
+        """The guard the loop exists for, kept. A renamed class has to stop
+        being excluded *loudly*, or a leg goes red on the platform the tool is
+        missing from -- which is what naming it was meant to avoid."""
+        self.both(tree)
+        done = tree.run_it("--exclude", "tests.test_nothing_like_this")
+        assert done.returncode != 0
+        assert "no test scope matches --exclude" in done.stdout
+
+    def test_a_pattern_matching_only_a_broken_module_does_not_excuse_a_second(
+        self, tree: Tree
+    ) -> None:
+        """**One test over the union, not one per dict.** Counted separately, a
+        pattern that matched only `unloadable` would satisfy the scopes check by
+        accident and a second, stale pattern would pass with it."""
+        self.both(tree)
+        done = tree.run_it("--exclude", "tests.test_broken", "--exclude", "tests.test_gone")
+        assert done.returncode != 0
+        assert "--exclude 'tests.test_gone'" in done.stdout, done.stdout
+
+
 class TestTheOrderTheSummaryNamesThings:
     """Two broken modules and two tests that never ran, so ordering is visible.
 

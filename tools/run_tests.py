@@ -625,8 +625,9 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="MODULE_OR_CLASS",
-        help="skip this module or class entirely; repeatable, and each pattern must "
-        "match. For a suite that cannot run somewhere, so the rest keeps --no-skips",
+        help="skip this module or class entirely, including one that will not "
+        "import; repeatable, and each pattern must match. For a suite that "
+        "cannot run somewhere, so the rest keeps --no-skips",
     )
     parser.add_argument(
         "--shard",
@@ -675,12 +676,30 @@ def main(argv: list[str] | None = None) -> int:
     # passes two, so that is the likely case rather than the exotic one. What it
     # would cost is a red build on the platform the tool is missing from, which
     # is precisely what naming the class was meant to avoid.
+    #
+    # **Both dicts, and one test over the union (#84).** `--only` reaches the
+    # broken modules above and this did not, so `--exclude tests.test_x` on a
+    # module that will not import was refused with "no test scope matches" --
+    # naming a module the runner had definitely seen, because it was sitting in
+    # `unloadable`. The flag is *for* a suite that cannot run somewhere, and a
+    # module that will not import there is the plainest case of that.
+    #
+    # Excluding it also stops it keeping the job red, which is a behaviour
+    # change and the one the flag's own help asks for: "so the rest keeps
+    # --no-skips". It cannot hide a *new* breakage silently, because the pattern
+    # still has to match -- a module that starts importing again matches through
+    # `scopes` instead, and one that is renamed matches neither and is refused.
+    #
+    # The count is over the union rather than per dict. Two separate checks
+    # would let a pattern matching only a broken module satisfy the scope check
+    # by accident, which is the guard this loop exists to keep.
     for pattern in args.exclude:
         kept = {name: ids for name, ids in scopes.items() if not selects(dotted(name), pattern)}
-        if len(kept) == len(scopes):
+        left = {name: why for name, why in unloadable.items() if not selects(name, pattern)}
+        if len(kept) + len(left) == len(scopes) + len(unloadable):
             print(f"::error::no test scope matches --exclude {pattern!r}")
             return 1
-        scopes = kept
+        scopes, unloadable = kept, left
     if not scopes and not unloadable:
         # **Every filter above can end here, and only `--only` said so.** An
         # `--exclude` list that removes the last scope is not a typo -- each
