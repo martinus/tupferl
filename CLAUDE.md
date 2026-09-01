@@ -2223,6 +2223,45 @@ read this file:
   So the walk order is load-bearing for *correctness* and not only for speed,
   by a route not yet understood. 1.6% was never going to pay for that.
 
+- **A within-run cheap-tests-first prefix cannot be built, because the prefix is
+  *derived from* the recorded killers -- and where the killers exist it is worth
+  nothing measurable.** Proposed as #80: on a run whose cache is cold, or whose
+  ids have all changed shape, `Killers.prefix()` returns nothing and every row
+  falls straight through to its own selection, so build the prefix during the
+  run from verdicts as they land.
+
+  Three measurements, on `--all --only tupferl/` (1309 rows), interleaved, both
+  arms confirmed to sweep identical tables with identical verdicts (26
+  survivors, baseline green):
+
+  | | wall |
+  |---|---:|
+  | cold (`--no-killers`) | 501.8s, 498.2s |
+  | warm | 278.5s, 277.4s |
+  | warm, `--prefix 0` | 277.6s |
+
+  **A cold cache costs 1.80x -- a median paired difference of 222s.** That is
+  real and it is the reason the issue was filed. But it is `Killers.ahead_of`'s,
+  not the prefix's: turning the prefix *off* on a warm run costs **0.51s of
+  278s**, which is below measurement, because `ahead_of` puts the exact killer
+  first for every row that has one and the prefix only ever serves rows that do
+  not.
+
+  **And the prefix cannot be separated from the killers even in principle.**
+  `prefix()` builds its coverage table by walking `self.known` -- the recorded
+  killers -- so "no remembered killers" and "no prefix" are one state rather
+  than two losses. Stripping `killers` from a real cache while keeping `costs`
+  and `seconds` yields a prefix of **0 tests**, checked. A prefix built during a
+  run would therefore need killers discovered during that run, which is exactly
+  what `Learned` already is, and that puts the whole idea in the family the
+  entry below measured at 27.3% and the four dispatches measured as losing.
+
+  **What would justify re-opening it**: evidence that `Learned`'s move-to-front
+  leaves a large share of a *cold* run's rows with no useful front -- replayed
+  from a recorded cold whole-tree report, which is a replay rather than a build
+  and costs an afternoon rather than a feature. Without that number this is the
+  same guess the four dispatches were.
+
 - **Interleaving a mutation table round-robin across files cuts `Learned`'s hit
   rate from 72.7% to 27.3%, and nothing fails to say so** (#49). Proposed so
   that an interrupted sweep would have partial coverage of every file rather
