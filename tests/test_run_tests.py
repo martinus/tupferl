@@ -1105,6 +1105,13 @@ class TestTheTwoSpellingsOfAScope:
 #: `parametrize` below has the cases at collection time. A computed list is the
 #: shape §2's zero-iteration trap takes under pytest -- an empty one collects no
 #: cases at all -- so `test_there_are_excludes_to_check` asserts the count.
+#: The fewest `--exclude` patterns ci.yml may carry and still be believed. Four
+#: as this is written, and the floor sits at four rather than under it because
+#: the four are a *fixed* set of platform impossibilities -- an argv that is not
+#: valid UTF-8 on APFS, two `verdict.cap` classes macOS cannot observe, and
+#: `/proc` -- so one of them going missing is a question, not routine drift.
+FLOOR = 4
+
 EXCLUDES = [
     line.split("--exclude", 1)[1].strip()
     for line in (run_tests.ROOT / ".github" / "workflows" / "ci.yml")
@@ -1141,7 +1148,7 @@ def scope_names() -> set[str]:
 class TestTheWorkflowsExcludesStillNameSomething:
     """Every `--exclude` in ci.yml, against the scopes this tree really has.
 
-    The macOS leg names four classes it cannot run, and `main` refuses a pattern
+    The macOS leg names the classes it cannot run, and `main` refuses a pattern
     that matches nothing -- so a class renamed without touching the workflow
     turns that leg red. Red is the right answer, and *finding out on the runner*
     is not: this is the same check, here, where it costs one collect.
@@ -1157,13 +1164,17 @@ class TestTheWorkflowsExcludesStillNameSomething:
         would pass by not existing, and the whole class would go green on a
         workflow file it had failed to read.
 
-        **6 until Phase C**, which deleted `tests/test_verdict_unittest.py` and
-        the two patterns naming it. `main` refuses a pattern that matches
-        nothing, so leaving them would have turned the macOS leg red for the
-        deletion rather than for a defect -- and this line is what says so
-        here, one collect, instead of on the runner.
+        **A floor and not an equality**, which is `tests/test_errors.py`'s
+        `FLOOR` and `tests/test_support.py`'s, for their reason: the hazard is a
+        parse that matched *nothing*, and equality does not guard that any
+        better while costing an edit every time the workflow gains a legitimate
+        exclusion. Nothing is bought by the stricter form -- the `parametrize`
+        below already checks each pattern found, so a new one is checked by
+        existing, and an over-matching parse (a prose `--exclude` in a comment)
+        goes red there rather than here. Phase C deleted two patterns and this
+        line did not need editing, which is the argument.
         """
-        assert len(EXCLUDES) == 4, EXCLUDES
+        assert len(EXCLUDES) >= FLOOR, EXCLUDES
 
     @pytest.mark.parametrize("pattern", EXCLUDES)
     def test_every_exclude_names_at_least_one_scope(

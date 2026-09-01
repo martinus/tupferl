@@ -27,9 +27,10 @@ CLAUDE.md §8 collects:
   with no conversion behind it. **A count that a `__module__ = __name__` can
   lower is not a count of work done.**
 
-`loadTestsFromModule` is what `python -m unittest discover` and
-`tools/verdict_unittest.py` actually run, so the number means the thing the plan
-is about: modules pytest still takes through its `unittest` adapter. It is also
+`loadTestsFromModule` is what pytest's own `unittest` adapter runs -- and what
+`python -m unittest discover` and `tools/verdict_unittest.py` ran until Phase B
+and Phase C respectively stopped them being usable at all -- so the number means
+the thing the plan is about: modules pytest still takes through that adapter. It is also
 immune to the hazard the `__module__` filter existed for -- a module that
 *imports* a base from `tests/support.py` gains no runnable test by doing so, and
 those bases carry no `test_` methods to count. Measured: 159ms for all 35.
@@ -38,7 +39,7 @@ The companion claim is the one a status line cannot make: that **every** module
 is accounted for. A module nobody scheduled is invisible to a count that only
 compares two totals, so `test_every_module_is_scheduled_or_permanent` reads the
 cluster table and insists each module is either converted, named in a cluster,
-or one of the two the plan keeps.
+or one the plan keeps permanently.
 
 **The plan states modules *left*, not modules converted**, and this file is why:
 its first version guarded a "converted" count and failed on its own first run,
@@ -177,11 +178,24 @@ class TestEveryModuleIsAccountedFor:
         assert len(scheduled()) > 20, scheduled()
 
     def test_every_module_is_scheduled_or_permanent(self) -> None:
-        """Converted, named in a cluster, or one of the two the plan keeps."""
+        """Converted, named in a cluster, or one the plan keeps permanently."""
         loose = [
             stem for stem in still_unittest() if stem not in scheduled() and stem not in PERMANENT
         ]
         assert loose == [], f"these modules are in no cluster and are not converted: {loose}"
+
+    def test_there_are_permanent_ones_to_check(self) -> None:
+        """The precondition the two tests below need, and it was not needed
+        until Phase C.
+
+        `PERMANENT` held two entries and now holds one. Both loops below are
+        `for stem in PERMANENT:` with the assertion inside, which is §2's
+        zero-iteration trap exactly: an empty dict satisfies each of them by
+        having nothing to check, and the dict's own comment says a *deletion* is
+        the way it falls. So the emptiness is asserted here rather than assumed
+        twice.
+        """
+        assert PERMANENT
 
     def test_the_permanent_ones_really_are_unittest_backed(self) -> None:
         """If one were ever converted, this file would be the only thing left
@@ -191,7 +205,7 @@ class TestEveryModuleIsAccountedFor:
         for stem in PERMANENT:
             assert stem in still, f"{stem} no longer runs as unittest; the plan says it does"
 
-    def test_the_status_line_names_both_of_them(self) -> None:
+    def test_the_status_line_names_every_permanent_one(self) -> None:
         """The half a count cannot carry. A permanent exception that only this
         file knows about reads, in the plan, as a module somebody forgot.
 

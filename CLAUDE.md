@@ -396,6 +396,20 @@ committed; the only recovery is writing it again from memory.
   put the full argument for its shape in its module docstring, and add a row to a
   table here saying *when* to reach for it. Reach for the tool rather than
   writing the loop again.
+
+  Two clauses this repository added by needing them, both live rules rather than
+  history — the instances that produced them are in the `Historical` notes below
+  the table and in the mutation-harness gotchas:
+
+  - **A tool written for a finite job says in its docstring what finishes it.**
+    Otherwise nothing ever notices the job is done, and the tool outlives its
+    reason as a row in the table above that nobody dares delete.
+    `tools/unassert.py` named Phase C and was deleted on time because of it.
+  - **A compatibility switch has a half-life, and it wants a stated end.** A
+    second implementation kept "so the two can be compared" is an instrument,
+    and an instrument outlives its experiment silently. Say in the switch's own
+    docstring what removes it. `TUPFERL_MUTATE_VERDICT` did, which turned its
+    removal into a checklist item instead of an archaeology exercise.
 - **Preflight is one line**, and it is exactly what CI runs:
 
   ```sh
@@ -546,7 +560,7 @@ failure §8 collects, so reach for `pytest -q`.
 | `tupferl/manage.py` | `init`, `add`, `remove`, `list`. `--host` on `add` and `remove` means the same thing in both: this machine's overlay rather than the shared tree |
 | `tupferl/inspection.py` | `status` and `diff`, the two commands that only look. Both read `sync.examine`, so what `status` promises about the next sync is computed by the code that performs it |
 | `tupferl/conflicts.py` | what a conflict is (`Sides`) and the six ways a person settles one. Returns an `Answer`, never a decision about disk — which is what keeps it out of an import cycle with `sync`, and what lets `--ours`/`--theirs`/`--no-input` be settlers that answer without asking |
-| `tests/` | **pytest-native, and run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness does not care how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. Phase B converted all 33 modules that had to convert; **a module or two are still taken by the `unittest` loader and none of them is arrears**, and *which* and *how many* is [`docs/pytest-plan.md`](docs/pytest-plan.md)'s status line rather than anything here — Phase C changed the number and something else will, so typing it here is the rot this file opens with, and `tests/test_pytest_plan.py` recomputes it from the tree where nothing recomputes a figure typed here. Write a new module pytest-native: a plain `def test_...` is discovered, packed by its module, run and accounted for |
+| `tests/` | **pytest-native, and run by pytest**: `tools/verdict.py` classifies pytest reports, so the harness does not care how a test is written. A new test module has to be named `test_<module>.py` or `test_<module>_<aspect>.py`, or `tools/mutants.py` resolves no target for that source file and `test_mutants.TestChoosingTheTests` goes red. Phase B converted all 33 modules that had to convert; **some modules are still taken by the `unittest` loader and none is arrears**, and *which* and *how many* is [`docs/pytest-plan.md`](docs/pytest-plan.md)'s status line rather than anything here — Phase C changed the number and something else will, so typing it here is the rot this file opens with, and `tests/test_pytest_plan.py` recomputes it from the tree where nothing recomputes a figure typed here. Write a new module pytest-native: a plain `def test_...` is discovered, packed by its module, run and accounted for |
 | `tools/` | the test infrastructure, ported from `martinus/woswoar` — except `paint.py`, which is this repository's. Its own tests came later (#4): `test_verdict.py` and `test_paint.py` were written here, `test_reached.py` and `test_watch.py` ported (`test_watch.py` has since gained `TestEveryAnswerIsColoured`), `test_mutants.py` ported with four assertions re-pointed at this project's layout. `verdict.py` + `test_verdict.py` are the classifier, and the only one — `verdict_unittest.py` and its tests were the `unittest` backend it replaced, kept behind `TUPFERL_MUTATE_VERDICT=unittest` while the conversion was measured against it and deleted with that switch in Phase C |
 | `docs/plan.md` | the plan this is built from |
 | `docs/pytest-plan.md` | the phased conversion of the suite to pytest, and the measured spike results Phase A depends on. **Its status line says which cluster is next, and `tests/test_pytest_plan.py` asserts it against the tree** -- so "continue the plan" is a safe instruction and the line cannot go stale. It did, within a day of being written |
@@ -962,14 +976,13 @@ has been dropped.
   no display format to drift. What it costs is that every id in
   `sweeps/killers.json` changed shape; the cache is machine-local and
   disposable, and `mutate._loadable` drops what pytest cannot name.
-- **Historical — `TestCase.enterContext` is 3.11**, so on the 3.10 leg it is an
-  `AttributeError` and the tests reached for `contextlib.ExitStack` instead.
-  Same family as the `tomllib` gotcha above, and the same leg caught it. It is
-  moot now: no test in this tree writes a `TestCase` any more, and a fixture
-  entering a context manager around its `yield` needs no version check at all.
-  The general form outlives it — **a `unittest` convenience added in 3.11 is not
-  available on the floor this project supports**, and the 3.10 leg is what says
-  so.
+- **Historical — `TestCase.enterContext` is 3.11**, so on the 3.10 leg it was
+  an `AttributeError` and the tests reached for `contextlib.ExitStack` instead.
+  Moot now: no test in this tree writes a `TestCase`, and a fixture entering a
+  context manager around its `yield` needs no version check. The live form of
+  the same lesson is the `tomllib` entry above, which has a branch behind it;
+  what the conversion did to this one is recorded where it is useful, beside
+  `support.bounds`.
 - **`text=True` encodes stdin and argv by different rules.** `subprocess`
   encodes an argv list with the filesystem encoding and `surrogateescape`, so a
   path that is not valid UTF-8 goes through; it encodes `input=` with the
@@ -1678,12 +1691,15 @@ read this file:
 - **Copy the two-machine fixture rather than building it — 120.4ms to 4.3ms,
   24% off the serial suite** (#19). `support.template()`
   builds the tree once per *process* and `copy_template` copies it; **190 of
-  the suite's 1920 tests** take it, all of them through the `two_machines`
+  the suite's 1991 tests** take it, all of them through the `two_machines`
   fixture since B4b converted the last `TestCase` user. That count was 146 when
   #19 was measured and is re-counted here because this entry was edited without
-  re-checking it: `pytest --collect-only --fixtures-per-test`, 2026-08-31. The
-  durable half of this entry is the 120.4 ms against 4.3 ms below; the number of
-  callers is a moving target and is dated for that reason.
+  re-checking it: `pytest --collect-only --fixtures-per-test`, 2026-09-01. The
+  numerator is unchanged at 190; the denominator said 1920, which was already
+  wrong before Phase C deleted 100 tests and made it wrong differently -- a
+  ratio written as two hand-typed numbers goes stale on whichever one somebody
+  is not thinking about. The durable half of this entry is the 120.4 ms against
+  4.3 ms below; both counts are a moving target and are dated for that reason.
 
   | | median |
   |---|---|

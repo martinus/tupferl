@@ -542,8 +542,8 @@ class TestTheKillerIsRecordedAtAll:
         assert mutate._loadable([result.verdict.killer]) == {result.verdict.killer}
 
 
-class TestTheProbeIsGradedByThisTreesClassifier:
-    """`_probe`: which source a sandbox is handed, and where it is read from.
+class TestWhichSourceTheProbeIsHanded:
+    """`_probe`: where the classifier a sandbox runs is read from.
 
     One backend now. `tools/verdict_unittest.py` and the
     `TUPFERL_MUTATE_VERDICT` switch that reached it were deleted at
@@ -557,31 +557,34 @@ class TestTheProbeIsGradedByThisTreesClassifier:
     switch once.** `_run` gained a JSON `first` slot and only one of the two
     layers was taught to read it; every assertion about the *source* passed
     throughout while one backend answered `broke` for every row including the
-    baseline. So this class asserts the source and
-    `TestTheKillerIsRecordedAtAll` drives a real row through it -- the pair is
-    the claim, not either half.
+    baseline. So this class is named for the source and nothing else --
+    `TestTheKillerIsRecordedAtAll` is the one that drives a real row through it,
+    and the pair is the claim.
+
+    **One test, not two.** A substring check for a hook name only that file
+    carries reads like a second guarantee and is a strictly weaker consequence
+    of the equality below: it can only fail when `tools/verdict.py` stops being
+    the pytest classifier, which `tests/test_verdict.py` drives end to end.
+    Under two backends it discriminated between them; under one it is an
+    assertion that passes against its own mutation.
     """
 
-    def test_it_is_the_pytest_classifier(self) -> None:
-        """By a name only that file carries. Not by comparing the whole text to
-        `verdict.py`'s bytes, which `test_it_comes_from_the_running_tree` does
-        and which would make this test a copy of that one."""
-        assert "pytest_runtest_makereport" in mutate._probe()
-
-    def test_it_comes_from_the_running_tree(self) -> None:
+    def test_it_comes_from_the_running_tree(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The isolation property, driven rather than read: `_probe` is called
         from inside a directory holding a *different* `tools/verdict.py`, and
-        must still hand back this repository's."""
-        real = (Path(mutate.__file__).resolve().with_name("verdict.py")).read_text(encoding="utf-8")
+        must still hand back this repository's.
+
+        The expectation comes through `verdict.__file__` -- the import system's
+        answer -- rather than through `Path(mutate.__file__).with_name(...)`,
+        which is `_probe`'s own body character for character and would make this
+        a test containing a copy of the code it checks.
+        """
+        real = Path(verdict.__file__).read_text(encoding="utf-8")
         with support.tempdir() as box:
             (box / "tools").mkdir()
             (box / "tools" / "verdict.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
-            held = os.getcwd()
-            os.chdir(box)
-            try:
-                assert mutate._probe() == real
-            finally:
-                os.chdir(held)
+            monkeypatch.chdir(box)
+            assert mutate._probe() == real
 
 
 class TestTwoSpellingsOfTheSameTest:

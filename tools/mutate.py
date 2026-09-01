@@ -470,9 +470,11 @@ class Verdict(NamedTuple):
     #: The first test that noticed, or the reason nothing could. Printed for
     #: everything except a plain `caught`, where the label already says it.
     detail: str = ""
-    #: The same test as `module.Class.method`, which is what `unittest` takes
-    #: back. Empty unless the outcome is `caught`. `detail` is for a reader and
-    #: this is for `killers`, which runs it again next time -- see `Killers`.
+    #: The killing test as a pytest **nodeid** -- `tests/test_x.py::C::test_y`,
+    #: which is the id `_loadable` and `_reaches` round-trip and therefore the
+    #: only spelling `Killers` can put back in front of a later run. Empty
+    #: unless the outcome is `caught`. `detail` is for a reader and this is for
+    #: `killers` -- see `Killers`.
     killer: str = ""
     #: What each test that ran cost, by id. Not persisted to the `--json`
     #: report, which is about verdicts; `Killers` keeps them, because ordering
@@ -601,6 +603,14 @@ def _probe() -> str:
     mutate, and a verdict loaded out of the copy would let a mutation grade its
     own exam. See that module's docstring for why the classification lives there
     and not in a string constant here.
+
+    **Deliberately not `functools.cache`d**, though it is a pure function of the
+    tree now that the layer switch is gone and `_collected` two functions away
+    is memoised exactly that way. It is one 39 KB read per row, against a caught
+    row's measured ~7.3s and a survivor's ~71s -- below noise -- and a cache
+    would silently make `test_mutate.TestWhichSourceTheProbeIsHanded` unfailable
+    the moment anything in the same process called `_probe` first, which
+    `test_mutate` does.
     """
     return (Path(__file__).resolve().with_name("verdict.py")).read_text(encoding="utf-8")
 
@@ -2918,8 +2928,18 @@ def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | 
 
 
 #: What a row runs when selection could not name a target: everything. Empty
-#: rather than `"tests"`, because a package name is not discovery -- `unittest`
-#: imports the package, finds no tests in it, and reports a green run of nothing.
+#: because that is what `verdict._groups` reads as "no selection" -- it yields
+#: `[]`, which is `pytest.main` with no target and so the rootdir's whole
+#: collection. `"tests"` would be a *name* handed to the same code, and naming
+#: something is what the walk beyond a selection is for.
+#:
+#: **Historical -- the original argument was about `unittest`**, where a package
+#: name was not discovery: the loader imported the package, found no tests in it
+#: and reported a green run of nothing. That hazard is gone with that loader.
+#: The constant is unchanged because the pytest reason above arrives at the same
+#: value, which is worth saying rather than leaving a reader to conclude the
+#: objection lapsed and `"tests"` is now free.
+#:
 #: Not a fallback of convenience either: see `mutants.targets_for`, and the row
 #: says out loud when it happens.
 WHOLE_SUITE = ""
@@ -4059,8 +4079,9 @@ def _run_generated(
     `failfast=True`: worth having for a generated table and not for a hand
     table, because `caught` is the expected outcome for most generated rows and
     without it each one runs the rest of its target after the answer is known.
-    An average, not a bound -- `unittest` runs classes alphabetically, so a
-    mutant caught only by the last of them still pays for nearly all.
+    An average, not a bound -- pytest collects a module's classes in definition
+    order, so a mutant caught only by the last of them still pays for nearly
+    all.
 
     No ``scope``: it existed because `sweep` called this once per *file*, and a
     batch had to say that a red baseline voided only its own rows. tupferl#7

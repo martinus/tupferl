@@ -40,8 +40,9 @@ differently from what it says below is in
 [B4a as built](#b4a-as-built--2026-08-31),
 [B4b as built](#b4b-as-built--2026-08-31),
 [B5 as built](#b5-as-built--2026-08-31) and
-[B6 as built](#b6-as-built--2026-08-31). **Read every "as built" section before
-the next phase** — said that way rather than as a count, because a count is one
+[B6 as built](#b6-as-built--2026-08-31) and
+[Phase C as built](#phase-c-as-built--2026-09-01). **Read every "as built"
+section before the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
 **A pytest-native test module is safe to write as of A2**, which was the whole
@@ -3162,6 +3163,13 @@ suite, the preflight, or any CI leg.
 **Acceptance gate:** preflight green; the sweep above;
 `grep -rn "verdict_unittest" .` empty; the CLAUDE.md audit table in the PR
 body. **Size:** 1 PR, mostly deletions and prose. **Failure protocol:** FP.
+
+> **The grep clause is wrong and was not met — see
+> [Phase C as built](#phase-c-as-built--2026-09-01).** It is satisfiable only by
+> deleting the history the audit deliberately keeps, which is the opposite of
+> CLAUDE.md §0. What was checked instead: no *live* reference — no import, no
+> `--exclude`, no environment variable, no table row — with every surviving
+> mention prose that names the deletion as history.
 
 ## Phase D — Extraction-readiness (parameterize, don't extract)
 

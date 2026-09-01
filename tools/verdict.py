@@ -578,12 +578,15 @@ class Watcher:
         whose sandboxes are flat throwaway modules.
 
         **Not recursive, and so `norecursedirs` is deliberately not consulted.**
-        It looks beside the selection and no deeper, which is what the
-        `unittest` backend did and what the acceptance sweep compares against.
         A recursive enumeration would need that setting to earn its keep: a
         naive `rglob` of the default patterns over this very tree finds 71
         files, 38 of them inside `.venv`, i.e. it would walk pytest's own test
         suite. Anyone widening this owes that filter in the same change.
+
+        (It was also what the retired `unittest` backend did, and what the
+        conversion's acceptance sweep therefore compared against. That half of
+        the argument became uncheckable when Phase C deleted the other backend,
+        which is why it is a parenthesis and the `.venv` count is not.)
         """
         chosen = {as_path(name) for name in names}
         found: set[str] = set()
