@@ -547,7 +547,13 @@ class TestASecondProjectConfiguresIt:
         class shares one -- but a reader comparing a whole configuration against
         a whole answer is still better served by one place to look."""
         got = answers
-        assert got["root"] == str(elsewhere)
+        # `.resolve()`, because `settings._root` does and **macOS is where that
+        # shows**: `/var/folders/...` is a symlink to `/private/var/folders/...`,
+        # so `tempfile` hands back the first and the harness reports the second.
+        # Green on all three Linux legs and red on `macos (3)`, which is the
+        # shape CLAUDE.md collects -- a test that could only fail on one
+        # platform, and this one had no label saying so because nobody knew.
+        assert got["root"] == str(elsewhere.resolve())
         assert got["mutable"] == ["src/"]
         assert got["unmutable"] == ["src/dangerous.py"]
         assert got["alarm"] == "OTHER_MUTATE_EACH_TEST"

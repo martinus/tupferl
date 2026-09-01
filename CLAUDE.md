@@ -1148,6 +1148,16 @@ has been dropped.
 
 #### Terminals, signals and processes
 
+- **`Path.resolve()` moves a macOS temporary directory, and nothing on Linux
+  says so.** `/var/folders/.../T` is a symlink to `/private/var/folders/.../T`,
+  so `tempfile.mkdtemp()` hands back the first and anything that resolves the
+  same path reports the second. A test comparing a fixture's directory against a
+  path the code under test resolved is green on all three Linux legs and red on
+  `macos` -- measured, on `tools/settings.py`'s `_root`, which calls `.resolve()`
+  for the reason every root-finder does. Resolve **both** sides or neither; and
+  since the two agree everywhere else, the assertion that would catch it is the
+  one no local run can.
+
 - **A unix socket cannot be bound at an arbitrary path.** `sun_path` is 104
   bytes on macOS, and a sandbox path plus `.local/share/tupferl/repo/…` exceeds
   it, so `bind` raises `OSError` and the test errors instead of testing. Use
