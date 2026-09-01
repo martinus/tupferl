@@ -3381,9 +3381,12 @@ table on the floor would produce a byte-identical sweep and every test written
 for the feature would pass — CLAUDE.md §8's flattering green, arriving through
 the feature's own design.
 
-Measured, by deleting the table from `pyproject.toml` and running the guards:
-**13 tests across `test_settings.py`, `test_mutate.py` and `test_profiles.py`
-go red.** Under the plan's arrangement the number would be zero.
+Measured, by deleting the table from `pyproject.toml` and running the whole
+suite: **58 tests go red** -- 35 in `test_mutate.py`, 10 each in
+`test_settings.py` and `test_mutants.py`, 2 in `test_profiles.py` and 1 in
+`test_packaging.py`. Under the plan's arrangement the number would be zero. It
+was 13 before the review pass below, which is the clearest thing that pass
+did.
 
 The gate the phase actually names — a whole-tree sweep unchanged — is met either
 way, because the table restores today's values exactly. `TODAY` in
@@ -3391,10 +3394,20 @@ way, because the table restores today's values exactly. `TODAY` in
 from `tools/`, asserted one knob per parametrize case, and it is the only place
 in the tree those literals still appear.
 
-**Four knobs are green with the table deleted**, because their default really
-does equal this project's value: `unmutable` (empty), `probe_plugins` (empty),
-`tests_dir` (`tests`) and `test_module_patterns`. Nothing about the repository
-can distinguish those, which is what `TestASecondProjectConfiguresIt` is for.
+**Three knobs are green with the table deleted**, because their default really
+does equal this project's value: `unmutable` (empty), `probe_plugins` (empty)
+and `tests_dir` (`tests`). Nothing about the repository can distinguish those,
+which is what `TestASecondProjectConfiguresIt` is for.
+
+**And one measurement here has a caveat worth keeping.** Perturbing the table
+and running a *hand-picked selection* of six modules serially produced a red in
+`tests/test_reached.py` that neither the whole suite nor that module alone
+reproduces. Chased rather than reported: the same selection on an unperturbed
+tree fails one test of `test_mutate.TestABatchSweepEndToEnd`, and **so does
+`main`** -- a different test of the same class, which is the signature of an
+order dependence in that class rather than of anything this branch did. Both
+trees are green under `python -m tools.run_tests`. Filed as #115; the 58 above
+is from the harness, not from the hand-picked selection.
 
 ### The instrument that answers "does a second project configure it"
 

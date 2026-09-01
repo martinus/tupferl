@@ -893,10 +893,11 @@ is the opposite of what `docs/pytest-plan.md` specified and is the one decision
 in that phase worth arguing. Had the defaults been tupferl's, a reader that
 opened the file and then threw the result away would produce a byte-identical
 sweep, and every test written for it would pass — the flattering green §8
-collects. Measured, by deleting the table: **13 tests across three files go
-red.** Four knobs stay green there because their default really does equal this
-project's value (`unmutable`, `probe_plugins`, `tests_dir`,
-`test_module_patterns`), and what covers those is the scratch project in
+collects. Measured, by deleting the table and running the suite: **58 tests
+across five modules go red** (it was 13 before the review pass that this section
+also records). Three knobs stay green there because their default really does
+equal this project's value (`unmutable`, `probe_plugins`, `tests_dir`), and what
+covers those is the scratch project in
 `tests/test_settings.py`, which drives a copy of `tools/` inside a tree whose
 every knob differs and asks the harness — not the settings — what it thinks.
 
