@@ -1447,10 +1447,12 @@ class TestEverySurvivorHasRunTheWholeSuite:
             first=("tests.test_hang.TestOne.test_is_fine",),
             names=(),
         )
-        # Two tests in that module, and the prefix names one of them -- so it
-        # runs twice, once in front and once as discovery reaches it. Anything
-        # less than three means the empty selection stopped discovering.
-        assert found["ran"] == 3
+        # Two tests in that module, each run once. This comment used to read
+        # "the prefix names one of them -- so it runs twice, once in front and
+        # once as discovery reaches it", and asserted three: the duplication was
+        # written down here as a fact and never costed. Two still catches what
+        # the test is for -- a prefix that *replaced* discovery would run one.
+        assert found["ran"] == 2
 
 
 class TestARowActuallyRunsWithItsPrefix:

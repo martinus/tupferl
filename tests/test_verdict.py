@@ -962,6 +962,45 @@ class TestWhichTestsGetRun:
         probe.passing("test_a", "test_b")
         assert probe.verdict()["ran"] == 2
 
+    def test_the_front_is_not_run_again_by_the_group_behind_it(self, probe: Probe) -> None:
+        """`first` is a *reordering* of the selection, not an extra pass over it.
+
+        The front gets its own `pytest.main` call and the selection groups that
+        follow contain those same tests, so without a `--deselect` every front
+        test executes twice on any row the front does not catch. Nothing was
+        ever wrong with the verdict; the cost was wall-clock on a miss,
+        invisible to the summary, and small at the default depth of 8 -- which
+        is why it survived, documented in a test comment as though it were a
+        property.
+
+        What it cost is the whole shape of the depth curve: replayed over a
+        real cold sweep, a front of 128 reaches a 74.0% hit rate against 66.8%
+        at 8, and paid 103 duplicated executions per miss to get there. Measured
+        on this tree, deeper fronts were *slower* -- 568s at 128 against 503s at
+        8 -- entirely because of this.
+        """
+        probe.passing("test_a", "test_b", "test_c")
+        plain = probe.verdict()
+        fronted = probe.verdict(first=("test_a.T.test_it",))
+        assert fronted["ran"] == plain["ran"], "a test ran twice because the front named it"
+
+    def test_a_front_test_still_runs_and_can_still_notice(self, probe: Probe) -> None:
+        """The other half, and the one that makes the test above able to fail
+        for the right reason: deselecting the front everywhere *including* its
+        own group would give the same equal counts and run nothing first."""
+        probe.module(
+            "test_a",
+            """
+            import unittest
+            class T(unittest.TestCase):
+                def test_it(self):
+                    self.fail("noticed")
+            """,
+        )
+        probe.passing("test_b")
+        found = probe.verdict(first=("test_a.T.test_it",))
+        assert found["noticed"], "the front did not run at all"
+
     def test_first_does_not_turn_the_whole_suite_into_a_selection(self, probe: Probe) -> None:
         """The one that matters. An empty `names` *means* everything; pushing
         `first` onto that list makes it non-empty, so a row that must run the
@@ -969,7 +1008,12 @@ class TestWhichTestsGetRun:
         """
         probe.passing("test_a", "test_b", "test_c")
         found = probe.verdict(first=("test_a.T.test_it",))
-        assert found["ran"] == 4, "the prefix replaced the suite instead of preceding it"
+        # Three tests, three runs. It read `== 4` until the front stopped being
+        # re-run by the group behind it: the fourth was `test_a` executing a
+        # second time, and the assertion had quietly become a measurement of
+        # that rather than of what its docstring claims. Three still catches the
+        # hazard -- a `first` merged into `names` runs one test, not three.
+        assert found["ran"] == 3, "the prefix replaced the suite instead of preceding it"
 
     def test_first_really_runs_before_the_rest(self, probe: Probe) -> None:
         """Its whole purpose: a remembered killer is run first so a caught

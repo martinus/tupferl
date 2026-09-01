@@ -631,7 +631,7 @@ class Watcher:
         # the same sweep is a cache that never warms.
         return sorted(found - chosen)
 
-    def over(self, group: Sequence[str], failfast: bool) -> None:
+    def over(self, group: Sequence[str], failfast: bool, skip: Sequence[str] = ()) -> None:
         """One `pytest.main`, plus whatever its exit status says that no hook did.
 
         The flags are the ones Phase 0 measured. ``-p no:cacheprovider`` is what
@@ -643,7 +643,30 @@ class Watcher:
         statements need it.
         """
         said = len(self.broke)
-        argv = ["-q", "-p", "no:cacheprovider", *(["-x"] if failfast else []), *group]
+        # **`skip` is what the front already ran, and without it the front is not
+        # a reordering at all.** `first` gets its own `pytest.main` call, and the
+        # selection groups that follow contain those same tests -- so on a row
+        # the front does *not* catch, every front test executes twice. Measured
+        # before this existed: a front naming one test of a four-test module gave
+        # `ran=5` over 4 distinct tests.
+        #
+        # Nothing was wrong with the verdict; the cost was pure wall-clock on a
+        # miss, invisible to the summary, and small at the default depth of 8.
+        # It is what made a deeper front lose: replayed over a real cold run,
+        # depth 128 reaches a 74.0% hit rate against 66.8% at 8, and paid 103
+        # duplicated executions per miss against 7.9 to get there.
+        #
+        # pytest ignores a `--deselect` for a nodeid the group does not collect,
+        # checked rather than assumed -- which is what lets one list of front ids
+        # be handed to every later group whatever module each one is.
+        argv = [
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *(["-x"] if failfast else []),
+            *[arg for name in skip for arg in ("--deselect", name)],
+            *group,
+        ]
         code = int(pytest.main(argv, plugins=[self]))
         if code in ANSWERED:
             return
@@ -723,8 +746,12 @@ def collect(
     `WHOLE_SUITE` for a walking table.
     """
     watcher = Watcher(each_test(each), running)
-    for group in _groups(names, first, walk, watcher):
-        watcher.over(group, failfast)
+    # The front runs once, and every group after it deselects what it ran. That
+    # is what makes `first` a *reordering* of the selection rather than an extra
+    # pass over part of it -- see `Watcher.over`.
+    head = [as_path(name) for name in first]
+    for index, group in enumerate(_groups(names, first, walk, watcher)):
+        watcher.over(group, failfast, () if head and index == 0 else head)
         # Three ways to stop, and they are not the same question. `stopped` is
         # "no later group can change this answer". `failed` under `failfast` is
         # the caller's request. `noticed` under `walk` is the walk's own
