@@ -789,6 +789,32 @@ Five things are not where a newcomer would guess, all on purpose:
   like one that always does. Size such a fixture for the odds you want: eight
   keys is 1 in 40320.
 
+- **A test that reads the repository's own source is not a test of behaviour,
+  and inside a probe it reads the *mutated* copy.** `tests/test_mutants.py`
+  asserts that every `# survivor:` tag names an operator its statement can
+  produce. Under a probe that property is false by construction -- the mutation
+  changed the statement -- so the test failed for the mutation rather than for
+  the code, and the row was filed `caught` with nothing behavioural having
+  noticed. Measured over a 2621-row `--only tools/` table, with and without the
+  gate: **caught 2394 -> 2228, survivors 205 -> 370, mutation score 92.1% ->
+  85.8%.** 166 lines read as guarded and were not.
+
+  `mutate._run` sets `TUPFERL_MUTATE_MUTATED` and `support.over_a_mutated_tree`
+  reads it, so such an assertion can stand down. **It is for source-shaped
+  claims only**: a test about *behaviour* that stood down would turn a real
+  survivor into a row nobody looked at, which is the same flattering direction
+  one step further on.
+
+  Two things about finding it are worth more than the fix. The signal was a
+  **spent-tag report inviting a deletion that would have been wrong** -- an
+  `equivalent:` tag reported "now caught", which is a contradiction rather than
+  good news, because an equivalent mutant is the same program and cannot
+  honestly be caught. And the first count was **226**, from reading recorded
+  killers; the true figure is **166**, because `Killers.ahead_of` runs a
+  recorded killer first so it stays recorded. **A killer census counts rows
+  whose first killer is X, never rows only X can catch** -- the honest number
+  needs a run with X deselected.
+
 - **Never read a raw survivor list as a bug count.** Cross it with coverage
   (`python -m tools.reached results.json coverage.json --list`): a survivor on a
   line no test executes is a missing test; a survivor on a line the suite does
@@ -818,7 +844,7 @@ measurement pins it.
 
 ### Gotchas
 
-Forty-nine of them, and each is here because it cost somebody an afternoon.
+Fifty of them, and each is here because it cost somebody an afternoon.
 Grouped rather than run together: as one flat list of 461 lines this was a
 section a reader scanned past. The entries themselves are unchanged and none
 has been dropped.

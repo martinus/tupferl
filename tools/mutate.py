@@ -298,6 +298,28 @@ _TOTAL = "TUPFERL_MUTATE_TOTAL"
 #: `bounded`, which is the one place the margin is decided.
 _ALARM = "TUPFERL_MUTATE_EACH_TEST"
 
+#: Set in a probe's environment to say that the tree underneath it is a
+#: *mutated copy*, not the repository.
+#:
+#: **A test asserting a property of the repository's own source has to stand
+#: down here**, because under a probe that property is false by construction and
+#: the test fails for the mutation rather than for the code -- crediting the row
+#: with a kill nothing behavioural made. Measured 2026-08-31 (#110): two such
+#: assertions in `tests/test_mutants.py` were the recorded killer for **226 rows
+#: of a 2789-row table**, across six files whose behaviour they say nothing
+#: about, 105 of them in this file. That inflates `caught`, which is the
+#: direction CLAUDE.md names as the one every bug in this class has taken.
+#:
+#: It is *not* in `SANDBOX`: that contract is spread into `_collected` too,
+#: which runs over the real tree, and a marker claiming otherwise there would be
+#: a lie in the one place the distinction matters.
+#:
+#: An environment variable for the reason `_BUDGET` and `_ALARM` are: it has to
+#: survive ``python -c`` into a nested harness. `tests/support.py` spells it a
+#: second time and `test_support` asserts the two agree, as it already does for
+#: `_ALARM`.
+_MUTATED = "TUPFERL_MUTATE_MUTATED"
+
 #: What a run leaves for the operating system and for itself when the machine is
 #: its own. A gibibyte, which is `_LANE` -- the same number, because the thing
 #: being reserved is exactly "room for one more lane's worth of everything else".
@@ -1398,6 +1420,7 @@ def _run(
                     **SANDBOX,
                     _BUDGET: str(memory),
                     _ALARM: str(each),
+                    _MUTATED: "1",
                     _PROFILE: _MUTATION_PROFILE,
                 },
                 # A file rather than a pipe, and this is not a style choice. The

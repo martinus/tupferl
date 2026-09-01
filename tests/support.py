@@ -60,6 +60,10 @@ ROOT = Path(__file__).resolve().parents[1]
 #: same arrangement `CARRIES` already has with `TUPFERL_MUTATE_BUDGET`.
 ALARM = "TUPFERL_MUTATE_EACH_TEST"
 
+#: The variable `tools/mutate.py` sets when the tree under this suite is a
+#: mutated copy. Spelled here rather than imported, for `ALARM`'s reason.
+MUTATED = "TUPFERL_MUTATE_MUTATED"
+
 #: The only names carried in from the ambient environment, each with a reason:
 #:
 #: - `PATH`: there is no sandbox-relative answer to where `git` and `python` are.
@@ -382,6 +386,24 @@ class Boxes:
 
     def make(self, prefix: str = "tupferl-test-") -> Path:
         return self._stack.enter_context(tempdir(prefix=prefix))
+
+
+def over_a_mutated_tree() -> bool:
+    """Whether this suite is running inside a mutation probe.
+
+    **For an assertion about the repository's own *source*, and nothing else.**
+    A test about behaviour must never ask this: behaviour under a mutation is
+    exactly what a sweep exists to measure, and a test that stood down would
+    turn a real survivor into a row nothing looked at. What has to stand down is
+    the other kind -- "no `# survivor:` tag in this tree names an operator its
+    statement cannot produce" is true of the repository and false of a
+    deliberately altered copy, so under a probe it fails for the mutation and
+    credits the row with a kill nothing behavioural made (#110).
+
+    Read at import so a `pytest.mark.skipif` can use it: the value cannot change
+    within a process.
+    """
+    return bool(os.environ.get(MUTATED))
 
 
 def sandbox_env(home: Path, host: str = HOST) -> dict[str, str]:
