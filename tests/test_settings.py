@@ -202,10 +202,17 @@ class TestThisProjectsTableIsYesterdaysConstants:
         pass the whole file above."""
         assert Settings() != TODAY
 
-    @pytest.mark.parametrize("name", ["ALARM", "MUTATED", "ROOT"])
+    @pytest.mark.parametrize("name", ["ALARM", "MUTATED"])
     def test_the_fixtures_derive_these_names_rather_than_spelling_them(self, name: str) -> None:
         """`tests/support.py` assigns each of these from `settings`, not from a
         literal, and this reads the source to say so.
+
+        `ROOT` is deliberately **not** in the list: `tests/support.py` derives
+        its own, because a fixture's idea of where the tree is must not come
+        from the thing under test. Routing it here cost two `caught` rows --
+        `settings._root` mutations became `BROKE`, which is never `caught`. The
+        two values are compared in `TestWhereItReads` instead, which is a real
+        check because they are computed apart.
 
         **Comparing the values instead is what cannot fail.** Both ends are one
         expression apart now, so `support.ALARM == mutate._ALARM` holds however
@@ -241,6 +248,21 @@ class TestWhatItRefuses:
             settings.parse({"mutible": ["src/"]})
         assert "mutible" in str(refused.value)
         assert "mutable" in str(refused.value)
+
+    def test_several_misspelled_keys_are_named_in_a_settled_order(self) -> None:
+        """Sorted, so two runs over the same table produce the same sentence.
+
+        **Eight of them, and the count is the test.** The unknown keys come out
+        of a `set` difference, whose iteration order Python randomises per run,
+        so `sorted` becoming `list` is caught only when that order happens to
+        differ from sorted -- with two keys a coin flip, and a guard that
+        sometimes guards reads exactly like one that always does. Eight is 1 in
+        40320, which is the ratio CLAUDE.md names for this shape.
+        """
+        wrong = ["hh", "gg", "ff", "ee", "dd", "cc", "bb", "aa"]
+        with pytest.raises(ValueError) as refused:
+            settings.parse(dict.fromkeys(wrong, "x"))
+        assert "aa, bb, cc, dd, ee, ff, gg, hh" in str(refused.value)
 
     def test_a_list_where_a_string_belongs_is_refused(self) -> None:
         with pytest.raises(ValueError, match="env_prefix"):
@@ -373,6 +395,76 @@ class TestTheNamesItDerives:
         way without growing an argv position for it."""
         made = Settings(probe_plugins=("one", "two")).sandbox
         assert made["PYTEST_PLUGINS"] == "one,two"
+
+    @pytest.mark.parametrize(
+        ("env", "value", "want"),
+        [
+            ("OTHER_HYPOTHESIS", "quick", {"OTHER_HYPOTHESIS": "quick"}),
+            ("", "quick", {}),
+            ("OTHER_HYPOTHESIS", "", {}),
+            ("", "", {}),
+        ],
+    )
+    def test_the_hypothesis_hook_needs_both_halves(
+        self, env: str, value: str, want: dict[str, str]
+    ) -> None:
+        """All four combinations, because three of them are the same answer for
+        three different reasons and a test of one proves nothing about the
+        others. An empty variable *name* is not a variable; an empty *value* is
+        a profile `load_profile` would try to find and fail on inside a probe,
+        where it surfaces as `BROKE` on every row rather than as the typo it
+        is; and a project with no Hypothesis has neither."""
+        assert Settings(hypothesis_profile_env=env, hypothesis_profile=value).profile == want
+
+    @pytest.mark.parametrize(
+        ("made", "want"),
+        [
+            (Settings(), ("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS")),
+            (Settings(probe_autoload=False), ("PYTEST_PLUGINS",)),
+            (Settings(probe_plugins=("one",)), ("PYTEST_DISABLE_PLUGIN_AUTOLOAD",)),
+            (Settings(probe_autoload=False, probe_plugins=("one",)), ()),
+        ],
+    )
+    def test_what_is_removed_is_exactly_what_was_not_set(
+        self, made: Settings, want: tuple[str, ...]
+    ) -> None:
+        """Derived from `sandbox` rather than listed beside it, so the two
+        halves cannot part -- and asked of all four configurations, because a
+        test of one arm is satisfied by a `unset` that returns a constant."""
+        assert made.unset == want
+
+    def test_an_inherited_variable_the_project_did_not_ask_for_is_removed(self) -> None:
+        """The hole the knob opened, and the reason `environment` exists at all.
+
+        `_run` spreads the contract over `os.environ`, so before this a
+        `probe_autoload = true` project running under a sweep -- which exports
+        `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` to its probes, and those probes run
+        this suite, which starts more sweeps -- inherited the ambient one and
+        the knob silently did nothing. Both directions here: the name the
+        project did not set is gone, and one it did not mention is kept.
+        """
+        got = Settings().environment(
+            {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_PLUGINS": "ghost", "PATH": "/bin"}
+        )
+        assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in got
+        assert "PYTEST_PLUGINS" not in got
+        assert got["PATH"] == "/bin"
+
+    def test_the_project_that_asked_for_them_keeps_them(self) -> None:
+        """The other half: `unset` must not remove what `sandbox` just set."""
+        got = Settings(probe_autoload=False, probe_plugins=("one",)).environment(
+            {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "0", "PYTEST_PLUGINS": "ghost"}
+        )
+        assert got["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+        assert got["PYTEST_PLUGINS"] == "one"
+
+    def test_extras_win_over_the_contract_and_the_environment(self) -> None:
+        """`_run` passes the budget, the alarm and the mutated marker as extras
+        over a base that may already carry a stale one from the sweep that
+        started it -- an inner harness reading the outer's budget is how 4,340
+        processes came to be alive at once."""
+        got = Settings().environment({"X": "old"}, X="new")
+        assert got["X"] == "new"
 
     def test_no_plugins_sets_nothing(self) -> None:
         """An empty `PYTEST_PLUGINS` is a plugin named the empty string, which

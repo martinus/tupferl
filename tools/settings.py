@@ -57,6 +57,14 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
+# survivor: boundary -- equivalent, and measured in `tupferl/config.py` for the same line:
+#   `sys.version_info` on a real 3.11.0 is `(3, 11, 0, 'final', 0)`, which is already `> (3, 11)`.
+#   The two spellings can only differ for a version tuple of exactly `(3, 11)`, which no
+#   interpreter reports.
+# survivor: branch -- `if True` is this program on every interpreter a sweep has ever run on,
+#   because a sweep runs one interpreter and every one in CI's matrix except the 3.10 leg takes
+#   this arm anyway. The 3.10 leg is what proves the other arm, and it is the one place no
+#   mutation runs. Dropping the check there is an `ImportError` at every import of this module.
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - the 3.10 CI leg is what proves this branch

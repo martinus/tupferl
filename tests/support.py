@@ -45,7 +45,6 @@ from unittest import mock
 import pytest
 from hypothesis import strategies as st
 
-from tools import settings
 from tools.settings import SETTINGS
 from tupferl import manifest, paths
 
@@ -53,11 +52,20 @@ from tupferl import manifest, paths
 #: it being installed. Not `os.getcwd()`: `tools/mutate.py` runs the suite from a
 #: *copy* of the tree and the copy is the tree that must be imported.
 #:
-#: Taken from `tools/settings.py` rather than derived a second time here. It was
-#: the same expression in three files -- this one, `tools/run_tests.py` and
-#: `settings` itself -- with a test asserting two of the three agreed, which is
-#: the arrangement Phase D removed for `ALARM` and `MUTATED` one screen below.
-ROOT = settings.ROOT
+#: **Derived here rather than taken from `tools/settings.py`, and that is a
+#: measurement rather than a preference.** Routing it through `settings.ROOT`
+#: was the obvious de-duplication -- one expression instead of three -- and the
+#: sweep that followed filed two mutations of `settings._root` as `BROKE`
+#: instead of `caught`: with this line pointing at the harness's answer, a wrong
+#: root takes `conftest` and every subprocess fixture with it, so nothing is
+#: left to notice. A `BROKE` row is never `caught`, so the line the mutation
+#: broke ends up guarded by nothing.
+#:
+#: The general rule, and it is worth more than the instance: **a fixture's own
+#: idea of where the tree is must not come from the thing under test.** The two
+#: values are still asserted equal, in `tests/test_settings.py`, which is a
+#: check rather than a restatement now that they are computed apart.
+ROOT = Path(__file__).resolve().parents[1]
 
 #: The environment variable `tools/mutate.py` sets to the per-test alarm it armed
 #: for this run, and the one it sets when the tree under this suite is a mutated
