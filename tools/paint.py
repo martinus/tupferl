@@ -23,7 +23,7 @@ columns, so a nine-wide field becomes a four-wide one and every table built that
 way is ragged -- painted rows short, plain rows right. Pad the bare text and
 paint the padded result: `paint(f"{word:9}", GOOD)`.
 
-Not `tupferl.conflicts.paint`, which is the same six lines. `tools/` is ported
+Not `tupferl.colours.paint`, which is the same six lines. `tools/` is ported
 between projects and imports nothing from the package under test (`mutants.py`
 is the single exception, and it only manipulates `sys.path`). Sharing this would
 make the tooling depend on the thing it is meant to be able to break.

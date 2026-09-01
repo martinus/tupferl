@@ -61,7 +61,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, TextIO
 
-from tupferl import gitrepo, merge
+from tupferl import colours, gitrepo, merge
 from tupferl.copies import Blob
 from tupferl.errors import TupferlError
 
@@ -98,14 +98,13 @@ SHOWN_HUNKS = 3
 #: How many lines of one side of one hunk are shown. Same argument.
 SHOWN_LINES = 12
 
-#: Everything written to a terminal, and nothing written to a pipe. `NO_COLOR`
-#: is honoured because a user who set it meant it, and because the test sandbox
-#: sets it -- so an assertion about the prompt's text is about the text.
-BOLD = "\033[1m"
-MINE = "\033[36m"
-THEIRS = "\033[33m"
-DIM = "\033[2m"
-OFF = "\033[0m"
+#: The four codes this module uses, re-exported from `tupferl.colours` rather
+#: than spelled again. Named here because every use below is a bare `BOLD` or
+#: `MINE`, and because the alternative -- `colours.BOLD` at forty call sites --
+#: would be a rename with no reader to serve. The palette itself moved when
+#: `status --diff` wanted the same colours: two copies of cyan can drift, and
+#: the two places most likely to be compared show the same diff of the same file.
+BOLD, MINE, THEIRS, DIM = colours.BOLD, colours.MINE, colours.THEIRS, colours.DIM
 
 
 class Sides(NamedTuple):
@@ -275,23 +274,6 @@ def trustworthy(sides: Sides, regions: list[Hunk]) -> bool:
     )
 
 
-def paint(text: str, code: str, colour: bool) -> str:
-    """`text` in `code`, or `text`, depending."""
-    return f"{code}{text}{OFF}" if colour else text
-
-
-def coloured(out: TextIO) -> bool:
-    """Whether to colour what goes to `out`.
-
-    A terminal and no `NO_COLOR`. Asked of the stream rather than of `sys.stdout`
-    so that a caller writing somewhere else gets the right answer, and so the
-    tests can drive both halves -- which they must, since the sandbox sets
-    `NO_COLOR` and every other assertion about this module's text depends on
-    that.
-    """
-    return out.isatty() and not os.environ.get("NO_COLOR")
-
-
 def excerpt(lines: list[bytes], colour: bool) -> list[str]:
     """At most `SHOWN_LINES` of one side, decoded for a terminal.
 
@@ -303,7 +285,9 @@ def excerpt(lines: list[bytes], colour: bool) -> list[str]:
     shown = [f"  | {line.decode('utf-8', 'replace')}" for line in lines[:SHOWN_LINES]]
     left = len(lines) - SHOWN_LINES
     if left > 0:
-        shown.append(paint(f"  | ... {left} more line{'s' if left > 1 else ''}", DIM, colour))
+        shown.append(
+            colours.paint(f"  | ... {left} more line{'s' if left > 1 else ''}", DIM, colour)
+        )
     return shown
 
 
@@ -311,9 +295,9 @@ def describe(sides: Sides, colour: bool) -> str:
     """The conflict itself: what disagrees, and what each side says."""
     if sides.binary:
         return (
-            f"{paint(str(sides.name), BOLD, colour)} is not a text file, and both computers "
-            f"changed it.\nThere are no lines to take from each side, so it is one choice "
-            f"for the whole file."
+            f"{colours.paint(str(sides.name), BOLD, colour)} is not a text file, and both "
+            f"computers changed it.\nThere are no lines to take from each side, so it is one "
+            f"choice for the whole file."
         )
 
     regions = hunks(sides)
@@ -322,7 +306,7 @@ def describe(sides: Sides, colour: bool) -> str:
     # is the one that decided there was a conflict at all, and the parse below
     # is the one that is refused rather than shown.
     lines = [
-        f"{paint(str(sides.name), BOLD, colour)}: "
+        f"{colours.paint(str(sides.name), BOLD, colour)}: "
         f"{sides.conflicts} conflict{'s' if sides.conflicts > 1 else ''} to settle."
     ]
     if not trustworthy(sides, regions):
@@ -338,20 +322,22 @@ def describe(sides: Sides, colour: bool) -> str:
     for index, hunk in enumerate(regions[:SHOWN_HUNKS], start=1):
         lines.append("")
         lines.append(
-            paint(
+            colours.paint(
                 f"  {index} of {len(regions)}, lines {hunk.start}-{hunk.end} of the merged file",
                 DIM,
                 colour,
             )
         )
-        lines.append(paint("  this computer", MINE, colour))
+        lines.append(colours.paint("  this computer", MINE, colour))
         lines.extend(excerpt(hunk.mine, colour))
-        lines.append(paint("  the repository", THEIRS, colour))
+        lines.append(colours.paint("  the repository", THEIRS, colour))
         lines.extend(excerpt(hunk.theirs, colour))
     left = len(regions) - SHOWN_HUNKS
     if left > 0:
         lines.append("")
-        lines.append(paint(f"  ... and {left} more; press [d] to see the whole file", DIM, colour))
+        lines.append(
+            colours.paint(f"  ... and {left} more; press [d] to see the whole file", DIM, colour)
+        )
     return "\n".join(lines)
 
 
@@ -362,8 +348,8 @@ def choices(sides: Sides, colour: bool) -> str:
         # `[b]`, `[e]` and `[d]` all mean "work with the lines", and there are
         # none. Offering them and then refusing is worse than not offering them:
         # the user has already decided by the time they are told.
-        return paint(f"  {keep}   [{SKIP}] skip", BOLD, colour)
-    return paint(
+        return colours.paint(f"  {keep}   [{SKIP}] skip", BOLD, colour)
+    return colours.paint(
         f"  {keep}   [{BOTH}] keep both\n"
         f"  [{EDIT}] edit merged file   [{DIFF}] show full diff   [{SKIP}] skip",
         BOLD,
@@ -629,7 +615,7 @@ def ask(sides: Sides, source: TextIO, out: TextIO, repo: Path | None = None) -> 
     changes, and `describe` re-parses the whole marked file -- so re-*printing*
     is intended and re-*computing* was not.
     """
-    colour = coloured(out)
+    colour = colours.coloured(out)
     question = describe(sides, colour)
     keys = choices(sides, colour)
     buffer = sides.marked
@@ -656,7 +642,10 @@ def ask(sides: Sides, source: TextIO, out: TextIO, repo: Path | None = None) -> 
             print(f"{key!r} is not one of the keys for a file with no lines.", file=out)
             continue
         if key == DIFF:
-            print(unified(sides), file=out)
+            # Painted here rather than inside `unified`, which returns the text
+            # and says nothing about a terminal -- the same split `merge` draws
+            # and the reason `colour` was computed once above.
+            print(colours.diff(unified(sides), colour), file=out)
             continue
         if key == BOTH:
             return Answer(
@@ -724,7 +713,7 @@ def happening(change: Change, colour: bool) -> str:
     obvious enough to bet a dotfile on.
     """
     said = f"{change.name}: you changed this here; the repository has the older copy."
-    return paint(said, BOLD, colour)
+    return colours.paint(said, BOLD, colour)
 
 
 def offers(change: Change, colour: bool) -> str:
@@ -738,21 +727,30 @@ def offers(change: Change, colour: bool) -> str:
     cannot be undone from inside tupferl.
     """
     keep = f"[{LOCAL}] store your version   [{REMOTE}] discard it, take the repository's"
-    return paint(f"  {keep}\n  [{DIFF}] show the whole diff   [{SKIP}] skip", BOLD, colour)
+    return colours.paint(f"  {keep}\n  [{DIFF}] show the whole diff   [{SKIP}] skip", BOLD, colour)
 
 
-def shown(change: Change) -> str:
-    """The diff, capped, with a line saying what was left out.
+def shown(change: Change, colour: bool) -> str:
+    """The diff, capped and coloured, with a line saying what was left out.
 
     Capped rather than paged: a pager here would take over the terminal the
     prompt is about to read a keypress from. `[d]` is the way to see all of it,
     which is the same answer the conflict prompt gives for the same reason.
+
+    **The elision line is painted separately, and not by `colours.diff`.** It is
+    not a line of the diff -- nothing in the file says it -- so putting it
+    through the same call would colour it by whatever character it happens to
+    begin with, which is a `.` today and is nobody's decision. `DIM` is what the
+    conflict prompt's identical "and N more" line already uses.
     """
     lines = change.diff.split("\n")
     if len(lines) <= SHOWN_DIFF:
-        return change.diff
+        return colours.diff(change.diff, colour)
     left = len(lines) - SHOWN_DIFF
-    return "\n".join([*lines[:SHOWN_DIFF], f"... and {left} more line(s); [{DIFF}] shows them"])
+    kept = colours.diff("\n".join(lines[:SHOWN_DIFF]), colour)
+    return (
+        f"{kept}\n{colours.paint(f'... and {left} more line(s); [{DIFF}] shows them', DIM, colour)}"
+    )
 
 
 def review(change: Change, source: TextIO, out: TextIO) -> str:
@@ -763,12 +761,12 @@ def review(change: Change, source: TextIO, out: TextIO) -> str:
     Anything not on offer re-asks; `[d]` prints the whole diff and re-asks; end
     of input is `[s]`, the only answer that cannot lose something.
     """
-    colour = coloured(out)
+    colour = colours.coloured(out)
     question = happening(change, colour)
     keys = offers(change, colour)
     while True:
         print(f"\n{question}\n", file=out)
-        print(shown(change), file=out)
+        print(shown(change, colour), file=out)
         print(keys, file=out)
         out.flush()
 
@@ -783,7 +781,7 @@ def review(change: Change, source: TextIO, out: TextIO) -> str:
         if key in REVIEWS:
             return key
         if key == DIFF:
-            print(change.diff, file=out)
+            print(colours.diff(change.diff, colour), file=out)
             continue
         print(f"{key!r} is not one of the keys.", file=out)
 
