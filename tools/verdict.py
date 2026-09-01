@@ -73,9 +73,12 @@ descriptor duplicated before `pytest.main` is entered, never by reaching for
 from __future__ import annotations
 
 import json
+import os
 import resource
 import signal
 import sys
+import threading
+import time
 import traceback
 from collections.abc import Generator, Iterator, Sequence
 from pathlib import Path
@@ -745,5 +748,119 @@ def main(argv: list[str]) -> None:
         json.dump(written, out)
 
 
+#: The sweep names itself here, and the probe watches *that* rather than asking
+#: the kernel who its parent is.
+#:
+#: **Because asking loses a race, and loses it in the direction that leaks.** A
+#: probe killed off from its sweep before this module finished importing records
+#: the *reaper* as its owner -- 1522 here, the systemd user manager -- and then
+#: waits for ever for a parent that is already the one it has. Measured while
+#: writing the test for it: killing the sweep immediately after it spawned a
+#: probe left the probe running, and inserting a one-second sleep before the kill
+#: made it collect itself. A sweep dying during its own startup is exactly when
+#: this matters most.
+#:
+#: **Not under `[tool.mutate] env_prefix`, and that is the one place Phase D's
+#: rule does not reach.** This file is read as source text into a sandbox and
+#: may import nothing from `tools`, so it cannot be told a derived name; the
+#: literal is spelled a second time in `tools/mutate.py` and
+#: `test_mutate.TestWhatEveryProbeIsHandedOnItsCommandLine` asserts the two
+#: agree. Same arrangement, and same reason, as the three copies of `ANSWERED`.
+#: Unprefixed is also harmless here where it would not be for a budget: the
+#: value is written per probe by the sweep that started it, so an inherited one
+#: is always the right answer for the process that inherited it.
+OWNER = "MUTATE_OWNER_PID"
+
+#: How often the watchdog below asks who its parent is. Two seconds: the thing
+#: it is racing is a person noticing a runaway, not a deadline, and a probe that
+#: outlives its sweep by two seconds costs nothing.
+ORPHAN_POLL = 2.0
+
+
+def watch_for_orphaning(poll: float = ORPHAN_POLL) -> threading.Thread | None:
+    """Take the whole probe down when the sweep that started it stops existing.
+
+    **Because nothing else can.** Every teardown path in `tools/mutate.py` runs
+    *inside* the sweep -- `_end_lane`, and `_sandboxes`' cleanup -- so a sweep
+    that takes a `SIGKILL`, or a session that abandons it, leaves its probes
+    with nothing that will ever collect them. Measured (#114): four probes alive
+    **36 hours** later, one holding 3.2 GiB, and every sweep run on that machine
+    in between sized itself from a `MemAvailable` those ghosts were eating.
+    `_report_crowding` cannot see it either -- it sums *lane* RSS, and an orphan
+    is not a lane, so the one instrument that would report the pressure is blind
+    to exactly this source of it.
+
+    **Not `os.getppid() == 1`.** That is the obvious spelling and it is wrong on
+    any machine with a subreaper: measured here, killing a sweep reparented its
+    probes to **1522**, the systemd user manager, and a check against 1 would
+    have watched them live for ever. The parent this was *started* by is
+    recorded instead, and any change to it means that process is gone.
+
+    **`killpg`, and the guard on it is the whole design.** `tools/mutate.py`
+    spawns a probe with ``start_new_session=True``, so this process is a session
+    and group leader and its group holds nothing but its own descendants --
+    which is what has to die, since a probe that exited alone would orphan the
+    `git` and `python -m tupferl` grandchildren the suite forked. There is no
+    process table to consult and no membership test to get wrong; the target
+    comes from the kernel's answer about *this* process.
+
+    That matters here more than it would elsewhere: this file is mutated by its
+    own sweep, and #91 is what happens when a harness routes a kill through code
+    a mutation can edit -- `_lane`'s membership test inverted, `_end_lane` killed
+    every process the user owned, and a real desktop session died. So the veto is
+    a second, independent fact: **unless we really are our own group leader we
+    kill nothing**, and a mutation that breaks the check makes this do less
+    rather than more.
+
+    Returns the thread so a test can join it; `None` when there is nothing safe
+    to do, which is also what a platform without process groups gets.
+    """
+    try:
+        group, mine = os.getpgid(0), os.getpid()
+    except (AttributeError, OSError):  # pragma: no cover - not POSIX
+        return None
+    # `OWNER` when the sweep said so, and only then `getppid` -- see `OWNER` for
+    # the race that makes the difference. A value that is not a number is
+    # treated as absent rather than raising: nothing but the harness writes it,
+    # so a strange one means something else set the name.
+    try:
+        owner = int(os.environ[OWNER])
+    except (KeyError, ValueError):
+        owner = os.getppid()
+    # survivor: branch, negate -- unanswerable, and it is the veto proving itself. Removing this
+    #   check lets a process that is *not* its own group leader arm the watchdog, and the first
+    #   thing it then kills is the group it is in -- which, under a sweep, is the probe running
+    #   the suite. Both rows came back `BROKE` with "the probe was killed by SIGKILL", which is
+    #   never `caught`, so the line reads as guarded in neither number a reader looks at. The
+    #   same family as `_lane` and `_born` in `tools/mutate.py`, and excused on #57's terms: a
+    #   probe cannot answer a row that kills the probe. `test_verdict`'s
+    #   `test_anything_sharing_a_group_refuses_to_arm` is what covers it outside a sweep.
+    if group != mine:
+        # Not a session of our own, so the group is somebody else's and killing
+        # it would reach processes this never started. Refusing is the old
+        # behaviour -- a leak -- which is the right way for this to fail.
+        return None
+
+    def watch() -> None:
+        while True:
+            # survivor: drop-call -- unanswerable, and behaviourally equivalent besides. Without the
+            #   sleep the loop still reaches the same answer; it just asks the kernel for its parent
+            #   as fast as it can, so every probe carries a thread pinning a core. It comes back
+            #   BROKE rather than SURVIVED because a probe hosting a nested harness then starves and
+            #   its tests run past their bounds -- a cost no assertion can see and no fixture can
+            #   separate from a loaded machine.
+            time.sleep(poll)
+            if os.getppid() != owner:
+                os.killpg(group, signal.SIGKILL)
+
+    thread = threading.Thread(target=watch, daemon=True, name="orphan-watch")
+    thread.start()
+    return thread
+
+
 if __name__ == "__main__":
+    # Armed here rather than in `main`, so that a test importing this module and
+    # calling `main` in its own process never arms a watchdog against pytest's
+    # parent. Only the ``python -c`` a probe really is reaches this line.
+    watch_for_orphaning()
     main(sys.argv[1:])

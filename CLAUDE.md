@@ -1148,6 +1148,23 @@ has been dropped.
 
 #### Terminals, signals and processes
 
+- **`_born` spawns `ps` where there is no `/proc`, so calling it puts a
+  subprocess into whatever called it -- and on macOS that is a different
+  program.** `mutate._stamp` read the sweep's own birth time through `_born`;
+  every Linux leg was green, and all four `macos` shards failed all seven tests
+  of `TestWhatEveryProbeIsHandedOnItsCommandLine` with `'int' object has no
+  attribute 'name'`, because that class patches `subprocess.Popen` and the fake
+  intercepted `ps` instead of the probe. `_my_birth` reads `/proc/self/stat` and
+  answers `None` elsewhere.
+
+  The general shape is worth more than the instance: **a helper with a
+  platform-dependent *implementation* has a platform-dependent cost, and a
+  fallback that shells out is not interchangeable with one that reads a file.**
+  Ask what a helper does on the other platform before calling it somewhere a
+  spawn would matter. The guard is asserted against `_born` rather than against
+  `subprocess`, so it fails on Linux too -- a test that watched for a spawn
+  could only go red on the leg nobody runs before pushing.
+
 - **`Path.resolve()` moves a macOS temporary directory, and nothing on Linux
   says so.** `/var/folders/.../T` is a symlink to `/private/var/folders/.../T`,
   so `tempfile.mkdtemp()` hands back the first and anything that resolves the
@@ -1618,6 +1635,58 @@ has been dropped.
     cases — and the notification when the *waiter* is reaped reads like the
     sweep completing. Wait on `[ -f <json>.done ] || ! kill -0 $pid`, and say
     which one happened.
+- **A killed sweep used to leak its probes for ever, and the probe is the only
+  thing that can notice.** Every teardown path in `tools/mutate.py` runs *inside*
+  the sweep, so a `SIGKILL` left probes with nothing that would ever reap them:
+  #114 measured four alive **36 hours** later, one holding 3.2 GiB, and every
+  sweep in that window sized itself from a `MemAvailable` they were eating --
+  invisible to `_report_crowding`, which sums *lane* RSS, and an orphan is not a
+  lane. `verdict.watch_for_orphaning` is the fix, and three things about it are
+  the design rather than detail:
+
+  - **not `os.getppid() == 1`.** Measured here: a killed sweep's probes
+    reparent to **1522**, the systemd user manager, so the obvious test would
+    have watched them live for ever.
+  - **the sweep names itself, in `MUTATE_OWNER_PID`.** Asking `getppid()` at
+    startup loses a race in the leaking direction: a probe orphaned before it
+    finishes importing records the *reaper* as its owner and then waits for a
+    change that has already happened. Found by writing the test that kills the
+    sweep with no pause; a one-second sleep made it pass.
+  - **it `killpg`s its own group, and refuses unless it leads that group.**
+    `_run` passes `start_new_session=True`, so the group holds nothing but the
+    probe's descendants -- which is what has to die, since a probe exiting alone
+    would orphan the `git` its suite forked. There is no process table to walk
+    and no membership test to invert, which is #91's whole lesson; and the veto
+    means a mutation that breaks the check makes it do *less*.
+
+  The temporary trees are the other half and cannot be fixed the same way: they
+  belong to the sweep, not the probe. `_owned_temp` stamps each one with the
+  sweep's pid *and birth time*, and `_collect_abandoned` removes only those
+  whose owner is provably gone.
+
+  **It is `--collect`, never automatic, and the first version was automatic --
+  which is how this file's own rule got proved again.** A probe runs a *mutated*
+  copy of `tools/mutate.py`, so the very first row of the very first sweep taken
+  over that change mutated the liveness test and the probe deleted the live
+  sweep's own sandbox out from under it: `FileNotFoundError:
+  .../tree3/tools/verdict.py`, and the run died on row 1 of 39. That is exactly
+  *a harness that mutates itself must not route a destructive operation through
+  mutable code*, which #91 had already paid for once with `_end_lane`, arriving
+  in a new place within a week. **When you add a delete, a kill or a push to
+  this harness, that rule is the first thing to check, not the last.**
+
+  Two things make it acceptable now. It is a flag, for `--accept`'s reason --
+  removing things is a decision, and a run that made it by itself would be
+  making it on somebody's behalf. And the veto is a fact the code cannot talk
+  itself out of: a tree holding `Path.cwd()`, or holding a parent of it, is a
+  tree *this process is standing in*, and the kernel answers that rather than
+  anything computed here. A mutation to the liveness test can now at worst
+  delete somebody else's abandoned tree.
+
+  **It cannot collect what predates the stamp** -- nothing distinguishes an old
+  tree from a live one -- so `unstamped` names those and a person runs one
+  `rm -rf`. A tool that deletes on your behalf should not be the one guessing.
+
 - **The sweep sizes itself from what is actually free, and says so.**
   `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the
   smaller of that and any cgroup limit, leaves a gibibyte, and divides. So a
@@ -1686,6 +1755,21 @@ has been dropped.
   ```sh
   CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
   ```
+- **A bound sized on this machine is about five times too small on a `macos`
+  runner, and that is measured rather than felt.** The `macos` legs report
+  batches of 43 tests taking **100-108s** where the same batches take 10-30s
+  here -- a 3-core runner, sharded four ways with six workers each. Three
+  fixtures whose bounds were chosen against a local measurement went red there
+  and nowhere else, with `TimeoutError` rather than an assertion, which reads as
+  a hang and is not one. `support.SLOW_ELSEWHERE` is the number to reach for,
+  and it is 20s because `bounded` caps at two thirds of the harness's 30s alarm
+  -- a fixture wanting longer than that wants to be smaller.
+
+  **A raised bound is otherwise indistinguishable from giving up**, so the
+  number above is what makes it a fix rather than a shrug. And re-running the
+  failed jobs is worth doing first: it moved two `macos` shards to one, which
+  says load *and* a real margin, not one or the other.
+
 - **A platform skip turns a CI leg red, and it is not only the `macos` one.**
   Every job that runs tests passes `--no-skips` -- the `test` matrix's three
   legs and all four `macos` shards -- which is exactly what the flag is for: a
@@ -1702,6 +1786,14 @@ has been dropped.
   Measured: one `skipUnless(hasattr(os, "sched_getaffinity"))` added in this
   repository's own review pass took that leg from green to red on the next
   push.
+
+  **It caught a fresh instance while this line was being read**, which is the
+  argument for the leg rather than a story about it: a
+  `skipif(not Path("/proc/self/stat").exists())` written for a Linux-only fact
+  turned `macos (3)` red with `1 tests were skipped - an optional tool is
+  missing`, and nothing local could have said so. The prescribed shape below is
+  what replaced it -- both arms asserted, `None` on macOS checked against there
+  being no `/proc`, so neither platform runs a test that does nothing.
 
   Spelled `@pytest.mark.skipif` since B6 converted the last real `skipUnless`.
   **The polarity inverts and nothing checks it**: pytest has no `skipunless`, so

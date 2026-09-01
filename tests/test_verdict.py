@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -1973,3 +1974,180 @@ class TestTheSummaryLineOfACollectionFailure:
         said, twin = self.both("\n  \n")
         assert said == "collection failed and said nothing"
         assert twin == said, "the two copies of `_stated` have diverged"
+
+
+#: The variable a sweep names itself in, spelled out rather than imported --
+#: this module drives `verdict` as a subprocess and never imports it, which is
+#: the whole of its docstring's argument. Spelling it here also makes this a
+#: *check* of the protocol rather than a restatement of it;
+#: `test_mutate.TestWhatEveryProbeIsHandedOnItsCommandLine` is where the two
+#: modules' spellings are asserted equal.
+OWNER = "MUTATE_OWNER_PID"
+
+#: How long a collection may take, and it has to be **under** the class bound
+#: rather than equal to it: `until(..., BOUND)` inside a class bounded at `BOUND`
+#: loses the race to the class every time, and the failure then reads "the
+#: watchdog never fired" for a watchdog that was about to. The same mistake one
+#: level down from the one CLAUDE.md records about beating the harness's alarm.
+#: The watchdog polls at 0.1s here, so five seconds is a wide margin.
+COLLECTED = support.bounded(5.0)
+
+#: A probe that arms the watchdog and then does nothing but wait to be collected.
+#: `0.1` rather than `ORPHAN_POLL`, because the test is about *whether* it fires
+#: and paying two seconds per assertion to re-measure the constant is not.
+ORPHANED = """
+import sys, time
+sys.path.insert(0, {root!r})
+from tools import verdict
+verdict.watch_for_orphaning(0.1)
+time.sleep({sleep})
+"""
+
+#: The sweep's half: start a probe in its own session, say which pid it is, and
+#: then be killed. `start_new_session=True` is `mutate._run`'s spelling, and it
+#: is what makes the probe a group leader and so allowed to collect itself.
+SWEEP = """
+import os, subprocess, sys, time
+env = dict(os.environ)
+env[{owner!r}] = str(os.getpid())
+child = subprocess.Popen(
+    [sys.executable, "-c", {probe!r}], start_new_session=True, env=env
+)
+print(child.pid, flush=True)
+time.sleep({sleep})
+"""
+
+
+def alive(pid: int) -> bool:
+    """Whether `pid` is a *running* process, counting a zombie as gone.
+
+    **`os.kill(pid, 0)` is the obvious spelling and it made a test here unable
+    to fail.** A probe killed while its sweep is still running has nobody to
+    reap it -- the sweep is asleep, not waiting -- so it sits as a zombie, and
+    `kill(pid, 0)` on a zombie succeeds. The test that asserts a probe is *left
+    alone* while its sweep lives therefore passed whether the watchdog fired or
+    not, which the mutation sweep found by leaving `if os.getppid() != owner:`
+    alive: made unconditional, the watchdog killed every probe at the first tick
+    and all four tests still passed.
+
+    `ps` rather than `/proc`, because the `macos` leg has no `/proc`. An empty
+    answer is a pid that no longer exists at all.
+    """
+    done = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        timeout=support.PATIENCE,
+        check=False,
+    )
+    state = done.stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+class TestAProbeThatOutlivesItsSweep:
+    """`watch_for_orphaning`: a probe collects itself when its sweep is gone.
+
+    **Nothing else can.** Every teardown path in `tools/mutate.py` runs inside
+    the sweep, so a `SIGKILL` leaves probes with nothing that will ever reap
+    them: #114 measured four alive **36 hours** later, one holding 3.2 GiB, and
+    every sweep in that window sizing itself from a `MemAvailable` they were
+    eating.
+
+    Driven as real processes throughout, and that is not thoroughness for its
+    own sake: what is under test is *session membership*, which cannot be
+    faked in this process and would read differently under a probe -- where
+    pytest itself is a session leader -- than it does under a plain run.
+    """
+
+    _bounded = support.bounds(BOUND, "the orphan watchdog never fired")
+
+    def asked(self, session: bool) -> str:
+        """What `watch_for_orphaning` decides, in a child whose session we chose."""
+        script = (
+            f"import os, sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+            "from tools import verdict\n"
+            "print('armed' if verdict.watch_for_orphaning(3600) else 'refused')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=BOUND,
+            start_new_session=session,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    def test_a_probe_in_its_own_session_arms_the_watchdog(self) -> None:
+        """`mutate._run` passes `start_new_session=True`, so this is the real
+        case: the group holds nothing but the probe's own descendants."""
+        assert self.asked(session=True) == "armed"
+
+    def test_anything_sharing_a_group_refuses_to_arm(self) -> None:
+        """**The veto, and it is the whole design.** Without its own session the
+        group is somebody else's -- a shell, an editor, a CI runner -- and a
+        `killpg` would reach processes this never started. #91 is what that
+        costs: a mutated membership test sent `SIGKILL` to every process the
+        user owned and a real desktop session died. Refusing leaves the old
+        behaviour, a leak, which is the right direction for this to fail in.
+
+        Asked of a child rather than of this process, because under a mutation
+        probe *pytest itself* is a session leader and the answer would invert.
+        """
+        assert self.asked(session=False) == "refused"
+
+    def test_an_orphaned_probe_collects_itself(self) -> None:
+        """The whole mechanism, end to end: a sweep starts a probe in its own
+        session, the sweep is `SIGKILL`ed, and the probe is gone shortly after.
+
+        The probe sleeps 60s, so nothing but the watchdog can end it inside the
+        bound -- a shorter sleep would let "it exited on its own" pass for "it
+        was collected".
+
+        **The sweep is killed the instant it says the probe exists**, with no
+        pause, and that is the point rather than impatience: the first version
+        of `watch_for_orphaning` asked `os.getppid()` for its owner and this
+        test is what found the race. Killed immediately, the probe had not yet
+        imported far enough to look, so it read the *reaper* as its parent and
+        waited for ever for a change that had already happened. A one-second
+        sleep here made it pass. `OWNER` is the fix and this is its test.
+        """
+        probe = ORPHANED.format(root=str(ROOT), sleep=60)
+        sweep = subprocess.Popen(
+            [sys.executable, "-c", SWEEP.format(probe=probe, sleep=60, owner=OWNER)],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert sweep.stdout is not None
+            orphan = int(sweep.stdout.readline().strip())
+            assert alive(orphan), "the probe never started"
+            sweep.kill()
+            sweep.wait(timeout=BOUND)
+            waited = support.until(lambda: not alive(orphan), COLLECTED)
+        finally:
+            sweep.kill()
+            with suppress(ProcessLookupError):
+                os.kill(orphan, signal.SIGKILL)
+        assert waited, "the probe outlived the sweep that started it"
+
+    def test_a_probe_whose_sweep_is_alive_is_left_alone(self) -> None:
+        """The other half, and the one that would make this dangerous if it were
+        wrong: a watchdog that fired while the sweep was running would kill
+        every probe mid-row and report the lot as `BROKE`."""
+        probe = ORPHANED.format(root=str(ROOT), sleep=60)
+        sweep = subprocess.Popen(
+            [sys.executable, "-c", SWEEP.format(probe=probe, sleep=60, owner=OWNER)],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert sweep.stdout is not None
+            orphan = int(sweep.stdout.readline().strip())
+            assert not support.until(lambda: not alive(orphan), 1.5), (
+                "the probe collected itself while its sweep was still running"
+            )
+        finally:
+            sweep.kill()
+            with suppress(ProcessLookupError):
+                os.kill(orphan, signal.SIGKILL)

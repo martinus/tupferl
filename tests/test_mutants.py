@@ -960,7 +960,7 @@ class TestFindingATagNoRowCanReach:
     #: pointed and the hang was somewhere else. Measured -- four `line_starts`
     #: rows the gate's control arm reported `caught` came back `BROKE` here,
     #: with these two classes named as the killer.
-    _bounded = support.bounds(support.PATIENCE, "walking every tag hung")
+    _bounded = support.bounds(support.SLOW_ELSEWHERE, "walking every tag hung")
 
     def dead(self, box: Path) -> list[tuple[str, int, str]]:
         (box / "tools").mkdir(parents=True)
@@ -1020,7 +1020,7 @@ class TestEveryTagGuardsARowThatExists:
 
     #: The same route and the same bound as `TestFindingATagNoRowCanReach`
     #: above, which carries the argument.
-    _bounded = support.bounds(support.PATIENCE, "walking every tag hung")
+    _bounded = support.bounds(support.SLOW_ELSEWHERE, "walking every tag hung")
 
     @pytest.mark.skipif(support.over_a_mutated_tree(), reason=MUTATED_TREE)
     def test_the_tree_has_tags_to_check(self) -> None:
