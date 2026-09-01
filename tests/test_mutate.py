@@ -795,8 +795,19 @@ class TestOne(unittest.TestCase):
 """
 
 
+@pytest.mark.usefixtures("_alarm_put_back")
 class TestAHungTestIsBoundedAndNotCredited:
     """A per-test alarm, and the classification that makes it safe.
+
+    **The mark is the other half of #115.** `test_zero_arms_nothing` calls
+    `verdict.each_test` in *this* process, and that installs `_ring` as the
+    `SIGALRM` handler and leaves it there. Harmless on its own -- nothing arms a
+    timer afterwards -- and one half of a two-module failure: with
+    `tests/test_support.py` leaking an armed 30s `ITIMER_REAL` and this leaking
+    the handler it would fire into, a `SIGALRM` landed in `_ring` some thirty
+    seconds later and raised `Hung` inside whatever unrelated test was running.
+    Neither module reproduced it alone, which is why it read as shared state
+    with no owner.
 
     `tools/mutate.py`'s `TIMEOUT` bounds a whole *run* at 300s and cannot say
     which test hung. This bounds a *test*, in seconds, and names it.
