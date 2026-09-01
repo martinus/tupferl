@@ -1755,6 +1755,21 @@ has been dropped.
   ```sh
   CI=true TUPFERL_HYPOTHESIS_PROFILE=ci python -m tools.run_tests
   ```
+- **A bound sized on this machine is about five times too small on a `macos`
+  runner, and that is measured rather than felt.** The `macos` legs report
+  batches of 43 tests taking **100-108s** where the same batches take 10-30s
+  here -- a 3-core runner, sharded four ways with six workers each. Three
+  fixtures whose bounds were chosen against a local measurement went red there
+  and nowhere else, with `TimeoutError` rather than an assertion, which reads as
+  a hang and is not one. `support.SLOW_ELSEWHERE` is the number to reach for,
+  and it is 20s because `bounded` caps at two thirds of the harness's 30s alarm
+  -- a fixture wanting longer than that wants to be smaller.
+
+  **A raised bound is otherwise indistinguishable from giving up**, so the
+  number above is what makes it a fix rather than a shrug. And re-running the
+  failed jobs is worth doing first: it moved two `macos` shards to one, which
+  says load *and* a real margin, not one or the other.
+
 - **A platform skip turns a CI leg red, and it is not only the `macos` one.**
   Every job that runs tests passes `--no-skips` -- the `test` matrix's three
   legs and all four `macos` shards -- which is exactly what the flag is for: a

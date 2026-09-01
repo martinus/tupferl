@@ -3843,20 +3843,27 @@ def _collect_abandoned(where: Path | None = None, dry: bool = False) -> list[Pat
     on your behalf should not be the one doing the guessing.
     """
     root = Path(where) if where is not None else Path(tempfile.gettempdir())
+    # survivor: order -- `sorted` for a stable answer across machines, over a `glob` whose order is
+    #   the filesystem's. Every tree is judged on its own stamp, so the order decides only which
+    #   line of output comes first, and one machine agrees with itself either way.
+    found = sorted(root.glob(f"{SETTINGS.tmp_prefix}*"))
+    if not found:
+        # **Before `_born`, which is a subprocess where there is no `/proc`.**
+        # Every ordinary machine has nothing here, and asking `ps` about every
+        # process to answer a question about an empty list is a spawn per run
+        # on macOS for no reason at all.
+        return []
     living = _born()
     # Resolved, because a sandbox under `/tmp` on macOS is reached through a
     # `/private/var` symlink and an unresolved comparison would miss it.
     here = Path.cwd().resolve()
     swept = []
-    # survivor: order -- `sorted` for a stable answer across machines, over a `glob` whose order is
-    #   the filesystem's. Every tree is judged on its own stamp, so the order decides only which
-    #   line of output comes first and one machine agrees with itself either way.
-    for found in sorted(root.glob(f"{SETTINGS.tmp_prefix}*")):
-        settled = found.resolve()
+    for made in found:
+        settled = made.resolve()
         if settled == here or settled in here.parents:
             continue
         try:
-            owner = json.loads((found / _OWNER).read_text(encoding="utf-8"))
+            owner = json.loads((made / _OWNER).read_text(encoding="utf-8"))
             pid, born = int(owner["pid"]), owner["born"]
         except (OSError, ValueError, KeyError, TypeError):
             continue
@@ -3866,8 +3873,8 @@ def _collect_abandoned(where: Path | None = None, dry: bool = False) -> list[Pat
         if pid in living and (born is None or living[pid] == born):
             continue
         if not dry:
-            shutil.rmtree(found, ignore_errors=True)
-        swept.append(found)
+            shutil.rmtree(made, ignore_errors=True)
+        swept.append(made)
     return swept
 
 

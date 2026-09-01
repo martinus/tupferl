@@ -88,7 +88,7 @@ ALARM = 0.5
 #: stays under whatever `--each-test` the outer sweep armed rather than under the
 #: default alone. The margin is wide on purpose -- under a 39-lane sweep this
 #: runs inside a memory-capped sandbox against 38 other lanes.
-NESTED = support.bounded(12.0)
+NESTED = support.SLOW_ELSEWHERE
 
 #: The deliberate bug: `tupferl/config.py` stops refusing keys it does not know.
 #: The same row appears in `tools/mutate.py`'s module docstring as the example,

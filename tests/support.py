@@ -181,6 +181,22 @@ PROMPTED = bounded(20.0)
 PATIENCE = bounded(5.0)
 
 
+#: For a fixture whose own work is fast here and slow on a GitHub `macos`
+#: runner, which is the tightest machine this suite runs on.
+#:
+#: **Measured, because a raised bound is otherwise indistinguishable from giving
+#: up.** The `macos` legs report batches of 43 tests taking 100-108s where the
+#: same batches take 10-30s on the development machine -- a 3-core runner,
+#: sharded four ways with six workers each. A number chosen against a local
+#: measurement is therefore about five times too small there, and three bounds
+#: sized that way went red on `macos` alone while every Linux leg was green.
+#:
+#: 20s rather than more: `bounded` caps at two thirds of the harness's alarm, so
+#: under the default 30s per-test alarm this *is* the ceiling. A fixture wanting
+#: longer than this wants a smaller fixture.
+SLOW_ELSEWHERE = bounded(20.0)
+
+
 def bounds(seconds: float, why: str) -> Any:
     """`deadline` as an autouse fixture, for a class whose subject can hang.
 
