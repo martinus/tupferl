@@ -6,13 +6,11 @@ count of tests behind, so the distinction has to be drawn where the exception
 objects still exist rather than reconstructed from what pytest printed. That is
 what this file is.
 
-This is the pytest backend, and it is what a sweep uses.
-`tools/verdict_unittest.py` is the classifier that was here before, kept until
-`docs/pytest-plan.md`'s Phase C and reachable with
-``TUPFERL_MUTATE_VERDICT=unittest`` so that a row the two disagree about can be
-re-run against the old one rather than argued about. `cap` and `each_test` are
-duplicated between the two files rather than shared, because the isolation
-property below forbids either from importing anything of ours.
+This is the only backend. `tools/verdict_unittest.py` classified ``unittest``
+result objects here until `docs/pytest-plan.md`'s Phase C deleted it, together
+with the ``TUPFERL_MUTATE_VERDICT`` switch that chose between the two while the
+conversion was being measured. What that arrangement cost, and what its removal
+buys back, is recorded in the plan rather than here.
 
 **It is read, not imported.** `mutate` reads this source out of its *own* tree
 and hands it to ``python -c`` in the sandbox. Two properties fall out, and both
@@ -39,7 +37,7 @@ not, and it is the directory pytest then takes as its ``rootdir``.
 | ``tearDownClass`` / ``tearDownModule`` | ``teardown`` | `broke` |
 | a module that will not import | no phase; `pytest_collectreport` | `broke` |
 
-So the fixture/test line that `verdict_unittest` had to draw with an
+So the fixture/test line the retired `unittest` backend had to draw with an
 `isinstance` against `unittest.suite._ErrorHolder` is drawn here by the phase
 pytest already reports, plus one fact phase cannot carry: the **scope** of the
 fixture that raised, taken from `pytest_fixture_setup`. Under `unittest` the
@@ -580,12 +578,15 @@ class Watcher:
         whose sandboxes are flat throwaway modules.
 
         **Not recursive, and so `norecursedirs` is deliberately not consulted.**
-        It looks beside the selection and no deeper, which is what the
-        `unittest` backend did and what the acceptance sweep compares against.
         A recursive enumeration would need that setting to earn its keep: a
         naive `rglob` of the default patterns over this very tree finds 71
         files, 38 of them inside `.venv`, i.e. it would walk pytest's own test
         suite. Anyone widening this owes that filter in the same change.
+
+        (It was also what the retired `unittest` backend did, and what the
+        conversion's acceptance sweep therefore compared against. That half of
+        the argument became uncheckable when Phase C deleted the other backend,
+        which is why it is a parenthesis and the `.venv` count is not.)
         """
         chosen = {as_path(name) for name in names}
         found: set[str] = set()

@@ -75,7 +75,11 @@ class Mutation(NamedTuple):
     #: matches quietly tests nothing. For a generated row `span` pins it instead.
     old: str
     new: str
-    #: Whitespace-separated unittest targets, as `python -m unittest` takes them.
+    #: Whitespace-separated **dotted** module paths -- `tests.test_sync` --
+    #: joined by `targets_for`. Dotted rather than nodeids because it is built
+    #: out of module names; `verdict._groups` and `mutate._reaches` are what
+    #: translate it for pytest, and comparing a nodeid raw against it matches
+    #: nothing at all.
     tests: str
     #: Say so when the replacement is meant to *contain* the original -- an
     #: inserted call, an early return in front of code that stays. Otherwise
@@ -1244,9 +1248,10 @@ def dead_tags(root: Path) -> list[tuple[str, int, str]]:
     claiming somebody read a survivor. Two real instances, both found by the
     first run of this: a tag written for `mutate._lane`'s walk placed above the
     enclosing `while`, covering the loop header and none of the five statements
-    inside it; and `verdict_unittest.main`'s `off-by-one` reason four screens
-    from the `argv` indices it describes, above a `return` that has never
-    carried such a row.
+    inside it; and the retired `verdict_unittest.main`'s `off-by-one` reason
+    four screens from the `argv` indices it describes, above a `return` that had
+    never carried such a row. That second file was deleted in Phase C; the
+    instance is kept because the shape it names is what this check looks for.
 
     Here rather than in `tests/`, because it is the same question `--accept` and
     a sweep would want to ask, and neither can reach a helper that lives in a
@@ -1680,7 +1685,7 @@ def importers(root: Path) -> dict[str, set[str]]:
 
 
 def targets_for(path: str, root: Path, index: dict[str, set[str]] | None = None) -> str:
-    """The unittest targets a mutant in `path` should be run against.
+    """The dotted module paths a mutant in `path` should be run against.
 
     A heuristic, and it is allowed to be one because this is an **ordering**
     rather than a gate: `verdict.collect` walks a mutation's selection first and

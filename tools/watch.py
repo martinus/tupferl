@@ -76,8 +76,8 @@ from tools import paint
 #: function* and thirty tests in `tests/test_watch.py` assert on the exact string
 #: it returns. Painting inside it would make every one of those assertions depend
 #: on whether the suite was run in a terminal -- green under `tools/run_tests.py`,
-#: which pipes its batches, and red under `python -m unittest discover` in a
-#: shell. Carrying the colour out of `step` instead means widening its result
+#: which pipes its batches, and red under `python -m pytest -q` in a shell.
+#: Carrying the colour out of `step` instead means widening its result
 #: through all thirty call sites, which is a larger change than this one and
 #: about something else.
 #:

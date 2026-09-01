@@ -109,34 +109,6 @@ UNWATCHED = UNKNOWN_KEY_GUARD._replace(
     tests="tests.test_paths",
 )
 
-#: A row **either verdict layer can grade**, which the two above are not.
-#:
-#: `TUPFERL_MUTATE_VERDICT=unittest` runs `unittest`'s own loader, and a
-#: pytest-native module is not something that loader can take back: a plain
-#: `class TestX:` is found by name and refused with `calling <class ...>
-#: returned <object>, not a test`. So every row whose selection names a
-#: converted module is now `broke` under that layer -- which is correct, and is
-#: what Phase B of `docs/pytest-plan.md` is doing on purpose, one cluster at a
-#: time. `UNKNOWN_KEY_GUARD` selects `tests.test_config`, converted in B1.
-#:
-#: The one module that stays `unittest`-style to the end is
-#: `tests/test_verdict_unittest.py` -- deliberately, because it dies with its
-#: subject in Phase C -- so a row selecting *it* is the one that keeps working
-#: through the rest of the conversion. That the row also mutates
-#: `tools/verdict_unittest.py` is a bonus rather than the reason: the claim
-#: under test is that `_run` drives whichever layer is named, and it is asserted
-#: on a row both can answer.
-#:
-#: Measured at 0.35s per layer against `UNKNOWN_KEY_GUARD`'s 0.66s, so moving
-#: the row bought headroom rather than spending it.
-EITHER_LAYER = Mutation(
-    "a test that noticed the mutation is not recorded as having noticed",
-    "tools/verdict_unittest.py",
-    "self.noticed.append(str(test))",
-    "pass",
-    "tests.test_verdict_unittest.TestATestThatNoticed",
-)
-
 
 class TestTheHarnessAnswersBothWays:
     """The whole loop: copy the tree, apply the edit, run a suite, classify.
@@ -551,97 +523,68 @@ class TestWhatTheCacheLearns:
 class TestTheKillerIsRecordedAtAll:
     """The cache is worth nothing if `Verdict.killer` is empty, and it comes
     from `tools/verdict.py` through a JSON report -- so this drives the real
-    thing rather than asserting on a field."""
+    thing rather than asserting on a field.
 
-    def test_a_caught_mutation_names_the_test_in_a_form_unittest_takes_back(self) -> None:
+    It is also the running half of `TestTheProbeIsGradedByThisTreesClassifier`:
+    that class reads the probe's source and this one puts a real row through
+    it, which is the pair the deleted second backend was caught by not having.
+    """
+
+    def test_a_caught_mutation_names_the_test_in_a_form_pytest_takes_back(self) -> None:
         found = mutate.run(
             [UNKNOWN_KEY_GUARD], baseline=False, workers=1, summarise=False, strict=False
         )
         (result,) = found.results
         assert result.verdict.outcome == "caught"
         assert result.verdict.killer, "nothing recorded the killing test"
-        # The claim: it loads. `str(test)` -- "method (dotted.id)" -- does not.
+        # The claim: it can be selected again. A nodeid can; a display string
+        # -- "method (dotted.id)", which is what `str(test)` gives -- cannot.
         assert mutate._loadable([result.verdict.killer]) == {result.verdict.killer}
 
 
-class TestWhichVerdictLayerGradesAProbe:
-    """`TUPFERL_MUTATE_VERDICT`: two classifiers, and a typo that must be loud.
+class TestWhichSourceTheProbeIsHanded:
+    """`_probe`: where the classifier a sandbox runs is read from.
 
-    The acceptance gate for the pytest conversion is two whole-tree sweeps of
-    the same command line differing only in this variable, so a mistyped value
-    that fell back to the default would report the pair as agreeing when only
-    one of them ever ran. That is CLAUDE.md §8's shape exactly, which is why
-    the refusal is asserted rather than the fallback.
+    One backend now. `tools/verdict_unittest.py` and the
+    `TUPFERL_MUTATE_VERDICT` switch that reached it were deleted at
+    `docs/pytest-plan.md`'s Phase C, so what is left to assert is the isolation
+    property the switch was layered on top of: the source comes out of *this*
+    tree, never the sandbox's copy, because `tools/**.py` is itself something a
+    generated table mutates and a verdict loaded out of the copy would let a
+    mutation grade its own exam.
+
+    **Reading the source is not running it, and that distinction cost the
+    switch once.** `_run` gained a JSON `first` slot and only one of the two
+    layers was taught to read it; every assertion about the *source* passed
+    throughout while one backend answered `broke` for every row including the
+    baseline. So this class is named for the source and nothing else --
+    `TestTheKillerIsRecordedAtAll` is the one that drives a real row through it,
+    and the pair is the claim.
+
+    **One test, not two.** A substring check for a hook name only that file
+    carries reads like a second guarantee and is a strictly weaker consequence
+    of the equality below: it can only fail when `tools/verdict.py` stops being
+    the pytest classifier, which `tests/test_verdict.py` drives end to end.
+    Under two backends it discriminated between them; under one it is an
+    assertion that passes against its own mutation.
     """
 
-    def layer(self, value: str | None) -> str:
-        env = {name: held for name, held in os.environ.items() if name != mutate._VERDICT}
-        if value is not None:
-            env[mutate._VERDICT] = value
-        with mock.patch.dict(os.environ, env, clear=True):
-            return mutate._layer()
+    def test_it_comes_from_the_running_tree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The isolation property, driven rather than read: `_probe` is called
+        from inside a directory holding a *different* `tools/verdict.py`, and
+        must still hand back this repository's.
 
-    def test_pytest_is_what_a_sweep_uses(self) -> None:
-        """The backend's *name*. Which file holds it is
-        `test_the_source_handed_over_is_the_one_named`'s claim, and keeping the
-        two apart is why renaming that file cannot change a branch about
-        cache validity."""
-        assert self.layer(None) == "pytest"
-        assert self.layer("pytest") == "pytest"
-
-    def test_the_classifier_it_replaced_can_still_be_asked_for(self) -> None:
-        assert self.layer("unittest") == "unittest"
-
-    def test_a_name_that_is_neither_is_refused_rather_than_defaulted(self) -> None:
-        with pytest.raises(SystemExit) as caught:
-            self.layer("pytst")
-        # The alternatives are in the message, so a typo answers itself rather
-        # than sending the reader to this file.
-        assert "pytest" in str(caught.value)
-        assert "unittest" in str(caught.value)
-
-    def test_the_source_handed_over_is_the_one_named(self) -> None:
-        """The two backends are two files, not two branches inside one -- so a
-        row diagnosed under `unittest` really is graded by the code that was
-        here before, rather than by today's with a flag set."""
-        with mock.patch.dict(os.environ, {mutate._VERDICT: "unittest"}):
-            assert "unittest.TextTestResult" in mutate._probe()
-        with mock.patch.dict(os.environ, {mutate._VERDICT: "pytest"}):
-            assert "pytest_runtest_makereport" in mutate._probe()
-
-    @pytest.mark.parametrize("layer", sorted(mutate._LAYERS))
-    def test_either_layer_can_actually_grade_a_row(self, layer: str) -> None:
-        """Which file is read is not the claim; that `_run` can drive it is.
-
-        **This is the test that was missing, and its absence cost the switch.**
-        `_run` gained a JSON `first` slot and only one of the two layers was
-        taught to read it, so `TUPFERL_MUTATE_VERDICT=unittest` answered
-        `broke` -- with `Failed to import test module: []` -- for every row
-        including the baseline. The assertion above passed throughout: it reads
-        the source and never runs it, which is CLAUDE.md §8's "a passing check
-        and a real check are different things".
-
-        Driven through the real `_run`, on a real mutation, once per layer.
-        `strict=False` because a hand-built table must not stop at a row a layer
-        cannot answer -- and answering is exactly what is being asserted.
-
-        The row is `EITHER_LAYER` and not `UNKNOWN_KEY_GUARD`, because the
-        latter selects a module Phase B has converted and `unittest`'s loader
-        cannot take a pytest-native module back. See `EITHER_LAYER`.
+        The expectation comes through `verdict.__file__` -- the import system's
+        answer -- rather than through `Path(mutate.__file__).with_name(...)`,
+        which is `_probe`'s own body character for character and would make this
+        a test containing a copy of the code it checks.
         """
-        with mock.patch.dict(os.environ, {mutate._VERDICT: layer}):
-            found = mutate.run(
-                [EITHER_LAYER],
-                baseline=False,
-                workers=1,
-                summarise=False,
-                strict=False,
-            )
-            (result,) = found.results
-        assert result.verdict.outcome == "caught", (
-            f"{layer} could not grade a row: {result.verdict.detail}"
-        )
-        assert result.verdict.killer, "nothing recorded the killing test"
+        real = Path(verdict.__file__).read_text(encoding="utf-8")
+        with support.tempdir() as box:
+            (box / "tools").mkdir()
+            (box / "tools" / "verdict.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            monkeypatch.chdir(box)
+            assert mutate._probe() == real
 
 
 class TestTwoSpellingsOfTheSameTest:

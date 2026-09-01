@@ -1,17 +1,22 @@
 # Converting tupferl to pytest — phased implementation plan
 
-Status: **Phases 0, A and A2 executed** (2026-08-30), and Phase B's step 1a
-and **clusters B1 through B6** with them — so **Phase B is finished**, and
-Phase C is next.
-**Of 36 test modules, 2 still run through pytest's `unittest` adapter**, and
-neither is arrears: `tests/test_verdict_unittest.py` stays as it is until
-Phase C deletes it with its subject, and `tests/test_sync_properties.py` is
-converted but exposes a class Hypothesis builds inside `hypothesis.stateful`,
-which the plan keeps as the pytest-idiomatic spelling.
+Status: **Phases 0, A, A2, B and C executed** (2026-08-30 to 2026-09-01) — so
+the conversion is finished and **Phase D is next**, which is
+extraction-readiness rather than conversion work.
+**Of 34 test modules, 1 still runs through pytest's `unittest` adapter**, and
+it is not arrears: `tests/test_sync_properties.py` is converted but exposes a
+class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
+the pytest-idiomatic spelling.
 
 Both numbers are asserted by `tests/test_pytest_plan.py`, which asks the
 `unittest` loader what it takes back from each module — so this line cannot
 quietly go stale and "continue the plan" is a safe instruction.
+
+**The module total fell by two and that is a deletion, not a conversion.**
+Phase C removed `tests/test_verdict_unittest.py` and `tests/test_unassert.py`
+with their subjects. Both numbers in the line above therefore dropped for a
+reason that is not progress, which is exactly the reading a falling count
+invites — said here because no test can tell the two apart.
 
 **"Still run as `unittest`" is the number to state, and it took two tries to
 find a predicate that means it.** "Converted" was the first, and the guard
@@ -21,8 +26,8 @@ asked `issubclass` of each module's attributes, filtered by `__module__`, and
 cluster B2 then edited exactly that attribute: deleting
 `test_sync_properties.py`'s dunder rewrite dropped the count by one for free. A
 number a `__module__ = __name__` can lower is not a number of work done, so the
-guard asks the loader instead — what `python -m unittest discover` and
-`tools/verdict_unittest.py` actually run.
+guard asks the loader instead — what pytest's own `unittest` adapter runs, and
+what `tools/verdict_unittest.py` ran until Phase C deleted it.
 The measured answers to the spikes are in
 [Spike results](#spike-results--measured-2026-08-30), which corrects three
 expectations this plan was written with. What each executed phase did
@@ -35,8 +40,9 @@ differently from what it says below is in
 [B4a as built](#b4a-as-built--2026-08-31),
 [B4b as built](#b4b-as-built--2026-08-31),
 [B5 as built](#b5-as-built--2026-08-31) and
-[B6 as built](#b6-as-built--2026-08-31). **Read every "as built" section before
-the next phase** — said that way rather than as a count, because a count is one
+[B6 as built](#b6-as-built--2026-08-31) and
+[Phase C as built](#phase-c-as-built--2026-09-01). **Read every "as built"
+section before the next phase** — said that way rather than as a count, because a count is one
 more thing to hand-maintain per cluster and this one was already wrong once.
 
 **A pytest-native test module is safe to write as of A2**, which was the whole
@@ -1921,8 +1927,8 @@ recording because this is the first sweep since [#91](https://github.com/martinu
 where the harness's kill list was the thing at fault rather than memory.
 
 `tools/mutate.py` was **not** swept, on the rule the [#96
-section](#96-is-a-prerequisite-of-b6-and-of-no-other-cluster) already states and
-which says to re-run the count rather than trust it. Re-run against both of the
+section](#96-is-a-prerequisite-of-b6-and-of-no-other-cluster--settled-2026-08-31)
+already states, which says to re-run the count rather than trust it. Re-run against both of the
 day's whole-table arms (1030 rows each, 21:38 and 22:08): **0 of its caught rows
 is killed by any B2 module**, in either. So no change to these four modules can
 turn one of those caught rows into a survivor -- there is nothing there that
@@ -3157,6 +3163,163 @@ suite, the preflight, or any CI leg.
 **Acceptance gate:** preflight green; the sweep above;
 `grep -rn "verdict_unittest" .` empty; the CLAUDE.md audit table in the PR
 body. **Size:** 1 PR, mostly deletions and prose. **Failure protocol:** FP.
+
+> **The grep clause is wrong and was not met — see
+> [Phase C as built](#phase-c-as-built--2026-09-01).** It is satisfiable only by
+> deleting the history the audit deliberately keeps, which is the opposite of
+> CLAUDE.md §0. What was checked instead: no *live* reference — no import, no
+> `--exclude`, no environment variable, no table row — with every surviving
+> mention prose that names the deletion as history.
+
+## Phase C as built — 2026-09-01
+
+**Done in one PR (#113).** Both files named in step 1 went, and so did
+`tools/unassert.py` with its tests -- which step 1 did not list, because the
+sentence saying it dies here was in *its own docstring* and in CLAUDE.md rather
+than in this plan. That is the phase's first lesson and it is a cheerful one:
+**a tool written for a finite job should say in its docstring what finishes
+it**, and both of these did, which turned the deletion into a checklist item
+rather than an archaeology exercise. The clause is now in CLAUDE.md §7 as a
+standing rule rather than only as an instance.
+
+### The gate, and why the headline numbers are not it
+
+Two whole-tree sweeps, both with a green baseline, both on an idle machine:
+
+| | baseline (`main` at `eba3970`) | branch |
+|---|---:|---:|
+| rows | 3930 | 3557 |
+| caught | 3511 | 3201 |
+| SURVIVED | 394 | 339 |
+| BROKE | 15 | 7 |
+| TIMEOUT | 10 | 10 |
+| score | 89.9% | 90.4% |
+
+**None of those deltas is evidence of anything.** 373 rows cease to exist with
+the two deleted files, so every total moves for arithmetic reasons, and the
+score improving by 0.5 points is the removal of two files with a poor ratio
+rather than a suite that got better. The comparison that means something is per
+`(path, scope, operator, old, new)` -- **not** per line, because five `tools/`
+files had docstrings edited and a positional key reports nearly everything as
+moved. 3337 keys exist on both trees; **20 differ, 10 each way.**
+
+The symmetry is the tell, and all 20 resolve into three known classes:
+
+- **8 are `broke` ⇄ `caught`** in `_Lanes._sample`, `run`, `_run`,
+  `_unbaselined`, `run.announce`, `Killers.learn` -- the scopes CLAUDE.md
+  already records as unanswerable under a sweep, where the mutation disables
+  the bound its own probe runs under. 6 improved, 2 worsened. Re-run idle, both
+  of the worsened pair came back `caught` in seconds.
+- **3 are `order`** (`sorted` becoming `list`) -- `targets_for`, `_parse_ps`
+  worse, `Watcher.beside` better. `sorted` over a *set* is only
+  probabilistically guarded, because hash order is randomised per run.
+- **the rest** are `off-by-one` / `arith` / `drop-call` singletons.
+
+**Zero rows regressed.** Established twice, by different routes:
+
+1. **A killer census over the baseline report.** Of 3511 caught rows, 305 have
+   their recorded killer in a deleted test module -- and every one of those 305
+   mutates `verdict_unittest.py` or `unassert.py` itself, so it ceases to exist
+   too. Surviving rows that lose their killer: **none**. The census is sound in
+   this direction: a row whose recorded killer survives is still caught by it,
+   and only a row whose killer was deleted is at risk. (CLAUDE.md's warning that
+   a census "counts rows whose *first* killer is X, never rows only X can catch"
+   bites the *other* question and not this one.)
+2. **Re-running the 10 worsened rows idle, on both trees, with `failfast=True`
+   as `main` passes.** 3 came back `caught` on the branch; the other **7 survive
+   on the baseline as well**.
+
+### The seven rows nothing ever guarded
+
+Those 7 are the phase's real finding, and they are about the suite rather than
+about this change. Each was reported `caught` in a whole-tree sweep of *either*
+tree and survives when run alone. They were never guarded: the outward walk
+reached them, some unrelated test failed under the mutation, and the row was
+credited. The recorded "killers" say so out loud --
+`tools/mutate.py:_parse_ps`'s `all` becoming `any` was killed by
+`tests/test_sync_cli.py::TestWhatStopsASync::test_an_unfinished_merge_stops_it`,
+and `run`'s column arithmetic by another `test_sync_cli` test. A test about a
+refused sync is not a guard on process-table parsing.
+
+| row | operator |
+|---|---|
+| `mutate.py:_parse_ps` `all` -> `any` | order |
+| `mutate.py:run` `+` -> `-` (`2 * width + lane_width`) | arith |
+| `mutate.py:Killers.save` `1` -> `0` | off-by-one |
+| `mutate.py:_resume_key` `1` -> `0` | off-by-one |
+| `mutate.py:_persist` `1` -> `0` | off-by-one |
+| `mutants.py:Tags.__init__` the `if` is never taken | branch |
+| `watch.py:main` `time.sleep(args.interval)` dropped | drop-call |
+
+Not fixed here -- Phase C is a deletion and this is pre-existing on both trees
+-- but recorded so the next sweep does not rediscover them, and so that nobody
+reads a whole-tree `caught` as proof a line is guarded. **The general form:
+`caught` in a full sweep and `caught` alone are different claims, and only the
+second is about a test.**
+
+### What diverged from the plan
+
+- **Step 1 was incomplete**: `tools/unassert.py` was not listed. See above.
+- **Step 2 was a confirmed no-op.** `pytest-subtests` was never added --
+  `pyproject.toml` says so beside the pytest floor. The plan's own table already
+  recorded this; it was re-checked rather than re-decided.
+- **The acceptance gate's `grep -rn "verdict_unittest" .` clause is wrong.** It
+  cannot be empty: 48 references survive, every one of them prose that names the
+  deletion as history, which is what CLAUDE.md §0 asks for. The only way to
+  satisfy the clause as written is to delete the record. It is amended above to
+  state what was actually checked -- **no live reference**: no import, no
+  `--exclude`, no environment variable, no table row.
+- **`assert len(EXCLUDES) == 6` became `>= FLOOR`, not `== 4`.** The plan
+  prescribed the count dropping to 4 and devotes a paragraph to warning future
+  sessions that a red test-runner here is not a regression. That paragraph *is*
+  the cost of the equality. `tests/test_errors.py` and `tests/test_support.py`
+  already use a floor for the identical hazard -- a parse that matched nothing --
+  and the `parametrize` beside it checks each pattern found, so a new exclusion
+  is checked by existing.
+
+### Scope the next sweep before running it
+
+**The census in (1) above took thirty seconds and reached the same conclusion as
+fifty-seven minutes of whole-tree sweeping.** It should have been run *first*
+and used to scope the arm. What a whole-tree sweep uniquely adds over
+`--base main` plus a census is narrow, and worth stating so the next phase can
+decide rather than default:
+
+- rows the diff *created* -- `--base main` covers exactly those, in minutes;
+- **walk-order effects, which are only visible at full-sweep scale.** This is
+  the real reason and it is not hypothetical: the shuffled-walk dead end
+  produced 24 false `caught` verdicts reproducible in no smaller setting, and
+  the class-ordering entry records five rows flipping to `BROKE`. Deleting 100
+  tests changes what the walk runs and in what order, which is precisely that
+  class of change;
+- a post-phase whole-tree number, which is what Phase D's own gate
+  ("whole-tree sweep unchanged") is specified against.
+
+For Phase D, whose changes are configuration with defaults equal to today's
+constants, the census plus `--base main` is likely to be the honest instrument,
+with one whole-tree run at the end to set the baseline rather than two to
+compare.
+
+### Numbers the phase owes
+
+- **`TODO` survivor tags: 109**, all in `tools/mutate.py`, unchanged by this
+  phase -- re-counted rather than copied. (A review reported 110; that count
+  included `--accept`'s help string, which is not a tag.)
+- **Survivor dispositions on the branch**: of 339 survivors, every one of the
+  **26 in `tupferl/` has a written reason**. Zero `TODO`, zero untagged in the
+  shipped package. The debt is entirely in `tools/`.
+- **Suite size 2097 -> 1991 collected items**, every one of the 109 accounted
+  for: 47 in `test_verdict_unittest.py`, 53 in `test_unassert.py`, 6 in the
+  deleted layer class, 2 dead `--exclude` parametrize cases, 1 rename.
+
+### One thing the sweeps exposed that is not about the sweeps
+
+Four probe processes from a sweep **36 hours earlier** were still alive during
+both arms, one holding 3.2 GiB resident, together with 2681 leftover sandbox
+directories totalling 2.5 GiB. They pre-date this branch and were present for
+both arms equally, so the comparison is unaffected -- but the absolute memory
+lines every sweep prints were computed on a machine with ghosts on it. Filed
+separately; `_end_lane` cannot run when the sweep itself is killed.
 
 ## Phase D — Extraction-readiness (parameterize, don't extract)
 

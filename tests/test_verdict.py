@@ -15,9 +15,10 @@ alarm installs a `SIGALRM` handler, so an in-process test would be configuring
 the suite that is running it. The four classes at the end that *do* import it
 touch neither, and say so.
 
-This file states the same claims `tests/test_verdict_unittest.py` states about
-the backend that came before, against pytest. Three of them change, and the
-changes are the interesting part:
+This file states, against pytest, the same claims that
+`tests/test_verdict_unittest.py` stated about the backend before it -- deleted
+in Phase C, so the comparison below is history rather than a second file to
+read. Three of the claims change, and the changes are the interesting part:
 
 - a dead fixture is `broke` because of the *phase* pytest reports it in, not
   because of an `isinstance` against a private `unittest` class. That mapping is

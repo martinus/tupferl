@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Split mutation survivors into missing tests and weak fixtures.",
         epilog=(
             "Produce the coverage map with:\n"
-            "  coverage run --source=tupferl -m unittest discover -s . -t . -p 'test_*.py'\n"
+            "  coverage run --source=tupferl -m pytest -q\n"
             "  coverage json -o coverage.json\n"
             "and the results with `python -m tools.mutate --base main --json results.json`.\n"
             "Both must come from the same tree: a fix that shifts line numbers "

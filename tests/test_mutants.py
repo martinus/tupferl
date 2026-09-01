@@ -59,10 +59,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #:
 #: Measured 2026-08-31 over a 2789-row table (#110): these two were the recorded
 #: killer for **226 rows across six files** -- 105 in `tools/mutate.py`, 20 in
-#: `tools/verdict_unittest.py`, 7 in `tools/run_tests.py` -- whose behaviour
-#: they say nothing whatever about. `TestFindingATagNoRowCanReach` below is
-#: deliberately *not* gated: it builds its own fixture tree, so its 67 kills are
-#: all in `tools/mutants.py` and every one is a real test of the generator.
+#: `tools/verdict_unittest.py` (deleted since, in Phase C), 7 in
+#: `tools/run_tests.py` -- whose behaviour they say nothing whatever about.
+#: `TestFindingATagNoRowCanReach` below is deliberately *not* gated: it builds
+#: its own fixture tree, so its 67 kills are all in `tools/mutants.py` and every
+#: one is a real test of the generator.
 #:
 #: A skip rather than an early `return`, so a run that expected these to
 #: execute can see that they did not. It cannot turn a CI leg red under
@@ -1007,9 +1008,11 @@ class TestEveryTagGuardsARowThatExists:
     A tag written for `mutate._lane`'s walk was placed above the enclosing
     `while`, so it covered the loop header and none of the five statements
     inside it -- seven rows still unexcused, and nothing saying so. And
-    `verdict_unittest.main`'s `off-by-one` reason sat above a `return {` four
-    screens from the `argv` indices it describes, where no `off-by-one` row has
-    ever been generated.
+    the retired `verdict_unittest.main`'s `off-by-one` reason sat above a
+    `return {` four screens from the `argv` indices it describes, where no
+    `off-by-one` row had ever been generated. That file was deleted in Phase C
+    and the instance is kept anyway: it is the shape this check hunts, and the
+    tag that is still in the tree -- `mutate._lane`'s -- is only one example.
 
     Static and pure, which is the point: both cost a whole-table sweep to notice
     otherwise, and one of them had been wrong for as long as it had existed.

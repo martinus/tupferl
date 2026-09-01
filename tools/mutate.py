@@ -69,7 +69,7 @@ time here:
 
   That is also what makes the mutations run **in parallel**. They are
   independent by construction, each is mostly waiting on a subprocess, and the
-  suite a mutation runs is plain serial ``unittest`` rather than the sharded
+  suite a mutation runs is plain serial ``pytest`` rather than the sharded
   runner. That last clause used to end "so there is no nested pool to
   oversubscribe", which is true of every file in ``tupferl/`` and false of the
   ones in ``tools/``: `tests/test_mutate.py` starts this harness and
@@ -114,7 +114,6 @@ import tempfile
 import textwrap
 import threading
 import time
-import unittest
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -340,30 +339,6 @@ _PROFILE = "TUPFERL_HYPOTHESIS_PROFILE"
 #: rather than as the typo it is.
 _MUTATION_PROFILE = "mutation"
 
-#: Which verdict layer grades a probe. ``pytest`` is what a sweep uses;
-#: ``unittest`` selects `tools/verdict_unittest.py`, the classifier that was here
-#: before the conversion, so that a row the two disagree about can be graded by
-#: the old one rather than argued about. It is deleted with that file at
-#: `docs/pytest-plan.md`'s Phase C.
-#:
-#: An environment variable rather than a flag because it has to survive
-#: ``python -c`` into a nested harness, the way `_BUDGET` and `_ALARM` do.
-#:
-#: **It will not give you a green whole-tree run, and that is not a defect to
-#: fix.** `tests/test_mutate.py` asserts the shape of a killer id -- it has to,
-#: since a cache full of ids nothing can select is a wall of `BROKE` -- so under
-#: the old classifier those assertions fail and the baseline is red. Use it for
-#: one row at a time, ``--no-baseline --only <file>``, and read the row rather
-#: than the summary; and prefer a caught row to a survivor, because a survivor
-#: walks outward far enough to reach those same failing tests and comes back
-#: falsely `caught`. The whole-tree control for this conversion was the tree
-#: *before* it, which is where the old classifier is the one the tests expect.
-_VERDICT = "TUPFERL_MUTATE_VERDICT"
-
-#: What each accepted value names, next to this file. Read out loud in the error
-#: below, so a typo names its alternatives instead of failing as a missing file.
-_LAYERS = {"pytest": "verdict.py", "unittest": "verdict_unittest.py"}
-
 #: The environment every pytest this module starts runs under, written once
 #: because it is a *contract* and two spellings of it are two contracts. `_run`
 #: spreads it into a probe's environment and `_collected` into its own, so what
@@ -495,9 +470,11 @@ class Verdict(NamedTuple):
     #: The first test that noticed, or the reason nothing could. Printed for
     #: everything except a plain `caught`, where the label already says it.
     detail: str = ""
-    #: The same test as `module.Class.method`, which is what `unittest` takes
-    #: back. Empty unless the outcome is `caught`. `detail` is for a reader and
-    #: this is for `killers`, which runs it again next time -- see `Killers`.
+    #: The killing test as a pytest **nodeid** -- `tests/test_x.py::C::test_y`,
+    #: which is the id `_loadable` and `_reaches` round-trip and therefore the
+    #: only spelling `Killers` can put back in front of a later run. Empty
+    #: unless the outcome is `caught`. `detail` is for a reader and this is for
+    #: `killers` -- see `Killers`.
     killer: str = ""
     #: What each test that ran cost, by id. Not persisted to the `--json`
     #: report, which is about verdicts; `Killers` keeps them, because ordering
@@ -617,28 +594,6 @@ _RUNS: list[Report] = []
 #: the good news.
 
 
-def _layer() -> str:
-    """Which backend a probe is graded by, or a loud refusal.
-
-    The *name*, not the filename: `_probe` needs the file and `_loadable` needs
-    to know which validation to use, and answering the second by comparing
-    filenames would make renaming `verdict_unittest.py` silently change a branch
-    about cache validity.
-
-    Refused rather than defaulted, because the two backends are the instrument
-    the conversion is being measured with: a mistyped `_VERDICT` that quietly
-    fell back to the default would report the sweep pair as agreeing when only
-    one of them ever ran, which is §8's shape exactly.
-    """
-    chosen = os.environ.get(_VERDICT, "pytest")
-    if chosen not in _LAYERS:
-        raise SystemExit(
-            f"{_VERDICT}={chosen!r} names no verdict layer; unset it, or set it to "
-            f"one of {', '.join(sorted(_LAYERS))}."
-        )
-    return chosen
-
-
 def _probe() -> str:
     """The verdict layer, read from *this* tree rather than the sandbox's copy.
 
@@ -648,8 +603,16 @@ def _probe() -> str:
     mutate, and a verdict loaded out of the copy would let a mutation grade its
     own exam. See that module's docstring for why the classification lives there
     and not in a string constant here.
+
+    **Deliberately not `functools.cache`d**, though it is a pure function of the
+    tree now that the layer switch is gone and `_collected` two functions away
+    is memoised exactly that way. It is one 39 KB read per row, against a caught
+    row's measured ~7.3s and a survivor's ~71s -- below noise -- and a cache
+    would silently make `test_mutate.TestWhichSourceTheProbeIsHanded` unfailable
+    the moment anything in the same process called `_probe` first, which
+    `test_mutate` does.
     """
-    return (Path(__file__).resolve().with_name(_LAYERS[_layer()])).read_text(encoding="utf-8")
+    return (Path(__file__).resolve().with_name("verdict.py")).read_text(encoding="utf-8")
 
 
 def _clear_bytecode(root: Path) -> None:
@@ -2965,8 +2928,18 @@ def verify(mutations: Iterable[Mutation], baseline: bool = True, workers: int | 
 
 
 #: What a row runs when selection could not name a target: everything. Empty
-#: rather than `"tests"`, because a package name is not discovery -- `unittest`
-#: imports the package, finds no tests in it, and reports a green run of nothing.
+#: because that is what `verdict._groups` reads as "no selection" -- it yields
+#: `[]`, which is `pytest.main` with no target and so the rootdir's whole
+#: collection. `"tests"` would be a *name* handed to the same code, and naming
+#: something is what the walk beyond a selection is for.
+#:
+#: **Historical -- the original argument was about `unittest`**, where a package
+#: name was not discovery: the loader imported the package, found no tests in it
+#: and reported a green run of nothing. That hazard is gone with that loader.
+#: The constant is unchanged because the pytest reason above arrives at the same
+#: value, which is worth saying rather than leaving a reader to conclude the
+#: objection lapsed and `"tests"` is now free.
+#:
 #: Not a fallback of convenience either: see `mutants.targets_for`, and the row
 #: says out loud when it happens.
 WHOLE_SUITE = ""
@@ -3710,29 +3683,16 @@ def _loadable(ids: Iterable[str]) -> set[str]:
 
     Asked of the framework rather than by checking that the file exists: a
     renamed *method* leaves its module in place, and that is the common way a
-    remembered id goes stale. It is also what drops a cache written by the other
-    backend -- `sweeps/killers.json` is machine-local and disposable, and its
-    ids simply do not appear in the answer the current one gives.
+    remembered id goes stale. It is also what drops a cache written before the
+    conversion, whose ids are dotted where pytest's are nodeids --
+    `sweeps/killers.json` is machine-local and disposable, and an id pytest
+    cannot name simply does not appear in the answer it gives.
     """
     wanted = set(ids)
     if not wanted:
-        # Nothing to ask about, and under pytest asking costs a subprocess.
+        # Nothing to ask about, and asking costs a subprocess.
         return set()
-    if _layer() != "unittest":
-        return wanted & _collected(os.getcwd())
-    found = set()
-    for name in wanted:
-        loader = unittest.TestLoader()
-        try:
-            loader.loadTestsFromName(name)
-        except Exception:
-            # Deliberately every exception: a module that no longer imports can
-            # raise anything at all on the way, and each one means the same
-            # thing here -- this id cannot be put in front of a run.
-            continue
-        if not loader.errors:
-            found.add(name)
-    return found
+    return wanted & _collected(os.getcwd())
 
 
 def generated(args: argparse.Namespace) -> list[Mutation]:
@@ -4119,8 +4079,9 @@ def _run_generated(
     `failfast=True`: worth having for a generated table and not for a hand
     table, because `caught` is the expected outcome for most generated rows and
     without it each one runs the rest of its target after the answer is known.
-    An average, not a bound -- `unittest` runs classes alphabetically, so a
-    mutant caught only by the last of them still pays for nearly all.
+    An average, not a bound -- pytest collects a module's classes in definition
+    order, so a mutant caught only by the last of them still pays for nearly
+    all.
 
     No ``scope``: it existed because `sweep` called this once per *file*, and a
     batch had to say that a red baseline voided only its own rows. tupferl#7
@@ -4486,13 +4447,6 @@ def main(argv: list[str] | None = None) -> int:
         help=f"budget for the cheap-tests-first prefix, 0 to disable (default {PREFIX:g})",
     )
     args = parser.parse_args(argv)
-
-    # Before any sandbox is built and before a spec file is loaded. `_probe`
-    # asks the same question once per row, from a lane thread, where a
-    # `SystemExit` is somebody else's problem; asking it here is what makes a
-    # mistyped `TUPFERL_MUTATE_VERDICT` one line on stderr instead of a wall of
-    # `BROKE`.
-    _layer()
 
     if args.all and args.base:
         parser.error("--all is every line; --base is what changed. Not both.")

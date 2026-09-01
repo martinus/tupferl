@@ -27,9 +27,10 @@ CLAUDE.md §8 collects:
   with no conversion behind it. **A count that a `__module__ = __name__` can
   lower is not a count of work done.**
 
-`loadTestsFromModule` is what `python -m unittest discover` and
-`tools/verdict_unittest.py` actually run, so the number means the thing the plan
-is about: modules pytest still takes through its `unittest` adapter. It is also
+`loadTestsFromModule` is what pytest's own `unittest` adapter runs -- and what
+`python -m unittest discover` and `tools/verdict_unittest.py` ran until Phase B
+and Phase C respectively stopped them being usable at all -- so the number means
+the thing the plan is about: modules pytest still takes through that adapter. It is also
 immune to the hazard the `__module__` filter existed for -- a module that
 *imports* a base from `tests/support.py` gains no runnable test by doing so, and
 those bases carry no `test_` methods to count. Measured: 159ms for all 35.
@@ -38,7 +39,7 @@ The companion claim is the one a status line cannot make: that **every** module
 is accounted for. A module nobody scheduled is invisible to a count that only
 compares two totals, so `test_every_module_is_scheduled_or_permanent` reads the
 cluster table and insists each module is either converted, named in a cluster,
-or one of the two the plan keeps.
+or one the plan keeps permanently.
 
 **The plan states modules *left*, not modules converted**, and this file is why:
 its first version guarded a "converted" count and failed on its own first run,
@@ -56,19 +57,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = ROOT / "docs" / "pytest-plan.md"
 
-#: The modules pytest will still run through its `unittest` adapter once Phase B
-#: is over, and why. **Neither is work left to do**, which is why they are named
-#: here rather than left to look like arrears:
+#: The modules pytest still runs through its `unittest` adapter, and why.
+#: **This is not work left to do**, which is why it is named here rather than
+#: left to look like arrears: `test_sync_properties` exposes a class Hypothesis
+#: builds inside `hypothesis.stateful`. The plan keeps `X = Machine.TestCase` as
+#: the pytest-idiomatic spelling, so that module is finished and will still be
+#: unittest-backed for ever.
 #:
-#: - `test_verdict_unittest` dies with its subject in Phase C, and until then
-#:   `tools/verdict_unittest.py` needs one module it can still grade --
-#:   `tests/test_mutate.py`'s `EITHER_LAYER` row points at it;
-#: - `test_sync_properties` exposes a class Hypothesis builds inside
-#:   `hypothesis.stateful`. The plan keeps `X = Machine.TestCase` as the
-#:   pytest-idiomatic spelling, so that module is finished and will still be
-#:   unittest-backed for ever.
+#: **It held two entries until Phase C.** `test_verdict_unittest` was the other,
+#: kept only so the retired classifier had one module it could still grade; the
+#: file was deleted with its subject, so the exception went with it rather than
+#: being converted. A `PERMANENT` that shrinks by a *deletion* is the one way
+#: this dict can fall without a conversion behind it -- worth saying, because
+#: the plan's own number falls too and reads like progress.
 PERMANENT = {
-    "test_verdict_unittest": "dies with its subject in Phase C",
     "test_sync_properties": "the class is Hypothesis's, built in `hypothesis.stateful`",
 }
 
@@ -136,6 +138,52 @@ def scheduled() -> set[str]:
     return found
 
 
+def anchors(text: str) -> set[str]:
+    """The fragment GitHub gives each heading, by GitHub's own rule.
+
+    Lowercase, drop everything that is not a word character, whitespace or a
+    hyphen, then one hyphen per space -- **not** one per *run* of spaces, which
+    is the detail that matters here and cost the first version of this function
+    a false result on every link in the file. A heading reading
+    ``## Phase C as built -- 2026-09-01`` loses the dash and keeps the two
+    spaces around it, so its anchor carries a *doubled* hyphen. Collapsing runs
+    reports thirteen dead anchors where one is dead.
+    """
+    found = set()
+    for line in text.splitlines():
+        if line.startswith("#"):
+            bare = re.sub(r"[^\w\s-]", "", line.lstrip("#").strip().lower())
+            found.add("#" + bare.replace(" ", "-"))
+    return found
+
+
+class TestEveryInternalLinkResolves:
+    """The plan's index links to each "as built" section, and the line above it
+    says to read every one of them before the next phase.
+
+    A link to a fragment that does not exist scrolls nowhere and reads, to
+    anybody following it, as a section that was never written -- which is what
+    the index exists to deny. Phase C found two: one it had introduced by
+    indexing a section before writing it, and one that had been dead since B6,
+    where a heading gained a date the link did not. Two instances is the rule
+    this file already applies to counts, so the check is here rather than in
+    another pair of eyes.
+    """
+
+    def test_the_document_has_internal_links_at_all(self) -> None:
+        """The precondition. A regex that matched nothing would satisfy the test
+        below by having no links to check -- §2's zero-iteration trap, in the
+        shape it takes when the subject is prose."""
+        text = PLAN.read_text(encoding="utf-8")
+        assert len(re.findall(r"\]\((#[\w-]+)\)", text)) > 10
+
+    def test_every_one_of_them_names_a_heading(self) -> None:
+        text = PLAN.read_text(encoding="utf-8")
+        have = anchors(text)
+        dead = sorted(set(re.findall(r"\]\((#[\w-]+)\)", text)) - have)
+        assert dead == [], f"these links point at no heading: {dead}"
+
+
 class TestTheStatusLineIsTrue:
     """The three numbers, against what the tree actually holds."""
 
@@ -176,11 +224,24 @@ class TestEveryModuleIsAccountedFor:
         assert len(scheduled()) > 20, scheduled()
 
     def test_every_module_is_scheduled_or_permanent(self) -> None:
-        """Converted, named in a cluster, or one of the two the plan keeps."""
+        """Converted, named in a cluster, or one the plan keeps permanently."""
         loose = [
             stem for stem in still_unittest() if stem not in scheduled() and stem not in PERMANENT
         ]
         assert loose == [], f"these modules are in no cluster and are not converted: {loose}"
+
+    def test_there_are_permanent_ones_to_check(self) -> None:
+        """The precondition the two tests below need, and it was not needed
+        until Phase C.
+
+        `PERMANENT` held two entries and now holds one. Both loops below are
+        `for stem in PERMANENT:` with the assertion inside, which is §2's
+        zero-iteration trap exactly: an empty dict satisfies each of them by
+        having nothing to check, and the dict's own comment says a *deletion* is
+        the way it falls. So the emptiness is asserted here rather than assumed
+        twice.
+        """
+        assert PERMANENT
 
     def test_the_permanent_ones_really_are_unittest_backed(self) -> None:
         """If one were ever converted, this file would be the only thing left
@@ -190,7 +251,7 @@ class TestEveryModuleIsAccountedFor:
         for stem in PERMANENT:
             assert stem in still, f"{stem} no longer runs as unittest; the plan says it does"
 
-    def test_the_status_line_names_both_of_them(self) -> None:
+    def test_the_status_line_names_every_permanent_one(self) -> None:
         """The half a count cannot carry. A permanent exception that only this
         file knows about reads, in the plan, as a module somebody forgot.
 
