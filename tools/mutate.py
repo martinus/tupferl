@@ -3412,7 +3412,11 @@ class Killers:
         self.known: dict[str, str] = {}
         #: What each *row* cost last time, by `_key`, for `slowest_first`.
         self.seconds: dict[str, float] = {}
-        # survivor: branch -- TODO: why is this acceptable?
+        # survivor: branch -- equivalent: taken anyway, `read_text` raises --
+        #   `AttributeError` for `None`, `FileNotFoundError` for a path that is
+        #   not there -- and the `except` below sets the same two empty dicts
+        #   this branch is skipped to leave. The guard buys a failed call, not a
+        #   different answer.
         if where is not None and where.is_file():
             try:
                 saved = json.loads(where.read_text(encoding="utf-8"))
@@ -3449,7 +3453,6 @@ class Killers:
         # unreachable -- so the count read 0 for every run there has ever been,
         # while `ahead_of` printed its own bare copy of the same sentence and
         # made the silence look like nothing to report.
-        # survivor: arith -- TODO: why is this acceptable?
         self.dropped = len(wanted) - len(usable)
         ahead = []
         for row in table:
