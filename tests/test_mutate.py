@@ -30,6 +30,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import typing
@@ -1011,6 +1012,26 @@ class TestCollectingWhatAKilledSweepLeft:
             assert len(said) == 2, said
             assert "collected" in said[0]
             assert "no owner stamp" in said[1]
+
+    def test_a_real_run_prints_what_it_found(self) -> None:
+        """`main` end to end, because the lines above are only useful if
+        something says them and the `print` loop is a line of its own.
+
+        `tempfile.tempdir` is patched rather than `TMPDIR`, because
+        `gettempdir()` caches its answer on first use and an environment
+        variable set afterwards would change nothing. `--base HEAD` reaches the
+        report and then exits on "nothing mutable changed", which is the
+        cheapest way through `main` that still runs it.
+        """
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            gone = self.tree(box, "mutate-said", json.dumps({"pid": self.dead(), "born": 1.0}))
+            with (
+                mock.patch.object(tempfile, "tempdir", str(box)),
+                support.quiet() as spill,
+                pytest.raises(SystemExit),
+            ):
+                mutate.main(["--base", "HEAD", "--collect"])
+            assert f"collected {gone}" in spill.getvalue()
 
     def test_a_tree_it_makes_is_stamped_before_anything_else_goes_in(self) -> None:
         """A sweep killed a millisecond after `mkdtemp` still has to leave a
