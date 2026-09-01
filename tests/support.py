@@ -39,11 +39,13 @@ from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdo
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
+if TYPE_CHECKING:  # pragma: no cover - for the annotation on `line` alone
+    from hypothesis import strategies as st
+
 import pytest
-from hypothesis import strategies as st
 
 from tools.settings import SETTINGS
 from tupferl import manifest, paths
@@ -1266,6 +1268,33 @@ def move_on_first_push(remote: Path, env: dict[str, str], root: Path) -> None:
 #:   by `test_merge.TestBinaryFilesHaveNoMerge`, which is what stops the
 #:   exclusion being a hole.
 def line(max_size: int) -> st.SearchStrategy[str]:
+    """The strategy, with the import paid for by the three modules that want it.
+
+    **`hypothesis` is imported here rather than at module scope, and that is
+    measured (#85).** This file is imported by 20 of the 35 test modules and by
+    every probe of a sweep, and only the three `*_properties` modules ever call
+    this. Measured, medians of seven fresh processes each:
+
+    | `import tests.support` | |
+    |---|---|
+    | with `hypothesis` at module scope | **122.3 ms** |
+    | with it here | **74.3 ms** |
+
+    Across a whole `python -m tools.run_tests`, three interleaved pairs against
+    a worktree of `main`: **median CPU -1.27 s** (negative in all three pairs,
+    -1.27/-1.18/-2.12) and **median wall +0.00 s -- below measurement**, which
+    is what the issue predicted and is said here rather than dressed up. The
+    issue's estimate was ~7 s of CPU; the measured figure is a fifth of that,
+    because only the batches whose scopes reach `support` pay the import.
+
+    The alternative the issue offered was a `tests/strategies.py` that only the
+    property modules import. This is the smaller change and keeps a helper where
+    twenty modules already look for one; the tidier split moves a helper away
+    from that one place to save the same milliseconds. `TYPE_CHECKING` above is
+    what keeps the annotation honest without paying for it at runtime.
+    """
+    from hypothesis import strategies as st
+
     return st.text(
         alphabet=st.characters(codec="utf-8", exclude_characters="\n\r\x00"),
         max_size=max_size,
