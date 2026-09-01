@@ -1588,9 +1588,11 @@ def _imported(node: ast.AST, package: str = "") -> Iterator[str]:
     if not isinstance(node, ast.ImportFrom):
         return
     if node.level:
-        # survivor: branch -- a relative import in a file with no package to resolve against, which
-        #   cannot happen for the `tests/` tree this is called on -- `importers` passes `"tests"`
-        #   always.
+        # survivor: branch -- a relative import in a file with no package to resolve against.
+        #   `importers` passes `SETTINGS.tests_package`, which is `"tests"` here and non-empty for
+        #   any project that has a tests directory at all -- but it is a *setting* since Phase D,
+        #   so this is reachable by configuration rather than unreachable, and no fixture in this
+        #   tree establishes it.
         if not package:
             return
         base = f"{package}.{node.module}" if node.module else package

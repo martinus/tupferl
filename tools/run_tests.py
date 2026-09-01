@@ -94,11 +94,17 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from tools import paint
+from tools import paint, settings
 from tools.cpus import usable_cpus
 from tools.settings import SETTINGS
 
-ROOT = Path(__file__).resolve().parent.parent
+#: Through `settings` rather than computed again, so that `settings._root` really
+#: is the only thing that knows where a project is -- which is what
+#: `tools/README.md`'s extraction checklist claims and what a second copy here
+#: made false. This feeds pytest's ``--rootdir``, discovery's default and a
+#: subprocess `cwd`, so an installed harness whose root moved would otherwise
+#: leave this one walking `site-packages`.
+ROOT = settings.ROOT
 
 #: What every `pytest.main` call below passes, and why each of the three is
 #: there. ``-q`` because sixty-four batches of per-test lines is not a log

@@ -3462,6 +3462,73 @@ from perturbing the file rather than from reading the diff.
   has both; and a list check that asks "are all items strings" accepts
   `"src/"` and turns one prefix into eleven one-character ones.
 
+### What the review pass added, and it was not polish
+
+Four review agents over the diff, and CLAUDE.md's line about a "quality pass"
+containing real defects held again. Five findings changed behaviour rather than
+shape:
+
+- **`Settings.sandbox` was a dict of keys to *add*, so `probe_autoload = true`
+  could not turn autoload on.** `_run` spreads it over `os.environ`, so an
+  ambient `PYTEST_DISABLE_PLUGIN_AUTOLOAD` — from a nested sweep, or a CI that
+  exports it — was inherited and the knob silently did nothing. The default
+  configuration introduced a hole the old unconditional constant did not have.
+  `Settings.unset` and `Settings.environment` are the fix: one place that
+  inherits, overrides *and* removes, with the removals derived from the
+  additions so a name cannot be added to one and forgotten in the other.
+- **Two knobs were missed.** `mutate._COLUMNS = 100` is this repository's
+  `[tool.ruff] line-length`, and `--accept` writes tags at that width into the
+  *host's* source — so the harness would make every tag it wrote illegal in a
+  project formatted at 88, which is the guard failing in exactly the project
+  that cannot see it. And `mutate._SKIP` named `.venv` and `sweeps`, this tree's
+  spellings, in the list that decides what is copied into a sandbox once per
+  lane per row. Both are `[tool.mutate]` keys now.
+- **`tools/run_tests.py` computed the repository root a third time**, three
+  lines under the `from tools.settings import SETTINGS` this phase added —
+  which falsified the claim, written in the same commit, that `settings._root`
+  is the only thing that knows where a project is. It feeds pytest's
+  `--rootdir`, discovery's default and a subprocess `cwd`, so an installed
+  harness would have left it walking `site-packages`. Routed, along with
+  `tests/support.py`'s copy.
+- **`tools/reached.py`'s argparse epilog still told the user
+  `coverage run --source=tupferl`** — the only lowercase `tupferl` left in a
+  live code path, invisible to the phase's own case-sensitive `grep -rn
+  "TUPFERL" tools/` gate, in the one tool whose entire output is a list of
+  things to go and do. Derived from `mutable` now.
+- **The type dispatch in `parse` fell through to `str`.** It read the *source
+  text* of each annotation (`from __future__ import annotations` makes
+  `Field.type` a string), matched `"tuple"` and `"bool"`, and treated everything
+  else as a string — so the first numeric knob would be refused for every legal
+  value with a message naming the wrong type, and no test could see it until
+  that knob existed. `tag_columns` arrived in the same review. It dispatches on
+  `type(field.default)` now, which is exact.
+
+Three more were about tests that were not what they looked like:
+
+- **a hand-rolled TOML parser in a test**, splitting the raw file on `=` — the
+  fourth instance of CLAUDE.md's "a test that greps a config file must strip
+  comments", arriving in a file added by the same PR. It parses now, through
+  `tupferl.config.toml()`, which is also what keeps it off `import tomllib` on
+  the 3.10 leg — mypy caught that half before CI could.
+- **four assertions that could not fail.** With both ends derived,
+  `support.ALARM == mutate._ALARM` holds however either is written, and would go
+  on holding if somebody typed the literal back into `support.py` — the exact
+  state this phase removed. The check that can fail reads `tests/support.py`
+  with `ast` and insists the three names are *assigned from* `settings`. The two
+  value comparisons in `test_support` are kept as a tripwire against a literal
+  with a different spelling, with docstrings saying that is all they are.
+- **a cache that cached nothing.** `functools.lru_cache` on a test method looks
+  settled and is not: pytest builds a fresh instance per test, so `self` is part
+  of the key and seven tests paid seven 90 ms subprocesses. `--durations` said
+  so. A class-scoped fixture took the module from 0.70 s to 0.17 s.
+
+And one stale claim written by this phase and corrected by it: the docstring on
+`settings.load` explained that `tomllib` was imported inside the function to
+save every test process the cost — while `SETTINGS = load(ROOT)` on the last
+line of the module ran it during import anyway. Measured at 0.9 ms of a 14 ms
+import, 1.9 ms of `tests/support.py`'s 110 ms, 0.24 s of CPU across 128
+batches: the code was fine and the sentence was not.
+
 ### Two things this phase did not do
 
 - **`tools/README.md` carries the extraction checklist** — package name and

@@ -115,6 +115,8 @@ Everything the harness knows about the project it measures is a key in a
 | `hypothesis_profile_env`, `hypothesis_profile` | the variable and value a probe sets; either empty disables the hook | none |
 | `probe_autoload` | whether a probe lets pytest autoload installed plugins | `true` |
 | `probe_plugins` | plugins a probe force-loads through `PYTEST_PLUGINS` | none |
+| `tag_columns` | what `--accept` wraps a `# survivor:` tag to | `88` |
+| `sandbox_ignore` | names a sandbox copy leaves out, on top of the universal list | none |
 | `tests_dir` | where the test modules are | `tests` |
 | `test_module_patterns` | how a source stem predicts its test module's | `["test_{stem}", "test_{stem}_*"]` |
 
@@ -124,11 +126,33 @@ file would produce an identical sweep and every test written for it would pass.
 An unknown key or a wrong type is refused with a message naming it, rather than
 silently keeping a default.
 
+`tag_columns` has to equal whatever the host's formatter enforces, because
+`--accept` writes comment lines into the host's own source files; here
+`tests/test_packaging.py` asserts it against `[tool.ruff] line-length`.
+
+`sandbox_ignore` is where a sweep's largest avoidable cost is decided: a sandbox
+is copied once per lane per row, so a virtualenv or a `node_modules` left in it
+is paid thousands of times. The universal names — `.git`, `__pycache__`, the two
+linter caches, `*.egg-info`, `.hypothesis` — are in `mutate._SKIP` and need no
+configuration.
+
 `tests_dir` and `test_module_patterns` are an **ordering** heuristic and not a
 gate — `verdict.collect` walks whatever the selection missed — so a wrong value
 costs a longer walk, never a wrong verdict. The walk itself already respects the
 host's own pytest configuration (`python_files`, `testpaths`, conftest
 hierarchies).
+
+Two limits of that pair, both stated rather than fixed, because neither can be
+exercised by a project with tupferl's flat layout:
+
+- **a host states its test-module convention twice** — here, and in pytest's
+  `python_files`. Defaulting one from the other is possible (`settings.load`
+  already parses the file that holds both) and is declined for now: tupferl
+  declares neither, so nothing here would prove the defaulting works.
+- **`tests_dir` is one directory and is not searched recursively.** A suite laid
+  out as `tests/unit/test_x.py` gets an empty selection for every row, so every
+  row runs the whole suite — slower, never wrong, and silent about it. It is the
+  knob most likely to be wrong for the second consumer.
 
 ## What extraction still needs
 

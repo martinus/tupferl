@@ -52,9 +52,15 @@ from __future__ import annotations
 
 import fnmatch
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - the 3.10 CI leg is what proves this branch
+    import tomli as tomllib
 
 
 def _root() -> Path:
@@ -80,6 +86,11 @@ ROOT = _root()
 #: worse than no message.
 FILE = "pyproject.toml"
 TABLE = "tool.mutate"
+
+#: Every environment variable `Settings.sandbox` may set. `unset` subtracts
+#: what a given configuration did *not* set from this, so a probe never
+#: inherits a half of the contract the project turned off.
+_PROBE_NAMES = ("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS")
 
 
 @dataclass(frozen=True)
@@ -133,6 +144,23 @@ class Settings:
 
     #: Where the test modules are, as a path relative to the root.
     tests_dir: str = "tests"
+
+    #: What `--accept` wraps a `# survivor:` tag to, which has to be the host's
+    #: own formatter width. It was `mutate._COLUMNS = 100` -- this repository's
+    #: `[tool.ruff] line-length`, in the harness -- and `--accept` writes those
+    #: tags into the *host's* source: at 88 every tag the tool writes is a line
+    #: the host's `ruff format --check` rejects, which is exactly the failure the
+    #: constant existed to prevent, arriving in the project that cannot see the
+    #: guard. 88 by default because that is what ruff and black use unasked.
+    tag_columns: int = 88
+
+    #: Names never copied into a mutation's sandbox, **on top of** the universal
+    #: list in `mutate._SKIP`. A sandbox is copied once per lane per row, so this
+    #: is the single largest cost a sweep can carry and it surfaces only as
+    #: slowness. `.git` and the bytecode and tool caches are everybody's;
+    #: `sweeps` and `.venv` are a spelling, and a host using `venv/`, `.tox/` or
+    #: `node_modules/` has no way to say so without this.
+    sandbox_ignore: tuple[str, ...] = ()
 
     #: How a source file's name predicts its test module's, ``{stem}`` being the
     #: source file's stem and the rest an `fnmatch` pattern against a test
@@ -200,6 +228,52 @@ class Settings:
             made["PYTEST_PLUGINS"] = ",".join(self.probe_plugins)
         return made
 
+    @property
+    def profile(self) -> dict[str, str]:
+        """The Hypothesis hook a probe sets, or nothing at all.
+
+        Empty unless the project named **both** a variable and a value. An empty
+        variable name is not a variable, and an empty *value* is a profile
+        `load_profile` would try to find and fail on inside the probe -- where a
+        typo surfaces as `BROKE` on every row rather than as the typo it is.
+
+        A property beside `sandbox` rather than a conditional spread inside
+        `_run`'s `Popen` call, which is where it was first written: there its
+        empty arm was reachable only from a project configured differently to
+        this one, so no test in the tree could execute it.
+        """
+        if not (self.hypothesis_profile_env and self.hypothesis_profile):
+            return {}
+        return {self.hypothesis_profile_env: self.hypothesis_profile}
+
+    @property
+    def unset(self) -> tuple[str, ...]:
+        """Names a probe must *not* inherit, given what `sandbox` did not set.
+
+        **A dict of keys to add cannot turn a variable off**, and until this
+        existed the default configuration had a hole the old constant did not:
+        `PYTEST_DISABLE_PLUGIN_AUTOLOAD` used to be set unconditionally, so
+        `probe_autoload = true` was expressed as *leaving it out* -- and `_run`
+        spreads `sandbox` over `os.environ`, so an ambient one (a nested sweep,
+        a CI that exports it) was inherited and the knob silently did nothing.
+        A stranger's probes would then run without the plugins their suite
+        needs, which is precisely what the knob exists to prevent.
+
+        Derived from `sandbox` rather than listed beside it, so a name added
+        there conditionally cannot be forgotten here.
+        """
+        return tuple(name for name in _PROBE_NAMES if name not in self.sandbox)
+
+    def environment(self, base: Mapping[str, str], **extra: str) -> dict[str, str]:
+        """`base`, with the sandbox contract applied and `extra` on top.
+
+        The one place the three operations meet -- inherit, override, remove --
+        because two spellings of a contract are two contracts, which is the
+        argument `sandbox` already carried for the additions alone.
+        """
+        made = {name: value for name, value in base.items() if name not in self.unset}
+        return {**made, **self.sandbox, **extra}
+
     def is_test_module(self, name: str) -> bool:
         """Whether a module stem under `tests_dir` is a test module or a helper.
 
@@ -222,14 +296,19 @@ class Settings:
         return {name for name in names if any(fnmatch.fnmatch(name, want) for want in wanted)}
 
 
-def _tuple(table: str, key: str, value: Any) -> tuple[str, ...]:
-    """A TOML array of strings, or a message naming the key that was not one."""
+def _tuple(key: str, value: Any) -> tuple[str, ...]:
+    """A TOML array of strings, or a message naming the key that was not one.
+
+    `isinstance(value, list)` first, and not only "every item is a string":
+    `"src/"` is iterable and every character of it is a string, so the shorter
+    check accepts it and turns one prefix into eleven one-character ones.
+    """
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"[{table}] {key} must be a list of strings, not {value!r}")
+        raise ValueError(f"[{TABLE}] {key} must be a list of strings, not {value!r}")
     return tuple(value)
 
 
-def _scalar(table: str, key: str, value: Any, want: type) -> Any:
+def _scalar(key: str, value: Any, want: type) -> Any:
     """One value of the type the field declares, or a message saying so.
 
     `type(value) is not want` rather than `isinstance`, because `bool` is a
@@ -238,7 +317,7 @@ def _scalar(table: str, key: str, value: Any, want: type) -> Any:
     and a config that half-works is the thing this module refuses to be.
     """
     if type(value) is not want:
-        raise ValueError(f"[{table}] {key} must be a {want.__name__}, not {value!r}")
+        raise ValueError(f"[{TABLE}] {key} must be a {want.__name__}, not {value!r}")
     return value
 
 
@@ -257,15 +336,18 @@ def parse(raw: dict[str, Any]) -> Settings:
         )
     made: dict[str, Any] = {}
     for key, value in raw.items():
-        # `str(...)` because `from __future__ import annotations` makes every
-        # `Field.type` the *source text* of the annotation rather than the
-        # class, so this reads `"tuple[str, ...]"` and never a `type`.
-        want = str(declared[key].type)
-        made[key] = (
-            _tuple(TABLE, key, value)
-            if want.startswith("tuple")
-            else _scalar(TABLE, key, value, bool if want == "bool" else str)
-        )
+        # The type of the field's own **default**, not of its annotation.
+        # `from __future__ import annotations` makes every `Field.type` the
+        # *source text* -- `"tuple[str, ...]"` -- so dispatching on it means
+        # string-matching, and the first version did: `startswith("tuple")`,
+        # then `bool` if the text was exactly `"bool"`, and `str` for everything
+        # else. That last arm is the problem. It is not a default, it is a
+        # silent mis-type: the first numeric knob added here would be refused
+        # for every legal value with a message naming the wrong type, and no
+        # test could see it until the knob existed. Every field has a plain
+        # default, so `type(...)` of it is exact and needs no map to maintain.
+        want = type(declared[key].default)
+        made[key] = _tuple(key, value) if want is tuple else _scalar(key, value, want)
     return Settings(**made)
 
 
@@ -279,15 +361,15 @@ def load(root: Path) -> Settings:
 
     ``tomllib`` is 3.11; ``tomli`` is the library it was taken from, and the
     3.10 CI leg is what proves that branch is reachable -- the same shim, and the
-    same argument, as `tupferl/config.py`. Imported inside the function rather
-    than at module scope because `tests/support.py` imports this module, so the
-    cost would be paid by every test process for a parse that happens once.
+    same argument, as `tupferl/config.py`. **Unlike `config.py` it is imported at
+    module scope**, and the first version of this deferred it with `config.py`'s
+    reason copied across: that deferral buys nothing here, because `SETTINGS =
+    load(ROOT)` runs `load` during import anyway. Measured: 0.9 ms of a 14 ms
+    ``import tools.settings``, 1.9 ms median paired difference on the whole of
+    `tests/support.py`'s 110 ms import -- 0.24 s of CPU across the suite's 128
+    batches. `config.py`'s deferral is real because `toml()` is only reached when
+    a file is actually read.
     """
-    if sys.version_info >= (3, 11):
-        import tomllib
-    else:
-        import tomli as tomllib
-
     found = root / FILE
     try:
         raw = tomllib.loads(found.read_text(encoding="utf-8"))
@@ -295,9 +377,14 @@ def load(root: Path) -> Settings:
         return Settings()
     except tomllib.TOMLDecodeError as broken:
         raise ValueError(f"{found} is not valid TOML ({broken}); fix that line.") from broken
-    table = raw.get("tool", {}).get("mutate")
-    if table is None:
-        return Settings()
+    # Walked from `TABLE` rather than spelled `raw["tool"]["mutate"]`, which is
+    # the drift that constant's own comment says it prevents and which the first
+    # version of this line committed anyway.
+    table: Any = raw
+    for step in TABLE.split("."):
+        if not isinstance(table, dict) or step not in table:
+            return Settings()
+        table = table[step]
     if not isinstance(table, dict):
         raise ValueError(f"[{TABLE}] in {found} must be a table, not {table!r}")
     return parse(table)

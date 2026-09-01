@@ -15,6 +15,7 @@ Three questions, and they are separate on purpose:
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ import pytest
 from tests import support
 from tools import mutants, mutate, settings
 from tools.settings import Settings
+from tupferl import config
 
 #: What this project's `[tool.mutate]` table has to come back as: the constants
 #: that stood in `tools/` before Phase D, character for character. If a change
@@ -44,6 +46,8 @@ TODAY = Settings(
     hypothesis_profile="mutation",
     probe_autoload=False,
     probe_plugins=(),
+    tag_columns=100,
+    sandbox_ignore=("sweeps", ".venv"),
     tests_dir="tests",
     test_module_patterns=("test_{stem}", "test_{stem}_*"),
 )
@@ -62,8 +66,22 @@ hypothesis_profile_env = "OTHER_HYPOTHESIS"
 hypothesis_profile = "quick"
 probe_autoload = true
 probe_plugins = ["myplugin", "otherplugin"]
+tag_columns = 72
+sandbox_ignore = ["node_modules"]
 tests_dir = "checks"
 test_module_patterns = ["check_{stem}"]
+
+# Stated a second time, in pytest's own vocabulary, because the harness has two
+# readers of "which files are test modules" and only one of them is this table:
+# `verdict.collect`'s outward walk asks the host's pytest for `python_files`
+# (Phase A) and the *selection* asks `test_module_patterns`. A project that set
+# only the second would get a selection its own pytest cannot collect -- which
+# costs a longer walk rather than a wrong verdict, and is still a foot-gun a
+# demonstration should not model. Defaulting one from the other is recorded in
+# `docs/pytest-plan.md` as considered and declined: nothing in tupferl exercises
+# it, because tupferl declares neither.
+[tool.pytest.ini_options]
+python_files = ["check_*.py"]
 """
 
 #: What the subprocess in `TestASecondProjectConfiguresIt` prints back. Every
@@ -87,8 +105,11 @@ print(json.dumps({
     "mutated": mutate._MUTATED,
     "profile_env": mutate._PROFILE,
     "profile": mutate._MUTATION_PROFILE,
-    "sandbox": mutate.SANDBOX,
+    "sandbox": settings.SETTINGS.environment({}),
+    "unset": list(settings.SETTINGS.unset),
     "tmp": settings.SETTINGS.tmp("verdict-"),
+    "columns": mutate._COLUMNS,
+    "skipped": sorted(mutate._SKIP("x", ["node_modules", "sweeps", ".git", "src"])),
     "refusal": mutate._mutable_prefixes(),
 }))
 """
@@ -100,12 +121,15 @@ print(json.dumps({
 #: lose the race to the alarm and file the row `BROKE`.
 ASKING = support.bounded(20.0)
 
+#: What `ASKS` prints back, parsed.
+Answers = dict[str, Any]
+
 #: What `tmp_table` hands a test: a root, optionally with a `pyproject.toml` in
 #: it. Named because four signatures spell it.
 Table = Callable[[str | None], Path]
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
 def elsewhere() -> Iterator[Path]:
     """A whole second project: its own config, its own layout, its own copy.
 
@@ -114,11 +138,16 @@ def elsewhere() -> Iterator[Path]:
     scratch project that merely sits beside this one would be configured by this
     one's `pyproject.toml`. Copying is also what extraction looks like -- an
     installed harness sits inside the project it measures.
+
+    Class-scoped, and `answers` caches: nothing here mutates the tree, and at
+    function scope the five tests below paid the same 110 ms subprocess five
+    times over five identical copies -- 0.43 s of the module's 0.59 s, in a class
+    whose first test argues in its own docstring that the spawn is the cost.
+    `mutate._SKIP` rather than a second ignore list, for the reason this whole
+    change exists.
     """
     with support.tempdir(prefix="tupferl-elsewhere-") as box:
-        shutil.copytree(
-            support.ROOT / "tools", box / "tools", ignore=shutil.ignore_patterns("__pycache__")
-        )
+        shutil.copytree(support.ROOT / "tools", box / "tools", ignore=mutate._SKIP)
         (box / "pyproject.toml").write_text(OTHER, encoding="utf-8")
         (box / "src").mkdir()
         (box / "src" / "thing.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -147,11 +176,24 @@ class TestThisProjectsTableIsYesterdaysConstants:
         """The table is the documentation of what the table takes, so a field
         added to `Settings` and left out of `pyproject.toml` is a knob nobody
         knows to reach for. Read out of the file rather than off `SETTINGS`,
-        which would be satisfied by the defaults."""
-        raw = (settings.ROOT / settings.FILE).read_text(encoding="utf-8")
-        table = raw.partition("[tool.mutate]")[2].partition("\n[")[0]
-        stated = {line.partition("=")[0].strip() for line in table.splitlines() if "=" in line}
-        assert stated == set(TODAY.__dataclass_fields__)
+        which would be satisfied by the defaults.
+
+        **Parsed, not grepped**, which is CLAUDE.md's thrice-recorded rule about
+        reading a config file in a test and was got wrong here on the first
+        attempt: the original walked the raw text and split every line on `=`,
+        so a comment inside the table quoting a setting -- and the table has six
+        of them -- would have been read as a stated key.
+
+        Through `config.toml()` rather than `import tomllib`, which is 3.11: a
+        module-scope import of it here is red on the 3.10 leg, and mypy said so
+        before CI could. `tools/` may not import the package and carries its own
+        copy of the shim; `tests/` may, and `tests/test_packaging.py` reads this
+        same file the same way.
+        """
+        table: Any = config.toml().loads((settings.ROOT / settings.FILE).read_text("utf-8"))
+        for step in settings.TABLE.split("."):
+            table = table[step]
+        assert set(table) == set(TODAY.__dataclass_fields__)
 
     def test_the_defaults_are_not_this_project(self) -> None:
         """**The reason the defaults are generic**, and the test that makes
@@ -160,21 +202,35 @@ class TestThisProjectsTableIsYesterdaysConstants:
         pass the whole file above."""
         assert Settings() != TODAY
 
-    def test_the_harness_reads_the_derived_names_rather_than_spelling_them(self) -> None:
-        """Both ends of the alarm and the mutated-tree marker, which used to be
-        four hand-written literals in two files that a typo could part.
+    @pytest.mark.parametrize("name", ["ALARM", "MUTATED", "ROOT"])
+    def test_the_fixtures_derive_these_names_rather_than_spelling_them(self, name: str) -> None:
+        """`tests/support.py` assigns each of these from `settings`, not from a
+        literal, and this reads the source to say so.
 
-        It is vacuous *today* by construction -- every side is one expression
-        apart -- and that is the improvement: the class of bug is gone rather
-        than watched. What it still catches is any end going back to a literal,
-        which is exactly how all four were written before. `test_support`'s
-        `test_the_harness_and_the_fixture_spell_the_name_the_same` asks the same
-        question from the fixture's side, where a reader of `bounded` looks.
+        **Comparing the values instead is what cannot fail.** Both ends are one
+        expression apart now, so `support.ALARM == mutate._ALARM` holds however
+        either is written -- and it would go on holding if somebody typed
+        `"TUPFERL_MUTATE_EACH_TEST"` back into `support.py`, which is precisely
+        the state Phase D removed. The two value comparisons in `test_support`
+        are kept as a tripwire against a literal with a *different* spelling;
+        this is the one that sees a literal with the same spelling, and that is
+        the one which then rots the next time `env_prefix` moves.
+
+        Reading the repository's own source is a source-shaped claim, and
+        `tests/` is not mutable, so no `over_a_mutated_tree` guard applies: a
+        probe's copy of this file is the same file.
         """
-        assert settings.SETTINGS.alarm_env == support.ALARM
-        assert settings.SETTINGS.mutated_env == support.MUTATED
-        assert settings.SETTINGS.alarm_env == mutate._ALARM
-        assert settings.SETTINGS.budget_env in support.CARRIES
+        source = ast.parse((support.ROOT / "tests" / "support.py").read_text(encoding="utf-8"))
+        assigned = [
+            node.value
+            for node in source.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(at, ast.Name) and at.id == name for at in node.targets)
+        ]
+        assert len(assigned) == 1, name
+        assert isinstance(assigned[0], ast.Attribute), ast.unparse(assigned[0])
+        assert isinstance(assigned[0].value, ast.Name)
+        assert assigned[0].value.id in {"settings", "SETTINGS"}
 
 
 class TestWhatItRefuses:
@@ -220,7 +276,7 @@ class TestWhatItRefuses:
 
 
 @pytest.fixture
-def tmp_table() -> Iterator[Callable[[str | None], Path]]:
+def tmp_table() -> Iterator[Table]:
     """A throwaway root holding one `pyproject.toml`, or none at all.
 
     `support.tempdir` rather than pytest's `tmp_path`, which keeps three
@@ -360,6 +416,30 @@ class TestTheNamesItDerives:
         assert Settings(test_module_patterns=patterns).is_test_module(name) is want
 
 
+@pytest.fixture(scope="class")
+def answers(elsewhere: Path) -> Answers:
+    """What the harness inside `elsewhere` says about itself, asked once.
+
+    A class-scoped fixture rather than a cached method, and the difference is
+    measured: `functools.lru_cache` on the method was the first spelling and it
+    cached nothing, because pytest builds a fresh instance for every test and
+    `self` is part of the key. Seven tests, seven 90 ms subprocesses, and the
+    `maxsize=1` beside it read as though the question were settled -- §8's
+    "distrust a pass you cannot explain" applied to a speed-up rather than to a
+    verdict. `--durations` is what said so.
+    """
+    done = subprocess.run(
+        [sys.executable, "-c", ASKS],
+        cwd=elsewhere,
+        capture_output=True,
+        text=True,
+        timeout=ASKING,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return dict(json.loads(done.stdout))
+
+
 class TestASecondProjectConfiguresIt:
     """The claim the phase exists for, asked of a project that is not this one.
 
@@ -368,23 +448,13 @@ class TestASecondProjectConfiguresIt:
     knob differs, and asks the harness -- not the settings -- what it thinks.
     """
 
-    def answers(self, box: Path) -> dict[str, Any]:
-        done = subprocess.run(
-            [sys.executable, "-c", ASKS],
-            cwd=box,
-            capture_output=True,
-            text=True,
-            timeout=ASKING,
-            check=False,
-        )
-        assert done.returncode == 0, done.stderr
-        return dict(json.loads(done.stdout))
-
-    def test_every_knob_arrives_overridden(self, elsewhere: Path) -> None:
-        """One test rather than eleven, because the subprocess is the cost and
-        splitting it would pay that cost eleven times for the same answer. Each
-        assertion names its knob, so a failure still says which."""
-        got = self.answers(elsewhere)
+    def test_every_knob_arrives_overridden(self, answers: Answers, elsewhere: Path) -> None:
+        """One test rather than thirteen, because each assertion names its knob
+        and a failure still says which. The subprocess is no longer the argument
+        for grouping them -- `answers` is class-scoped, so every test in this
+        class shares one -- but a reader comparing a whole configuration against
+        a whole answer is still better served by one place to look."""
+        got = answers
         assert got["root"] == str(elsewhere)
         assert got["mutable"] == ["src/"]
         assert got["unmutable"] == ["src/dangerous.py"]
@@ -395,19 +465,39 @@ class TestASecondProjectConfiguresIt:
         assert got["profile_env"] == "OTHER_HYPOTHESIS"
         assert got["profile"] == "quick"
         assert got["tmp"] == "other-verdict-"
+        assert got["columns"] == 72
         assert got["sandbox"] == {
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTEST_PLUGINS": "myplugin,otherplugin",
         }
 
-    def test_the_walk_takes_the_configured_prefix_and_not_this_ones(self, elsewhere: Path) -> None:
+    def test_what_a_probe_there_must_not_inherit_follows_the_knobs(self, answers: Answers) -> None:
+        """`probe_autoload = true` has to *remove* an inherited
+        `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, not merely decline to set one -- a
+        sweep started from inside another sweep would otherwise hand its own
+        down and the knob would silently do nothing. `probe_plugins` is named,
+        so that half is set rather than removed."""
+        assert answers["unset"] == ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"]
+
+    def test_the_sandbox_copy_leaves_out_what_that_project_named(self, answers: Answers) -> None:
+        """`node_modules` is nobody's business but that project's, and `sweeps`
+        is this one's -- so both halves are here: the configured name is skipped
+        and tupferl's is not, which is what separates "it read the table" from
+        "the list is still hardcoded"."""
+        skipped = answers["skipped"]
+        assert "node_modules" in skipped
+        assert ".git" in skipped
+        assert "sweeps" not in skipped
+        assert "src" not in skipped
+
+    def test_the_walk_takes_the_configured_prefix_and_not_this_ones(self, answers: Answers) -> None:
         """`--all` over a project that has no `tupferl/` and does have a
         `tools/`: the copied harness is *there*, so a `mutable` that had not
         moved would come back with `tools/**.py` in it and read as a working
         sweep."""
-        assert self.answers(elsewhere)["walked"] == ["src/thing.py"]
+        assert answers["walked"] == ["src/thing.py"]
 
-    def test_the_unmutable_entry_is_left_out_of_the_walk(self, elsewhere: Path) -> None:
+    def test_the_unmutable_entry_is_left_out_of_the_walk(self, answers: Answers) -> None:
         """`src/dangerous.py` is under `mutable` and named in `unmutable`, so
         it is the one file that separates the two knobs. Empty in this
         repository, which is why nothing here can show it.
@@ -418,21 +508,23 @@ class TestASecondProjectConfiguresIt:
         the negative assertion whose precondition was never established that
         CLAUDE.md §2 lists. The positive half is what establishes it.
         """
-        walked = self.answers(elsewhere)["walked"]
+        walked = answers["walked"]
         assert "src/thing.py" in walked
         assert "src/dangerous.py" not in walked
 
-    def test_the_selection_comes_from_the_configured_tests_directory(self, elsewhere: Path) -> None:
+    def test_the_selection_comes_from_the_configured_tests_directory(
+        self, answers: Answers
+    ) -> None:
         """`checks/check_thing.py` matches the configured pattern and
         `checks/test_thing.py` does not, so this separates "it found the
         directory" from "it kept the old convention" -- both files are there and
         only one is an answer."""
-        assert self.answers(elsewhere)["targets"] == "checks.check_thing"
+        assert answers["targets"] == "checks.check_thing"
 
-    def test_the_refusal_names_the_configured_prefixes(self, elsewhere: Path) -> None:
+    def test_the_refusal_names_the_configured_prefixes(self, answers: Answers) -> None:
         """The message a stranger sees first. Naming `tupferl/` at somebody
         else's project is the whole of the problem this phase is about."""
-        assert self.answers(elsewhere)["refusal"] == "src/**.py"
+        assert answers["refusal"] == "src/**.py"
 
 
 class TestWhatARunWithNothingMutableSays:

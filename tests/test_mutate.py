@@ -44,6 +44,7 @@ import pytest
 from tests import support
 from tools import mutants, mutate, paint, reached, verdict
 from tools.mutants import Mutation, check
+from tools.settings import SETTINGS
 
 #: Seconds a driven probe may take before a test calls it hung. Well above the
 #: ~0.5s an honest `collect(ALARM)` spends and well below `tools/mutate.py`'s
@@ -761,11 +762,15 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         assert env["TUPFERL_MUTATE_MUTATED"] == "1"
 
     def test_the_marker_is_not_part_of_the_sandbox_contract(self) -> None:
-        """`SANDBOX` is spread into `_collected` as well, which runs over the
-        *real* tree — so a marker living there would claim a mutated copy in the
-        one place the distinction matters, and the two gated assertions would
-        stop running in the preflight with nothing saying so."""
-        assert "TUPFERL_MUTATE_MUTATED" not in mutate.SANDBOX
+        """The sandbox contract is applied to `_collected` as well, which runs
+        over the *real* tree — so a marker living there would claim a mutated
+        copy in the one place the distinction matters, and the two gated
+        assertions would stop running in the preflight with nothing saying so.
+
+        Asked of the environment `_collected` would build rather than of the
+        dict, because since Phase D the contract is `Settings.environment` and
+        the question is about what a process actually receives."""
+        assert "TUPFERL_MUTATE_MUTATED" not in SETTINGS.environment({})
 
 
 #: A test module that hangs on a blocking read, and one that does not. Written

@@ -310,14 +310,16 @@ _ALARM = SETTINGS.alarm_env
 #: about, 105 of them in this file. That inflates `caught`, which is the
 #: direction CLAUDE.md names as the one every bug in this class has taken.
 #:
-#: It is *not* in `SANDBOX`: that contract is spread into `_collected` too,
+#: It is *not* in `Settings.sandbox`: that contract is spread into `_collected` too,
 #: which runs over the real tree, and a marker claiming otherwise there would be
 #: a lie in the one place the distinction matters.
 #:
 #: An environment variable for the reason `_BUDGET` and `_ALARM` are: it has to
-#: survive ``python -c`` into a nested harness. `tests/support.py` spells it a
-#: second time and `test_support` asserts the two agree, as it already does for
-#: `_ALARM`.
+#: survive ``python -c`` into a nested harness. `tests/support.py` used to spell
+#: it a second time, with `test_support` asserting the two agreed; since Phase D
+#: both ends read `[tool.mutate] env_prefix` through `tools/settings.py`, so
+#: there is one spelling and the agreement tests are kept as a tripwire against a
+#: literal returning rather than as a live guard.
 _MUTATED = SETTINGS.mutated_env
 
 #: What a run leaves for the operating system and for itself when the machine is
@@ -339,15 +341,6 @@ _PROFILE = SETTINGS.hypothesis_profile_env
 #: registered raises inside the probe, where it surfaces as `BROKE` on every row
 #: rather than as the typo it is.
 _MUTATION_PROFILE = SETTINGS.hypothesis_profile
-
-#: The environment every pytest this module starts runs under, written once
-#: because it is a *contract* and two spellings of it are two contracts. `_run`
-#: spreads it into a probe's environment and `_collected` into its own, so what
-#: a sweep is graded against and what its cache is validated against cannot
-#: drift apart. `tests/test_mutate.py` asserts the keys literally rather than
-#: importing this, which is the difference between checking a claim and
-#: restating it.
-SANDBOX = SETTINGS.sandbox
 
 #: The two exit statuses that mean pytest listed what it could -- `ExitCode.OK`
 #: and `ExitCode.NO_TESTS_COLLECTED`. Written as numbers rather than imported:
@@ -386,15 +379,20 @@ _OK, _NONE = 0, 5
 #: `shutil.ignore_patterns` matches on the **base name at any depth**, checked
 #: rather than assumed -- a pattern that only applied at the root would leave a
 #: nested one copied and nothing here would notice until the next red leg.
+#: Split in two since Phase D. The names below are everybody's -- a repository,
+#: bytecode, the two linters' caches, a build artefact, Hypothesis's database --
+#: and `sandbox_ignore` is where a project spells its own. This tree's are
+#: `sweeps` and `.venv`, and a host using `venv/`, `.tox/` or `node_modules/`
+#: had no way to say so: a sandbox is copied once per lane per row, so this is
+#: the single largest cost a sweep can carry and it surfaces only as slowness.
 _SKIP = shutil.ignore_patterns(
     ".git",
     "__pycache__",
     ".mypy_cache",
     ".ruff_cache",
-    ".venv",
     "*.egg-info",
     ".hypothesis",
-    "sweeps",
+    *SETTINGS.sandbox_ignore,
 )
 
 
@@ -1377,22 +1375,26 @@ def _run(
                 # here: it decides what the *suite* runs under, and measured, it
                 # takes 79.5ms off every probe. It is right for this project and
                 # would be wrong for one whose tests need an autoloaded plugin,
-                # so it becomes a setting when the harness is extracted rather
-                # than a constant then -- `docs/pytest-plan.md`, Phase D.
-                env={
-                    **os.environ,
-                    **SANDBOX,
-                    _BUDGET: str(memory),
-                    _ALARM: str(each),
-                    _MUTATED: "1",
-                    # Only when the project named a profile. A project without
-                    # Hypothesis has nothing to select and an empty variable name
-                    # is not a variable, so the hook is absent rather than set to
-                    # the empty string -- which `hypothesis` would then try to
-                    # load and fail inside the probe, where a typo surfaces as
-                    # `BROKE` on every row.
-                    **({_PROFILE: _MUTATION_PROFILE} if _PROFILE and _MUTATION_PROFILE else {}),
-                },
+                # so Phase D made it `[tool.mutate] probe_autoload`. This spread
+                # goes through `Settings.environment` rather than `**SANDBOX`,
+                # because a dict of keys to *add* cannot turn one off, and a
+                # project that leaves autoload on would otherwise inherit an
+                # ambient one from whatever started the sweep.
+                env=SETTINGS.environment(
+                    os.environ,
+                    **{
+                        _BUDGET: str(memory),
+                        _ALARM: str(each),
+                        _MUTATED: "1",
+                        # Only when the project named a profile. A project
+                        # without Hypothesis has nothing to select and an empty
+                        # variable name is not a variable, so the hook is absent
+                        # rather than set to the empty string -- which
+                        # `hypothesis` would try to load and fail on inside the
+                        # probe, where a typo surfaces as `BROKE` on every row.
+                        **(SETTINGS.profile),
+                    },
+                ),
                 # A file rather than a pipe, and this is not a style choice. The
                 # suite's `python -m tupferl` grandchildren inherit the write
                 # end, so anything that drains a pipe before reaping -- which is
@@ -3126,12 +3128,17 @@ PREFIX = 0.5
 #: prevent, arriving through its own syntax.
 _TAGGED = "# survivor:"
 
-#: The line limit `ruff` enforces here, so a written tag never needs reflowing by
-#: hand and `ruff format --check` stays green after `--accept`. The same number
-#: as `pyproject.toml`'s `line-length`, and `tests/test_packaging.py` asserts
-#: they agree -- a tag wrapped to the wrong width turns the preflight red on
-#: generated text nobody would think to attribute.
-_COLUMNS = 100
+#: The line limit the host's formatter enforces, so a written tag never needs
+#: reflowing by hand and `ruff format --check` stays green after `--accept`.
+#: `tests/test_packaging.py` asserts it equals `pyproject.toml`'s `line-length` --
+#: a tag wrapped to the wrong width turns the preflight red on generated text
+#: nobody would think to attribute.
+#:
+#: **A setting since Phase D, and it had to become one**: `--accept` writes these
+#: tags into the *host's* source files, so a constant here at this repository's
+#: 100 makes every tag illegal in a project formatted at 88 -- the guard failing
+#: in exactly the project that cannot see it.
+_COLUMNS = SETTINGS.tag_columns
 
 _TAG = re.compile(r"#\s*survivor:\s*([\w\s,-]+?)\s*--\s*(\S.*?)\s*$")
 
@@ -3668,7 +3675,7 @@ def _collected(where: str) -> frozenset[str]:
             text=True,
             timeout=TIMEOUT,
             cwd=where,
-            env={**os.environ, **SANDBOX},
+            env=SETTINGS.environment(os.environ),
         )
     except (OSError, subprocess.SubprocessError) as why:
         print(f"pytest could not be asked what it collects ({why}), so nothing is run first.")

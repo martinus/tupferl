@@ -875,8 +875,18 @@ measurement pins it.
 Every name under `tools/` that used to say `tupferl` is a key in
 `pyproject.toml`'s `[tool.mutate]` table since Phase D — the mutable prefixes,
 the `TUPFERL_MUTATE_*` family, the temporary directory prefixes, the Hypothesis
-profile, the tests directory and the naming convention that predicts a test
-module. `tools/settings.py` reads it; `tools/README.md` documents it.
+profile, the tests directory, the naming convention that predicts a test module,
+the width `--accept` wraps a tag to, and what a sandbox copy leaves out.
+`tools/settings.py` reads it; `tools/README.md` documents it.
+
+The last two were found by the review rather than by the plan, and both are the
+same shape: **a constant that is this repository's answer, applied to somebody
+else's tree.** `--accept` writes tag comments into the *host's* source at
+`_COLUMNS`, so a harness carrying 100 into a project formatted at 88 makes every
+tag it writes illegal there. `_SKIP` decides what is copied into a sandbox once
+per lane per row, and named `.venv` and `sweeps` — a spelling. Ask that question
+of anything new under `tools/`: not "does this say tupferl", but "whose tree does
+this touch".
 
 **The defaults are generic and this project's answers are in the table**, which
 is the opposite of what `docs/pytest-plan.md` specified and is the one decision
@@ -889,6 +899,17 @@ project's value (`unmutable`, `probe_plugins`, `tests_dir`,
 `test_module_patterns`), and what covers those is the scratch project in
 `tests/test_settings.py`, which drives a copy of `tools/` inside a tree whose
 every knob differs and asks the harness — not the settings — what it thinks.
+
+**A dict of keys to add cannot turn a variable off**, and that is worth more
+than the instance. `Settings.sandbox` set `PYTEST_DISABLE_PLUGIN_AUTOLOAD` when
+the project wanted autoload off and said nothing when it wanted it on — and
+`_run` spreads it over `os.environ`, so an ambient one from a nested sweep was
+inherited and the knob silently did nothing. Making a constant configurable
+introduced a hole the constant did not have, because "unconditionally set" and
+"set unless configured otherwise" differ only when something else already set
+it. `Settings.environment` is the one place that inherits, overrides and
+removes, and the removals are derived from the additions so a name cannot be
+added to one and forgotten in the other.
 
 Two rules follow for anything added under `tools/`:
 

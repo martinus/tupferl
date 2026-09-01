@@ -173,5 +173,17 @@ hypothesis_profile = "mutation"
 # not through its pytest integration -- so the list below is empty.
 probe_autoload = false
 probe_plugins = []
+# What `--accept` wraps a `# survivor:` tag to. It has to be `[tool.ruff]
+# line-length` below, and `tests/test_packaging.py` asserts that -- a tag wrapped
+# to the wrong width turns the preflight red on generated text nobody would think
+# to attribute. Stated twice because they are two different tools' settings that
+# happen to need the same number; the test is what keeps them equal.
+tag_columns = 100
+# On top of the universal list in `tools/mutate.py`'s `_SKIP`. `sweeps` is this
+# repository's mutation reports, 3.5 MB and growing that no mutant reads;
+# `.venv` is a spelling and another project's is `venv/` or `.tox/`. A sandbox is
+# copied once per lane per row, so this is where a sweep's largest avoidable cost
+# is decided.
+sandbox_ignore = ["sweeps", ".venv"]
 tests_dir = "tests"
 test_module_patterns = ["test_{stem}", "test_{stem}_*"]

@@ -45,14 +45,19 @@ from unittest import mock
 import pytest
 from hypothesis import strategies as st
 
+from tools import settings
 from tools.settings import SETTINGS
 from tupferl import manifest, paths
 
 #: The repository root, so a subprocess can import the package under test without
-#: it being installed. Derived from this file rather than from `os.getcwd()`,
-#: because `tools/mutate.py` runs the suite from a *copy* of the tree and the
-#: copy is the tree that must be imported.
-ROOT = Path(__file__).resolve().parents[1]
+#: it being installed. Not `os.getcwd()`: `tools/mutate.py` runs the suite from a
+#: *copy* of the tree and the copy is the tree that must be imported.
+#:
+#: Taken from `tools/settings.py` rather than derived a second time here. It was
+#: the same expression in three files -- this one, `tools/run_tests.py` and
+#: `settings` itself -- with a test asserting two of the three agreed, which is
+#: the arrangement Phase D removed for `ALARM` and `MUTATED` one screen below.
+ROOT = settings.ROOT
 
 #: The environment variable `tools/mutate.py` sets to the per-test alarm it armed
 #: for this run, and the one it sets when the tree under this suite is a mutated

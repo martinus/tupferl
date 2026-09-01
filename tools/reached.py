@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from tools import mutate, paint
+from tools.settings import SETTINGS
 
 
 class Row(NamedTuple):
@@ -223,13 +224,26 @@ def _by_file(rows: list[Row]) -> None:
         print(f"  {paint.paint(f'{n:5d}', paint.BAD)}  {path}")
 
 
+def _sources() -> str:
+    """`coverage`'s `--source` for whatever this project says is mutable.
+
+    Derived rather than written down, because the epilog is *instructions to a
+    user*: a second project told to run `--source=tupferl` is told to measure a
+    package it does not have, in the one tool whose entire output is a list of
+    things to go and do. `.` when nothing is configured, which is coverage's own
+    answer for "all of it" and is what a project with no table would want.
+    """
+    packages = [prefix.strip("/").replace("/", ".") for prefix in SETTINGS.mutable]
+    return f"--source={','.join(packages)}" if packages else "--source=."
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tools.reached",
         description="Split mutation survivors into missing tests and weak fixtures.",
         epilog=(
             "Produce the coverage map with:\n"
-            "  coverage run --source=tupferl -m pytest -q\n"
+            f"  coverage run {_sources()} -m pytest -q\n"
             "  coverage json -o coverage.json\n"
             "and the results with `python -m tools.mutate --base main --json results.json`.\n"
             "Both must come from the same tree: a fix that shifts line numbers "
