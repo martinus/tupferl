@@ -990,8 +990,23 @@ class TestEveryWaitOnAChildIsBounded:
         assert list(waits_on_a_child(tree)) == []
 
 
+@pytest.mark.usefixtures("_alarm_put_back")
 class TestABoundGivesTheHarnessItsAlarmBack:
     """`deadline` restores the `ITIMER_REAL` it found, rather than clearing it.
+
+    **The mark is load-bearing and was missing, which is #115.** Every test below
+    arms a real 30s `ITIMER_REAL` and installs a real handler, and without the
+    fixture the last of them left both behind: measured, `tests/test_support.py`
+    finished with the timer reading `(29.988, 0.0)` and `SIGALRM` pointing at a
+    lambda defined inside `test_the_previous_handler_is_back_before_the_alarm_
+    can_fire`. Thirty seconds later that fired into whatever was running.
+
+    That is why the symptom looked like shared state with no owner: which test
+    died depended only on what happened to be executing at T+30s, so
+    `tests/test_mutate.py` alone was green, this module alone was green, and the
+    pair was red at a different test each time. The sibling class below has had
+    the mark since it was written; the conftest fixture'"'"'s own docstring names
+    *this* class as one it covers, and did not.
 
     There is one interval timer per process and `tools/mutate.py` arms it around
     every test, so a bound that zeroed it on the way out left the *rest* of that

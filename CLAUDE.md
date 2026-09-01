@@ -1187,6 +1187,32 @@ has been dropped.
   under one — Linux's pty buffer is large enough to hide it. Every job now has a
   `timeout-minutes`, and `tests/test_ci.py` asserts it, because a running job's
   log is a 404: a hang is the one failure with nothing to read.
+- **A leaked `SIGALRM` is a failure with no owner, and it takes two modules to
+  see one.** `tests/test_support.py` left `ITIMER_REAL` armed at **29.99s**
+  (measured, by asking `getitimer` after `pytest.main` returned) because one
+  class that arms a real timer was missing the `_alarm_put_back` mark its
+  sibling twelve lines below had; `tests/test_mutate.py` left `verdict._ring`
+  installed as the handler, because `verdict.each_test` installs it and one test
+  calls that in-process. **Either alone is inert.** Together, `SIGALRM` fired
+  thirty seconds later into `_ring` and raised `Hung` inside whatever unrelated
+  test was running -- so *which* test failed depended only on what was executing
+  at T+30s, each module was green alone, and the pair was red at a different
+  place each run (#115).
+
+  Two things this cost that are worth more than the fix. The conftest fixture's
+  own docstring **named the class it did not cover**, which is §0's shape at its
+  most flattering -- a reader checking whether the hazard was handled finds a
+  sentence saying it is. And the failure it produced was a *timeout*, so every
+  instinct says "something is slow or deadlocked" and the answer was neither.
+
+  `tests/conftest.py`'s `_every_test_leaves_the_alarm_no_louder_than_it_found_it`
+  is the guard, autouse beside the environment one and for its reason: the
+  failure lands on the test that caused it rather than on the next nine. It
+  asserts the timer never gets **louder** rather than that it is unchanged --
+  an alarm that legitimately fires leaves it at zero, and demanding equality
+  would add a spurious second failure to a test that already reported the real
+  one. Handler identity is the half that catches a leaked `lambda`.
+
 - **A whole `termios` structure does not round-trip portably.** Asserting
   `tcgetattr(fd)` is byte-identical before and after a raw-mode read passed on
   every Linux leg and failed on macOS: `VMIN` and `VTIME` are meaningless once

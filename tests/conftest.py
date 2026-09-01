@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import signal
+import time
 from collections.abc import Iterator
 from contextlib import ExitStack
 
@@ -71,6 +72,56 @@ def _every_test_puts_the_environment_back() -> Iterator[None]:
     before = ours()
     yield
     assert ours() == before, "this test changed os.environ and did not put it back"
+
+
+@pytest.fixture(autouse=True)
+def _every_test_leaves_the_alarm_no_louder_than_it_found_it() -> Iterator[None]:
+    """Fail the test that arms `ITIMER_REAL` and walks away, rather than the
+    unrelated one running thirty seconds later.
+
+    **Written because that is exactly what happened (#115).**
+    `test_support.TestABoundGivesTheHarnessItsAlarmBack` arms a real 30s timer
+    and installs a real handler in each of its four tests, and was missing the
+    `_alarm_put_back` mark its sibling class has -- so the module finished with
+    the timer reading `(29.988, 0.0)`. Thirty seconds later `SIGALRM` fired into
+    whatever was running, which was a test in another module with no idea an
+    alarm existed. It took a `getitimer` after `pytest.main` to see it at all:
+    from the failure it read as shared state with no owner, because *which* test
+    died depended only on what was executing at T+30s. `tests/test_mutate.py`
+    alone was green, `tests/test_support.py` alone was green, and the pair was
+    red at a different test each run.
+
+    This is the alarm's version of `_every_test_puts_the_environment_back`
+    above, and it is the same argument: the failure lands on the test that
+    caused it instead of on the nine that follow.
+
+    **It asserts the timer never gets *louder*, not that it is unchanged**, and
+    the asymmetry is deliberate. An alarm that legitimately *fires* during a
+    test leaves the timer at zero, and a guard demanding equality would then add
+    a second, spurious failure to a test that has already reported the real one.
+    Every direction that matters is still covered: arming where nothing was
+    armed, and arming longer over shorter, both raise the number.
+
+    The handler is compared by identity, which is the half that caught the
+    lambda `test_the_previous_handler_is_back_before_the_alarm_can_fire` left
+    installed.
+
+    Autouse, so it is set up before the `_alarm_put_back` a class may request
+    and therefore torn down after it -- the restoring fixture's work is what
+    this reads, not the state it was hiding.
+    """
+    handler = signal.getsignal(signal.SIGALRM)
+    armed, _ = signal.getitimer(signal.ITIMER_REAL)
+    yield
+    left, _ = signal.getitimer(signal.ITIMER_REAL)
+    assert left <= armed, (
+        f"this test left ITIMER_REAL at {left:.3f}s where it found {armed:.3f}s; "
+        "arm it through support.deadline, or ask for the _alarm_put_back fixture"
+    )
+    assert signal.getsignal(signal.SIGALRM) is handler, (
+        "this test left a SIGALRM handler installed; the next test to run under "
+        "an alarm would report the timeout against whatever this one installed"
+    )
 
 
 @pytest.fixture
@@ -141,13 +192,29 @@ def _alarm_put_back() -> Iterator[None]:
     **The timer as well as the handler, and that is the half a second copy
     got wrong.** B6 wrote a handler-only version in `test_verdict` before this
     was shared. Restoring the handler and leaving a timer armed hands the next
-    test an alarm nobody asked for, into whichever handler is then installed --
-    and leaving the timer *cleared* is the fault `support.deadline` has its own
-    four tests about, one level down.
+    test an alarm nobody asked for, into whichever handler is then installed.
+
+    **It restores the timer rather than zeroing it, which is the other half.**
+    Clearing was the first spelling, and its own docstring conceded that
+    "leaving the timer *cleared* is the fault `support.deadline` has its own
+    four tests about, one level down" -- committing that fault here instead. It
+    matters under a probe: `tools/mutate.py` arms `ITIMER_REAL` around every
+    test, so a fixture that zeroed it left the *rest* of that test unwatched by
+    the harness, and a hang afterwards costs `TIMEOUT`'s 300s rather than
+    `EACH_TEST`'s 30 -- filed under the one outcome that names no test. Same
+    rule as `deadline`: whatever was left, less the time spent in here, and
+    never zero, because `setitimer(0)` means *disarm*.
     """
     handler = signal.getsignal(signal.SIGALRM)
+    outer, _ = signal.getitimer(signal.ITIMER_REAL)
+    began = time.monotonic()
     try:
         yield
     finally:
+        # Off and the handler back *before* re-arming, or the restored alarm
+        # could fire into whatever this test installed -- `deadline`'s ordering,
+        # and for its reason.
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, handler)
+        if outer:
+            signal.setitimer(signal.ITIMER_REAL, max(outer - (time.monotonic() - began), 1e-6))
