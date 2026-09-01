@@ -1,7 +1,16 @@
 """`tupferl sync`: plan §3.4, whole.
 
-Pull, work out what changed on each side, resolve everything that can be
-resolved without asking, ask about the rest, commit, push.
+Pull, work out what changed on each side, show the user every file that is
+about to move and let them settle it, commit, push.
+
+**"Ask only when it must" became "show what you are about to do", and the two
+are not the same promise.** Plan §3.4 asks for a prompt on a true conflict, and
+that is still the only thing a run *cannot* proceed without an answer to. The
+per-file review is the other half: a one-sided change already has a right
+answer, and the prompt exists so a person can disagree with it before it
+reaches disk. Every flag that means "do not ask me" turns it off, and so does a
+stdin that is not a terminal -- see `conflicts.reviewing` -- so `init`, cron and
+CI are exactly as they were.
 
 **Two different conflicts reach the same prompt.** `settle` compares three
 *files* -- `$HOME`, the repository's copy, and this machine's snapshot as the
@@ -150,6 +159,36 @@ RULES: dict[str, Rule] = {
     KEPT_REMOTE: Rule(to_repo=False, to_home=True, needs_user=False),
     KEPT_BOTH: Rule(to_repo=True, to_home=True, needs_user=False),
     EDITED: Rule(to_repo=True, to_home=True, needs_user=False),
+}
+
+
+#: Which of `resolve`'s actions the per-file review asks about, and which way
+#: each one is travelling. Membership *is* the test -- `settle` reviews an
+#: outcome exactly when its action is a key here -- so adding a direction is one
+#: row rather than a condition to find and extend.
+#:
+#: It was `pushes(action)`, which is `to_repo and not to_home` and so named the
+#: one outbound action there is. That excluded every arriving change, and an
+#: arriving change is the one a user cannot see coming: `sync` replaced a file
+#: in `$HOME` and said `updated .gitconfig` afterwards.
+#:
+#: Three actions are deliberately absent, and the third is the one that had to
+#: be measured rather than reasoned about:
+#:
+#: - `MERGED`: both sides changed and git reconciled them, so there is no side
+#:   to choose. Declining would mean only "not this run", which is what `[s]` on
+#:   a conflict already is.
+#: - `CONFLICT`: it has the *other* prompt.
+#: - **`RESTORED`**, which looks like the obvious third row and is not. A file
+#:   the repository has and `$HOME` does not is how a machine gets *set up*:
+#:   `tupferl init` ends in a sync, so reviewing restores turns bringing up a
+#:   second computer into one keypress per managed file -- forty of them, before
+#:   the user has done anything. Restoring a file that is missing is the tool's
+#:   promise rather than a change to be reviewed, and it is reported afterwards
+#:   like any other write.
+WAY: dict[str, str] = {
+    TO_REPO: conflicts.SENDING,
+    TO_HOME: conflicts.TAKING,
 }
 
 
@@ -373,7 +412,44 @@ def stale(snapshots: Path, keep: set[PurePosixPath]) -> list[PurePosixPath]:
     return [name for name in manifest.under(snapshots, snapshots) if name not in keep]
 
 
-def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflicts.Settler) -> int:
+class Settled:
+    """The managed names this run has already put to the user, during its merge.
+
+    **A mutable record threaded down rather than a value handed back up**, and
+    that is a deliberate trade. The names are learnt in `reconcile`, four calls
+    below `main`, and are wanted in `settle`, three calls below it on the other
+    branch; returning them means a new return type on `reconcile`, `integrate`
+    and `deliver`, two of which already return a number that means something
+    else. One object, filled where it is learnt and read where it is spent.
+
+    It accumulates across `deliver`'s retries on purpose. A push rejected
+    because the remote moved again runs `integrate` a second time, and a file
+    the user settled on the *first* merge must not be asked about again on the
+    second pass over `$HOME` -- the two merges are different questions, but the
+    review after them is the same one.
+
+    A set of managed names and not of git paths: `reconcile` walks the index, so
+    this host's overlay of `.vimrc` is `.tupferl/hosts/<host>/.vimrc` there and
+    `.vimrc` in `manifest.managed`. `manifest.managed_name` is the one
+    translation, and comparing the two spellings directly matches nothing --
+    which would be this whole record silently doing nothing.
+    """
+
+    def __init__(self) -> None:
+        self.names: set[PurePosixPath] = set()
+
+    def note(self, name: PurePosixPath) -> None:
+        self.names.add(name)
+
+
+def integrate(
+    repo: Path,
+    remote: str,
+    branch: str,
+    host: str,
+    settler: conflicts.Settler,
+    settled_already: Settled | None = None,
+) -> int:
     """Fetch, and merge the remote branch if it holds anything new. How much?
 
     Zero is the old `False` and means exactly what it did, which is why this
@@ -431,7 +507,7 @@ def integrate(repo: Path, remote: str, branch: str, host: str, settler: conflict
     # a concluded merge is not undone by its own `finally`.
     concluded = False
     try:
-        left = reconcile(repo, host, settler)
+        left = reconcile(repo, host, settler, settled_already)
         # `left` alone. `gitrepo.unmerged` is `sorted(conflicted(repo))` now, and
         # `reconcile` returns exactly the names it did not stage, so a second
         # opinion from the same `ls-files` cannot disagree -- it was a redundant
@@ -520,7 +596,9 @@ def held(repo: Path, number: int, name: str, modes: dict[int, int]) -> Blob | No
     return Blob(data, executable(modes[number]))
 
 
-def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
+def reconcile(
+    repo: Path, host: str, settler: conflicts.Settler, settled_already: Settled | None = None
+) -> list[str]:
     """Settle every file git could not merge. Returns the names still unsettled.
 
     This is plan §3.4's prompt over the *index* rather than over three files: a
@@ -557,6 +635,7 @@ def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
     to leave the repository somewhere the next run can start from. That is
     `integrate`'s `finally`, not this function's: see `undone`.
     """
+    settled_already = Settled() if settled_already is None else settled_already
     left: list[str] = []
     # survivor: order -- tupferl/sync.py:519 in reconcile() -- `sorted` becomes `list` -- equivalent
     #   for the names git can produce, same argument as `gitrepo.py:474`: `conflicted`'s dict is
@@ -599,6 +678,20 @@ def reconcile(repo: Path, host: str, settler: conflicts.Settler) -> list[str]:
             left.append(name)
             continue
         write(repo / name, outcome.blob)
+        # **Noted after the write, not before the prompt.** A file that reached
+        # the prompt and came back `[s]` took the `blob is None` arm above and
+        # is in `left`, so the merge is about to be abandoned and nothing was
+        # decided about it -- recording it would silence the review for a
+        # question the user declined to answer.
+        #
+        # `managed_name` cannot be `None` here: `mergeable` is one line over it
+        # and this loop skipped everything it refused, forty lines above. The
+        # assertion says so rather than a `if is not None`, which would make a
+        # broken mapping a silent no-op -- and a silent no-op here is a record
+        # that is always empty, which reads exactly like a run with no merge.
+        managed = manifest.managed_name(PurePosixPath(name), repo, host)
+        assert managed is not None, f"{name} was merged and is not a managed name"
+        settled_already.note(managed)
     if left:
         return left
     staged = gitrepo.stage(repo, [repo / name for name in gitrepo.conflicted(repo)])
@@ -731,49 +824,58 @@ def examine(repo: Path, home: Path, host: str) -> Iterator[Reading]:
 def looked_at(reading: Reading, reviewer: conflicts.Reviewer) -> Outcome:
     """One file's outcome after the person was shown it and asked.
 
-    Only ever called for a change *this computer* made -- see the guard in
-    `settle` for why incoming ones are left out. So `reverse=True` is not a
-    decision taken here twice: it is what `pushes` already said, and the diff
-    the prompt shows is the one `status --diff` would have shown.
+    Called for every action in `WAY` -- the one this computer is sending and the
+    one that is arriving -- and the direction decides both what the prompt says
+    and which keys it offers. `sync` names the direction because it is the only
+    place that knows; `conflicts` turns it into words.
 
-    A table, for `RULES`' reason: three answers, one action each, and a row
-    that is missing is a `KeyError` rather than a silent fall-through.
+    **`[r]` means "take the repository's copy" in both, and that is the one
+    thing that stays fixed.** Sending, it throws away the edit just made -- the
+    undo tupferl otherwise has no command for, which is why `OFFERS` spells the
+    consequence out. Taking, it is simply what the sync was going to do anyway,
+    so the outcome comes back exactly as `resolve` built it rather than being
+    rebuilt from a side named here.
 
-    `[r]` is `REVERTED`: the repository's copy goes back into `$HOME` and the
-    edit is gone. It is the one answer here that destroys something -- the undo
-    tupferl otherwise has no command for -- which is why `offers` spells it out
-    rather than calling it "keep remote".
+    `[s]` is `LEFT` in both, and is the one answer written before the direction
+    is consulted: leaving a file alone is the same act whichever way it was
+    about to move, and a second row per direction saying so would be two places
+    to forget that skipping must never write.
     """
     stored, found = reading.stored, reading.found
-    # survivor: branch, connector -- tupferl/sync.py:722 in looked_at() -- the `if` is never taken.
-    #   Equivalent: the guard is unreachable. `settle` calls this only when `pushes(action)`, which
-    #   is true for `TO_REPO` alone, and `resolve` produces that only with both sides present -- so
-    #   `stored is None or found is None` cannot fire. It is there because returning the outcome
-    #   unchanged is what stays right if a later rule makes it reachable, where raising would turn a
-    #   display decision into a failed sync.
+    way = WAY[reading.outcome.action]
+    # survivor: branch, connector -- the `if` is never taken. Equivalent: the guard is unreachable.
+    #   `stored` is `None` only on a `REFUSED` reading, and `found` only on a `RESTORED` one;
+    #   neither action is in `WAY`, which is the whole of what `settle` reviews. Returning the
+    #   outcome unchanged is what stays right if a later rule makes it reachable, where raising
+    #   would turn a display decision into a failed sync.
     if stored is None or found is None:
-        # Neither can be `None` for an outbound change -- `pushes` is only true
-        # for `TO_REPO`, which needs both sides -- so this is unreachable rather
-        # than a case being skipped. Returning the outcome unchanged is what
-        # stays right if a later rule makes it reachable, where raising would
-        # turn a display decision into a failed sync.
-        # survivor: return-value -- tupferl/sync.py:728 in looked_at() -- returns `None` instead of
-        #   `reading.outcome`. Equivalent: the line is the body of the unreachable guard above.
-        #   Nothing reaches it, so what it returns cannot be observed.
+        # survivor: return-value -- returns `None` instead of `reading.outcome`. Equivalent: the
+        #   line is the body of the unreachable guard above. Nothing reaches it, so what it returns
+        #   cannot be observed.
         return reading.outcome
-    diff = merge.unified(str(reading.name), found.data, stored.data, reverse=True)
-    # **The bytes as well as the action.** `resolve` set `blob` to what `TO_REPO`
-    # would write, which is `$HOME`'s copy -- so replacing the action alone made
-    # `[r]` write `$HOME` back over itself and report `reverted`. A no-op that
-    # says it undid something, found by pressing the key rather than by reading
-    # the code: the report was right about what it meant to do and wrong about
-    # what it did, which is the pair no unit test of the mapping would separate.
-    became, blob = {
-        conflicts.LOCAL: (TO_REPO, found),
-        conflicts.REMOTE: (REVERTED, stored),
-        conflicts.SKIP: (LEFT, None),
-    }[reviewer(conflicts.Change(reading.name, diff))]
-    return reading.outcome._replace(action=became, blob=blob)
+    # `pushes`, not the direction spelled out again: `status --diff` orients the
+    # same file by the same rule, so the preview and the prompt cannot describe
+    # one file differently.
+    diff = merge.unified(
+        str(reading.name), found.data, stored.data, reverse=pushes(reading.outcome.action)
+    )
+    answer = reviewer(conflicts.Change(reading.name, diff, way))
+    if answer == conflicts.SKIP:
+        return reading.outcome._replace(action=LEFT, blob=None)
+    if way == conflicts.SENDING:
+        # **The bytes as well as the action.** `resolve` set `blob` to what
+        # `TO_REPO` would write, which is `$HOME`'s copy -- so replacing the
+        # action alone made `[r]` write `$HOME` back over itself and report
+        # `reverted`. A no-op that says it undid something, found by pressing
+        # the key rather than by reading the code.
+        became, blob = (TO_REPO, found) if answer == conflicts.LOCAL else (REVERTED, stored)
+        return reading.outcome._replace(action=became, blob=blob)
+    # `[r]` on an arriving file, which is the only answer left: what `resolve`
+    # already decided, unchanged. Rebuilding it here from `stored` would be a
+    # second place that has to agree with `resolve` about which bytes `TO_HOME`
+    # writes -- and they are the same bytes, which is what makes this arm a
+    # `return` rather than a `_replace`.
+    return reading.outcome
 
 
 def settle(
@@ -782,6 +884,7 @@ def settle(
     host: str,
     settler: conflicts.Settler,
     reviewer: conflicts.Reviewer | None = None,
+    settled_already: Settled | None = None,
 ) -> list[Outcome]:
     """Resolve every managed file, write what was decided, and commit it.
 
@@ -790,10 +893,17 @@ def settle(
     `apply`, so a choice reaches disk through exactly the code every other
     outcome does.
 
+    `settled_already` is what `reconcile` put to the user during this run's
+    merge; the review below skips those. `None` is an empty one, which is right
+    for a caller with no merge behind it -- and it is a default rather than a
+    required argument because every test that drives `settle` directly is
+    exactly that caller.
+
     Returns one `Outcome` per managed file, in the order `manifest.managed`
     gives them, which is sorted -- so the report and the commit message list
     files in the same order on every machine.
     """
+    settled_already = Settled() if settled_already is None else settled_already
     snapshots = paths.snapshot_dir(repo, host)
     backups = Backups(paths.backup_dir())
 
@@ -812,17 +922,23 @@ def settle(
         outcome = reading.outcome
         if outcome.sides is not None:
             outcome = settled(outcome.sides, settler(outcome.sides))
-        elif reviewer is not None and pushes(outcome.action):
-            # **Only what this computer changed.** An unchanged file is most
-            # files on most runs and has nothing to ask about; an *incoming*
-            # one is deliberately left out, and not for want of trying. A
-            # commit-level conflict the user has just settled at the `[l]/[r]`
-            # prompt arrives here as an ordinary inbound change on the second
-            # pass, so reviewing those asked twice about one file in one run --
-            # and telling the two apart means mapping git's paths in
-            # `reconcile` back to managed names, which is a lot of machinery
-            # for a question already answered. `status --diff` shows what is
-            # coming, correctly oriented, before the sync runs.
+        elif (
+            reviewer is not None
+            and outcome.action in WAY
+            and reading.name not in settled_already.names
+        ):
+            # **Every file the sync would move, in either direction.** An
+            # unchanged file is most files on most runs and has nothing to ask
+            # about; a clean merge has no side to choose. What is left is one
+            # outbound action and two arriving ones, which is exactly `WAY`.
+            #
+            # `settled_already` is the reason the arriving half took a second
+            # attempt. A commit-level conflict the user has just answered at the
+            # `[l]/[r]/[b]/[e]` prompt reaches this loop as an ordinary arriving
+            # change, so reviewing those asked twice about one file in one run
+            # -- once about the commits and once about the bytes that came out
+            # of that answer. `reconcile` records the managed name of every file
+            # it put to the user, and this is where that record is spent.
             outcome = looked_at(reading, reviewer)
         try:
             wrote = apply(
@@ -1048,8 +1164,14 @@ def main(
                 f"{repo} has no branch checked out, so there is nothing to push; "
                 f"run `git -C {repo} checkout main`."
             )
-        came = integrate(repo, remote, branch, host, settler)
-        outcomes, moved = deliver(repo, home, host, remote, branch, settler, reviewer)
+        # One record for the whole run: `integrate` here and every retry inside
+        # `deliver` fill it, and the review inside `settle` spends it. See
+        # `Settled` for why it is threaded rather than returned.
+        settled_already = Settled()
+        came = integrate(repo, remote, branch, host, settler, settled_already)
+        outcomes, moved = deliver(
+            repo, home, host, remote, branch, settler, reviewer, settled_already
+        )
         print(crossed(f"{remote}/{branch}", Traffic(came + moved.pulled, moved.pushed)))
 
     print(report(outcomes))
@@ -1064,6 +1186,7 @@ def deliver(
     branch: str,
     settler: conflicts.Settler,
     reviewer: conflicts.Reviewer | None = None,
+    settled_already: Settled | None = None,
 ) -> tuple[list[Outcome], Traffic]:
     """Push, and plan §3.4 step 5: if the remote moved, pull, redo, push again.
 
@@ -1087,7 +1210,8 @@ def deliver(
     the repository's copy, so it is a different question from the one they
     declined, and a `[s]` that stuck would hide it.
     """
-    outcomes = settle(repo, home, host, settler, reviewer)
+    settled_already = Settled() if settled_already is None else settled_already
+    outcomes = settle(repo, home, host, settler, reviewer, settled_already)
     there = f"{remote}/{branch}"
     pulled = 0
     for _ in range(ATTEMPTS):
@@ -1104,14 +1228,14 @@ def deliver(
         pushed = gitrepo.push(repo, remote, branch)
         if pushed.ok:
             return outcomes, Traffic(pulled, pushed=True)
-        came = integrate(repo, remote, branch, host, settler)
+        came = integrate(repo, remote, branch, host, settler, settled_already)
         pulled += came
         if not came:
             raise TupferlError(
                 f"could not push to {remote}: {gitrepo.reason(pushed)}; "
                 f"run `tupferl doctor` to check the remote."
             )
-        outcomes = settle(repo, home, host, settler, reviewer)
+        outcomes = settle(repo, home, host, settler, reviewer, settled_already)
     raise TupferlError(
         f"{remote} moved again on each of {ATTEMPTS} attempts, so nothing was pushed; "
         f"try again when it is quieter."

@@ -268,6 +268,29 @@ class TestTheKeys:
         two_commits.concluded()
         two_commits.everywhere(FROM_A)
 
+    def test_settling_the_commits_is_not_asked_about_a_second_time(
+        self, two_commits: TwoCommits
+    ) -> None:
+        """The trap the arriving-change review had to solve before it could
+        exist, and the reason `sync.Settled` is threaded down.
+
+        One run holds two prompts over one file. `reconcile` settles the two
+        *commits*; the bytes that come out of that answer then reach `settle` as
+        an ordinary arriving change, because `$HOME` still holds this machine's
+        version. Reviewing those asks the same person about the same file twice
+        in one run -- once about the commits and once about their result.
+
+        `[r]` is typed **once**. `support.FALLBACK` (`s`) answers anything else
+        the run asks, so a second question is not a hang: it is a skip, which
+        leaves `$HOME` holding `FROM_B` and fails the last assertion. That is
+        what makes this a test rather than a timeout.
+        """
+        two_commits.settle(keys="r")
+        two_commits.concluded()
+        assert two_commits.second.read(MANAGED) == FROM_A, (
+            "the file was asked about twice, and the second answer was the fallback skip"
+        )
+
     def test_b_keeps_both(self, two_commits: TwoCommits) -> None:
         """`[b]` is a union merge of the two *commits*, which is the same
         operation on different inputs -- and the one answer that proves the

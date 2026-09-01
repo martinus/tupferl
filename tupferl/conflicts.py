@@ -79,11 +79,55 @@ SKIP = "s"
 #: something the prompt *does*, after which it asks again.
 ANSWERS = (LOCAL, REMOTE, BOTH, EDIT, SKIP)
 
-#: The three the per-file review ends on. It is the conflict prompt without
-#: `[b]` and `[e]`, which have nothing to offer where only one side moved:
-#: there is no second version to keep and nothing to merge. `[d]` behaves the
-#: same -- it shows and asks again.
+#: The three the per-file review ends on when the change is *this computer's*.
+#: It is the conflict prompt without `[b]` and `[e]`, which have nothing to
+#: offer where only one side moved: there is no second version to keep and
+#: nothing to merge. `[d]` behaves the same -- it shows and asks again.
 REVIEWS = (LOCAL, REMOTE, SKIP)
+
+#: The two it ends on when the change is *arriving*, and the missing `[l]` is a
+#: decision rather than an omission. On a file the repository changed and `$HOME`
+#: did not, "keep mine" is one of two things and neither belongs behind a
+#: keypress: this run, it is exactly `[s]`; for good, it means storing an
+#: unchanged local file over another machine's committed change and pushing that
+#: -- a revert of somebody else's work, which is a different operation from
+#: reviewing one. A user who wants the incoming change *not* to win edits the
+#: file, which makes it a real two-sided conflict with the full prompt behind it.
+ARRIVALS = (REMOTE, SKIP)
+
+#: Which way one file is travelling. `sync` names it, because it is what knows
+#: -- see `Change` -- and this module turns each into a sentence and a key set.
+#: A pair of names rather than a `bool` so that a third can be added without
+#: every reader of it having to be found; `sync.WAY` is where the actions that
+#: get one are decided, and says which are deliberately left out.
+SENDING = "sending"
+TAKING = "taking"
+
+#: The sentence above the keys, per direction. Said in words rather than left to
+#: the diff's `---`/`+++`, because the complaint that produced this prompt was
+#: that a diff's direction is not obvious enough to bet a dotfile on.
+HAPPENING: dict[str, str] = {
+    SENDING: "{name}: you changed this here; the repository has the older copy.",
+    TAKING: "{name}: the repository has a newer copy; yours has not changed.",
+}
+
+#: The keys on offer, per direction, and what each one *does* rather than which
+#: side it names. `[l]` and `[r]` mean the same two sides everywhere in this
+#: module -- local and remote, exactly as in the conflict prompt -- and only the
+#: consequence differs. Spelling the consequence out is what stops `[r]` reading
+#: as "reject": on a file this computer changed it throws away the edit just
+#: made, which is the one keypress here that cannot be undone from inside
+#: tupferl.
+OFFERS: dict[str, str] = {
+    SENDING: f"  [{LOCAL}] store your version   [{REMOTE}] discard it, take the repository's",
+    TAKING: f"  [{REMOTE}] update $HOME from the repository",
+}
+
+#: Which answers end the prompt, per direction.
+ENDS_ON: dict[str, tuple[str, ...]] = {
+    SENDING: REVIEWS,
+    TAKING: ARRIVALS,
+}
 
 #: How many lines of a one-sided diff the review prints before it stops and
 #: says how many are left. Same argument as `SHOWN_HUNKS`: the question has to
@@ -698,36 +742,39 @@ class Change(NamedTuple):
     """
 
     name: PurePosixPath
-    #: The diff, oriented by `sync.pushes` before it gets here: the repository's
-    #: copy on `-`, this computer's on `+`. Same orientation `status --diff`
-    #: gives the same file, from the same rule, so the preview and the prompt
-    #: cannot describe one file differently.
+    #: The diff, oriented by `sync.pushes` before it gets here: the side being
+    #: *replaced* on `-`. Same orientation `status --diff` gives the same file,
+    #: from the same rule, so the preview and the prompt cannot describe one
+    #: file differently.
     diff: str
+    #: One of `SENDING`, `TAKING`, `RESTORING`. `sync` decides it from the
+    #: action `resolve` produced, which is the only place that knows; this
+    #: module turns it into a sentence and a key set. Defaulted, because
+    #: `SENDING` was the only direction this prompt had and every existing
+    #: caller and test means exactly that.
+    way: str = SENDING
 
 
 def happening(change: Change, colour: bool) -> str:
     """The sentence above the keys: what the sync is about to do to this file.
 
-    Said in words rather than left to the diff's `---`/`+++`, because the whole
-    complaint that produced this prompt was that a diff's direction is not
-    obvious enough to bet a dotfile on.
+    A lookup rather than a branch, for `sync.RULES`' reason: a fourth direction
+    added to `HAPPENING` and forgotten here would be a `KeyError` on the first
+    run rather than a file described as travelling the wrong way.
     """
-    said = f"{change.name}: you changed this here; the repository has the older copy."
-    return colours.paint(said, BOLD, colour)
+    return colours.paint(HAPPENING[change.way].format(name=change.name), BOLD, colour)
 
 
 def offers(change: Change, colour: bool) -> str:
-    """The keys, worded for the direction.
+    """The keys, worded for the direction -- see `OFFERS`.
 
-    The same two letters mean the same two *sides* in both directions -- `[l]`
-    is always this computer, `[r]` is always the repository, exactly as in the
-    conflict prompt -- and only the consequence differs. Spelling the
-    consequence out is what stops `[r]` reading as "reject": on an outbound file
-    it throws away the edit you just made, which is the one keypress here that
-    cannot be undone from inside tupferl.
+    `[d]` and `[s]` are on every one of them and are appended here rather than
+    written into each row, because they mean the same thing in all three and
+    three copies is two chances for one of them to lose a key.
     """
-    keep = f"[{LOCAL}] store your version   [{REMOTE}] discard it, take the repository's"
-    return colours.paint(f"  {keep}\n  [{DIFF}] show the whole diff   [{SKIP}] skip", BOLD, colour)
+    return colours.paint(
+        f"{OFFERS[change.way]}\n  [{DIFF}] show the whole diff   [{SKIP}] skip", BOLD, colour
+    )
 
 
 def shown(change: Change, colour: bool) -> str:
@@ -778,11 +825,15 @@ def review(change: Change, source: TextIO, out: TextIO) -> str:
             print(f"{key!r} is not a key.", file=out)
             continue
         print(key, file=out)
-        if key in REVIEWS:
+        if key in ENDS_ON[change.way]:
             return key
         if key == DIFF:
             print(colours.diff(change.diff, colour), file=out)
             continue
+        # Reached by `[l]` on an arriving file as well as by a key that means
+        # nothing anywhere, and deliberately not distinguished: `[l]` is not on
+        # offer here for the reason `ARRIVALS` gives, and a special message for
+        # it would be explaining a key the prompt above never showed.
         print(f"{key!r} is not one of the keys.", file=out)
 
 
