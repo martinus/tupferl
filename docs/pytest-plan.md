@@ -3,7 +3,7 @@
 Status: **Phases 0, A, A2, B, C and D executed** (2026-08-30 to 2026-09-01) —
 so the conversion is finished, and so is the extraction-readiness work that
 followed it. **There is no Phase E: the plan is done.**
-**Of 35 test modules, 1 still runs through pytest's `unittest` adapter**, and
+**Of 36 test modules, 1 still runs through pytest's `unittest` adapter**, and
 it is not arrears: `tests/test_sync_properties.py` is converted but exposes a
 class Hypothesis builds inside `hypothesis.stateful`, which the plan keeps as
 the pytest-idiomatic spelling.

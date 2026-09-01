@@ -23,7 +23,7 @@ import functools
 import io
 import os
 import termios
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, TextIO
@@ -32,7 +32,7 @@ from unittest import mock
 import pytest
 
 from tests import support
-from tupferl import conflicts, merge
+from tupferl import colours, conflicts, merge
 from tupferl.config import Config
 from tupferl.copies import Blob
 from tupferl.errors import TupferlError
@@ -610,6 +610,21 @@ class TestTheKeys:
         # Asked twice, which is what "and asks again" means.
         assert prompt.out.getvalue().count("1 conflict to settle") == 2
 
+    def test_d_paints_the_diff_when_there_is_a_terminal_to_paint_it_on(
+        self, terminal: support.Terminal
+    ) -> None:
+        """`REMOVED` is the precise assertion here: `describe` above the keys
+        uses `MINE`, `THEIRS`, `DIM` and `BOLD` and never the two diff colours,
+        so red in this output can only have come from `[d]`.
+
+        Not through `prompt`, whose `out` is a `Spill` -- see
+        `coloured_prompt` for the two conditions that make every coloured
+        branch in this module unreachable from every other test in it."""
+        seen = coloured_prompt(
+            terminal, "d", lambda source, out: conflicts.ask(one_conflict(), source, out)
+        )
+        assert f"{colours.REMOVED}-MINE-IS-HERE{colours.OFF}" in seen, seen
+
     def test_a_key_that_is_not_on_offer_asks_again(self, prompt: Prompt) -> None:
         got = prompt.ask(one_conflict(), "zs")
         assert got.choice == conflicts.SKIP
@@ -1074,31 +1089,6 @@ class TestWhereTheDisplayStopsCutting:
         assert "2 conflicts to settle" in conflicts.describe(sides_for(*many(2)), colour=False)
 
 
-class TestWhenColourIsUsed:
-    """`conflicts.coloured`, both halves.
-
-    Every other assertion in this file runs against a `StringIO`, which is not a
-    terminal, *and* under a sandbox that sets `NO_COLOR` -- so the whole function
-    is unobservable there and each of its three mutations survived. A real pty
-    is the only way to make `isatty()` true.
-    """
-
-    def test_a_terminal_with_no_no_colour_is_coloured(self, written: TextIO) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            assert conflicts.coloured(written)
-
-    def test_no_colour_turns_it_off_even_on_a_terminal(self, written: TextIO) -> None:
-        """A user who set it meant it."""
-        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
-            assert not conflicts.coloured(written)
-
-    def test_a_pipe_is_never_coloured_even_without_no_colour(self) -> None:
-        """The other half of the `and`, and the reason it is not an `or`:
-        escape codes in a file someone redirected the run into are noise."""
-        with mock.patch.dict(os.environ, {}, clear=True):
-            assert not conflicts.coloured(io.StringIO())
-
-
 class TestReadingAnEscapeSequence:
     """`rest_of_escape`'s arms, each of which decides where a keypress ends.
 
@@ -1219,6 +1209,32 @@ def one_change(diff: str = "--- a\n+++ b\n-old\n+new\n") -> conflicts.Change:
     return conflicts.Change(PurePosixPath(".bashrc"), diff)
 
 
+def coloured_prompt(
+    terminal: support.Terminal, keys: str, run: Callable[[TextIO, TextIO], object]
+) -> str:
+    """Drive a prompt against a stream that *is* a terminal, with `NO_COLOR` gone.
+
+    The two conditions `colours.coloured` asks about, and the sandbox denies
+    both: it sets `NO_COLOR`, and `Prompt.out` is a `Spill`. So every coloured
+    branch in this module is unreachable from every other test here, which is
+    what let two `[d]` arms print an unpainted diff undetected.
+
+    `support.Screen` rather than a second pty for the output half: `isatty` is
+    the whole of what is being asked, and a pty would add an output buffer that
+    somebody has to drain -- which is CLAUDE.md's `TCSADRAIN` hang, arriving in
+    a test written to check a colour.
+    """
+    seen = support.Screen()
+    terminal.type(keys + support.FALLBACK)
+    without = {name: value for name, value in os.environ.items() if name != "NO_COLOR"}
+    with (
+        mock.patch.dict(os.environ, without, clear=True),
+        support.deadline(support.PATIENCE, f"the prompt never settled on {keys!r}"),
+    ):
+        run(terminal.source, seen)
+    return seen.getvalue()
+
+
 class TestWhatTheReviewShows:
     """`happening` and `shown`: the two lines above the keys, as pure functions.
 
@@ -1237,15 +1253,55 @@ class TestWhatTheReviewShows:
 
     def test_a_short_diff_is_shown_whole(self) -> None:
         change = one_change("\n".join(f"line {n}" for n in range(conflicts.SHOWN_DIFF)))
-        assert conflicts.shown(change) == change.diff
-        assert "more line(s)" not in conflicts.shown(change)
+        assert conflicts.shown(change, colour=False) == change.diff
+        assert "more line(s)" not in conflicts.shown(change, colour=False)
+
+    def test_the_whole_diff_that_d_prints_is_coloured_too(self, terminal: support.Terminal) -> None:
+        """`[d]`, in the review prompt, on a diff long enough that the capped
+        display above it cannot account for the colour.
+
+        Every other test in this file reads the prompt out of a `Spill` -- not a
+        terminal -- under a sandbox that sets `NO_COLOR`, so both of
+        `colours.coloured`'s halves are false and an unpainted `[d]` is
+        invisible from all of them. Measured: that mutation survived the whole
+        module until this existed.
+        """
+        rows = [*(f"-line {n}" for n in range(conflicts.SHOWN_DIFF)), "-past the cap"]
+        seen = coloured_prompt(
+            terminal,
+            "d",
+            lambda source, out: conflicts.review(one_change("\n".join(rows)), source, out),
+        )
+        assert f"{colours.REMOVED}-past the cap{colours.OFF}" in seen, (
+            "the whole diff was printed unpainted"
+        )
+
+    def test_a_diff_that_fits_is_still_coloured(self) -> None:
+        """Every other assertion in this file passes `colour=False`, so the
+        short-diff arm returning the text unpainted is invisible from all of
+        them -- measured: that mutation survived the whole module until this
+        existed. It is the arm most prompts take, since most edits are small."""
+        painted = conflicts.shown(one_change(), colour=True)
+        assert f"{colours.REMOVED}-old{colours.OFF}" in painted
+        assert f"{colours.ADDED}+new{colours.OFF}" in painted
+
+    def test_a_cut_diff_is_coloured_and_the_elision_line_is_not_a_diff_line(self) -> None:
+        """The other arm, and the reason the elision is painted separately: it
+        is not a line of the file, so putting it through `colours.diff` would
+        colour it by whatever character it happens to begin with."""
+        change = one_change("\n".join(f"-line {n}" for n in range(conflicts.SHOWN_DIFF + 3)))
+        painted = conflicts.shown(change, colour=True)
+        assert f"{colours.REMOVED}-line 0{colours.OFF}" in painted
+        assert painted.split("\n")[-1] == colours.paint(
+            f"... and 3 more line(s); [{conflicts.DIFF}] shows them", colours.DIM, colour=True
+        )
 
     @pytest.mark.parametrize("count", [conflicts.SHOWN_DIFF - 1, conflicts.SHOWN_DIFF])
     def test_a_diff_exactly_at_the_cap_is_still_shown_whole(self, count: int) -> None:
         """The boundary, which is where `<=` becoming `<` lives. One line either
         side of it is the only thing that tells the two spellings apart."""
         change = one_change("\n".join(f"line {n}" for n in range(count)))
-        assert conflicts.shown(change) == change.diff
+        assert conflicts.shown(change, colour=False) == change.diff
 
     def test_a_longer_diff_is_cut_and_says_how_much_was_left(self) -> None:
         """The count is asserted, not just its presence: `len(lines) -
@@ -1253,7 +1309,7 @@ class TestWhatTheReviewShows:
         looked for "more line(s)" passed for it."""
         over = 7
         change = one_change("\n".join(f"line {n}" for n in range(conflicts.SHOWN_DIFF + over)))
-        cut = conflicts.shown(change)
+        cut = conflicts.shown(change, colour=False)
         assert f"and {over} more line(s)" in cut
         assert f"line {conflicts.SHOWN_DIFF - 1}" in cut, "the kept part is wrong"
         assert f"line {conflicts.SHOWN_DIFF}" not in cut, "the slice kept too much"
