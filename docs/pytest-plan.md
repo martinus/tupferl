@@ -3542,6 +3542,58 @@ line of the module ran it during import anyway. Measured at 0.9 ms of a 14 ms
 import, 1.9 ms of `tests/support.py`'s 110 ms, 0.24 s of CPU across 128
 batches: the code was fine and the sentence was not.
 
+### The sweep, and the one number this phase owes an explanation for
+
+`--base main`, 83 rows, baseline green. Before the survivor work and after:
+
+| | first run | final |
+|---|---:|---:|
+| caught | 47 | **56** |
+| SURVIVED | 15 | 6 |
+| BROKE | 21 | 21 |
+| unexcused survivors | 11 | **0** |
+| rows that asked nothing and said nothing | 20 | **0** |
+
+Nine more rows are caught because the review's own additions had no tests:
+`Settings.profile` (all four combinations of the two halves), `unset` (all four
+configurations, because a test of one arm is satisfied by a constant),
+`environment` (both directions -- what the project did not ask for is removed,
+what it did ask for survives), and `tools/reached.py`'s epilog, which the review
+had just made derived and nothing read. `parse`'s sorted message wanted **eight**
+unknown keys rather than two: it comes out of a `set` difference, so `sorted`
+becoming `list` is a coin flip at two and 1 in 40320 at eight, and a guard that
+sometimes guards reads exactly like one that always does.
+
+**The 21 `BROKE` rows are the number this phase owes an explanation for, and it
+is structural.** `SETTINGS = load(ROOT)` runs at *import*, and every consumer
+reads it at *theirs* -- `mutants.MUTABLE`, `mutate._ALARM`, and
+`tests/support.py`'s `ALARM` and `CARRIES`, which `tests/conftest.py` pulls in
+before any test runs. So a mutation that makes the answer wrong or absent does
+not fail a test; it makes the module unimportable, pytest exits `USAGE_ERROR`
+over a broken conftest, and the row is `BROKE` -- never `caught`, and shown in
+neither of the two numbers a reader looks at. **20 of `tools/settings.py`'s 64
+rows, 31%.**
+
+Every one of them has a test that *would* catch the behaviour, and none of those
+tests can be collected once the configuration is unreadable. It is the price of
+reading configuration once at import, which is the right shape for a value read
+in loops -- a call at every use would also stop
+`mock.patch.object(mutants, "UNMUTABLE", ...)` working, which existing tests
+rely on. So they are excused per `(line, operator)` with reasons, which is the
+mechanism CLAUDE.md already documents for `BROKE` (#57), and **not** by excluding
+the file: an exclusion is permanent and silent, so a future unanswerable row here
+would never be reported. `--accept` placed thirteen tags over the twenty rows and
+each `TODO` was replaced by the reason for that line.
+
+**The routing experiment is priced in the same table.** Sending
+`tests/support.py`'s `ROOT` through `settings.ROOT` -- one expression instead of
+three, and what made the "single seam" claim true -- turned two more
+`settings._root` rows from `caught` into `BROKE`, because a fixture's idea of
+where the tree is must not come from the thing under test. Taken back out; the
+two values are still asserted equal, which is a check rather than a restatement
+now that they are computed apart. `tools/run_tests.py`'s copy stays routed,
+because it genuinely is the harness.
+
 ### Two things this phase did not do
 
 - **`tools/README.md` carries the extraction checklist** — package name and
