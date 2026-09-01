@@ -824,12 +824,13 @@ class TestNamingOneFile:
         bug survived a suite that drives everything from a sandbox.
         """
         synced.apart()
-        # The *name* column, which is no longer the last one: a row under
-        # `--all` is `[host]  name  state`, and the state is several words for
-        # anything that is changing. Taking the first field that is not the
-        # overlay marker is what "the name this listing prints" means now.
+        # The *name* column, which is neither the first nor the last: a row
+        # under `--all` is `mark  [host]  name  state`, and the state is several
+        # words for anything that is changing. Taking the first field that is
+        # neither the direction marker nor the overlay marker is what "the name
+        # this listing prints" means now.
         listed = [
-            next(field for field in row.split() if field != "host")
+            next(field for field in row.split() if field.startswith("."))
             for row in synced.second.say("status", "--all")[1].splitlines()
             if ".bashrc" in row
         ]

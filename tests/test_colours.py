@@ -17,7 +17,6 @@ from __future__ import annotations
 import contextlib
 import io
 import os
-import re
 from collections.abc import Iterator
 from typing import TextIO
 from unittest import mock
@@ -26,13 +25,6 @@ import pytest
 
 from tests import support
 from tupferl import colours, merge
-
-#: Every SGR sequence, for the round-trip that says painting adds and removes
-#: nothing else. A second copy of `tests/test_paint.py`'s, and deliberately: that
-#: file's docstring commits it to importing the standard library and the tool it
-#: covers, so the shared home a reader would reach for -- `tests/support.py` --
-#: is the one place it may not take this from.
-ESCAPES = re.compile(r"\x1b\[[0-9;]*m")
 
 
 @pytest.fixture
@@ -205,7 +197,7 @@ class TestPaintingADiff:
         line, no reordering. The strongest single claim available here, and the
         one that a rewrite of the loop has to keep."""
         painted = colours.diff(DIFF, colour=True)
-        assert ESCAPES.sub("", painted) == DIFF
+        assert support.ESCAPES.sub("", painted) == DIFF
 
 
 class TestTheRolesAreDistinguishable:
