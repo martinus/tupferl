@@ -25,7 +25,7 @@ from unittest import mock
 import pytest
 
 from tests import support
-from tupferl import conflicts, copies, gitrepo, merge, sync
+from tupferl import conflicts, copies, gitrepo, manage, merge, sync
 
 #: Three versions of one file whose edits do not overlap, so a merge of any two
 #: of them is decidable. Named rather than spelled out per test: half the table
@@ -324,6 +324,18 @@ class TestTheReport:
         text = sync.report([sync.Outcome(name, sync.CONFLICT, None, sides)])
         assert "conflict in .bashrc (3 to settle)" in text
         assert "1 in conflict" in text
+
+    def test_nothing_managed_says_so_rather_than_counting_an_empty_set(self) -> None:
+        """`0 files managed, 0 changed, 0 in conflict` is arithmetic about an
+        empty set, and it is the last line `tupferl init` prints on a fresh
+        machine -- where "what now?" is the only question the user has.
+
+        The same sentence `status` gives, from the same constant rather than a
+        second copy of the wording: `init` used to answer this itself, one line
+        early, and got it wrong on the machine that mattered."""
+        text = sync.report([])
+        assert text == manage.NOTHING_MANAGED
+        assert "0 files managed" not in text
 
 
 class TestTheCommitMessage:
