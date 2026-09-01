@@ -138,6 +138,52 @@ def scheduled() -> set[str]:
     return found
 
 
+def anchors(text: str) -> set[str]:
+    """The fragment GitHub gives each heading, by GitHub's own rule.
+
+    Lowercase, drop everything that is not a word character, whitespace or a
+    hyphen, then one hyphen per space -- **not** one per *run* of spaces, which
+    is the detail that matters here and cost the first version of this function
+    a false result on every link in the file. A heading reading
+    ``## Phase C as built -- 2026-09-01`` loses the dash and keeps the two
+    spaces around it, so its anchor carries a *doubled* hyphen. Collapsing runs
+    reports thirteen dead anchors where one is dead.
+    """
+    found = set()
+    for line in text.splitlines():
+        if line.startswith("#"):
+            bare = re.sub(r"[^\w\s-]", "", line.lstrip("#").strip().lower())
+            found.add("#" + bare.replace(" ", "-"))
+    return found
+
+
+class TestEveryInternalLinkResolves:
+    """The plan's index links to each "as built" section, and the line above it
+    says to read every one of them before the next phase.
+
+    A link to a fragment that does not exist scrolls nowhere and reads, to
+    anybody following it, as a section that was never written -- which is what
+    the index exists to deny. Phase C found two: one it had introduced by
+    indexing a section before writing it, and one that had been dead since B6,
+    where a heading gained a date the link did not. Two instances is the rule
+    this file already applies to counts, so the check is here rather than in
+    another pair of eyes.
+    """
+
+    def test_the_document_has_internal_links_at_all(self) -> None:
+        """The precondition. A regex that matched nothing would satisfy the test
+        below by having no links to check -- §2's zero-iteration trap, in the
+        shape it takes when the subject is prose."""
+        text = PLAN.read_text(encoding="utf-8")
+        assert len(re.findall(r"\]\((#[\w-]+)\)", text)) > 10
+
+    def test_every_one_of_them_names_a_heading(self) -> None:
+        text = PLAN.read_text(encoding="utf-8")
+        have = anchors(text)
+        dead = sorted(set(re.findall(r"\]\((#[\w-]+)\)", text)) - have)
+        assert dead == [], f"these links point at no heading: {dead}"
+
+
 class TestTheStatusLineIsTrue:
     """The three numbers, against what the tree actually holds."""
 
