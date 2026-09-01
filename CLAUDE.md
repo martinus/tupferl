@@ -1618,6 +1618,38 @@ has been dropped.
     cases — and the notification when the *waiter* is reaped reads like the
     sweep completing. Wait on `[ -f <json>.done ] || ! kill -0 $pid`, and say
     which one happened.
+- **A killed sweep used to leak its probes for ever, and the probe is the only
+  thing that can notice.** Every teardown path in `tools/mutate.py` runs *inside*
+  the sweep, so a `SIGKILL` left probes with nothing that would ever reap them:
+  #114 measured four alive **36 hours** later, one holding 3.2 GiB, and every
+  sweep in that window sized itself from a `MemAvailable` they were eating --
+  invisible to `_report_crowding`, which sums *lane* RSS, and an orphan is not a
+  lane. `verdict.watch_for_orphaning` is the fix, and three things about it are
+  the design rather than detail:
+
+  - **not `os.getppid() == 1`.** Measured here: a killed sweep's probes
+    reparent to **1522**, the systemd user manager, so the obvious test would
+    have watched them live for ever.
+  - **the sweep names itself, in `MUTATE_OWNER_PID`.** Asking `getppid()` at
+    startup loses a race in the leaking direction: a probe orphaned before it
+    finishes importing records the *reaper* as its owner and then waits for a
+    change that has already happened. Found by writing the test that kills the
+    sweep with no pause; a one-second sleep made it pass.
+  - **it `killpg`s its own group, and refuses unless it leads that group.**
+    `_run` passes `start_new_session=True`, so the group holds nothing but the
+    probe's descendants -- which is what has to die, since a probe exiting alone
+    would orphan the `git` its suite forked. There is no process table to walk
+    and no membership test to invert, which is #91's whole lesson; and the veto
+    means a mutation that breaks the check makes it do *less*.
+
+  The temporary trees are the other half and cannot be fixed the same way: they
+  belong to the sweep, not the probe. `_owned_temp` stamps each one with the
+  sweep's pid *and birth time* and `_collect_abandoned` removes, at the next
+  run, only those whose owner is provably gone. **It cannot collect what
+  predates the stamp** -- nothing distinguishes an old tree from a live one --
+  so `unstamped` names those and a person runs one `rm -rf`. A tool that deletes
+  on your behalf should not be the one guessing.
+
 - **The sweep sizes itself from what is actually free, and says so.**
   `tools/mutate.py` reads `MemAvailable` out of `/proc/meminfo`, takes the
   smaller of that and any cgroup limit, leaves a gibibyte, and divides. So a

@@ -34,7 +34,7 @@ import sys
 import tempfile
 import termios
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from functools import lru_cache
@@ -219,6 +219,30 @@ def bounds(seconds: float, why: str) -> Any:
             yield
 
     return _bounded
+
+
+def until(ready: Callable[[], bool], seconds: float, poll: float = 0.05) -> bool:
+    """Whether `ready()` became true within `seconds`, polling until it does.
+
+    For a fact that becomes true in another *process*, where there is nothing to
+    wait on: a pid disappearing, a file appearing. `subprocess`'s own `timeout=`
+    covers the case where a handle exists, and this is the one where it does not.
+
+    **Returns rather than raises**, because both directions are assertions
+    somebody wants: that an orphaned probe *is* collected, and that a probe whose
+    sweep is alive is *not*. A helper that raised on timeout could only express
+    the first, and the second would have to be written again by hand.
+
+    Asked once more after the deadline, so a fact that became true during the
+    last sleep is not reported as a timeout -- the shape that makes a test flaky
+    on a loaded machine and nowhere else.
+    """
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if ready():
+            return True
+        time.sleep(poll)
+    return ready()
 
 
 @contextmanager

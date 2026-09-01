@@ -298,6 +298,18 @@ _TOTAL = SETTINGS.total_env
 #: `bounded`, which is the one place the margin is decided.
 _ALARM = SETTINGS.alarm_env
 
+#: The pid a probe watches, so that it can collect itself when this process is
+#: gone. Spelled here *and* in `tools/verdict.py`, which is the one name Phase D
+#: could not route through `[tool.mutate]`: `verdict.py` is read as source into
+#: the sandbox and may import nothing from `tools`, so it cannot be handed a
+#: derived name. `tests/test_mutate.py` asserts the two spellings agree, which
+#: is the arrangement `ANSWERED`'s three copies already have.
+#:
+#: Given rather than left to `os.getppid()` because that loses a race: a probe
+#: orphaned before it finishes importing reads the *reaper* as its parent and
+#: then waits for a change that has already happened.
+_OWNER_PID = "MUTATE_OWNER_PID"
+
 #: Set in a probe's environment to say that the tree underneath it is a
 #: *mutated copy*, not the repository.
 #:
@@ -1337,9 +1349,9 @@ def _run(
     # Both files land outside the sandbox on purpose: the copy is what the
     # mutation edits, and a report written into it is one `open()` away from
     # being the mutation's to write.
-    with tempfile.TemporaryDirectory(prefix=SETTINGS.tmp("verdict-")) as box:
-        report = Path(box) / "verdict.json"
-        noise = Path(box) / "stderr.txt"
+    with _owned_temp("verdict-") as box:
+        report = box / "verdict.json"
+        noise = box / "stderr.txt"
         with noise.open("w", encoding="utf-8") as spill:
             probe = subprocess.Popen(
                 [
@@ -1386,6 +1398,7 @@ def _run(
                         _BUDGET: str(memory),
                         _ALARM: str(each),
                         _MUTATED: "1",
+                        _OWNER_PID: str(os.getpid()),
                         # Only when the project named a profile. A project
                         # without Hypothesis has nothing to select and an empty
                         # variable name is not a variable, so the hook is absent
@@ -1508,10 +1521,10 @@ def _sandboxes(count: int) -> Iterator[queue.Queue[Path]]:
     it stands, uncommitted changes and all, which is the whole situation this is
     used in.
     """
-    with tempfile.TemporaryDirectory(prefix=SETTINGS.tmp("mutate-")) as holder:
+    with _owned_temp("mutate-") as holder:
         available: queue.Queue[Path] = queue.Queue()
         for index in range(count):
-            root = Path(holder) / f"tree{index}"
+            root = holder / f"tree{index}"
             shutil.copytree(Path.cwd(), root, ignore=_SKIP, symlinks=True)
             # survivor: drop-call -- unanswerable: the pool is built one copy short of what
             #   it promised, so a nested sweep's last borrower waits on an empty queue for ever.
@@ -3709,6 +3722,114 @@ def _loadable(ids: Iterable[str]) -> set[str]:
     return wanted & _collected(os.getcwd())
 
 
+#: Dropped into every temporary tree a sweep makes, naming the sweep. It is what
+#: separates "abandoned" from "in use" without guessing, and what keeps
+#: `_collect_abandoned` away from the `tupferl-test-` directories the *suite*
+#: makes under the same prefix: no stamp, not ours, not touched.
+_OWNER = "owner.json"
+
+
+@functools.cache
+def _stamp() -> str:
+    """This sweep, identified so that a recycled pid cannot impersonate it.
+
+    The birth time as well as the pid, from `_born` -- the same second fact
+    `_permitted` vetoes a kill with. Without it a long-dead sweep whose number
+    has since been handed to somebody's editor reads as alive for ever, and its
+    gigabytes are never collected; with it the only way to be wrong is to be
+    wrong in the direction that *keeps* a tree.
+
+    Cached because both callers run in the sweep process and `_born` walks every
+    process on the machine -- and one of them runs once per row.
+    """
+    mine = os.getpid()
+    return json.dumps({"pid": mine, "born": _born().get(mine)})
+
+
+@contextmanager
+def _owned_temp(kind: str) -> Iterator[Path]:
+    """A temporary directory, stamped with the sweep that owns it.
+
+    Written before anything else goes in, so a sweep killed a millisecond later
+    still leaves a tree that can be identified rather than one that has to be
+    guessed at.
+    """
+    with tempfile.TemporaryDirectory(prefix=SETTINGS.tmp(kind)) as made:
+        root = Path(made)
+        (root / _OWNER).write_text(_stamp(), encoding="utf-8")
+        yield root
+
+
+def _collect_abandoned(where: Path | None = None) -> list[Path]:
+    """Remove temporary trees whose sweep no longer exists, and say which.
+
+    **Because nothing inside a sweep can do it.** `_sandboxes` cleans up in a
+    `finally` that a `SIGKILL` never reaches, so an abandoned run leaves whole
+    copies of the tree behind for ever: measured (#114), **2681 directories
+    totalling 2.5 GiB** on this machine, accumulated over weeks.
+
+    Exact rather than heuristic, which is what makes deleting acceptable here at
+    all. A directory is removed only when it carries a `_OWNER` stamp this tool
+    wrote *and* the sweep named in it is provably gone. Three things follow, and
+    all three are the conservative direction:
+
+    - a tree with no stamp is left alone, so the `tupferl-test-` directories the
+      suite makes under the same prefix are never candidates;
+    - a stamp that will not parse is left alone, because a half-written one
+      means a sweep was interrupted *while starting* and may still be running;
+    - a pid that is alive with the recorded birth time is left alone, and so is
+      one whose birth time could not be read at all on this platform.
+
+    It cannot help a second sweep running concurrently: that one's pid is alive
+    and its trees are skipped, which is the whole point of the stamp.
+
+    **And it cannot collect what predates the stamp**, which is the honest limit
+    of this and the one place it does less than #114 asked for. The issue wanted
+    a startup pass that repaired "the state that already exists on every
+    developer machine"; a tree with no stamp cannot be told from a live one by
+    anything this knows, and the only ways to guess -- its age, or whether any
+    process has it open -- are a race and an arbitrary number. `unstamped` names
+    them instead, so a person can look and run one `rm -rf`. A tool that deletes
+    on your behalf should not be the one doing the guessing.
+    """
+    root = Path(where) if where is not None else Path(tempfile.gettempdir())
+    living = _born()
+    swept = []
+    for found in sorted(root.glob(f"{SETTINGS.tmp_prefix}*")):
+        try:
+            owner = json.loads((found / _OWNER).read_text(encoding="utf-8"))
+            pid, born = int(owner["pid"]), owner["born"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        # `born is None` is macOS, where `_born` may have nothing to say. Then
+        # the pid alone decides, which is weaker and still only ever errs
+        # towards keeping a tree somebody may be using.
+        if pid in living and (born is None or living[pid] == born):
+            continue
+        shutil.rmtree(found, ignore_errors=True)
+        swept.append(found)
+    return swept
+
+
+def unstamped(where: Path | None = None) -> list[Path]:
+    """Temporary trees of this harness's own kinds that carry no owner stamp.
+
+    Only the three names this tool makes, never the bare `tmp_prefix`: the suite
+    puts its own throwaway directories under that prefix too, and a list that
+    swept those in would be inviting a person to delete something in use.
+
+    Reported and never removed -- see `_collect_abandoned`'s last paragraph.
+    """
+    root = Path(where) if where is not None else Path(tempfile.gettempdir())
+    found = [
+        made
+        for kind in ("mutate-", "verdict-", "batches-")
+        for made in root.glob(f"{SETTINGS.tmp(kind)}*")
+        if made.is_dir() and not (made / _OWNER).exists()
+    ]
+    return sorted(found)
+
+
 def _mutable_prefixes() -> str:
     """`MUTABLE` as a refusal names it, or what to do when there is none.
 
@@ -4474,6 +4595,28 @@ def main(argv: list[str] | None = None) -> int:
         help=f"budget for the cheap-tests-first prefix, 0 to disable (default {PREFIX:g})",
     )
     args = parser.parse_args(argv)
+
+    # Before anything is sized or copied. `_share` reads `MemAvailable`, and a
+    # ghost from an abandoned run is memory this one will not see -- #114
+    # measured 3.2 GiB held by one such process for 36 hours, with every sweep
+    # in that window sizing itself against what was left. The processes are
+    # `verdict.watch_for_orphaning`'s job now; the trees they ran in are this
+    # one's, and nothing inside a killed sweep can ever do it.
+    #
+    # Said out loud rather than done quietly: this deletes directories, and a
+    # tool that removes things on your behalf should name them. Silence when
+    # there is nothing to collect, which is every ordinary run.
+    if swept := _collect_abandoned():
+        print(f"collected {len(swept)} abandoned temporary tree(s) from a sweep that was killed.")
+    # Named, not deleted: these predate the owner stamp, so nothing here can
+    # tell one that is in use from one that is not. One line, so the 2.5 GiB
+    # #114 found is visible rather than waiting for somebody to run `du`.
+    if old := unstamped():
+        where = Path(tempfile.gettempdir()) / f"{SETTINGS.tmp_prefix}*"
+        print(
+            f"{len(old)} older temporary tree(s) carry no owner stamp, so this cannot tell "
+            f"whether they are in use.\n  If no sweep is running: rm -rf {where}"
+        )
 
     if args.all and args.base:
         parser.error("--all is every line; --base is what changed. Not both.")

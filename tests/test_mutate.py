@@ -761,6 +761,25 @@ class TestWhatEveryProbeIsHandedOnItsCommandLine:
         _, env = self.spawn()
         assert env["TUPFERL_MUTATE_MUTATED"] == "1"
 
+    def test_the_probe_is_told_which_pid_to_outlive(self) -> None:
+        """A probe collects itself when this pid stops existing, so this is the
+        one slot that has to be *this* process rather than anything derived.
+
+        Spelled literally, like the marker above: `mutate` and `verdict` each
+        write the name down because `verdict.py` is read as source into the
+        sandbox and may import nothing from `tools`, so Phase D could not route
+        it through `[tool.mutate]`.
+        """
+        _, env = self.spawn()
+        assert env["MUTATE_OWNER_PID"] == str(os.getpid())
+
+    def test_the_two_modules_spell_that_name_the_same(self) -> None:
+        """The cost of the exception above, and the check that pays it. A typo
+        in either leaves the sweep setting a name nothing reads and the probe
+        falling back to `os.getppid()` -- which works right up until the sweep
+        dies during the probe's own startup, and then leaks for ever."""
+        assert mutate._OWNER_PID == verdict.OWNER
+
     def test_the_marker_is_not_part_of_the_sandbox_contract(self) -> None:
         """The sandbox contract is applied to `_collected` as well, which runs
         over the *real* tree — so a marker living there would claim a mutated
@@ -793,6 +812,117 @@ class TestOne(unittest.TestCase):
     def test_is_fine(self):
         self.assertTrue(True)
 """
+
+
+class TestCollectingWhatAKilledSweepLeft:
+    """`_collect_abandoned`: remove a sweep's trees when the sweep is gone.
+
+    Every teardown path in `tools/mutate.py` runs *inside* the sweep, so a
+    `SIGKILL` leaves whole copies of the tree behind for ever -- 2681 of them,
+    2.5 GiB, when #114 was written. This is the only thing that can collect
+    them, and because it *deletes*, every test below is about what it refuses
+    to touch rather than what it removes.
+    """
+
+    _bounded = support.bounds(support.PATIENCE, "collecting abandoned trees hung")
+
+    def dead(self) -> int:
+        """A pid that is certainly not running: one we waited for.
+
+        Not `max(_born()) + 1`, which is a guess about a wrapping number, and
+        not a large constant, which is a guess about the machine. Checked
+        against a fresh `_born` afterwards, so the fixture cannot be the thing
+        that fails.
+        """
+        child = subprocess.Popen([sys.executable, "-c", ""])
+        child.wait(timeout=support.PATIENCE)
+        assert child.pid not in mutate._born(), "the pid was reused before the test could use it"
+        return child.pid
+
+    def tree(self, root: Path, name: str, stamp: str | None) -> Path:
+        made = root / f"{SETTINGS.tmp_prefix}{name}"
+        made.mkdir()
+        (made / "big").write_text("a copy of the tree", encoding="utf-8")
+        if stamp is not None:
+            (made / mutate._OWNER).write_text(stamp, encoding="utf-8")
+        return made
+
+    def test_a_tree_whose_sweep_is_gone_is_removed(self) -> None:
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            gone = self.tree(box, "mutate-x", json.dumps({"pid": self.dead(), "born": 1.0}))
+            assert mutate._collect_abandoned(box) == [gone]
+            assert not gone.exists()
+
+    def test_a_tree_whose_sweep_is_still_running_is_kept(self) -> None:
+        """Our own pid and our own birth time -- the concurrent-sweep case, and
+        the one where deleting would break a run in progress."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            mine = self.tree(box, "mutate-y", mutate._stamp())
+            assert mutate._collect_abandoned(box) == []
+            assert mine.exists()
+
+    def test_a_recycled_pid_cannot_impersonate_the_owner(self) -> None:
+        """The reason the stamp carries a birth time at all. A dead sweep whose
+        number has since been handed to somebody's editor would otherwise read
+        as alive for ever, and its gigabytes never collected."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            stale = json.dumps({"pid": os.getpid(), "born": -1.0})
+            gone = self.tree(box, "mutate-z", stale)
+            assert mutate._collect_abandoned(box) == [gone]
+
+    def test_a_birth_time_that_could_not_be_read_falls_back_to_the_pid(self) -> None:
+        """`born: null` is macOS, where `_born` may have nothing to say. Weaker,
+        and still only ever wrong towards keeping a tree somebody is using --
+        which is why this asserts the tree *survives*."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            mine = self.tree(box, "mutate-m", json.dumps({"pid": os.getpid(), "born": None}))
+            assert mutate._collect_abandoned(box) == []
+            assert mine.exists()
+
+    @pytest.mark.parametrize(
+        ("what", "stamp"),
+        [
+            ("no stamp at all", None),
+            ("a half-written stamp", '{"pid": 1'),
+            ("a stamp with no pid", "{}"),
+            ("a stamp whose pid is not a number", '{"pid": "later", "born": 1.0}'),
+        ],
+    )
+    def test_anything_it_cannot_read_is_left_alone(self, what: str, stamp: str | None) -> None:
+        """All four are the same rule: **this deletes, so it acts only on what
+        it can prove.** A half-written stamp in particular means a sweep was
+        interrupted while *starting*, and may still be running."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            kept = self.tree(box, "mutate-q", stamp)
+            assert mutate._collect_abandoned(box) == [], what
+            assert kept.exists(), what
+
+    def test_the_suites_own_throwaway_directories_are_never_reported(self) -> None:
+        """`support.tempdir` defaults to `tupferl-test-`, under the same prefix.
+        `unstamped` names only the three kinds this tool makes, so a person
+        following its `rm -rf` hint cannot be pointed at a running test's
+        directory."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            self.tree(box, "test-something", None)
+            ours = self.tree(box, "mutate-old", None)
+            assert mutate.unstamped(box) == [ours]
+
+    def test_a_stamped_tree_is_not_reported_as_unstamped(self) -> None:
+        """The other half: once stamped, a tree is `_collect_abandoned`'s
+        business and must not also appear in a hint telling a person to delete
+        it by hand while a sweep is using it."""
+        with support.tempdir(prefix="tupferl-collect-") as box:
+            self.tree(box, "mutate-new", mutate._stamp())
+            assert mutate.unstamped(box) == []
+
+    def test_a_tree_it_makes_is_stamped_before_anything_else_goes_in(self) -> None:
+        """A sweep killed a millisecond after `mkdtemp` still has to leave a
+        tree that can be identified rather than one that has to be guessed at."""
+        with mutate._owned_temp("mutate-") as made:
+            assert made.name.startswith(SETTINGS.tmp("mutate-"))
+            assert json.loads((made / mutate._OWNER).read_text(encoding="utf-8"))["pid"] == (
+                os.getpid()
+            )
 
 
 @pytest.mark.usefixtures("_alarm_put_back")
