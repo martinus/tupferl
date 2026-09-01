@@ -387,9 +387,7 @@ class TestTwoHostsOverrideTheSameFile:
         assert both_override.first.call("sync") == 0
         done = both_override.first.run("status", "--all")
         assert "host  .bashrc" in done.stdout
-        assert (
-            "1 file managed, 0 to change, 0 in conflict, 1 from this host's overlay" in done.stdout
-        )
+        assert "1 file managed, nothing to do, 1 from this host's overlay" in done.stdout
 
     def test_neither_overlay_is_offered_to_the_other_machine_as_managed(
         self, both_override: support.TwoMachines
@@ -400,6 +398,4 @@ class TestTwoHostsOverrideTheSameFile:
         assert both_override.first.call("sync") == 0
         done = both_override.first.run("status", "--all")
         assert done.stdout.count(".bashrc") == 1, done.stdout
-        assert (
-            "1 file managed, 0 to change, 0 in conflict, 1 from this host's overlay" in done.stdout
-        )
+        assert "1 file managed, nothing to do, 1 from this host's overlay" in done.stdout

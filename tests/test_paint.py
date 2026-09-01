@@ -41,6 +41,10 @@ from tools import paint
 #: nothing else. Deliberately broader than what this module emits: the claim is
 #: "strip the escapes and you have the text back", and a stripper that only knew
 #: the four codes used here could not tell a stray one from the text.
+#:
+#: `tests/support.ESCAPES` is the same pattern, for the package's own colour
+#: tests. Not shared, and this is the copy that cannot be: the docstring above
+#: commits this file to the standard library and the tool it covers.
 ESCAPES = re.compile(r"\x1b\[[0-9;]*m")
 
 #: One of each kind, so a test over "every colour" is over the roles rather than
