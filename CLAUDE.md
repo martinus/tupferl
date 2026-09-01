@@ -1148,6 +1148,23 @@ has been dropped.
 
 #### Terminals, signals and processes
 
+- **`_born` spawns `ps` where there is no `/proc`, so calling it puts a
+  subprocess into whatever called it -- and on macOS that is a different
+  program.** `mutate._stamp` read the sweep's own birth time through `_born`;
+  every Linux leg was green, and all four `macos` shards failed all seven tests
+  of `TestWhatEveryProbeIsHandedOnItsCommandLine` with `'int' object has no
+  attribute 'name'`, because that class patches `subprocess.Popen` and the fake
+  intercepted `ps` instead of the probe. `_my_birth` reads `/proc/self/stat` and
+  answers `None` elsewhere.
+
+  The general shape is worth more than the instance: **a helper with a
+  platform-dependent *implementation* has a platform-dependent cost, and a
+  fallback that shells out is not interchangeable with one that reads a file.**
+  Ask what a helper does on the other platform before calling it somewhere a
+  spawn would matter. The guard is asserted against `_born` rather than against
+  `subprocess`, so it fails on Linux too -- a test that watched for a spawn
+  could only go red on the leg nobody runs before pushing.
+
 - **`Path.resolve()` moves a macOS temporary directory, and nothing on Linux
   says so.** `/var/folders/.../T` is a symlink to `/private/var/folders/.../T`,
   so `tempfile.mkdtemp()` hands back the first and anything that resolves the

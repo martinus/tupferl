@@ -1039,6 +1039,43 @@ class TestCollectingWhatAKilledSweepLeft:
                 mutate.main(["--base", "HEAD", "--only", "no/such/path", "--collect"])
             assert f"collected {gone}" in spill.getvalue()
 
+    def test_stamping_spawns_nothing(self) -> None:
+        """**`_stamp` must not go through `_born`**, and this is a macOS bug in
+        the shape of a test.
+
+        `_born` reads `/proc` where there is one and falls back to `ps` where
+        there is not -- so calling it here put a *subprocess spawn* inside
+        `_run`, and `TestWhatEveryProbeIsHandedOnItsCommandLine` patches
+        `subprocess.Popen`: on the macos legs the fake intercepted `ps` instead
+        of the probe and all seven of that class's tests failed with `'int'
+        object has no attribute 'name'`. Every Linux leg was green, because
+        there `_born` reads `/proc` and spawns nothing.
+
+        Asserted against `_born` rather than against `subprocess`, so that it
+        fails on *this* platform too. A test that watched for a spawn could only
+        go red on macOS, which is the leg nobody runs before pushing.
+        """
+        mutate._stamp.cache_clear()
+        try:
+            with mock.patch.object(mutate, "_born", side_effect=AssertionError("walked /proc")):
+                assert json.loads(mutate._stamp())["pid"] == os.getpid()
+        finally:
+            mutate._stamp.cache_clear()
+
+    @pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="Linux reads /proc")
+    def test_our_own_birth_agrees_with_the_walk(self) -> None:
+        """The two are compared with each other -- a stamp against `_born`'s map
+        -- so reading them differently would make every stamp look stale and
+        every live sweep's tree collectable."""
+        assert mutate._my_birth() == mutate._born()[os.getpid()]
+
+    def test_a_birth_that_cannot_be_read_is_none_rather_than_an_error(self) -> None:
+        """macOS, where there is no `/proc`. `_collect_abandoned` already treats
+        `None` as "the pid alone decides", so the weaker check is reached rather
+        than the stamp failing to be written at all."""
+        with mock.patch.object(Path, "read_text", side_effect=OSError("no /proc")):
+            assert mutate._my_birth() is None
+
     def test_a_tree_it_makes_is_stamped_before_anything_else_goes_in(self) -> None:
         """A sweep killed a millisecond after `mkdtemp` still has to leave a
         tree that can be identified rather than one that has to be guessed at."""

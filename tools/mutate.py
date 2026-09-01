@@ -3733,17 +3733,49 @@ _OWNER = "owner.json"
 def _stamp() -> str:
     """This sweep, identified so that a recycled pid cannot impersonate it.
 
-    The birth time as well as the pid, from `_born` -- the same second fact
-    `_permitted` vetoes a kill with. Without it a long-dead sweep whose number
-    has since been handed to somebody's editor reads as alive for ever, and its
-    gigabytes are never collected; with it the only way to be wrong is to be
-    wrong in the direction that *keeps* a tree.
+    The birth time as well as the pid -- the same second fact `_permitted`
+    vetoes a kill with. Without it a long-dead sweep whose number has since been
+    handed to somebody's editor reads as alive for ever, and its gigabytes are
+    never collected; with it the only way to be wrong is to be wrong in the
+    direction that *keeps* a tree.
 
-    Cached because both callers run in the sweep process and `_born` walks every
-    process on the machine -- and one of them runs once per row.
+    **Read from `/proc/self/stat` rather than through `_born`, and that is a
+    macOS bug this had.** `_born` falls back to `ps` where there is no `/proc`,
+    so calling it here put a *subprocess spawn* inside `_run` -- and
+    `test_mutate`'s probe-argv fake patches `subprocess.Popen`, so on the macos
+    legs it intercepted `ps` instead of the probe and all seven tests in that
+    class failed with `'int' object has no attribute 'name'`. Green on every
+    Linux leg, because there `_born` reads `/proc` and spawns nothing.
+
+    Asking only about *ourselves* needs no walk and no `ps`. Where that cannot
+    be answered the value is `None`, which `_collect_abandoned` already treats
+    as "the pid alone decides" -- weaker, and only ever wrong towards keeping a
+    tree somebody may be using.
     """
     mine = os.getpid()
-    return json.dumps({"pid": mine, "born": _born().get(mine)})
+    return json.dumps({"pid": mine, "born": _my_birth()})
+
+
+def _my_birth() -> float | None:
+    """When *this* process started, in `_born`'s unit, or `None` where nothing says.
+
+    `/proc/self/stat` only: the point is to cost nothing and spawn nothing, and
+    the `ps` fallback `_born` carries for macOS is exactly what this must not
+    do. `None` there is handled rather than papered over.
+
+    The index arithmetic is `_born_from_proc`'s, and deliberately the same
+    expression: the two values are compared with each other, so a difference in
+    how they are read would make every stamp look stale.
+    """
+    try:
+        said = Path("/proc/self/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    fields = said.rpartition(") ")[2].split()
+    try:
+        return float(fields[22 - 3])
+    except (IndexError, ValueError):  # pragma: no cover - a /proc that is not Linux's
+        return None
 
 
 @contextmanager
