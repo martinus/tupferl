@@ -2045,6 +2045,19 @@ def alive(pid: int) -> bool:
     return bool(state) and not state.startswith("Z")
 
 
+def verdict_module() -> Any:
+    """`tools.verdict`, imported here rather than at module scope.
+
+    This file drives the verdict layer as a *subprocess* throughout, which its
+    own docstring argues for; two tests below ask about one object's behaviour
+    in this process, where a subprocess would say nothing extra. Imported inside
+    them so the module-level rule stays true for everything else.
+    """
+    from tools import verdict
+
+    return verdict
+
+
 class TestTheBreadcrumbAKilledProbeLeaves:
     """`<report>.running`: the only thing a `TIMEOUT` has to say for itself.
 
@@ -2076,6 +2089,26 @@ class TestTheBreadcrumbAKilledProbeLeaves:
             )
             note = report.with_name(report.name + ".running")
             return note.read_text(encoding="utf-8") if note.exists() else ""
+
+    def test_a_probe_with_nowhere_to_write_still_runs(self) -> None:
+        """`running=None` is the default and every existing caller's behaviour.
+        A breadcrumb that was not asked for must not be the thing that stops the
+        suite -- this is a diagnostic, and an instrument that causes the fault it
+        reports is worse than none."""
+        watcher = verdict_module().Watcher(0.0)
+        watcher.pytest_runtest_logstart("tests/test_x.py::T::test_a", None)
+        assert watcher.ran == 1
+
+    def test_a_breadcrumb_that_cannot_be_written_is_given_up_on(self) -> None:
+        """A read-only or full temporary directory. It must not raise, and it
+        must stop trying: one failed write per test for the rest of a survivor's
+        whole-suite walk is two thousand pointless syscalls."""
+        module = verdict_module()
+        watcher = module.Watcher(0.0, Path("/proc/self/no/such/place/running.txt"))
+        watcher.pytest_runtest_logstart("tests/test_x.py::T::test_a", None)
+        assert watcher.running is None, "it kept a path it cannot write to"
+        watcher.pytest_runtest_logstart("tests/test_x.py::T::test_b", None)
+        assert watcher.ran == 2
 
     def test_it_names_a_test_that_really_ran(self) -> None:
         said = self.leaves()

@@ -6943,6 +6943,21 @@ class TestHowOneRunsOutcomeIsClassified:
         found = self.verdict(hang=True, running="tests/test_x.py::T::test_old")
         assert "tests/test_x.py::T::test_old" in found.detail
 
+    @pytest.mark.parametrize(
+        ("what", "note"),
+        [("nothing was written", ""), ("only whitespace", "   \n"), ("no file at all", None)],
+    )
+    def test_a_note_with_nothing_in_it_adds_nothing(self, what: str, note: str | None) -> None:
+        """Three ways to have nothing to say, and all three must add nothing
+        rather than `None` -- the detail is built by concatenation, so a `None`
+        here is a `TypeError` in the one path that only runs when a sweep is
+        already going wrong."""
+        with support.tempdir(prefix="tupferl-crumb-") as box:
+            report = box / "verdict.json"
+            if note is not None:
+                report.with_name(report.name + ".running").write_text(note, encoding="utf-8")
+            assert mutate._was_running(report) == "", what
+
     def test_a_lane_killed_for_memory_broke_rather_than_answered(self) -> None:
         """And it is read *before* the report, which is the whole subtlety. A
         killed lane may well have written one -- the kill lands on whichever
