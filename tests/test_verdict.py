@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -2042,6 +2043,84 @@ def alive(pid: int) -> bool:
     )
     state = done.stdout.strip()
     return bool(state) and not state.startswith("Z")
+
+
+def verdict_module() -> Any:
+    """`tools.verdict`, imported here rather than at module scope.
+
+    This file drives the verdict layer as a *subprocess* throughout, which its
+    own docstring argues for; two tests below ask about one object's behaviour
+    in this process, where a subprocess would say nothing extra. Imported inside
+    them so the module-level rule stays true for everything else.
+    """
+    from tools import verdict
+
+    return verdict
+
+
+class TestTheBreadcrumbAKilledProbeLeaves:
+    """`<report>.running`: the only thing a `TIMEOUT` has to say for itself.
+
+    A probe that runs out of time is killed before it writes its report, so the
+    row said "no answer within 300s" and named nothing (#107). This is the note
+    that survives, because the file belongs to the caller rather than to the
+    process being killed.
+    """
+
+    _bounded = support.bounds(BOUND, "the probe never wrote its breadcrumb")
+
+    def leaves(self, extra: str = "") -> str:
+        """One real probe over one real test, and the note it left."""
+        with support.tempdir(prefix="tupferl-crumb-") as box:
+            report = box / "verdict.json"
+            script = (
+                f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+                "from tools import verdict\n"
+                f"verdict.collect(['tests.test_paths'], False, 0.0, (), False, "
+                f"__import__('pathlib').Path({str(report) + '.running'!r}))\n"
+            )
+            subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=BOUND,
+                check=False,
+            )
+            note = report.with_name(report.name + ".running")
+            return note.read_text(encoding="utf-8") if note.exists() else ""
+
+    def test_a_probe_with_nowhere_to_write_still_runs(self) -> None:
+        """`running=None` is the default and every existing caller's behaviour.
+        A breadcrumb that was not asked for must not be the thing that stops the
+        suite -- this is a diagnostic, and an instrument that causes the fault it
+        reports is worse than none."""
+        watcher = verdict_module().Watcher(0.0)
+        watcher.pytest_runtest_logstart("tests/test_x.py::T::test_a", None)
+        assert watcher.ran == 1
+
+    def test_a_breadcrumb_that_cannot_be_written_is_given_up_on(self) -> None:
+        """A read-only or full temporary directory. It must not raise, and it
+        must stop trying: one failed write per test for the rest of a survivor's
+        whole-suite walk is two thousand pointless syscalls."""
+        module = verdict_module()
+        watcher = module.Watcher(0.0, Path("/proc/self/no/such/place/running.txt"))
+        watcher.pytest_runtest_logstart("tests/test_x.py::T::test_a", None)
+        assert watcher.running is None, "it kept a path it cannot write to"
+        watcher.pytest_runtest_logstart("tests/test_x.py::T::test_b", None)
+        assert watcher.ran == 2
+
+    def test_it_names_a_test_that_really_ran(self) -> None:
+        said = self.leaves()
+        assert "::" in said, said
+        assert "tests/test_paths.py" in said, said
+
+    def test_it_carries_a_clock(self) -> None:
+        """Without it the id cannot separate "one test hung" from "the suite was
+        slow", which are #107's two competing readings and want opposite fixes."""
+        began, _, nodeid = self.leaves().partition(" ")
+        assert nodeid, "the note has no test id"
+        assert abs(float(began) - time.time()) < BOUND, "the clock is not a timestamp"
 
 
 class TestAProbeThatOutlivesItsSweep:

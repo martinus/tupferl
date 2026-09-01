@@ -1431,7 +1431,7 @@ def _run(
         except subprocess.TimeoutExpired:
             # survivor: drop-call -- TODO: why is this acceptable?
             _end(probe)
-            return Verdict("timeout", f"no answer within {timeout:g}s")
+            return Verdict("timeout", f"no answer within {timeout:g}s{_was_running(report)}")
         finally:
             # In a `finally` so that no path leaves a group registered: a
             # `KeyboardInterrupt` here would otherwise leave the sampler holding
@@ -3931,6 +3931,43 @@ def about_temporary_trees(collect: bool, where: Path | None = None) -> list[str]
             f"rm -rf {root / f'{SETTINGS.tmp_prefix}*'}"
         )
     return said
+
+
+def _was_running(report: Path) -> str:
+    """What the probe was doing when it ran out of time, if it left a note.
+
+    **A `TIMEOUT` is the one verdict with nothing to read.** The probe is killed,
+    so it writes no report, and the row says "no answer within 300s" -- naming
+    neither the test in flight nor anything else to go on. #107 is an
+    observation that stayed unexplained for exactly that reason: two sweeps
+    disagreed about one row and neither left evidence.
+
+    `verdict.Watcher.pytest_runtest_logstart` overwrites `<report>.running` as
+    each test starts, and this file survives the kill because it belongs to the
+    caller rather than to the process being killed.
+
+    Empty when there is no note -- an old probe, a probe killed before the first
+    test, a read-only temporary directory. Silence rather than a guess: a
+    `TIMEOUT` that named the wrong test would be worse than one that names none.
+    """
+    try:
+        said = report.with_name(report.name + ".running").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not said:
+        return ""
+    began, _, nodeid = said.partition(" ")
+    try:
+        # How long that one test had been running. Nearly the whole budget is
+        # one test that hung; a few seconds is a suite that was merely slow, and
+        # the two want opposite fixes.
+        elapsed = time.time() - float(began)
+    except ValueError:
+        # A note with no clock -- an older probe, which a resumed sweep can
+        # meet. The id is worth more than the clock, so losing the clock must
+        # not lose both.
+        return f", in {said}"
+    return f", in {nodeid} after {elapsed:.0f}s" if nodeid else f", in {said}"
 
 
 def _mutable_prefixes() -> str:

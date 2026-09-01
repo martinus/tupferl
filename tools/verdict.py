@@ -345,10 +345,14 @@ class Watcher:
     object used to.
     """
 
-    def __init__(self, each: float) -> None:
+    def __init__(self, each: float, running: Path | None = None) -> None:
         #: Seconds one test may take. 0 disables the alarm, which is what a
         #: platform without `SIGALRM` gets.
         self.each = each
+        #: Where to leave the id of the test now starting, or `None` for no
+        #: breadcrumb. See `pytest_runtest_logstart`; it is what gives a
+        #: `TIMEOUT` a name to report instead of a number.
+        self.running = running
         #: Tests that failed at the ``call`` phase, having asserted something.
         #: This is what `caught` means. Under pytest a nodeid is both the
         #: display form and the id a later run feeds back, so `mutate`'s two
@@ -408,8 +412,31 @@ class Watcher:
         """Counted here rather than from the reports, because this fires for a
         test whose *setup* dies too -- which `unittest` also counted as a test
         that started, and which is a `broke` that must not read as "nothing
-        ran"."""
+        ran".
+
+        **It also leaves a breadcrumb, which is the one thing a `TIMEOUT` has
+        not got.** A probe that runs out of time is killed, so it writes no
+        report at all and the row says only "no answer within 300s" -- naming
+        neither the test that was running nor anything else to go on. #107 is an
+        observation nobody could explain for exactly that reason. One tiny
+        overwrite per test start survives the kill, because the file is the
+        caller's and not this process's to clean up.
+
+        **The clock as well as the name**, because the two readings a `TIMEOUT`
+        leaves open need it: one test that hung spends nearly the whole budget
+        under a single id, and a suite that was merely slow shows a few seconds.
+        The id alone cannot tell them apart, which is the state #107 was filed
+        in.
+        """
         self.ran += 1
+        if self.running is not None:
+            # Best effort and never fatal: this is a diagnostic, and a probe
+            # that died because it could not write a breadcrumb would be the
+            # instrument causing the fault it exists to report.
+            try:
+                self.running.write_text(f"{time.time():.3f} {nodeid}", encoding="utf-8")
+            except OSError:  # pragma: no cover - a full or read-only /tmp
+                self.running = None
 
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_protocol(
@@ -675,6 +702,7 @@ def collect(
     each: float = 0.0,
     first: Sequence[str] = (),
     walk: bool = False,
+    running: Path | None = None,
 ) -> dict[str, Any]:
     """What the suite said, walking outward until something notices.
 
@@ -694,7 +722,7 @@ def collect(
     the first red test whatever it was about. That is why `mutate.run` baselines
     `WHOLE_SUITE` for a walking table.
     """
-    watcher = Watcher(each_test(each))
+    watcher = Watcher(each_test(each), running)
     for group in _groups(names, first, walk, watcher):
         watcher.over(group, failfast)
         # Three ways to stop, and they are not the same question. `stopped` is
@@ -734,7 +762,11 @@ def main(argv: list[str]) -> None:
     # and a mutation to something imported at module scope can run away there.
     cap(int(argv[2]))
     try:
-        written = collect(names, failfast, float(argv[3]), first, walk)
+        # `<report>.running` rather than a new argv slot or a new environment
+        # name: the probe already knows where its report goes, so the breadcrumb
+        # needs no protocol at all -- and a protocol is what `first`'s own slot
+        # cost this file once already.
+        written = collect(names, failfast, float(argv[3]), first, walk, Path(report + ".running"))
     except BaseException:
         # Said, not inferred. The caller used to conclude "the suite could not be
         # loaded" from an absent file, which is also what a typo in this file

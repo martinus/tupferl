@@ -860,6 +860,23 @@ Five things are not where a newcomer would guess, all on purpose:
   whose first killer is X, never rows only X can catch** -- the honest number
   needs a run with X deselected.
 
+- **A `TIMEOUT` is the one verdict with nothing to read, and now it has a
+  name.** The probe is killed, so it writes no report: the row said "no answer
+  within 300s" and named neither the test in flight nor anything else. #107 was
+  an observation nobody could explain for exactly that reason -- two sweeps
+  disagreed about one row and neither left evidence.
+
+  `verdict.Watcher.pytest_runtest_logstart` overwrites `<report>.running` with
+  the clock and the nodeid as each test starts, and `mutate._was_running` reads
+  it back into the detail. The file survives the kill because it belongs to the
+  *caller*, not to the process being killed, and it needs no protocol: the probe
+  already knows where its report goes.
+
+  **The clock is what makes it a diagnosis rather than a hint.** Nearly the whole
+  budget under one id is a test that hung; a few seconds is a suite that was
+  merely slow, and the two want opposite fixes. Reading the id alone cannot tell
+  them apart, which was #107's whole difficulty.
+
 - **Never read a raw survivor list as a bug count.** Cross it with coverage
   (`python -m tools.reached results.json coverage.json --list`): a survivor on a
   line no test executes is a missing test; a survivor on a line the suite does
