@@ -42,6 +42,29 @@ nothing to explain them.
 bottom of the test tree and now imports this to spell one environment variable,
 so anything this pulled in would be pulled into every test process.
 
+**Why a mutation here is BROKE, and why 13 tags below say so.** `SETTINGS =
+load(ROOT)` runs at *import*, and every consumer reads it at *their* import --
+`mutants.MUTABLE`, `mutate._ALARM`, and `tests/support.py`'s `ALARM` and
+`CARRIES`, which `tests/conftest.py` pulls in before any test runs. So a mutation
+that makes the answer wrong or absent does not fail a test; it makes the module
+unimportable, pytest exits `USAGE_ERROR` over a broken conftest, and the harness
+files the row `BROKE` -- which is never `caught`. **Measured 2026-09-01: 20 of
+this file's 64 rows, 31%.**
+
+Every one of them has a test that would catch the behaviour, and none of those
+tests can be collected once the configuration is unreadable. That is a cost of
+reading configuration once at import, which is the right shape for a value read
+in loops -- the alternative is a call at every use, which would also stop
+`mock.patch.object(mutants, "UNMUTABLE", ...)` working. It is excused per
+`(line, operator)` rather than by excluding the file, for the reasons CLAUDE.md
+gives about `_lane` and `_born`: an exclusion is permanent and silent, so a
+*future* unanswerable row here would never be reported.
+
+One thing this rules out, and it was tried: routing `tests/support.py`'s `ROOT`
+through this module. It is one expression fewer and it cost two more `BROKE`
+rows, because a fixture's idea of where the tree is must not come from the thing
+under test.
+
 What extraction still changes, so the next reader is not surprised: an installed
 harness has no tree of its own to read, and would take the root from pytest's
 ``rootdir`` or the invoking directory instead. That is one function, `_root`,
@@ -83,6 +106,9 @@ def _root() -> Path:
     `parents[1]` rather than `parent.parent` for the reason `tests/support.py`
     spells it that way: one index to read instead of two hops.
     """
+    # survivor: off-by-one, return-value -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. a wrong root finds no `pyproject.toml`, so `mutable` is empty and `tools/mutants.py`
+    #   has nothing to import -- and `tools/run_tests.py` takes its `--rootdir` from here.
     return Path(__file__).resolve().parents[1]
 
 
@@ -179,6 +205,9 @@ class Settings:
 
     def env(self, suffix: str) -> str:
         """One environment variable's name, under this project's prefix."""
+        # survivor: return-value -- unanswerable; see "Why a mutation here is BROKE"
+        #   above. `None` here is a `None` in `tests/support.py`'s `CARRIES` tuple, which
+        #   `os.environ` is filtered by before any test runs.
         return f"{self.env_prefix}_{suffix}" if self.env_prefix else suffix
 
     @property
@@ -194,11 +223,15 @@ class Settings:
     @property
     def alarm_env(self) -> str:
         """The per-test alarm this run armed, for the suite under it to read."""
+        # survivor: return-value -- unanswerable; see "Why a mutation here is BROKE"
+        #   above. `support.ALARM` is this, read at the import of every test module.
         return self.env("MUTATE_EACH_TEST")
 
     @property
     def mutated_env(self) -> str:
         """Set when the tree under the suite is a mutated copy."""
+        # survivor: return-value -- unanswerable; see "Why a mutation here is BROKE"
+        #   above. `support.MUTATED` is this, and `over_a_mutated_tree` reads it at import.
         return self.env("MUTATE_MUTATED")
 
     @property
@@ -311,8 +344,13 @@ def _tuple(key: str, value: Any) -> tuple[str, ...]:
     `"src/"` is iterable and every character of it is a string, so the shorter
     check accepts it and turns one prefix into eleven one-character ones.
     """
+    # survivor: branch, drop-not, order -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. accepting a bad `mutable` or refusing this project's good one both end at the same
+    #   place. `TestWhatItRefuses` is what would catch it, and cannot be collected.
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"[{TABLE}] {key} must be a list of strings, not {value!r}")
+    # survivor: return-value -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. `mutants.MUTABLE` is `None` then, and `str.startswith(None)` at its import.
     return tuple(value)
 
 
@@ -324,6 +362,9 @@ def _scalar(key: str, value: Any, want: type) -> Any:
     string field take nothing extra but would let ``probe_autoload = 1`` past,
     and a config that half-works is the thing this module refuses to be.
     """
+    # survivor: branch, negate -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. refusing every scalar refuses this project's own table; accepting every one is caught
+    #   by `TestWhatItRefuses`, which cannot be collected once the table is refused.
     if type(value) is not want:
         raise ValueError(f"[{TABLE}] {key} must be a {want.__name__}, not {value!r}")
     return value
@@ -336,7 +377,12 @@ def parse(raw: dict[str, Any]) -> Settings:
     so the refusals below are reachable without one.
     """
     declared = {spec.name: spec for spec in fields(Settings)}
+    # survivor: arith -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. `set(raw) + set(declared)` is a `TypeError` at import.
     unknown = sorted(set(raw) - set(declared))
+    # survivor: branch -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. always-taken refuses this project's own table at import; the never-taken half is
+    #   caught.
     if unknown:
         raise ValueError(
             f"[{TABLE}] has no key(s) {', '.join(unknown)}; "
@@ -355,7 +401,12 @@ def parse(raw: dict[str, Any]) -> Settings:
         # test could see it until the knob existed. Every field has a plain
         # default, so `type(...)` of it is exact and needs no map to maintain.
         want = type(declared[key].default)
+        # survivor: negate -- unanswerable; see "Why a mutation here is BROKE"
+        #   above. every list is then checked as a scalar and every scalar as a list, so the table
+        #   is refused at import.
         made[key] = _tuple(key, value) if want is tuple else _scalar(key, value, want)
+    # survivor: return-value -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. `SETTINGS` is `None`, and `SETTINGS.mutable` at `tools/mutants.py`'s import.
     return Settings(**made)
 
 
@@ -393,8 +444,13 @@ def load(root: Path) -> Settings:
         if not isinstance(table, dict) or step not in table:
             return Settings()
         table = table[step]
+    # survivor: branch, drop-not -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. always-taken refuses this project's own table; the other half hands a string to
+    #   `parse`.
     if not isinstance(table, dict):
         raise ValueError(f"[{TABLE}] in {found} must be a table, not {table!r}")
+    # survivor: return-value -- unanswerable; see "Why a mutation here is BROKE"
+    #   above. `SETTINGS` is `None`, as two entries above.
     return parse(table)
 
 
