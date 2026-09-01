@@ -67,6 +67,21 @@ def managed(started: support.Machine) -> support.Machine:
     return started
 
 
+def seed_the_remote(machine: support.Machine) -> None:
+    """Push a `.bashrc` to `machine`'s remote from somewhere that is not it.
+
+    The second-machine precondition, and two `TestInit` tests need it: one asks
+    what `init` *does* with a populated clone, the other what it *says*. Written
+    twice first, which is two chances for the state under test to drift between
+    the two questions asked about it.
+    """
+    first = support.make_repo(machine.tmp / "seed", machine.env, remote=machine.remote)
+    (first / ".bashrc").write_text("export EDITOR=nvim\n", encoding="utf-8")
+    support.git(["add", "-A"], first, machine.env)
+    support.git(["commit", "-m", "seeded"], first, machine.env)
+    support.git(["push"], first, machine.env)
+
+
 @pytest.mark.usefixtures("machine")
 class TestInit:
     def test_an_empty_remote_is_cloned_and_given_a_first_commit(
@@ -101,11 +116,7 @@ class TestInit:
         this host's merge base: without it the machine could not merge anything
         later, because it would have no common ancestor to merge against.
         """
-        first = support.make_repo(machine.tmp / "seed", machine.env, remote=machine.remote)
-        (first / ".bashrc").write_text("export EDITOR=nvim\n", encoding="utf-8")
-        support.git(["add", "-A"], first, machine.env)
-        support.git(["commit", "-m", "seeded"], first, machine.env)
-        support.git(["push"], first, machine.env)
+        seed_the_remote(machine)
 
         machine.init()
         stored = (machine.repo / ".bashrc").read_text(encoding="utf-8")
@@ -113,6 +124,23 @@ class TestInit:
         assert (machine.home / ".bashrc").read_text() == "export EDITOR=nvim\n"
         assert machine.log() == [f"sync from {machine.host}: .bashrc", "seeded", "initial"]
         assert not paths.config_file().is_file()
+
+    def test_a_second_machine_is_not_told_to_start_adding_files(
+        self, machine: support.Machine
+    ) -> None:
+        """`init` used to end with "next: `tupferl add <path>...` to start
+        managing files", unconditionally and *before* the sync it runs -- so a
+        machine cloning a populated repository was told to start adding files
+        directly above the lines saying its files had just arrived.
+
+        Both halves are asserted. "No advice" alone is equally satisfied by a
+        run that restored nothing, which is the state the advice would have
+        been right about."""
+        seed_the_remote(machine)
+
+        done = machine.init()
+        assert "restored .bashrc" in done.stdout, "the clone brought nothing to be quiet about"
+        assert "tupferl add" not in done.stdout
 
     def test_a_url_that_cannot_be_cloned_is_reported(self, machine: support.Machine) -> None:
         """And nothing is created. The alternative — falling back to a local

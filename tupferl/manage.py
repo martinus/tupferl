@@ -186,7 +186,13 @@ def init(url: str) -> int:
                 f"run `tupferl doctor` and try again."
             )
         print("the remote was empty, so an empty first commit was made to start the branch")
-    print("next: `tupferl add <path>...` to start managing files")
+    # **No "next: add some files" line here, and there was one.** `init` is
+    # followed immediately by a sync -- see `__main__` -- and on a second
+    # machine that sync *restores* the files the clone brought, so the advice
+    # was printed above three `restored` lines telling the user they already
+    # had files. Advice about a state this command cannot see yet is advice the
+    # command after it should give: `sync` reports `NOTHING_MANAGED` when there
+    # is genuinely nothing, which is the same sentence at the moment it is true.
     return 0
 
 

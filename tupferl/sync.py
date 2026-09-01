@@ -954,7 +954,23 @@ def report(outcomes: list[Outcome]) -> str:
     Silent about UNCHANGED files, which are most of them on most runs: a sync
     that printed forty lines saying nothing happened would bury the one line
     saying something did.
+
+    A run with *nothing* managed is the one case that gets no counts at all --
+    see the first branch, which is also `tupferl init`'s closing line on a
+    machine that has just been set up.
     """
+    if not outcomes:
+        # The same sentence `status` and `status --diff` give, from the same
+        # constant. `sync` reached here saying "0 files managed, 0 changed, 0 in
+        # conflict", which is arithmetic about an empty set rather than an
+        # answer -- and it is the *last* line of `tupferl init` on a fresh
+        # machine, where "what do I do now?" is the only question the user has.
+        # `init` used to answer it itself, one line early and wrongly: it printed
+        # the advice before the sync that restores a cloned repository's files,
+        # so a second machine was told to start adding files above three lines
+        # saying its files had just arrived. Said here, it is said when it is
+        # true.
+        return manage.NOTHING_MANAGED
     lines: list[str] = []
     for outcome in outcomes:
         if outcome.action == UNCHANGED:
